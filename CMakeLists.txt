@@ -184,7 +184,6 @@ set(MILO_ENGINE_PLATFORM_SOURCES
     src/platform/CDReader_Native.cpp
     src/platform/ChecksumData_Stub.cpp
     src/platform/DataParser_Native.cpp
-    src/platform/DebugPanel.cpp
     src/platform/File_Native.cpp
     src/platform/FxSendNative.cpp
     src/platform/Joypad_Native.cpp
@@ -212,6 +211,9 @@ set(MILO_ENGINE_PLATFORM_SOURCES
     #   RenderState_Native.cpp  rnddx9/RenderState.h -> xdk/D3D9.h (Xbox D3D9)
     #   Skeleton_Native.cpp     gesture/Skeleton.h -> xdk/NUI.h (Kinect; DC3-only)
     #   HttpServer.cpp          telemetry/GameplayTelemetry.h (DC3 telemetry)
+    #   DebugPanel.cpp          references TheHttpServer under DC3_HTTP_SERVER;
+    #                           pairs with HttpServer — factor the HTTP/telemetry
+    #                           hook, then both move in together.
 )
 if(MILO_ENGINE_HAVE_FFMPEG)
     list(APPEND MILO_ENGINE_PLATFORM_SOURCES
@@ -260,8 +262,11 @@ if(MILO_ENGINE_HAVE_CONTEXT)
     # Consumer-injected Milo headers + matched-fork compat flags + defs.
     target_include_directories(milo-engine PUBLIC ${MILO_ENGINE_DECOMP_INCLUDE_DIRS})
     target_compile_options(milo-engine PRIVATE ${MILO_ENGINE_DECOMP_COMPAT_FLAGS})
+    # HX_IMGUI for ImGuiBackend. DC3_HTTP_SERVER is intentionally NOT set here —
+    # it's a per-decomp debug flag; the consumer defines it on its own target
+    # (and compiles HttpServer.cpp + DebugPanel.cpp, which are deferred glue).
     target_compile_definitions(milo-engine PRIVATE
-        MILO_DEBUG=1 _DEBUG=1 HX_IMGUI=1 DC3_HTTP_SERVER=1
+        MILO_DEBUG=1 _DEBUG=1 HX_IMGUI=1
         ${MILO_ENGINE_DECOMP_DEFINITIONS})
     if(MILO_ENGINE_HAVE_FFMPEG)
         target_compile_definitions(milo-engine PRIVATE HX_FFMPEG=1)
