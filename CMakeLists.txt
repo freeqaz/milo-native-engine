@@ -4,35 +4,39 @@ cmake_minimum_required(VERSION 3.22)
 # milo-native-engine
 #
 # Shared LP64 modern-C++ runtime for native ports of Milo-engine games
-# (Dance Central 3, Rock Band 3 Wii, Rock Band 3 Xbox 360). The engine is
-# GAME-AGNOSTIC and SDK-AGNOSTIC: it never references per-game classes
-# (hamobj/, band3/, dance/, meta_*) or per-platform SDK headers (xdk/,
-# revolution/). Each decomp consumes the engine via add_subdirectory() and
-# assembles its own executable from engine + its matched fork + its native glue.
+# (Dance Central 3, Rock Band 3 Wii, Rock Band 3 Xbox 360). GAME-AGNOSTIC and
+# SDK-AGNOSTIC: no per-game classes (hamobj/, band3/, dance/, meta_*), no
+# per-platform SDK headers (xdk/, revolution/).
 #
 # Canonical plan: rb3/docs/native/NATIVE_PORT_ROADMAP.md
 # Disposition catalog: rb3/docs/native/NATIVE_PORT_INVENTORY.md
 #
-# Phase 0.1 (this commit): the skeleton. milo-engine builds as a valid (near-
-# empty) static archive from a single placeholder TU. The subsystem source
-# trees (gfx/, audio/, platform/, char/, stl/, system/) are empty and land in
-# Phase 0.2. Dependency detection below is SOFT (warn, don't fail) precisely
-# because the skeleton has no sources that need those deps yet; Phase 0.2 flips
-# the ones it consumes to REQUIRED.
+# --- Build model -------------------------------------------------------------
+# The engine .cpp files include the consuming decomp's Milo HEADERS (obj/,
+# rndobj/, math/, synth/, char/ ...) and are compiled with that decomp's
+# matched-fork compat flags (MSVC for DC3/Xenon, MWCC for RB3-Wii). So the
+# engine is NOT standalone-compilable: it compiles inside a consumer's context.
+#
+# A consumer (a decomp's CMakeLists, or a standalone "reference" build via -D)
+# injects context BEFORE add_subdirectory():
+#     MILO_ENGINE_DECOMP_INCLUDE_DIRS  decomp Milo header roots
+#     MILO_ENGINE_DECOMP_COMPAT_FLAGS  matched-fork compat flags
+#     MILO_ENGINE_DECOMP_DEFINITIONS   extra compile definitions
+#     MILO_ENGINE_DECOMP_PCH           optional decomp PCH header
+#
+# With context, milo-engine compiles the full gfx/audio/platform/char source
+# set. WITHOUT context, it builds the Phase-0.1 placeholder-only near-empty
+# archive (the skeleton), so `cmake -B build && cmake --build build` still works
+# bare.
 # =============================================================================
 
-# Is the engine the top-level build, or pulled in via add_subdirectory() by a
-# decomp? Standalone-only setup (compiler autodetect, default-on tests) is gated
-# on this so consuming a decomp build doesn't clobber the parent's choices.
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     set(MILO_ENGINE_STANDALONE ON)
 else()
     set(MILO_ENGINE_STANDALONE OFF)
 endif()
 
-# The native build targets vanilla Clang LP64 C++17. Consumers (the decomps)
-# already select Clang for their matched-fork MSVC/MWCC compat flags; when built
-# standalone, autodetect clang to match. (Emscripten ships its own Clang.)
+# Clang autodetect when built standalone (consumers select their own compiler).
 if(MILO_ENGINE_STANDALONE AND NOT EMSCRIPTEN)
     if(NOT DEFINED CMAKE_C_COMPILER AND NOT DEFINED ENV{CC})
         find_program(CLANG_C_COMPILER clang)
@@ -50,15 +54,15 @@ endif()
 
 project(milo-engine LANGUAGES C CXX)
 
-# Engine .cpp is clean LP64 and would compile under GCC, but we standardize on
-# Clang to match the decomp builds (which require it for compat flags). Warn,
-# don't fail — a stray GCC configure of the skeleton alone is harmless.
 if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     message(WARNING
         "milo-engine targets Clang LP64 (found ${CMAKE_CXX_COMPILER_ID}). "
-        "The decomp builds that consume this engine require Clang; configure "
-        "with CC=clang CXX=clang++ to match.")
+        "The decomp builds that consume this engine require Clang.")
 endif()
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_C_STANDARD 11)
 
 # -----------------------------------------------------------------------------
 # Options
@@ -70,107 +74,241 @@ option(MILO_ENGINE_LP64_AUDIT   "Enable LP64 pointer-truncation warnings for aud
 option(MILO_ENGINE_ENABLE_ASAN  "Build the engine with AddressSanitizer"                        OFF)
 
 # -----------------------------------------------------------------------------
-# Sanitizers / audit flags (applied to the engine target only, below)
+# Consumer / reference context
 # -----------------------------------------------------------------------------
-set(MILO_ENGINE_PRIVATE_FLAGS)
-set(MILO_ENGINE_PRIVATE_LINK_FLAGS)
-if(MILO_ENGINE_ENABLE_ASAN)
-    list(APPEND MILO_ENGINE_PRIVATE_FLAGS      -fsanitize=address -fno-omit-frame-pointer)
-    list(APPEND MILO_ENGINE_PRIVATE_LINK_FLAGS -fsanitize=address)
-endif()
-if(MILO_ENGINE_LP64_AUDIT)
-    # cmake -DMILO_ENGINE_LP64_AUDIT=ON ... 2>&1 | grep -E 'pointer-to-int|int-to-pointer'
-    list(APPEND MILO_ENGINE_PRIVATE_FLAGS -Wpointer-to-int-cast -Wint-to-pointer-cast)
+if(DEFINED MILO_ENGINE_DECOMP_INCLUDE_DIRS AND NOT "${MILO_ENGINE_DECOMP_INCLUDE_DIRS}" STREQUAL "")
+    set(MILO_ENGINE_HAVE_CONTEXT ON)
+else()
+    set(MILO_ENGINE_HAVE_CONTEXT OFF)
 endif()
 
 # -----------------------------------------------------------------------------
-# Dependencies (SOFT in Phase 0.1 — see header comment)
-#
-# Phase 0.2 consumes: Dawn (WebGPU), glfw3, ImGui (FetchContent), FFmpeg
-# (pkg-config: libavformat/libavcodec/libswscale/libavutil), miniaudio
-# (vendored in third_party/). For now we probe-and-report so the empty archive
-# configures on any machine, and Phase 0.2 has a known detection point to
-# promote to REQUIRED.
+# Sanitizers / audit (applied to the engine target only)
+# -----------------------------------------------------------------------------
+set(MILO_ENGINE_EXTRA_FLAGS)
+set(MILO_ENGINE_EXTRA_LINK_FLAGS)
+if(MILO_ENGINE_ENABLE_ASAN)
+    list(APPEND MILO_ENGINE_EXTRA_FLAGS      -fsanitize=address -fno-omit-frame-pointer)
+    list(APPEND MILO_ENGINE_EXTRA_LINK_FLAGS -fsanitize=address)
+endif()
+if(MILO_ENGINE_LP64_AUDIT)
+    list(APPEND MILO_ENGINE_EXTRA_FLAGS -Wpointer-to-int-cast -Wint-to-pointer-cast)
+endif()
+
+# -----------------------------------------------------------------------------
+# Dependencies — only when compiling the real engine (HAVE_CONTEXT). Each is
+# guarded by NOT TARGET so a consuming decomp that already set them up wins.
 # -----------------------------------------------------------------------------
 find_package(Threads REQUIRED)
 
-if(EMSCRIPTEN)
-    # Emscripten supplies its own threading, WebGPU (emdawnwebgpu) and GLFW shim.
-    set(MILO_ENGINE_HAVE_DAWN  OFF)
-    set(MILO_ENGINE_HAVE_GLFW  OFF)
-    set(MILO_ENGINE_HAVE_FFMPEG OFF)
-else()
-    find_package(Dawn QUIET)
-    find_package(glfw3 QUIET)
-    set(MILO_ENGINE_HAVE_DAWN ${Dawn_FOUND})
-    set(MILO_ENGINE_HAVE_GLFW ${glfw3_FOUND})
+if(MILO_ENGINE_HAVE_CONTEXT AND NOT EMSCRIPTEN)
+    if(NOT TARGET dawn::webgpu_dawn)
+        find_package(Dawn REQUIRED)
+    endif()
+    if(NOT TARGET glfw)
+        find_package(glfw3 REQUIRED)
+    endif()
 
+    # FFmpeg (Bink video/audio decode). Optional — gates two platform sources.
     find_package(PkgConfig QUIET)
-    if(PkgConfig_FOUND)
+    if(PkgConfig_FOUND AND NOT TARGET PkgConfig::FFMPEG)
         pkg_check_modules(FFMPEG QUIET IMPORTED_TARGET
             libavformat libavcodec libswscale libavutil)
     endif()
     set(MILO_ENGINE_HAVE_FFMPEG ${FFMPEG_FOUND})
+
+    # Dear ImGui — debug overlay, built into the engine by default.
+    if(NOT TARGET imgui)
+        include(FetchContent)
+        FetchContent_Declare(imgui
+            GIT_REPOSITORY https://github.com/ocornut/imgui.git
+            GIT_TAG        8314fc3e5a10f7c6b670225065fce1dc8cfd396b)
+        FetchContent_MakeAvailable(imgui)
+        add_library(imgui STATIC
+            ${imgui_SOURCE_DIR}/imgui.cpp
+            ${imgui_SOURCE_DIR}/imgui_draw.cpp
+            ${imgui_SOURCE_DIR}/imgui_tables.cpp
+            ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+            ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+            ${imgui_SOURCE_DIR}/backends/imgui_impl_wgpu.cpp)
+        target_include_directories(imgui PUBLIC
+            ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
+        target_link_libraries(imgui PUBLIC glfw dawn::webgpu_dawn)
+        target_compile_definitions(imgui PUBLIC IMGUI_IMPL_WEBGPU_BACKEND_DAWN)
+    endif()
 endif()
+
+# -----------------------------------------------------------------------------
+# Engine source lists (mirrors dc3-decomp/native source lists, minus per-decomp
+# and not-yet-factored files). Web-only sources gated by MILO_BUILD_WEB.
+# -----------------------------------------------------------------------------
+if(APPLE)
+    set(MILO_ENGINE_METAL_SOURCE src/gfx/MetalSurface.mm)
+else()
+    set(MILO_ENGINE_METAL_SOURCE "")
+endif()
+
+set(MILO_ENGINE_GFX_SOURCES
+    src/gfx/GpuDevice.cpp
+    ${MILO_ENGINE_METAL_SOURCE}
+    src/gfx/Screenshot.cpp
+    src/gfx/TextureConvert.cpp
+    src/gfx/VertexFormats.cpp
+    src/gfx/PipelineManager.cpp
+    src/gfx/FrameCapture.cpp
+    src/gfx/ShadowPass.cpp
+    src/gfx/BloomPass.cpp
+    src/gfx/DofPass.cpp
+    src/gfx/PostProcPass.cpp
+    src/gfx/DrawRect2D.cpp
+    src/gfx/GpuResourceRegistry.cpp
+    src/gfx/VideoEncoder.cpp
+    src/gfx/mikktspace.c
+    src/gfx/ImGuiBackend.cpp
+)
+
+set(MILO_ENGINE_AUDIO_SOURCES
+    src/audio/AudioDevice.cpp
+)
+
+set(MILO_ENGINE_CHAR_SOURCES
+    src/char/CharTwistSolver.cpp
+)
+
+set(MILO_ENGINE_PLATFORM_SOURCES
+    src/platform/AsyncFile_Native.cpp
+    src/platform/BinkMovie_Stub.cpp
+    src/platform/BoneSetup.cpp
+    src/platform/Cache_Stub.cpp
+    src/platform/Cam_Native.cpp
+    src/platform/CDReader_Native.cpp
+    src/platform/ChecksumData_Stub.cpp
+    src/platform/DataParser_Native.cpp
+    src/platform/DebugPanel.cpp
+    src/platform/File_Native.cpp
+    src/platform/FxSendNative.cpp
+    src/platform/Joypad_Native.cpp
+    src/platform/Keyboard_Native.cpp
+    src/platform/Keygen_Stub.cpp
+    src/platform/MapFile_Stub.cpp
+    src/platform/MaterialSetup.cpp
+    src/platform/MeshGpuCache.cpp
+    src/platform/Mesh_Wgpu.cpp
+    src/platform/Net_Stub.cpp
+    src/platform/NetworkSocket_Stub.cpp
+    src/platform/Part_Wgpu.cpp
+    src/platform/RndTex_Native.cpp
+    src/platform/SampleInst_Native.cpp
+    src/platform/StreamReceiver_Native.cpp
+    src/platform/Synth_Stub.cpp
+    src/platform/SynthCommon_Stub.cpp
+    src/platform/Tex_Wgpu.cpp
+    src/platform/TransparentQueue.cpp
+    src/platform/VirtualKeyboard_Stub.cpp
+    # Deferred — these compile in DC3 today but their matched-fork interface
+    # headers drag in SDK/game couplings that need HX_NATIVE-gating before the
+    # file is engine-clean (Phase-1 factoring). They stay DC3 glue for now:
+    #   PlatformMgr_Native.cpp  os/PlatformMgr.h -> xdk/XSOCIAL.h (Xbox social)
+    #   RenderState_Native.cpp  rnddx9/RenderState.h -> xdk/D3D9.h (Xbox D3D9)
+    #   Skeleton_Native.cpp     gesture/Skeleton.h -> xdk/NUI.h (Kinect; DC3-only)
+    #   HttpServer.cpp          telemetry/GameplayTelemetry.h (DC3 telemetry)
+)
+if(MILO_ENGINE_HAVE_FFMPEG)
+    list(APPEND MILO_ENGINE_PLATFORM_SOURCES
+        src/platform/FFmpegAudioReader.cpp
+        src/platform/FFmpegMovieImpl.cpp)
+endif()
+
+set(MILO_ENGINE_FULL_SOURCES
+    ${MILO_ENGINE_GFX_SOURCES}
+    ${MILO_ENGINE_AUDIO_SOURCES}
+    ${MILO_ENGINE_CHAR_SOURCES}
+    ${MILO_ENGINE_PLATFORM_SOURCES}
+)
 
 # -----------------------------------------------------------------------------
 # Engine static library
-#
-# Phase 0.2 appends globbed/explicit sources from src/gfx, src/audio,
-# src/platform, src/char, src/stl, src/system here. For now: the placeholder TU
-# only, which is enough for a valid `libmilo-engine.a`.
 # -----------------------------------------------------------------------------
-set(MILO_ENGINE_SOURCES
-    src/EngineVersion.cpp
-)
+set(MILO_ENGINE_SOURCES src/EngineVersion.cpp)
+if(MILO_ENGINE_HAVE_CONTEXT)
+    list(APPEND MILO_ENGINE_SOURCES ${MILO_ENGINE_FULL_SOURCES})
+endif()
 
 add_library(milo-engine STATIC ${MILO_ENGINE_SOURCES})
-
 target_compile_features(milo-engine PUBLIC cxx_std_17)
 
-# Engine code is always the native build.
-target_compile_definitions(milo-engine PRIVATE HX_NATIVE=1)
+set_source_files_properties(src/gfx/mikktspace.c PROPERTIES LANGUAGE C)
 
-# PUBLIC so consuming decomp executables inherit the engine's public headers.
+# STL ABI seam: the host-STL shim headers (include/bits, include/__iterator) and
+# the STLport-shape shims (src/stl) MUST precede the system + decomp headers so
+# host clang STL wins. BEFORE forces them ahead of everything.
+target_include_directories(milo-engine BEFORE PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
 target_include_directories(milo-engine PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/audio
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party
 )
 
-target_compile_options(milo-engine PRIVATE ${MILO_ENGINE_PRIVATE_FLAGS})
-target_link_options(milo-engine PRIVATE ${MILO_ENGINE_PRIVATE_LINK_FLAGS})
-
+target_compile_definitions(milo-engine PRIVATE HX_NATIVE=1)
+target_compile_options(milo-engine PRIVATE ${MILO_ENGINE_EXTRA_FLAGS})
+target_link_options(milo-engine PRIVATE ${MILO_ENGINE_EXTRA_LINK_FLAGS})
 target_link_libraries(milo-engine PUBLIC Threads::Threads)
 
-# Phase 0.2 will add, conditioned on the HAVE_ flags above:
-#   target_link_libraries(milo-engine PUBLIC dawn::dawn glfw imgui ...)
-#   if(MILO_ENGINE_HAVE_FFMPEG) target_link_libraries(milo-engine PUBLIC PkgConfig::FFMPEG) endif()
+if(MILO_ENGINE_HAVE_CONTEXT)
+    # Consumer-injected Milo headers + matched-fork compat flags + defs.
+    target_include_directories(milo-engine PUBLIC ${MILO_ENGINE_DECOMP_INCLUDE_DIRS})
+    target_compile_options(milo-engine PRIVATE ${MILO_ENGINE_DECOMP_COMPAT_FLAGS})
+    target_compile_definitions(milo-engine PRIVATE
+        MILO_DEBUG=1 _DEBUG=1 HX_IMGUI=1 DC3_HTTP_SERVER=1
+        ${MILO_ENGINE_DECOMP_DEFINITIONS})
+    if(MILO_ENGINE_HAVE_FFMPEG)
+        target_compile_definitions(milo-engine PRIVATE HX_FFMPEG=1)
+        target_include_directories(milo-engine PUBLIC ${FFMPEG_INCLUDE_DIRS})
+        target_link_libraries(milo-engine PUBLIC PkgConfig::FFMPEG)
+    endif()
+    if(NOT EMSCRIPTEN)
+        target_link_libraries(milo-engine PUBLIC dawn::webgpu_dawn glfw imgui)
+    endif()
+
+    # These TUs conflict with the decomp PCH (see dc3 CMake notes): File_Native
+    # (FileStat vs <sys/stat.h> st_*time macros), HttpServer (httplib heavy).
+    set_source_files_properties(
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/File_Native.cpp
+        PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+
+    if(MILO_ENGINE_DECOMP_PCH AND NOT "${MILO_ENGINE_DECOMP_PCH}" STREQUAL "")
+        target_precompile_headers(milo-engine PRIVATE
+            "$<$<COMPILE_LANGUAGE:CXX>:${MILO_ENGINE_DECOMP_PCH}>")
+    endif()
+endif()
 
 # -----------------------------------------------------------------------------
-# Opt-in tool targets (MILO_ENGINE_BUILD_TOOLS=ON) — populated in Phase 0.2.
+# Opt-in tool / test / web targets — land in later passes.
 # -----------------------------------------------------------------------------
 if(MILO_ENGINE_BUILD_TOOLS)
-    message(STATUS "milo-engine: tool targets requested but not yet ported "
-                   "(milo-viewer/milo2gltf/render-test land in Phase 0.2).")
+    message(STATUS "milo-engine: tool targets not yet ported (milo-viewer/milo2gltf/render-test).")
 endif()
-
-# -----------------------------------------------------------------------------
-# Engine-only convergence test suite — the cross-decomp gate (roadmap §0.2).
-# The engine-only test subset moves here from dc3-decomp/native/tests/ in 0.2.
-# -----------------------------------------------------------------------------
 if(MILO_ENGINE_BUILD_TESTS)
     enable_testing()
-    message(STATUS "milo-engine: test suite requested; engine-only tests land in Phase 0.2.")
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt)
+        add_subdirectory(tests)
+    else()
+        message(STATUS "milo-engine: engine-only test suite not yet ported.")
+    endif()
 endif()
 
 # -----------------------------------------------------------------------------
-# Configuration summary
+# Summary
 # -----------------------------------------------------------------------------
 message(STATUS "milo-engine configured:")
-message(STATUS "    standalone build : ${MILO_ENGINE_STANDALONE}")
-message(STATUS "    compiler         : ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
-message(STATUS "    tools / web      : ${MILO_ENGINE_BUILD_TOOLS} / ${MILO_BUILD_WEB}")
-message(STATUS "    tests            : ${MILO_ENGINE_BUILD_TESTS}")
-message(STATUS "    deps  Dawn/glfw  : ${MILO_ENGINE_HAVE_DAWN} / ${MILO_ENGINE_HAVE_GLFW}")
-message(STATUS "    deps  FFmpeg     : ${MILO_ENGINE_HAVE_FFMPEG}")
+message(STATUS "    standalone / context : ${MILO_ENGINE_STANDALONE} / ${MILO_ENGINE_HAVE_CONTEXT}")
+message(STATUS "    compiler             : ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
+if(MILO_ENGINE_HAVE_CONTEXT)
+    list(LENGTH MILO_ENGINE_FULL_SOURCES _n)
+    message(STATUS "    engine sources       : ${_n} (+ EngineVersion)")
+    message(STATUS "    FFmpeg               : ${MILO_ENGINE_HAVE_FFMPEG}")
+else()
+    message(STATUS "    engine sources       : placeholder-only (no decomp context)")
+endif()
