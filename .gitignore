@@ -1,0 +1,31 @@
+# Build output
+build/
+build-*/
+cmake-build-*/
+*.a
+*.o
+*.so
+*.dylib
+
+# CMake artifacts
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+/Testing/
+_deps/
+
+# IDE / editor
+.idea/
+.vs/
+.vscode/
+*.swp
+
+# Tooling caches
+.cache/
+__pycache__/
+.claude/*
+!.claude/skills/
+
+# OS cruft
+.DS_Store
