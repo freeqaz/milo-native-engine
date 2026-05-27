@@ -191,6 +191,7 @@ set(MILO_ENGINE_PLATFORM_SOURCES
     src/platform/Keygen_Stub.cpp
     src/platform/MapFile_Stub.cpp
     src/platform/MaterialSetup.cpp
+    src/platform/Memory_Native.cpp
     src/platform/MeshGpuCache.cpp
     src/platform/Mesh_Wgpu.cpp
     src/platform/Net_Stub.cpp
@@ -202,6 +203,7 @@ set(MILO_ENGINE_PLATFORM_SOURCES
     src/platform/Synth_Stub.cpp
     src/platform/SynthCommon_Stub.cpp
     src/platform/Tex_Wgpu.cpp
+    src/platform/ThreadCall_Native.cpp
     src/platform/TransparentQueue.cpp
     src/platform/VirtualKeyboard_Stub.cpp
     # Deferred — these compile in DC3 today but their matched-fork interface
