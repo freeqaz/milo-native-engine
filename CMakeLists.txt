@@ -69,6 +69,14 @@ set(CMAKE_C_STANDARD 11)
 # -----------------------------------------------------------------------------
 option(MILO_ENGINE_BUILD_TOOLS  "Build engine CLI tools (milo-viewer, milo2gltf, render-test)" OFF)
 option(MILO_BUILD_WEB           "Build the Emscripten/web target machinery"                     OFF)
+# GPU backend toggle. ON (default) → DC3's full WebGPU gfx + Wgpu platform
+# backends build, and the heavy GPU deps (Dawn/glfw/imgui) are pulled in. OFF →
+# the engine drops src/gfx/* and the GPU-coupled platform TUs and skips the GPU
+# deps entirely. RB3-Wii sets this OFF: its 2010-era rndobj/ is structurally
+# older than DC3's and cannot compile against the DC3-wired WebGPU layer (see
+# the excluded-source partition below). A .milo scene-tree dump needs no GPU,
+# so RB3 still reaches the load/dump path with this OFF.
+option(MILO_ENGINE_BUILD_GFX    "Build WebGPU gfx + Wgpu platform backends"                     ON)
 option(MILO_ENGINE_BUILD_TESTS  "Build the engine-only convergence test suite"  ${MILO_ENGINE_STANDALONE})
 option(MILO_ENGINE_LP64_AUDIT   "Enable LP64 pointer-truncation warnings for auditing"          OFF)
 option(MILO_ENGINE_ENABLE_ASAN  "Build the engine with AddressSanitizer"                        OFF)
@@ -101,7 +109,7 @@ endif()
 # -----------------------------------------------------------------------------
 find_package(Threads REQUIRED)
 
-if(MILO_ENGINE_HAVE_CONTEXT AND NOT EMSCRIPTEN)
+if(MILO_ENGINE_HAVE_CONTEXT AND MILO_ENGINE_BUILD_GFX AND NOT EMSCRIPTEN)
     if(NOT TARGET dawn::webgpu_dawn)
         find_package(Dawn REQUIRED)
     endif()
@@ -175,6 +183,27 @@ set(MILO_ENGINE_CHAR_SOURCES
     src/char/CharTwistSolver.cpp
 )
 
+# GPU-coupled platform backends. These hard-depend on the DC3-shaped WebGPU
+# renderer (WgpuRnd : NgRnd, MeshGpuCache, RndTex_Native, MaterialSetup) and on
+# DC3's rndobj/ surface. They are EXCLUDED when MILO_ENGINE_BUILD_GFX is OFF.
+# RB3-Wii (GFX OFF) cannot compile any of these — its 2010-era rndobj/ predates
+# the DC3 shapes these files reference (e.g. Part_Wgpu calls
+# RndParticleSys::NumTilesAcross()/NumTilesDown() which RB3 lacks; Rnd_Wgpu's
+# WgpuRnd derives from NgRnd while RB3's Rnd is an older unrelated class).
+set(MILO_ENGINE_GPU_PLATFORM_SOURCES
+    src/platform/MaterialSetup.cpp
+    src/platform/MeshGpuCache.cpp
+    src/platform/Mesh_Wgpu.cpp
+    src/platform/Part_Wgpu.cpp
+    src/platform/RndTex_Native.cpp
+    src/platform/Rnd_Wgpu.cpp
+    src/platform/Tex_Wgpu.cpp
+    src/platform/TransparentQueue.cpp
+)
+
+# Non-GPU platform sources — kept regardless of MILO_ENGINE_BUILD_GFX (file I/O,
+# audio device glue, input, threading, the *_Stub off-path slots, the render
+# hook seam). These have no WebGPU / DC3-rndobj coupling.
 set(MILO_ENGINE_PLATFORM_SOURCES
     src/platform/AsyncFile_Native.cpp
     src/platform/BinkMovie_Stub.cpp
@@ -191,22 +220,14 @@ set(MILO_ENGINE_PLATFORM_SOURCES
     src/platform/Keyboard_Native.cpp
     src/platform/Keygen_Stub.cpp
     src/platform/MapFile_Stub.cpp
-    src/platform/MaterialSetup.cpp
     src/platform/Memory_Native.cpp
-    src/platform/MeshGpuCache.cpp
-    src/platform/Mesh_Wgpu.cpp
     src/platform/Net_Stub.cpp
     src/platform/NetworkSocket_Stub.cpp
-    src/platform/Part_Wgpu.cpp
-    src/platform/RndTex_Native.cpp
-    src/platform/Rnd_Wgpu.cpp
     src/platform/SampleInst_Native.cpp
     src/platform/StreamReceiver_Native.cpp
     src/platform/Synth_Stub.cpp
     src/platform/SynthCommon_Stub.cpp
-    src/platform/Tex_Wgpu.cpp
     src/platform/ThreadCall_Native.cpp
-    src/platform/TransparentQueue.cpp
     src/platform/VirtualKeyboard_Stub.cpp
     # Deferred — these compile in DC3 today but their matched-fork interface
     # headers drag in SDK/game couplings that need HX_NATIVE-gating before the
@@ -219,6 +240,9 @@ set(MILO_ENGINE_PLATFORM_SOURCES
     #                           pairs with HttpServer — factor the HTTP/telemetry
     #                           hook, then both move in together.
 )
+if(MILO_ENGINE_BUILD_GFX)
+    list(APPEND MILO_ENGINE_PLATFORM_SOURCES ${MILO_ENGINE_GPU_PLATFORM_SOURCES})
+endif()
 if(MILO_ENGINE_HAVE_FFMPEG)
     list(APPEND MILO_ENGINE_PLATFORM_SOURCES
         src/platform/FFmpegAudioReader.cpp
@@ -226,11 +250,24 @@ if(MILO_ENGINE_HAVE_FFMPEG)
 endif()
 
 set(MILO_ENGINE_FULL_SOURCES
-    ${MILO_ENGINE_GFX_SOURCES}
     ${MILO_ENGINE_AUDIO_SOURCES}
     ${MILO_ENGINE_CHAR_SOURCES}
     ${MILO_ENGINE_PLATFORM_SOURCES}
 )
+if(MILO_ENGINE_BUILD_GFX)
+    list(APPEND MILO_ENGINE_FULL_SOURCES ${MILO_ENGINE_GFX_SOURCES})
+endif()
+
+# Consumer-injected extra exclusions. A consuming decomp whose matched-fork
+# headers are an OLDER shape than the engine's source set was written against
+# can name the engine TUs that don't compile against its headers (each entry is
+# a basename, e.g. "Synth_Stub.cpp"). These are dropped from the engine lib for
+# that consumer only — the default build is unaffected. Every exclusion must be
+# a genuine header-shape mismatch on an off-path subsystem, NOT a workaround for
+# a real engine bug (the consumer documents each in its own CMakeLists).
+foreach(_excl ${MILO_ENGINE_DECOMP_PLATFORM_EXCLUDE})
+    list(FILTER MILO_ENGINE_FULL_SOURCES EXCLUDE REGEX "/${_excl}$")
+endforeach()
 
 # -----------------------------------------------------------------------------
 # Engine static library
@@ -266,19 +303,23 @@ if(MILO_ENGINE_HAVE_CONTEXT)
     # Consumer-injected Milo headers + matched-fork compat flags + defs.
     target_include_directories(milo-engine PUBLIC ${MILO_ENGINE_DECOMP_INCLUDE_DIRS})
     target_compile_options(milo-engine PRIVATE ${MILO_ENGINE_DECOMP_COMPAT_FLAGS})
-    # HX_IMGUI for ImGuiBackend. DC3_HTTP_SERVER is intentionally NOT set here —
-    # it's a per-decomp debug flag; the consumer defines it on its own target
-    # (and compiles HttpServer.cpp + DebugPanel.cpp, which are deferred glue).
+    # DC3_HTTP_SERVER is intentionally NOT set here — it's a per-decomp debug
+    # flag; the consumer defines it on its own target (and compiles
+    # HttpServer.cpp + DebugPanel.cpp, which are deferred glue).
     target_compile_definitions(milo-engine PRIVATE
-        MILO_DEBUG=1 _DEBUG=1 HX_IMGUI=1
+        MILO_DEBUG=1 _DEBUG=1
         ${MILO_ENGINE_DECOMP_DEFINITIONS})
-    if(MILO_ENGINE_HAVE_FFMPEG)
-        target_compile_definitions(milo-engine PRIVATE HX_FFMPEG=1)
-        target_include_directories(milo-engine PUBLIC ${FFMPEG_INCLUDE_DIRS})
-        target_link_libraries(milo-engine PUBLIC PkgConfig::FFMPEG)
-    endif()
-    if(NOT EMSCRIPTEN)
-        target_link_libraries(milo-engine PUBLIC dawn::webgpu_dawn glfw imgui)
+    if(MILO_ENGINE_BUILD_GFX)
+        # HX_IMGUI for ImGuiBackend (only built under GFX).
+        target_compile_definitions(milo-engine PRIVATE HX_IMGUI=1)
+        if(MILO_ENGINE_HAVE_FFMPEG)
+            target_compile_definitions(milo-engine PRIVATE HX_FFMPEG=1)
+            target_include_directories(milo-engine PUBLIC ${FFMPEG_INCLUDE_DIRS})
+            target_link_libraries(milo-engine PUBLIC PkgConfig::FFMPEG)
+        endif()
+        if(NOT EMSCRIPTEN)
+            target_link_libraries(milo-engine PUBLIC dawn::webgpu_dawn glfw imgui)
+        endif()
     endif()
 
     # These TUs conflict with the decomp PCH (see dc3 CMake notes): File_Native
@@ -317,6 +358,7 @@ message(STATUS "    compiler             : ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_
 if(MILO_ENGINE_HAVE_CONTEXT)
     list(LENGTH MILO_ENGINE_FULL_SOURCES _n)
     message(STATUS "    engine sources       : ${_n} (+ EngineVersion)")
+    message(STATUS "    gfx (WebGPU)         : ${MILO_ENGINE_BUILD_GFX}")
     message(STATUS "    FFmpeg               : ${MILO_ENGINE_HAVE_FFMPEG}")
 else()
     message(STATUS "    engine sources       : placeholder-only (no decomp context)")
