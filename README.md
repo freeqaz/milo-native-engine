@@ -97,7 +97,39 @@ extraction from `dc3-decomp/native/`.
 
 ## Status
 
-**Phase 0.1 — engine repo skeleton.** Builds a valid near-empty
-`libmilo-engine.a`. Phase 0.2 moves the engine-clean code out of
-`dc3-decomp/native/` and switches dc3-decomp to consume this repo. See the
-roadmap's Status Log for the live phase tracker.
+**Phase 0 — COMPLETE.** The engine is extracted, consumed by both decomps, and
+gated by two convergence test suites. Substeps closed:
+
+- **0.1** — engine repo skeleton; valid near-empty `libmilo-engine.a`.
+- **0.2** — engine-clean code (gfx/audio/char/clean-platform) extracted out of
+  `dc3-decomp/native/`; DC3 switched to consume this repo via a
+  consumer-injected context model; engine-only tests moved in as
+  `milo-engine-tests`.
+- **0.2a** — `Rnd_Wgpu` graduated into the engine behind a game-agnostic
+  `GameRenderHook` interface (`src/platform/`); DC3 supplies `HamRenderHook`,
+  RB3 will supply `BandRenderHook`.
+- **0.2b** — `Memory_Native` + `ThreadCall_Native` graduated with POSIX-only
+  impls (pthread + `sem_t`); they no longer `#include "xdk/XAPILIB.h"`.
+- **0.3** — `rb3/native/` stood up; headless `rb3-dta` parses 138 real RB3 songs
+  from arkhelper-extracted assets (milestone (a)).
+- **0.4** — per-repo CI workflows (engine + dc3 + rb3) for native build + test.
+
+The engine now owns **gfx / audio / char / clean-platform = 50 TUs** (was 47;
++`Memory_Native`, +`ThreadCall_Native`, +`Rnd_Wgpu`/`GameRenderHook`), plus the
+`GameRenderHook` interface in `src/platform/`.
+
+**Deferred per-decomp glue** — matched-fork interface headers that still pull
+SDK/game couplings; they graduate once HX_NATIVE-gated:
+`PlatformMgr_Native` (xdk/XSOCIAL), `RenderState_Native` (xdk/D3D9),
+`Skeleton_Native` (Kinect), `HttpServer`+`DebugPanel`
+(telemetry/`DC3_HTTP_SERVER`), `MeshFilter` (DC3 hardcoded Kinect mesh skip
+list).
+
+**Convergence gates:**
+- DC3's `milo-tests` (links `libmilo-engine.a`): **371/371 pass.**
+- In-engine `milo-engine-tests`: **195/195 pass** (1 intentional skip).
+
+Published at <https://github.com/freeqaz/milo-native-engine> (public). Both
+decomps pin engine `9a58e86aa41e22a9fb90b4af39675eefd09a717e`. See the roadmap's
+[Status Log](../rb3/docs/native/NATIVE_PORT_ROADMAP.md#status-log) for the live
+phase tracker.
