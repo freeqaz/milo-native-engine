@@ -186,6 +186,7 @@ set(MILO_ENGINE_PLATFORM_SOURCES
     src/platform/DataParser_Native.cpp
     src/platform/File_Native.cpp
     src/platform/FxSendNative.cpp
+    src/platform/GameRenderHook.cpp
     src/platform/Joypad_Native.cpp
     src/platform/Keyboard_Native.cpp
     src/platform/Keygen_Stub.cpp
@@ -198,6 +199,7 @@ set(MILO_ENGINE_PLATFORM_SOURCES
     src/platform/NetworkSocket_Stub.cpp
     src/platform/Part_Wgpu.cpp
     src/platform/RndTex_Native.cpp
+    src/platform/Rnd_Wgpu.cpp
     src/platform/SampleInst_Native.cpp
     src/platform/StreamReceiver_Native.cpp
     src/platform/Synth_Stub.cpp

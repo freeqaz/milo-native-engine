@@ -798,7 +798,10 @@ set(DC3_RUNTIME_SOURCES
     ${DC3_RUNTIME_ROOT}/native/src/platform/NetXbox_Stub.cpp
     ${DC3_RUNTIME_ROOT}/native/src/platform/PlatformMgr_Native.cpp
     ${DC3_RUNTIME_ROOT}/native/src/platform/RenderState_Native.cpp
-    ${DC3_RUNTIME_ROOT}/native/src/platform/Rnd_Wgpu.cpp
+    # Phase 0.2a: Rnd_Wgpu.cpp moved into milo-engine behind GameRenderHook.
+    # The DC3 hook impl (dc3_render_hook.cpp) is added below alongside the
+    # other dc3 native-glue .cpp.
+    ${DC3_RUNTIME_ROOT}/native/src/dc3_render_hook.cpp
     ${DC3_RUNTIME_ROOT}/native/src/platform/Skeleton_Native.cpp
     ${DC3_RUNTIME_ROOT}/native/src/platform/SongSortMgr_Native.cpp
     ${DC3_RUNTIME_ROOT}/native/src/platform/System_Native.cpp
