@@ -13,6 +13,7 @@
 #include "hamobj/Ham.h"
 #include "flow/Flow.h"
 #include "ui/PanelDir.h"
+#include "ui/UI.h"
 #include "ui/UIPanel.h"
 #include "ui/UIScreen.h"
 #include "ui/UIColor.h"
@@ -95,6 +96,20 @@ void EngineTeardown() {
     _exit(exitCode);
 }
 
+// Stub UIManager for headless tests. The asset-loading suite reaches
+// PanelDir::Enter() -> SendTransition() -> TheUI->WentBack() when a song milo's
+// HamDirector merge fires the on_file_merged DTA handler. Without UIManager
+// init (App.cpp's `TheUI = &TheHamUI; TheHamUI.Init()`), TheUI is nullptr and
+// the deref crashes intermittently depending on which test loads trigger the
+// merger callback chain. UIManager::Init() is too heavy for headless tests
+// (it needs SystemConfig, Automator, cameras, UIEventMgr) so we just install
+// a default-constructed instance — mWentBack=0, mCurrentScreen=nullptr — so
+// the read-only WentBack()/OverloadHorizontalNav()/CurrentScreen()-style
+// accessors that fire during the load chain return safe defaults instead of
+// faulting. Lives in static storage for the program lifetime; _exit() in
+// EngineTeardown() skips its destructor (no resources to release).
+static UIManager sTestUIManager;
+
 void EnsureEngineInit() {
     if (sEngineInitialized)
         return;
@@ -115,6 +130,10 @@ void EnsureEngineInit() {
     TheRnd.PreInit();
     SystemInit("config/ham_keep.dta");
     TheRnd.Init();
+
+    // Install the headless UIManager stub before the suite runs any asset load
+    // that could fire a HamDirector merge callback (see comment on sTestUIManager).
+    TheUI = &sTestUIManager;
 
     std::atexit(EngineTeardown);
 

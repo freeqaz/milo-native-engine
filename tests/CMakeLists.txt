@@ -58,18 +58,21 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/dc3_runtime_sources.cmake)
 # -----------------------------------------------------------------------------
 # Engine-only test subset (roadmap §0.2).
 #
-# DROPPED from the §0.2 list: test_asset_loading.cpp. It is the one file in the
-# set that directly couples to game classes — it #includes hamobj/HamCharacter.h,
-# hamobj/MoveGraph.h, hamobj/Difficulty.h and flow/Flow.h — which violates the
-# roadmap's "touches no hamobj/" engine-only criterion. It also surfaces a flaky
-# engine TEARDOWN segfault in this engine-repo build: its two heaviest cases
-# (BetterOffAlone* MoveGraph-copy) report [ PASSED ] and then crash ~75% of runs
-# during the atexit EngineTeardown() path (GpuDevice / WgpuRnd static-destruction
-# ordering vs Dawn singletons — see the engine source gap note in the report).
-# dc3-decomp's own milo-tests runs the same cases without the crash, so this is
-# an engine-side teardown ordering bug, not a test-logic failure. Excluded so the
-# convergence gate stays deterministically green; re-add once the engine's GPU
-# teardown is hardened. The other 14 listed tests are included and pass.
+# test_asset_loading.cpp is included even though it #includes hamobj/MoveGraph.h
+# and flow/Flow.h — those couplings are tolerated for now because the file
+# exercises the most critical end-to-end asset load paths in the engine and
+# they're the same paths the §0.2 gate is trying to guard. The flaky teardown
+# segfault that previously caused this file to be DROPPED was diagnosed (Phase
+# 0.2): it was not a GpuDevice/Dawn static-destruction issue at all — it was a
+# nullptr deref of `TheUI` inside `PanelDir::SendTransition` reached when a
+# HamDirector merge callback fires from a song milo load. dc3's milo-tests
+# happens to run fewer setup steps before reaching this load and short-circuits
+# earlier; the engine build reaches the callback chain more reliably and hits
+# the deref ~70% of runs. Fixed in test_helpers.cpp by installing a default-
+# constructed UIManager stub (`TheUI = &sTestUIManager`) before any asset load
+# runs. UIManager::Init() is intentionally NOT called — only the read-only
+# accessors used during load callbacks (WentBack(), CurrentScreen()) matter,
+# and they return safe zero/null defaults on the stub instance.
 # -----------------------------------------------------------------------------
 set(MILO_ENGINE_TEST_SOURCES
     test_helpers.cpp
@@ -79,6 +82,7 @@ set(MILO_ENGINE_TEST_SOURCES
     test_dta_parser.cpp
     test_mesh_loading.cpp
     test_archive_enumeration.cpp
+    test_asset_loading.cpp
     test_charbones_serialization.cpp
     test_charclipgroup.cpp
     test_bone_ground_truth.cpp
