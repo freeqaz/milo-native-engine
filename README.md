@@ -65,6 +65,7 @@ The engine targets **Clang LP64 C++17**. Standalone configure autodetects
 |--------|---------|--------|
 | `MILO_ENGINE_BUILD_TOOLS` | `OFF` | Build `milo-viewer`, `milo2gltf`, `render-test` (Phase 0.2). |
 | `MILO_ENGINE_BUILD_TESTS` | `ON` standalone | Engine-only convergence test suite (Phase 0.2). |
+| `MILO_ENGINE_BUILD_GFX` | `ON` | Build the WebGPU gfx + `*_Wgpu` platform backends (and pull Dawn/glfw/imgui). RB3 sets this `OFF` — its 2010-era `rndobj` can't yet compile the DC3-wired GPU layer (see roadmap Phase 2). With a consumer-injected `MILO_ENGINE_DECOMP_PLATFORM_EXCLUDE` basename list, the consumer can also drop individual platform TUs whose RB3-header shape doesn't match. |
 | `MILO_BUILD_WEB` | `OFF` | Emscripten/web target machinery (Phase 6). |
 | `MILO_ENGINE_ENABLE_ASAN` | `OFF` | AddressSanitizer. |
 | `MILO_ENGINE_LP64_AUDIT` | `OFF` | Pointer-truncation warnings. |
@@ -114,6 +115,16 @@ gated by two convergence test suites. Substeps closed:
   from arkhelper-extracted assets (milestone (a)).
 - **0.4** — per-repo CI workflows (engine + dc3 + rb3) for native build + test.
 
+**Phase 1 — rb3-native milestone (b): COMPLETE.** `rb3-native` injects RB3's
+MWCC matched-fork context and links the engine built **GFX-off**, runs to a clean
+exit, and dumps `.milo` scene-tree headers (object names + class types) — 60/60
+sampled milos, 0 crashes. This added the `MILO_ENGINE_BUILD_GFX` option +
+`MILO_ENGINE_DECOMP_PLATFORM_EXCLUDE` seam: RB3's older `rndobj` can't compile the
+DC3-wired WebGPU layer (engine `Part_Wgpu` needs `RndParticleSys::NumTilesAcross`;
+`WgpuRnd : NgRnd` vs RB3's older `Rnd`), so RB3 links the engine's non-GPU half.
+A *full* object-graph load and RB3 rendering are the next steps — see the roadmap's
+[Critical path to a booting RB3](../rb3/docs/native/NATIVE_PORT_ROADMAP.md#critical-path-to-a-booting-rb3).
+
 The engine now owns **gfx / audio / char / clean-platform = 50 TUs** (was 47;
 +`Memory_Native`, +`ThreadCall_Native`, +`Rnd_Wgpu`/`GameRenderHook`), plus the
 `GameRenderHook` interface in `src/platform/`.
@@ -127,9 +138,14 @@ list).
 
 **Convergence gates:**
 - DC3's `milo-tests` (links `libmilo-engine.a`): **371/371 pass.**
-- In-engine `milo-engine-tests`: **195/195 pass** (1 intentional skip).
+- In-engine `milo-engine-tests`: **191/195** as of the 2026-05-27 session (1
+  intentional skip). The 4 failures are all `RndCamProjectionTest`
+  (perspective/orthographic projection-matrix checks) and are **pre-existing /
+  not introduced by recent engine changes** — suspected clang-22 float-codegen
+  drift; see roadmap [Known issues](../rb3/docs/native/NATIVE_PORT_ROADMAP.md#known-issues--tracked-regressions)
+  (K1). They were 195/195 under the earlier toolchain.
 
 Published at <https://github.com/freeqaz/milo-native-engine> (public). Both
-decomps pin engine `9a58e86aa41e22a9fb90b4af39675eefd09a717e`. See the roadmap's
+decomps pin engine `54b9fa011e0a90c087ed2c6cc0b167729c87caec`. See the roadmap's
 [Status Log](../rb3/docs/native/NATIVE_PORT_ROADMAP.md#status-log) for the live
 phase tracker.
