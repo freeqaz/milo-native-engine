@@ -76,7 +76,18 @@ option(MILO_BUILD_WEB           "Build the Emscripten/web target machinery"     
 # older than DC3's and cannot compile against the DC3-wired WebGPU layer (see
 # the excluded-source partition below). A .milo scene-tree dump needs no GPU,
 # so RB3 still reaches the load/dump path with this OFF.
-option(MILO_ENGINE_BUILD_GFX    "Build WebGPU gfx + Wgpu platform backends"                     ON)
+option(MILO_ENGINE_BUILD_GFX    "Build the rndobj-FREE WebGPU gfx core (GpuDevice, pipelines, screenshot, headless frame, …) + Dawn/glfw/imgui deps" ON)
+# GPU backend toggle — splits OFF the rndobj-COUPLED gfx TUs and the 8 Wgpu
+# platform backends from the rndobj-FREE gfx core above. DEFAULTS to the value
+# of MILO_ENGINE_BUILD_GFX, so a consumer that sets neither (DC3) gets ON+ON =
+# the full three-tier gfx set, byte-identical to before this split. RB3 keeps
+# the core ON but forces this OFF: the coupled TUs reference DC3's rndobj/ shapes
+# (RndMat/RndCam/RndMesh::Vert/RndPostProc/RndBitmap) and the backends derive
+# WgpuRnd from NgRnd — neither compiles against RB3's older 2010-era rndobj/.
+if(NOT DEFINED MILO_ENGINE_BUILD_GPU_BACKENDS)
+    set(MILO_ENGINE_BUILD_GPU_BACKENDS ${MILO_ENGINE_BUILD_GFX} CACHE BOOL
+        "Build the rndobj-coupled gfx TUs + Wgpu platform backends (default: =MILO_ENGINE_BUILD_GFX)")
+endif()
 option(MILO_ENGINE_BUILD_TESTS  "Build the engine-only convergence test suite"  ${MILO_ENGINE_STANDALONE})
 option(MILO_ENGINE_LP64_AUDIT   "Enable LP64 pointer-truncation warnings for auditing"          OFF)
 option(MILO_ENGINE_ENABLE_ASAN  "Build the engine with AddressSanitizer"                        OFF)
@@ -156,23 +167,35 @@ else()
     set(MILO_ENGINE_METAL_SOURCE "")
 endif()
 
+# Tier 1 — rndobj-FREE gfx core. These include only gfx/ headers (+ os/utl); no
+# rndobj/ coupling. Enough for a clear-color frame (device init, pipelines,
+# headless readback, screenshot, imgui). Gated on MILO_ENGINE_BUILD_GFX, so RB3
+# (gfx core ON, backends OFF) compiles exactly this set.
 set(MILO_ENGINE_GFX_SOURCES
     src/gfx/GpuDevice.cpp
     ${MILO_ENGINE_METAL_SOURCE}
     src/gfx/Screenshot.cpp
-    src/gfx/TextureConvert.cpp
-    src/gfx/VertexFormats.cpp
     src/gfx/PipelineManager.cpp
     src/gfx/FrameCapture.cpp
-    src/gfx/ShadowPass.cpp
     src/gfx/BloomPass.cpp
-    src/gfx/DofPass.cpp
-    src/gfx/PostProcPass.cpp
-    src/gfx/DrawRect2D.cpp
     src/gfx/GpuResourceRegistry.cpp
     src/gfx/VideoEncoder.cpp
     src/gfx/mikktspace.c
     src/gfx/ImGuiBackend.cpp
+)
+
+# Tier 2 — rndobj-COUPLED gfx. These include rndobj/ headers shaped for DC3
+# (DrawRect2D->RndMat, DofPass->RndCam, VertexFormats->RndMesh::Vert,
+# ShadowPass->RndCam/Env/Lit/Mat/Mesh, PostProcPass->RndPostProc,
+# TextureConvert->RndBitmap). Gated on MILO_ENGINE_BUILD_GPU_BACKENDS alongside
+# the Wgpu backends, so RB3 (older rndobj/) drops them.
+set(MILO_ENGINE_GFX_RNDOBJ_SOURCES
+    src/gfx/DrawRect2D.cpp
+    src/gfx/DofPass.cpp
+    src/gfx/VertexFormats.cpp
+    src/gfx/ShadowPass.cpp
+    src/gfx/PostProcPass.cpp
+    src/gfx/TextureConvert.cpp
 )
 
 set(MILO_ENGINE_AUDIO_SOURCES
@@ -240,7 +263,7 @@ set(MILO_ENGINE_PLATFORM_SOURCES
     #                           pairs with HttpServer — factor the HTTP/telemetry
     #                           hook, then both move in together.
 )
-if(MILO_ENGINE_BUILD_GFX)
+if(MILO_ENGINE_BUILD_GPU_BACKENDS)
     list(APPEND MILO_ENGINE_PLATFORM_SOURCES ${MILO_ENGINE_GPU_PLATFORM_SOURCES})
 endif()
 if(MILO_ENGINE_HAVE_FFMPEG)
@@ -256,6 +279,9 @@ set(MILO_ENGINE_FULL_SOURCES
 )
 if(MILO_ENGINE_BUILD_GFX)
     list(APPEND MILO_ENGINE_FULL_SOURCES ${MILO_ENGINE_GFX_SOURCES})
+endif()
+if(MILO_ENGINE_BUILD_GPU_BACKENDS)
+    list(APPEND MILO_ENGINE_FULL_SOURCES ${MILO_ENGINE_GFX_RNDOBJ_SOURCES})
 endif()
 
 # Consumer-injected extra exclusions. A consuming decomp whose matched-fork
@@ -358,7 +384,8 @@ message(STATUS "    compiler             : ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_
 if(MILO_ENGINE_HAVE_CONTEXT)
     list(LENGTH MILO_ENGINE_FULL_SOURCES _n)
     message(STATUS "    engine sources       : ${_n} (+ EngineVersion)")
-    message(STATUS "    gfx (WebGPU)         : ${MILO_ENGINE_BUILD_GFX}")
+    message(STATUS "    gfx (WebGPU core)    : ${MILO_ENGINE_BUILD_GFX}")
+    message(STATUS "    gpu_backends         : ${MILO_ENGINE_BUILD_GPU_BACKENDS}")
     message(STATUS "    FFmpeg               : ${MILO_ENGINE_HAVE_FFMPEG}")
 else()
     message(STATUS "    engine sources       : placeholder-only (no decomp context)")
