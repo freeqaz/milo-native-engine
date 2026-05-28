@@ -1,10 +1,16 @@
-// DC3 Web Port - Audio Device (AudioWorklet + SharedArrayBuffer)
+// Audio Device (AudioWorklet + SharedArrayBuffer) — browser-native path.
 //
-// Replaces the miniaudio-based AudioDevice with a browser-native path:
 //   WASM main thread mixes all AudioSources -> SharedArrayBuffer ring buffer
 //   AudioWorklet thread reads from ring buffer -> speaker output
 //
 // No ASYNCIFY needed. Push model: PumpAudio() called each frame from main loop.
+//
+// Consumer namespace (MILO_WEB_AUDIO_NS, identifier form, default `milo`)
+// prefixes both the C-side `_start_capture/_download_capture/_dump_sab/
+// _audio_stats` exports and the JS-side `window._<ns>Audio` global state,
+// AudioWorklet name `<ns>-audio-processor`, capture WAV filename
+// `<ns>_web_capture.wav`, and `window.<ns>CaptureAudio()` debug helpers.
+// DC3 sets it to `dc3`, keeping its existing public ABI; RB3 will set `rb3`.
 
 #ifdef __EMSCRIPTEN__
 
@@ -14,6 +20,20 @@
 #include <cstdio>
 #include <cstring>
 #include <emscripten.h>
+
+#ifndef MILO_WEB_AUDIO_NS
+#define MILO_WEB_AUDIO_NS milo
+#endif
+
+#define MILO_WEB_AUDIO_STR_(x)        #x
+#define MILO_WEB_AUDIO_STR(x)         MILO_WEB_AUDIO_STR_(x)
+#define MILO_WEB_AUDIO_NS_STR         MILO_WEB_AUDIO_STR(MILO_WEB_AUDIO_NS)
+
+// C-side token-paste: <ns>_start_capture, etc.
+#define MILO_WEB_AUDIO_CAT_(a, b)     a##b
+#define MILO_WEB_AUDIO_CAT(a, b)      MILO_WEB_AUDIO_CAT_(a, b)
+#define MILO_WEB_AUDIO_FN(name)       MILO_WEB_AUDIO_CAT(MILO_WEB_AUDIO_NS, MILO_WEB_AUDIO_CAT(_, name))
+#define MILO_WEB_AUDIO_FN_STR(name)   MILO_WEB_AUDIO_STR(MILO_WEB_AUDIO_FN(name))
 
 // Ring buffer: 32768 frames of stereo float (~743ms at 44100Hz)
 // Enough headroom for 1-3 FPS WASM frame rates
@@ -37,14 +57,24 @@ static int sCapturePos = 0;
 static bool sCapturing = false;
 static bool sCaptureReady = false;
 
-// EM_JS functions for JS interop (handles complex brace nesting correctly)
+// EM_JS functions for JS interop (handles complex brace nesting correctly).
+//
+// The DC3-legacy globals (window._<ns>Audio, '<ns>-audio-processor' worklet
+// name, '<ns>_web_capture.wav' filename) are namespaced by MILO_WEB_AUDIO_NS.
+// We pass the namespace string as a parameter to each EM_JS so the JS body
+// can compose bracket-form globals (window[stateKey]) and string literals.
 
-EM_JS(void, js_audio_init, (int totalBytes, int sampleRate, int bufFrames), {
+EM_JS(void, js_audio_init,
+      (int totalBytes, int sampleRate, int bufFrames,
+       const char *stateKey, const char *workletName),
+{
+    var key = UTF8ToString(stateKey);
+    var worklet = UTF8ToString(workletName);
     try {
         var sab = new SharedArrayBuffer(totalBytes);
         new Int32Array(sab, 0, 2).fill(0);
 
-        window._dc3Audio = {
+        window[key] = {
             sab: sab,
             bufFrames: bufFrames,
             ctx: null,
@@ -53,10 +83,10 @@ EM_JS(void, js_audio_init, (int totalBytes, int sampleRate, int bufFrames), {
         };
 
         var ctx = new AudioContext({ sampleRate: sampleRate });
-        window._dc3Audio.ctx = ctx;
+        window[key].ctx = ctx;
 
         ctx.audioWorklet.addModule('audio-worklet.js').then(function() {
-            var node = new AudioWorkletNode(ctx, 'dc3-audio-processor', {
+            var node = new AudioWorkletNode(ctx, worklet, {
                 numberOfInputs: 0,
                 numberOfOutputs: 1,
                 outputChannelCount: [2]
@@ -69,8 +99,8 @@ EM_JS(void, js_audio_init, (int totalBytes, int sampleRate, int bufFrames), {
                 bufFrames: bufFrames
             });
 
-            window._dc3Audio.worklet = node;
-            window._dc3Audio.started = true;
+            window[key].worklet = node;
+            window[key].started = true;
             console.log('AudioDevice: AudioWorklet connected (' + sampleRate + ' Hz, ring ' + bufFrames + ' frames)');
         }).catch(function(e) {
             console.error('AudioDevice: AudioWorklet failed: ' + e);
@@ -100,19 +130,22 @@ EM_JS(void, js_audio_init, (int totalBytes, int sampleRate, int bufFrames), {
     }
 });
 
-EM_JS(void, js_audio_terminate, (), {
-    if (window._dc3Audio && window._dc3Audio.ctx) {
-        window._dc3Audio.ctx.close();
-        window._dc3Audio = null;
+EM_JS(void, js_audio_terminate, (const char *stateKey), {
+    var key = UTF8ToString(stateKey);
+    if (window[key] && window[key].ctx) {
+        window[key].ctx.close();
+        window[key] = null;
     }
 });
 
-EM_JS(int, js_audio_worklet_started, (), {
-    return (window._dc3Audio && window._dc3Audio.started) ? 1 : 0;
+EM_JS(int, js_audio_worklet_started, (const char *stateKey), {
+    var key = UTF8ToString(stateKey);
+    return (window[key] && window[key].started) ? 1 : 0;
 });
 
-EM_JS(int, js_audio_ring_free_frames, (), {
-    var audio = window._dc3Audio;
+EM_JS(int, js_audio_ring_free_frames, (const char *stateKey), {
+    var key = UTF8ToString(stateKey);
+    var audio = window[key];
     if (!audio || !audio.sab) return 0;
     var cursors = new Int32Array(audio.sab, 0, 2);
     var writePos = Atomics.load(cursors, 0);
@@ -123,8 +156,9 @@ EM_JS(int, js_audio_ring_free_frames, (), {
     return bufFrames - used - 1;
 });
 
-EM_JS(void, js_audio_ring_write, (float *srcPtr, int frames), {
-    var audio = window._dc3Audio;
+EM_JS(void, js_audio_ring_write, (float *srcPtr, int frames, const char *stateKey), {
+    var key = UTF8ToString(stateKey);
+    var audio = window[key];
     if (!audio || !audio.sab) return;
 
     var cursors = new Int32Array(audio.sab, 0, 2);
@@ -152,7 +186,10 @@ EM_JS(void, js_audio_ring_write, (float *srcPtr, int frames), {
 });
 
 // Download captured audio as WAV from the browser
-EM_JS(void, js_download_wav, (float *pcmPtr, int numFrames, int sampleRate), {
+EM_JS(void, js_download_wav,
+      (float *pcmPtr, int numFrames, int sampleRate, const char *filename),
+{
+    var fname = UTF8ToString(filename);
     var numSamples = numFrames * 2;
     var floatIdx = pcmPtr >> 2;
     var pcm = HEAPF32.subarray(floatIdx, floatIdx + numSamples);
@@ -199,15 +236,16 @@ EM_JS(void, js_download_wav, (float *pcmPtr, int numFrames, int sampleRate), {
     var url = URL.createObjectURL(blob);
     var a = document.createElement('a');
     a.href = url;
-    a.download = 'dc3_web_capture.wav';
+    a.download = fname;
     a.click();
     URL.revokeObjectURL(url);
-    console.log('AudioDevice: downloaded dc3_web_capture.wav (' + numFrames + ' frames, ' + sampleRate + ' Hz)');
+    console.log('AudioDevice: downloaded ' + fname + ' (' + numFrames + ' frames, ' + sampleRate + ' Hz)');
 });
 
 // Dump first N samples from SAB ring buffer for inspection
-EM_JS(void, js_dump_sab_samples, (int count), {
-    var audio = window._dc3Audio;
+EM_JS(void, js_dump_sab_samples, (int count, const char *stateKey), {
+    var key = UTF8ToString(stateKey);
+    var audio = window[key];
     if (!audio || !audio.sab) {
         console.log('SAB not available');
         return;
@@ -254,27 +292,48 @@ bool AudioDevice::Init(int sampleRate) {
     // Allocate local mix buffer
     sMixBuffer = new float[MIX_BUF_FRAMES * 2];
 
+    // Per-consumer namespaced JS globals + symbol names.
+    static const char *kStateKey       = "_" MILO_WEB_AUDIO_NS_STR "Audio";
+    // The worklet processor identity is engine-wide (matches the verbatim
+    // audio-worklet.js shipped by milo-native-engine). Only window globals
+    // and C-exported symbols are namespaced.
+    static const char *kWorkletName    = "milo-audio-processor";
+    static const char *kFnStartCapture = MILO_WEB_AUDIO_FN_STR(start_capture);
+    static const char *kFnDownloadCap  = MILO_WEB_AUDIO_FN_STR(download_capture);
+    static const char *kFnDumpSab      = MILO_WEB_AUDIO_FN_STR(dump_sab);
+    static const char *kFnAudioStats   = MILO_WEB_AUDIO_FN_STR(audio_stats);
+    static const char *kNs             = MILO_WEB_AUDIO_NS_STR;
+
     // Create SharedArrayBuffer + AudioContext + AudioWorklet
     int totalBytes = HEADER_BYTES + RING_SAMPLES * sizeof(float);
-    js_audio_init(totalBytes, mSampleRate, RING_FRAMES);
+    js_audio_init(totalBytes, mSampleRate, RING_FRAMES, kStateKey, kWorkletName);
 
     // Set up console commands for audio debugging
     EM_ASM({
-        window.dc3CaptureAudio = function() {
-            Module.ccall('dc3_start_capture', null, [], []);
+        var ns = UTF8ToString($0);
+        var fnStart = UTF8ToString($1);
+        var fnDl    = UTF8ToString($2);
+        var fnDump  = UTF8ToString($3);
+        var fnStats = UTF8ToString($4);
+        var cap = ns + 'CaptureAudio';
+        var dl  = ns + 'DownloadAudio';
+        var dmp = ns + 'DumpSAB';
+        var st  = ns + 'AudioStats';
+        window[cap] = function() {
+            Module.ccall(fnStart, null, [], []);
             console.log('Audio capture started (3 seconds)...');
         };
-        window.dc3DownloadAudio = function() {
-            Module.ccall('dc3_download_capture', null, [], []);
+        window[dl] = function() {
+            Module.ccall(fnDl, null, [], []);
         };
-        window.dc3DumpSAB = function(n) {
-            Module.ccall('dc3_dump_sab', null, ['number'], [n || 20]);
+        window[dmp] = function(n) {
+            Module.ccall(fnDump, null, ['number'], [n || 20]);
         };
-        window.dc3AudioStats = function() {
-            Module.ccall('dc3_audio_stats', null, [], []);
+        window[st] = function() {
+            Module.ccall(fnStats, null, [], []);
         };
-        console.log('Audio debug commands: dc3CaptureAudio(), dc3DownloadAudio(), dc3DumpSAB(n), dc3AudioStats()');
-    });
+        console.log('Audio debug commands: ' + cap + '(), ' + dl + '(), ' + dmp + '(n), ' + st + '()');
+    }, kNs, kFnStartCapture, kFnDownloadCap, kFnDumpSab, kFnAudioStats);
 
     mInitialized = true;
     sWorkletReady = true;
@@ -286,7 +345,8 @@ void AudioDevice::Terminate() {
     if (!mInitialized)
         return;
 
-    js_audio_terminate();
+    static const char *kStateKey = "_" MILO_WEB_AUDIO_NS_STR "Audio";
+    js_audio_terminate(kStateKey);
 
     delete[] sMixBuffer;
     sMixBuffer = nullptr;
@@ -360,12 +420,14 @@ void AudioDevice::PumpAudio() {
     if (!mInitialized || !sWorkletReady || !sMixBuffer)
         return;
 
+    static const char *kStateKey = "_" MILO_WEB_AUDIO_NS_STR "Audio";
+
     // Check if AudioWorklet is ready (async setup)
-    if (!js_audio_worklet_started())
+    if (!js_audio_worklet_started(kStateKey))
         return;
 
     // Query free space in the SAB ring buffer
-    int freeFrames = js_audio_ring_free_frames();
+    int freeFrames = js_audio_ring_free_frames(kStateKey);
     if (freeFrames <= 0)
         return;
 
@@ -385,11 +447,12 @@ void AudioDevice::PumpAudio() {
             if (sCapturePos >= CAPTURE_FRAMES) {
                 sCapturing = false;
                 sCaptureReady = true;
-                printf("AudioDevice: capture complete (%d frames). Call dc3DownloadAudio() to save.\n", sCapturePos);
+                printf("AudioDevice: capture complete (%d frames). Call %sDownloadAudio() to save.\n",
+                       sCapturePos, MILO_WEB_AUDIO_NS_STR);
             }
         }
 
-        js_audio_ring_write(sMixBuffer, chunk);
+        js_audio_ring_write(sMixBuffer, chunk, kStateKey);
 
         freeFrames -= chunk;
     }
@@ -411,7 +474,7 @@ void AudioDevice::DebugDumpSources() {
 
 extern "C" {
 
-EMSCRIPTEN_KEEPALIVE void dc3_start_capture() {
+EMSCRIPTEN_KEEPALIVE void MILO_WEB_AUDIO_FN(start_capture)() {
     if (!sCaptureBuffer) {
         sCaptureBuffer = new float[CAPTURE_FRAMES * 2];
     }
@@ -422,19 +485,22 @@ EMSCRIPTEN_KEEPALIVE void dc3_start_capture() {
     printf("AudioDevice: capturing %d seconds of MixSources output...\n", CAPTURE_SECONDS);
 }
 
-EMSCRIPTEN_KEEPALIVE void dc3_download_capture() {
+EMSCRIPTEN_KEEPALIVE void MILO_WEB_AUDIO_FN(download_capture)() {
     if (!sCaptureReady || !sCaptureBuffer) {
-        printf("AudioDevice: no capture ready. Call dc3CaptureAudio() first.\n");
+        printf("AudioDevice: no capture ready. Call %sCaptureAudio() first.\n",
+               MILO_WEB_AUDIO_NS_STR);
         return;
     }
-    js_download_wav(sCaptureBuffer, sCapturePos, CAPTURE_RATE);
+    static const char *kWavName = MILO_WEB_AUDIO_NS_STR "_web_capture.wav";
+    js_download_wav(sCaptureBuffer, sCapturePos, CAPTURE_RATE, kWavName);
 }
 
-EMSCRIPTEN_KEEPALIVE void dc3_dump_sab(int count) {
-    js_dump_sab_samples(count);
+EMSCRIPTEN_KEEPALIVE void MILO_WEB_AUDIO_FN(dump_sab)(int count) {
+    static const char *kStateKey = "_" MILO_WEB_AUDIO_NS_STR "Audio";
+    js_dump_sab_samples(count, kStateKey);
 }
 
-EMSCRIPTEN_KEEPALIVE void dc3_audio_stats() {
+EMSCRIPTEN_KEEPALIVE void MILO_WEB_AUDIO_FN(audio_stats)() {
     auto &dev = AudioDevice::GetInstance();
     printf("AudioDevice stats: initialized=%d, sampleRate=%d, pumpCount=%d\n",
            dev.IsInitialized(), dev.GetSampleRate(), sPumpCount);

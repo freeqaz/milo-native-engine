@@ -132,6 +132,15 @@ option(MILO_ENGINE_BUILD_TESTS  "Build the engine-only convergence test suite"  
 option(MILO_ENGINE_LP64_AUDIT   "Enable LP64 pointer-truncation warnings for auditing"          OFF)
 option(MILO_ENGINE_ENABLE_ASAN  "Build the engine with AddressSanitizer"                        OFF)
 
+# JSPI (JavaScript Promise Integration) — non-blocking on-demand file fetches
+# via emscripten_sleep(), letting the loading screen render while .milo files
+# download. Zero code-size overhead vs the old ASYNCIFY (which instrumented
+# every function ~50% bloat). Requires Chrome 137+ / Firefox 139+. Used by
+# milo_engine_apply_web_target_options() below; only takes effect when
+# MILO_BUILD_WEB=ON. C-side gate is MILO_WEB_ASYNCIFY (the renamed
+# successor to DC3's DC3_WEB_ASYNCIFY).
+option(MILO_WEB_ASYNC "Use JSPI for non-blocking on-demand file fetches (Chrome 137+)" ON)
+
 # -----------------------------------------------------------------------------
 # Consumer / reference context
 # -----------------------------------------------------------------------------
@@ -193,6 +202,34 @@ if(MILO_ENGINE_HAVE_CONTEXT AND MILO_ENGINE_BUILD_GFX AND NOT EMSCRIPTEN)
         target_include_directories(imgui PUBLIC
             ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
         target_link_libraries(imgui PUBLIC glfw dawn::webgpu_dawn)
+        target_compile_definitions(imgui PUBLIC IMGUI_IMPL_WEBGPU_BACKEND_DAWN)
+    endif()
+endif()
+
+# -----------------------------------------------------------------------------
+# EMSCRIPTEN sibling for the imgui target. Under EMSCRIPTEN the engine's
+# non-EMSCRIPTEN imgui block above is skipped, so this stands up an `imgui`
+# CMake target that mirrors the desktop one but links emdawnwebgpu/browser-GL
+# instead of Dawn/glfw. ImGuiBackend_Web.cpp inside milo-engine then links
+# against this target. Input is handled directly via Emscripten's HTML5 API
+# from inside ImGuiBackend_Web.cpp (no imgui_impl_glfw under emscripten).
+# -----------------------------------------------------------------------------
+if(MILO_ENGINE_HAVE_CONTEXT AND MILO_ENGINE_BUILD_GFX AND MILO_BUILD_WEB AND EMSCRIPTEN)
+    if(NOT TARGET imgui)
+        include(FetchContent)
+        FetchContent_Declare(imgui
+            GIT_REPOSITORY https://github.com/ocornut/imgui.git
+            GIT_TAG        8314fc3e5a10f7c6b670225065fce1dc8cfd396b)
+        FetchContent_MakeAvailable(imgui)
+        add_library(imgui STATIC
+            ${imgui_SOURCE_DIR}/imgui.cpp
+            ${imgui_SOURCE_DIR}/imgui_draw.cpp
+            ${imgui_SOURCE_DIR}/imgui_tables.cpp
+            ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+            ${imgui_SOURCE_DIR}/backends/imgui_impl_wgpu.cpp)
+        target_include_directories(imgui PUBLIC
+            ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
+        target_compile_options(imgui PUBLIC "SHELL:--use-port=emdawnwebgpu")
         target_compile_definitions(imgui PUBLIC IMGUI_IMPL_WEBGPU_BACKEND_DAWN)
     endif()
 endif()
@@ -338,6 +375,43 @@ if(MILO_ENGINE_GPU_BACKEND STREQUAL "dc3")
     list(APPEND MILO_ENGINE_FULL_SOURCES ${MILO_ENGINE_GFX_RNDOBJ_SOURCES})
 endif()
 
+# -----------------------------------------------------------------------------
+# Web platform layer (Emscripten). Gated on MILO_BUILD_WEB AND EMSCRIPTEN —
+# these TUs all `#ifdef __EMSCRIPTEN__` internally too, but the gate keeps
+# them out of the engine's source list on non-web builds entirely.
+#
+# Replaces the corresponding *_Native / desktop TUs:
+#   File_Native.cpp     -> File_Web.cpp        (MEMFS-backed POSIX I/O)
+#   CDReader_Native.cpp -> CDReader_Web.cpp    (.ark archive system bypass)
+#   AudioDevice.cpp     -> AudioDevice_Web.cpp (AudioWorklet+SAB ring buffer)
+#   GpuDevice.cpp       -> GpuDevice_Web.cpp   (emdawnwebgpu canvas surface)
+#   ImGuiBackend.cpp    -> ImGuiBackend_Web.cpp (HTML5 input + imgui_impl_wgpu)
+# plus WebAssets.cpp (Emscripten fetch helper, no desktop equivalent).
+# -----------------------------------------------------------------------------
+set(MILO_ENGINE_WEB_PLATFORM_SOURCES
+    src/platform/WebAssets.cpp
+    src/platform/File_Web.cpp
+    src/platform/CDReader_Web.cpp
+    src/platform/GpuDevice_Web.cpp
+    src/audio/AudioDevice_Web.cpp
+)
+set(MILO_ENGINE_WEB_GFX_SOURCES
+    src/gfx/ImGuiBackend_Web.cpp
+)
+if(MILO_BUILD_WEB AND EMSCRIPTEN)
+    # Drop the desktop TUs that the *_Web variants replace.
+    list(FILTER MILO_ENGINE_FULL_SOURCES EXCLUDE REGEX "/File_Native\\.cpp$")
+    list(FILTER MILO_ENGINE_FULL_SOURCES EXCLUDE REGEX "/CDReader_Native\\.cpp$")
+    list(FILTER MILO_ENGINE_FULL_SOURCES EXCLUDE REGEX "/AudioDevice\\.cpp$")
+    list(FILTER MILO_ENGINE_FULL_SOURCES EXCLUDE REGEX "/GpuDevice\\.cpp$")
+    list(FILTER MILO_ENGINE_FULL_SOURCES EXCLUDE REGEX "/ImGuiBackend\\.cpp$")
+
+    list(APPEND MILO_ENGINE_FULL_SOURCES ${MILO_ENGINE_WEB_PLATFORM_SOURCES})
+    if(MILO_ENGINE_BUILD_GFX)
+        list(APPEND MILO_ENGINE_FULL_SOURCES ${MILO_ENGINE_WEB_GFX_SOURCES})
+    endif()
+endif()
+
 # Consumer-injected extra exclusions. A consuming decomp whose matched-fork
 # headers are an OLDER shape than the engine's source set was written against
 # can name the engine TUs that don't compile against its headers (each entry is
@@ -399,6 +473,10 @@ if(MILO_ENGINE_HAVE_CONTEXT)
         endif()
         if(NOT EMSCRIPTEN)
             target_link_libraries(milo-engine PUBLIC dawn::webgpu_dawn glfw imgui)
+        elseif(MILO_BUILD_WEB AND TARGET imgui)
+            # Web build: link the EMSCRIPTEN sibling imgui target (see top of
+            # this file). emdawnwebgpu is supplied via --use-port; no Dawn/glfw.
+            target_link_libraries(milo-engine PUBLIC imgui)
         endif()
     endif()
 
@@ -430,6 +508,84 @@ if(MILO_ENGINE_BUILD_TESTS)
 endif()
 
 # -----------------------------------------------------------------------------
+# Helper: milo_engine_apply_web_target_options(<target> [<asset_dest_dir>])
+#
+# Applies the canonical Emscripten link/compile flag set the engine's web
+# infra needs (emdawnwebgpu, wasm-exceptions, JSPI when MILO_WEB_ASYNC=ON,
+# stack/memory sizing, FETCH, ZLIB/OGG/VORBIS, ASSERTIONS, stack-overflow
+# check, debug symbols, missing_stubs.js pre-js, base _main export list).
+# Consumers extend EXPORTED_FUNCTIONS / JSPI_EXPORTS for their own tick
+# symbol by appending another target_link_options block — repeated
+# -sEXPORTED_FUNCTIONS=[...] / -sJSPI_EXPORTS=[...] entries to wasm-ld
+# replace earlier ones, so the LAST occurrence wins. Example consumer:
+#
+#   milo_engine_apply_web_target_options(dc3-web)
+#   target_link_options(dc3-web PRIVATE
+#       -sEXPORTED_FUNCTIONS=["_main","_dc3MainLoopTick"]
+#       -sJSPI_EXPORTS=["_main","_dc3MainLoopTick","dc3MainLoopTick"])
+#   target_compile_definitions(dc3-web PRIVATE
+#       MILO_WEB_CANVAS_SELECTOR="#dc3-canvas"
+#       MILO_WEB_AUDIO_NS=dc3)
+#
+# The optional second arg is the directory to copy audio-worklet.js into
+# (defaults to $<TARGET_FILE_DIR:tgt>, i.e. next to the .wasm). Pass an
+# explicit path to override (DC3's existing build.sh copies it to native/
+# web/build, for example).
+# -----------------------------------------------------------------------------
+function(milo_engine_apply_web_target_options _tgt)
+    if(NOT EMSCRIPTEN)
+        message(WARNING
+            "milo_engine_apply_web_target_options(${_tgt}) called without an "
+            "Emscripten toolchain — no-op. Configure with emcmake.")
+        return()
+    endif()
+
+    set(_asset_dest "${ARGV1}")
+
+    target_compile_options(${_tgt} PRIVATE
+        "SHELL:--use-port=emdawnwebgpu"
+        -fwasm-exceptions)
+
+    target_link_options(${_tgt} PRIVATE
+        "SHELL:--use-port=emdawnwebgpu"
+        -sALLOW_MEMORY_GROWTH=1
+        -sMAXIMUM_MEMORY=512MB
+        -sSTACK_SIZE=4194304
+        -sENVIRONMENT=web,node
+        -sERROR_ON_UNDEFINED_SYMBOLS=0
+        -sUSE_ZLIB=1
+        -sUSE_OGG=1
+        -sUSE_VORBIS=1
+        -sFETCH=1
+        -sASSERTIONS=1
+        -sSTACK_OVERFLOW_CHECK=2
+        # Base export set — consumers extend with their own tick symbol(s) via
+        # an additional target_link_options(... -sEXPORTED_FUNCTIONS=...) call.
+        -sEXPORTED_FUNCTIONS=[\"_main\"]
+        -sEXPORTED_RUNTIME_METHODS=[\"ccall\",\"cwrap\"]
+        -fwasm-exceptions
+        -g2
+        --pre-js ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/web/assets/missing_stubs.js)
+
+    if(MILO_WEB_ASYNC)
+        target_compile_definitions(${_tgt} PRIVATE MILO_WEB_ASYNCIFY=1)
+        target_link_options(${_tgt} PRIVATE
+            -sJSPI
+            -sJSPI_EXPORTS=[\"_main\"])
+    endif()
+
+    # Deploy the AudioWorklet JS next to the wasm at build time.
+    if(_asset_dest STREQUAL "")
+        set(_asset_dest "$<TARGET_FILE_DIR:${_tgt}>")
+    endif()
+    add_custom_command(TARGET ${_tgt} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/web/assets/audio-worklet.js
+            ${_asset_dest}/audio-worklet.js
+        COMMENT "milo-engine: deploying audio-worklet.js next to ${_tgt}")
+endfunction()
+
+# -----------------------------------------------------------------------------
 # Summary
 # -----------------------------------------------------------------------------
 message(STATUS "milo-engine configured:")
@@ -441,6 +597,9 @@ if(MILO_ENGINE_HAVE_CONTEXT)
     message(STATUS "    gfx (WebGPU core)    : ${MILO_ENGINE_BUILD_GFX}")
     message(STATUS "    gpu backend flavor   : ${MILO_ENGINE_GPU_BACKEND}")
     message(STATUS "    FFmpeg               : ${MILO_ENGINE_HAVE_FFMPEG}")
+    if(MILO_BUILD_WEB AND EMSCRIPTEN)
+        message(STATUS "    web (Emscripten)     : ON (MILO_WEB_ASYNC=${MILO_WEB_ASYNC})")
+    endif()
 else()
     message(STATUS "    engine sources       : placeholder-only (no decomp context)")
 endif()

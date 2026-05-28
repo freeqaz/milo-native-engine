@@ -1,5 +1,8 @@
 // ImGui backend for Emscripten/web — replaces ImGuiBackend.cpp (GLFW-based).
 // Uses Emscripten HTML5 API for keyboard/mouse input + imgui_impl_wgpu for rendering.
+//
+// Canvas selector is consumer-controlled via MILO_WEB_CANVAS_SELECTOR
+// (default "#milo-canvas"; DC3 sets "#dc3-canvas", RB3 sets "#rb3-canvas").
 
 #include "gfx/ImGuiBackend.h"
 
@@ -9,6 +12,10 @@
 #include <cstring>
 
 #include "platform/DebugPanel.h"
+
+#ifndef MILO_WEB_CANVAS_SELECTOR
+#define MILO_WEB_CANVAS_SELECTOR "#milo-canvas"
+#endif
 
 static bool sInitialized = false;
 
@@ -105,7 +112,7 @@ void ImGuiBackend::Init(GLFWwindow *, wgpu::Device device, wgpu::TextureFormat s
     ImGui_ImplWGPU_Init(&wgpuInfo);
 
     // Register Emscripten HTML5 input callbacks on the canvas
-    const char *target = "#dc3-canvas";
+    const char *target = MILO_WEB_CANVAS_SELECTOR;
     emscripten_set_keydown_callback(EMSCRIPTEN_EVENT_TARGET_DOCUMENT, nullptr, EM_TRUE, OnKeyDown);
     emscripten_set_keyup_callback(EMSCRIPTEN_EVENT_TARGET_DOCUMENT, nullptr, EM_TRUE, OnKeyUp);
     emscripten_set_mousemove_callback(target, nullptr, EM_TRUE, OnMouseMove);
@@ -122,7 +129,7 @@ void ImGuiBackend::NewFrame() {
 
     // Manually set display size from canvas (no GLFW to do this for us)
     int w, h;
-    emscripten_get_canvas_element_size("#dc3-canvas", &w, &h);
+    emscripten_get_canvas_element_size(MILO_WEB_CANVAS_SELECTOR, &w, &h);
     ImGuiIO &io = ImGui::GetIO();
     io.DisplaySize = ImVec2((float)w, (float)h);
     io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);

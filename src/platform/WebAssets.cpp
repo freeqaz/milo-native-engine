@@ -1,6 +1,6 @@
-// DC3 Web Port — Asset Fetcher Implementation
+// Web Asset Fetcher Implementation
 // Uses emscripten_fetch() to download files from the dev server's HTTP API
-// into Emscripten's in-memory filesystem (MEMFS).
+// into Emscripten's in-memory filesystem (MEMFS) under /data/.
 // All fetches are async — poll WebAssetsAllDone() from the main loop.
 
 #ifdef __EMSCRIPTEN__

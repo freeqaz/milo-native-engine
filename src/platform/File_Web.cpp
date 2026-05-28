@@ -1,5 +1,5 @@
-// DC3 Web Port — File I/O Implementation
-// Replaces File_Native.cpp — MEMFS-backed file operations.
+// File I/O Implementation (Web)
+// Replaces File_Native.cpp under Emscripten — MEMFS-backed file operations.
 // Files are fetched from the server HTTP API into Emscripten's MEMFS
 // under /data/, then opened via standard POSIX I/O.
 

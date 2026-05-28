@@ -1,4 +1,4 @@
-// DC3 Web Port — Asset Fetcher
+// Web Asset Fetcher
 // Downloads game assets from the dev server's HTTP API into Emscripten MEMFS.
 // Assets are stored under /data/ in MEMFS, mirroring the server's directory structure.
 

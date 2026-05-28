@@ -1,6 +1,8 @@
-// DC3 Web Port — WebGPU Device (Browser)
-// Replaces GpuDevice.cpp for Emscripten builds.
+// WebGPU Device (Browser) — replaces GpuDevice.cpp for Emscripten builds.
 // Uses emdawnwebgpu: same webgpu.h API but async init + canvas surface.
+//
+// Canvas selector is consumer-controlled via MILO_WEB_CANVAS_SELECTOR
+// (default "#milo-canvas"; DC3 sets "#dc3-canvas", RB3 sets "#rb3-canvas").
 
 #ifdef __EMSCRIPTEN__
 
@@ -12,6 +14,10 @@
 
 #include <cstdio>
 #include <cstring>
+
+#ifndef MILO_WEB_CANVAS_SELECTOR
+#define MILO_WEB_CANVAS_SELECTOR "#milo-canvas"
+#endif
 
 // ============================================================================
 // GpuDevice implementation (Emscripten/Browser)
@@ -27,14 +33,19 @@ bool GpuDevice::Init(const GpuDeviceDesc& desc) {
     // the viewport before WebGPU is initialized. The hardcoded 1280x720
     // defaults would then mismatch the live canvas and break surface configure.
     // Read the actual backing dimensions instead.
+    // Selector arrives as a UTF8 C-string ($0); JS slices the leading '#'.
     int canvasW = EM_ASM_INT({
-        var c = document.getElementById('dc3-canvas');
+        var sel = UTF8ToString($0);
+        var id = sel.charAt(0) === '#' ? sel.substring(1) : sel;
+        var c = document.getElementById(id);
         return c ? c.width : 0;
-    });
+    }, MILO_WEB_CANVAS_SELECTOR);
     int canvasH = EM_ASM_INT({
-        var c = document.getElementById('dc3-canvas');
+        var sel = UTF8ToString($0);
+        var id = sel.charAt(0) === '#' ? sel.substring(1) : sel;
+        var c = document.getElementById(id);
         return c ? c.height : 0;
-    });
+    }, MILO_WEB_CANVAS_SELECTOR);
     mWidth = (canvasW > 0) ? canvasW : desc.width;
     mHeight = (canvasH > 0) ? canvasH : desc.height;
 
@@ -97,7 +108,7 @@ bool GpuDevice::Init(const GpuDeviceDesc& desc) {
 
                     // Create canvas surface
                     wgpu::EmscriptenSurfaceSourceCanvasHTMLSelector canvasDesc{};
-                    canvasDesc.selector = "#dc3-canvas";
+                    canvasDesc.selector = MILO_WEB_CANVAS_SELECTOR;
 
                     wgpu::SurfaceDescriptor surfDesc{};
                     surfDesc.nextInChain = &canvasDesc;

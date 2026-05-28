@@ -1,4 +1,4 @@
-// DC3 Web Port — CDReader Stub
+// CDReader Stub (Web)
 // The web port bypasses the .ark archive system entirely.
 // Files are served individually by the dev server's HTTP API and stored
 // in Emscripten's MEMFS under /data/.  The engine opens them via regular

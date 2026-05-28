@@ -66,9 +66,41 @@ The engine targets **Clang LP64 C++17**. Standalone configure autodetects
 | `MILO_ENGINE_BUILD_TOOLS` | `OFF` | Build `milo-viewer`, `milo2gltf`, `render-test` (Phase 0.2). |
 | `MILO_ENGINE_BUILD_TESTS` | `ON` standalone | Engine-only convergence test suite (Phase 0.2). |
 | `MILO_ENGINE_BUILD_GFX` | `ON` | Build the WebGPU gfx + `*_Wgpu` platform backends (and pull Dawn/glfw/imgui). RB3 sets this `OFF` — its 2010-era `rndobj` can't yet compile the DC3-wired GPU layer (see roadmap Phase 2). With a consumer-injected `MILO_ENGINE_DECOMP_PLATFORM_EXCLUDE` basename list, the consumer can also drop individual platform TUs whose RB3-header shape doesn't match. |
-| `MILO_BUILD_WEB` | `OFF` | Emscripten/web target machinery (Phase 6). |
+| `MILO_BUILD_WEB` | `OFF` | Compile the Emscripten/web platform layer into `libmilo-engine.a` (WebAssets fetcher, File/CDReader/GpuDevice/AudioDevice/ImGuiBackend web variants, `audio-worklet.js` deploy step) and expose `milo_engine_apply_web_target_options(<tgt>)` for consumers. Only takes effect under `emcmake cmake` (EMSCRIPTEN toolchain). |
+| `MILO_WEB_ASYNC` | `ON` | When `MILO_BUILD_WEB=ON`, enables JSPI (non-blocking on-demand fetches via `emscripten_sleep()`) and defines `MILO_WEB_ASYNCIFY=1`. Requires Chrome 137+ / Firefox 139+. Set `OFF` to fall back to blocking synchronous XHR. |
 | `MILO_ENGINE_ENABLE_ASAN` | `OFF` | AddressSanitizer. |
 | `MILO_ENGINE_LP64_AUDIT` | `OFF` | Pointer-truncation warnings. |
+
+### Web-build consumer namespacing
+
+The web layer is shared between RB3 and DC3; per-consumer identity is
+injected via two compile definitions on the consumer's executable target:
+
+- `MILO_WEB_CANVAS_SELECTOR` (string literal, default `"#milo-canvas"`) —
+  the DOM selector the canvas surface, GpuDevice resize logic, and ImGui
+  input callbacks attach to. DC3 sets `"#dc3-canvas"`, RB3 sets `"#rb3-canvas"`.
+- `MILO_WEB_AUDIO_NS` (identifier, default `milo`) — prefix for the JS
+  `window._<ns>Audio` global state, the user-facing
+  `window.<ns>CaptureAudio()` debug helpers, the capture filename
+  `<ns>_web_capture.wav`, and the C exports
+  `<ns>_start_capture / <ns>_download_capture / <ns>_dump_sab /
+  <ns>_audio_stats`. Token-pasted, so pass an unquoted identifier:
+  `-DMILO_WEB_AUDIO_NS=dc3` not `'"dc3"'`. The AudioWorklet processor
+  name (`milo-audio-processor`) is fixed engine-wide.
+
+Example consumer wiring:
+
+```cmake
+add_executable(my-app main_web.cpp ...)
+target_link_libraries(my-app PRIVATE milo-engine)
+milo_engine_apply_web_target_options(my-app)        # base flag set
+target_link_options(my-app PRIVATE                  # extend with tick export
+    -sEXPORTED_FUNCTIONS=["_main","_myAppTick"]
+    -sJSPI_EXPORTS=["_main","_myAppTick"])
+target_compile_definitions(my-app PRIVATE
+    MILO_WEB_CANVAS_SELECTOR="#my-canvas"
+    MILO_WEB_AUDIO_NS=myapp)
+```
 
 ## Layout
 
@@ -82,6 +114,7 @@ milo-native-engine/
 │   ├── gfx/              WebGPU device, pipelines, post-processing, shadow
 │   ├── audio/            miniaudio device + web adapter
 │   ├── platform/         file I/O, input, pthread threading, renderer glue
+│   │   └── web/assets/   audio-worklet.js + missing_stubs.js (deployed by helper)
 │   ├── char/             engine character helpers (CharTwistSolver)
 │   ├── stl/              host-STL shim layer (the STL ABI seam)
 │   ├── system/           NEW clean-LP64 impls of os/ interfaces
