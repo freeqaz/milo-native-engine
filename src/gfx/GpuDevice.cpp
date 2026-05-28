@@ -379,6 +379,41 @@ bool GpuDevice::ReadbackHeadlessFrame(uint8_t* outPixels, size_t outSize) {
     return true;
 }
 
+void GpuDevice::WarmUp() {
+    // Force the GPU driver's first-use / worker-thread machinery (command-pool
+    // and descriptor-pool allocators, the driver's internal submission threads)
+    // to spin up and FULLY SETTLE synchronously, before any *other* thread
+    // (notably the miniaudio playback thread) starts up and contends with it.
+    //
+    // On some hosts (observed: NVIDIA proprietary Vulkan, driver 595.71.05) the
+    // very first descriptor-pool allocation lazily spawns internal driver worker
+    // threads; if the audio device's init/thread-start runs concurrently with
+    // that first allocation, an NVIDIA driver worker thread faults (SIGSEGV deep
+    // in libnvidia-eglcore, never in our code). App.cpp orders SynthInit()
+    // (which starts the audio thread) immediately before the first
+    // BeginDrawing()/EndDrawing(), so the two race. Calling WarmUp() from the
+    // native synth init BEFORE the audio thread starts removes the overlap.
+    if (!mDevice)
+        return;
+
+    // A trivial empty command buffer is enough to drive the queue's first
+    // submission through the driver's threaded path.
+    wgpu::CommandEncoder enc = mDevice.CreateCommandEncoder();
+    wgpu::CommandBuffer cmd = enc.Finish();
+    mQueue.Submit(1, &cmd);
+
+    // Block until that submission is fully retired, so the driver's lazy
+    // worker-thread spin-up is complete before we return.
+    bool done = false;
+    mInstance.WaitAny(
+        mQueue.OnSubmittedWorkDone(
+            wgpu::CallbackMode::WaitAnyOnly,
+            [&done](wgpu::QueueWorkDoneStatus, wgpu::StringView) { done = true; }),
+        UINT64_MAX);
+    mInstance.ProcessEvents();
+    (void)done;
+}
+
 bool GpuDevice::ShouldClose() const {
     return mWindow && glfwWindowShouldClose(mWindow);
 }

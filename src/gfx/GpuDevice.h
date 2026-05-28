@@ -81,6 +81,10 @@ public:
     bool ReadbackHeadlessFrame(uint8_t* outPixels, size_t outSize);
     wgpu::Texture& HeadlessTex() { return mHeadlessTex; }
 
+    // Synchronously spin up + drain the driver's first-use submission/allocator
+    // machinery, so it never races a thread started right after (e.g. audio).
+    void WarmUp();
+
     // Window queries
     bool ShouldClose() const;
     void PollEvents();

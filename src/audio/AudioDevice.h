@@ -13,6 +13,7 @@
 
 // Forward declare — we don't expose miniaudio types in the header
 struct ma_device;
+struct ma_context;
 
 // Interface for anything that produces audio samples
 class AudioSource {
@@ -70,6 +71,8 @@ private:
     ~AudioDevice();
 
     ma_device *mDevice;
+    ma_context *mContext = nullptr;     // explicit backend context (Linux ALSA pin)
+    bool mContextInited = false;
     bool mInitialized;
     int mSampleRate;
 

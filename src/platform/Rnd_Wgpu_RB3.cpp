@@ -1244,6 +1244,7 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     // row-vector convention and stored column-major for the WGSL `M * v` form,
     // so vs_skinned's weighted sum yields world-space positions directly.
     BoneUniforms bones{};
+    int sFallbackBones = 0; // SHARD_DBG: count identity-substituted (runaway) bones
     if (skinned) {
         int numBones = owner->NumBones();
         if (numBones > kMaxBones) numBones = kMaxBones;
@@ -1252,17 +1253,82 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
             // Identity fallback for a null/garbage bone.
             float* dst = bones.bones[b];
             for (int i = 0; i < 16; i++) dst[i] = (i % 5 == 0) ? 1.f : 0.f;
-            if (!bt) continue;
+            if (!bt) { sFallbackBones++; continue; }
             const Transform& wt = bt->WorldXfm();
             if (!(std::fabs(wt.v.x) < 1e5f && std::fabs(wt.v.y) < 1e5f &&
-                  std::fabs(wt.v.z) < 1e5f))
+                  std::fabs(wt.v.z) < 1e5f)) {
+                sFallbackBones++;
                 continue; // keep identity for runaway/NaN bone world xfm
+            }
             Transform skin;
             Multiply(owner->BoneOffsetAt(b), wt, skin);
+            // V24: validate the COMPOSED skin matrix, not just the bone's world
+            // translation. A bone whose WorldXfm has a non-finite / runaway
+            // ROTATION or SCALE (.m) passes the translation-only guard above, but
+            // `Multiply(offset, wt)` then yields a skin matrix whose rotation
+            // basis or translation flings any vertex weighted to it far across
+            // the scene — drawing as a thin teal/green triangular shard/fan
+            // (the crowd/extras servo skeletons can momentarily produce one).
+            // Reject the whole composed matrix (rotation rows + translation) if
+            // any element is non-finite or absurdly large, falling back to
+            // identity so the vertex stays at its bind pose instead of slivering.
+            {
+                const float* row[4] = { &skin.m.x.x, &skin.m.y.x, &skin.m.z.x, &skin.v.x };
+                bool bad = false;
+                // Transform is row-major Vector3 rows (4 floats stride incl pad);
+                // check the 3x3 rotation basis + the translation explicitly.
+                float chk[12] = {
+                    skin.m.x.x, skin.m.x.y, skin.m.x.z,
+                    skin.m.y.x, skin.m.y.y, skin.m.y.z,
+                    skin.m.z.x, skin.m.z.y, skin.m.z.z,
+                    skin.v.x,   skin.v.y,   skin.v.z };
+                (void)row;
+                for (int k = 0; k < 12; k++) {
+                    float a = chk[k];
+                    if (!(a == a) || std::fabs(a) > 1e5f) { bad = true; break; }
+                }
+                if (bad) { sFallbackBones++; continue; } // keep identity
+            }
             MiloXfmToColMajor(skin, dst);
         }
         for (int b = numBones; b < kMaxBones; b++)
             for (int i = 0; i < 16; i++) bones.bones[b][i] = (i % 5 == 0) ? 1.f : 0.f;
+        // V26: SHARD_BONE_DBG — runs INDEPENDENT of the V24 guard (so it works
+        // with SHARD_GUARD_OFF=1). For a skinned mesh whose bone WORLD translations
+        // spread far apart (a candidate shard), report the OUTLIER bone (farthest
+        // from the per-mesh centroid) + its name/world/local. This localizes the
+        // exact bone that produces a bad pose; it was the instrument that traced the
+        // V26 root cause to the upper-arm chain (the MakeRotQuat sqrt(2) bug). NOTE:
+        // a high spread is NOT proof of a shard for meshes weighted across BOTH
+        // hands (fingernails) or wide crowd batches — those legitimately span far;
+        // the rendered SHARD_RATIO (bind-vs-world AABB) is the truer metric.
+        if (getenv("SHARD_BONE_DBG") && numBones >= 2) {
+            float cx=0.f, cy=0.f, cz=0.f; int cn=0;
+            for (int b=0;b<numBones;b++){ RndTransformable* bt=owner->BoneTransAt(b);
+                if(!bt) continue; const Transform& w=bt->WorldXfm();
+                if(std::fabs(w.v.x)<1e5f&&std::fabs(w.v.y)<1e5f&&std::fabs(w.v.z)<1e5f){
+                    cx+=w.v.x; cy+=w.v.y; cz+=w.v.z; cn++; } }
+            if (cn>0){ cx/=cn; cy/=cn; cz/=cn;
+                int worst=-1; float worstD=0.f;
+                for (int b=0;b<numBones;b++){ RndTransformable* bt=owner->BoneTransAt(b);
+                    if(!bt) continue; const Transform& w=bt->WorldXfm();
+                    float dx=w.v.x-cx, dy=w.v.y-cy, dz=w.v.z-cz;
+                    float d=sqrtf(dx*dx+dy*dy+dz*dz);
+                    if(d>worstD){ worstD=d; worst=b; } }
+                if (worst>=0 && worstD>40.f) {
+                    RndTransformable* bw=owner->BoneTransAt(worst);
+                    const Transform& w=bw->WorldXfm();
+                    const Transform& lx=bw->LocalXfm();
+                    const char* mn = mesh->Name() ? mesh->Name() : "?";
+                    static std::unordered_map<std::string,int> sBoneSeen;
+                    if (sBoneSeen[mn]++ % 60 == 0)
+                        fprintf(stderr, "[SHARD_BONE] mesh='%s' f=%d worstBone[%d]='%s' "
+                            "dist=%.1f wv=(%.2f,%.2f,%.2f) lv=(%.3f,%.3f,%.3f)\n",
+                            mn, mFrameCount, worst, bw->Name()?bw->Name():"?", worstD,
+                            w.v.x,w.v.y,w.v.z, lx.v.x,lx.v.y,lx.v.z);
+                }
+            }
+        }
         if (getenv("SMASH_DBG")) {
             const char* mn = mesh->Name() ? mesh->Name() : "?";
             static std::unordered_map<std::string,int> sSeen;
@@ -1289,6 +1355,97 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
         for (int b = 0; b < kMaxBones; b++)
             for (int i = 0; i < 16; i++) bones.bones[b][i] = (i % 5 == 0) ? 1.f : 0.f;
     }
+
+    // V24: degenerate-skinned-triangle (teal shard) guard. The crowd / extras
+    // characters' servo skeletons can momentarily produce a FINITE-but-wrong bone
+    // pose (within the per-bone [-1e5,1e5] guard above, so not rejected there) for
+    // a held prop / appendage — a vertex weighted to that bone flings a few-to-tens
+    // of units away from the rest of the body, drawing the thin teal/green/yellow
+    // triangular slivers + fans seen scattered through the crowd and above the
+    // highway. They are SKINNED geometry (confirmed by bisection: skipping all
+    // skinned meshes removes them). Detect it by comparing the mesh's ACTUAL
+    // blended world extent to its bind-pose (local) extent: if a skinned mesh
+    // blows up to many times its authored size, its pose is broken this frame —
+    // skip drawing it (a transient dropped frame of a small crowd prop is
+    // invisible; the alternative is a screen-crossing shard). Bind-pose props are
+    // small (~1-10u), so a >6x blow-up with a >20u span is unambiguous. Opt out
+    // via SHARD_GUARD_OFF for A/B.
+    // V26: the ratio is now also computed when the guard is OFF (gated on
+    // SHARD_RATIO_DBG) so the post-fix residual can be measured with the guard
+    // disabled; the DROP itself still only fires when SHARD_GUARD_OFF is unset.
+    if (skinned && (!getenv("SHARD_GUARD_OFF") || getenv("SHARD_RATIO_DBG"))) {
+        bool guardActive = !getenv("SHARD_GUARD_OFF");
+        int n = (int)gpuVertsSkinned.size();
+        if (n >= 3) {
+            // Bind-pose (local) AABB and the blended (world) AABB, the latter via
+            // the EXACT 4-bone blend the shader uses.
+            float lmn[3]={1e30f,1e30f,1e30f}, lmx[3]={-1e30f,-1e30f,-1e30f};
+            float wmn[3]={1e30f,1e30f,1e30f}, wmx[3]={-1e30f,-1e30f,-1e30f};
+            int step = n > 256 ? (n / 256) : 1; // sample to bound cost
+            for (int i = 0; i < n; i += step) {
+                const GpuVertexSkinned& g = gpuVertsSkinned[i];
+                float lx=g.pos[0], ly=g.pos[1], lz=g.pos[2];
+                if(lx<lmn[0])lmn[0]=lx; if(lx>lmx[0])lmx[0]=lx;
+                if(ly<lmn[1])lmn[1]=ly; if(ly>lmx[1])lmx[1]=ly;
+                if(lz<lmn[2])lmn[2]=lz; if(lz>lmx[2])lmx[2]=lz;
+                float wsum=0.f, ox=0.f,oy=0.f,oz=0.f;
+                for (int k=0;k<4;k++){
+                    int bi=g.boneIndices[k]; if(bi<0||bi>=kMaxBones)bi=0;
+                    float w=g.boneWeights[k]; wsum+=w;
+                    const float* m=bones.bones[bi];
+                    ox+=w*(m[0]*lx+m[4]*ly+m[8]*lz+m[12]);
+                    oy+=w*(m[1]*lx+m[5]*ly+m[9]*lz+m[13]);
+                    oz+=w*(m[2]*lx+m[6]*ly+m[10]*lz+m[14]);
+                }
+                if (wsum < 0.01f) { const float* m=bones.bones[0];
+                    ox=m[0]*lx+m[4]*ly+m[8]*lz+m[12];
+                    oy=m[1]*lx+m[5]*ly+m[9]*lz+m[13];
+                    oz=m[2]*lx+m[6]*ly+m[10]*lz+m[14]; }
+                if(ox<wmn[0])wmn[0]=ox; if(ox>wmx[0])wmx[0]=ox;
+                if(oy<wmn[1])wmn[1]=oy; if(oy>wmx[1])wmx[1]=oy;
+                if(oz<wmn[2])wmn[2]=oz; if(oz>wmx[2])wmx[2]=oz;
+            }
+            float lext = sqrtf((lmx[0]-lmn[0])*(lmx[0]-lmn[0])+(lmx[1]-lmn[1])*(lmx[1]-lmn[1])+(lmx[2]-lmn[2])*(lmx[2]-lmn[2]));
+            float wext = sqrtf((wmx[0]-wmn[0])*(wmx[0]-wmn[0])+(wmx[1]-wmn[1])*(wmx[1]-wmn[1])+(wmx[2]-wmn[2])*(wmx[2]-wmn[2]));
+            // RATIO test (blended-extent / bind-extent). Measuring every skinned
+            // mesh over the song shows a roughly bimodal split: correctly-posed
+            // meshes (crowd bodies, extras bodies, hair, mic stand, animated
+            // limbs) sit at ratio ~1.0-1.9; the shard-producing exploded poses
+            // jump to ~2.0-12x (e.g. 51squier_strings 35u->100u, fingernails
+            // 36u->312u, extras' heads 15u->200u, an exploded crowd body
+            // 87u->305u). A 2.0x threshold drops the prominent screen-crossing
+            // teal shards while keeping every legitimately-posed/animated mesh —
+            // crucially NO crowd-body or band-player BODY is dropped (verified).
+            // A pure max-triangle-edge test and an absolute world-span cap were
+            // both tried and REJECTED: crowd-row meshes are large/batched and
+            // legitimately have long edges + big AABBs, so those tests gutted the
+            // crowd. The ratio is the only metric that separates cleanly. Opt out:
+            // SHARD_GUARD_OFF. Residual: a few small held-prop slivers (lighter/
+            // clap, ratio <2.0) can still flicker for a frame — see VENUE_RENDER
+            // V24 (a full fix needs the CharServo skeleton-math root-cause).
+            bool degenerate = (wext > 15.f) && (lext > 0.001f) && (wext > 2.0f * lext);
+            // SHARD_RATIO_DBG: log EVERY skinned mesh's bind/world extent + ratio,
+            // throttled per pointer, to see which slivers slip the threshold.
+            if (getenv("SHARD_RATIO_DBG") && wext > 8.f) {
+                const char* mn = mesh->Name() ? mesh->Name() : "?";
+                static std::unordered_map<const void*,int> sR;
+                if (sR[(const void*)mesh]++ % 60 == 0)
+                    fprintf(stderr, "[SHARD_RATIO] mesh='%s' bindExt=%.2f worldExt=%.2f ratio=%.2f%s\n",
+                        mn, lext, wext, wext/(lext+1e-6f), degenerate?" DROP":"");
+            }
+            if (degenerate && guardActive) {
+                if (getenv("SHARD_DBG")) {
+                    const char* mn = mesh->Name() ? mesh->Name() : "?";
+                    fprintf(stderr, "[SHARD_GUARD] dropped degenerate skinned mesh='%s' "
+                        "bindExt=%.2f worldExt=%.2f ratio=%.1f f=%d\n",
+                        mn, lext, wext, wext/(lext+1e-6f), mFrameCount);
+                }
+                mDrawnMeshes++; // count it as handled; just don't emit the shard
+                return;
+            }
+        }
+    }
+
     uint32_t boneOff = mBoneRing.Write(mGpu.Queue(), &bones, sizeof(bones));
     wgpu::BindGroup boneBG;
     {
@@ -1320,6 +1477,25 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
         mu.useTexture = hasTex ? 1.0f : 0.0f;
         mu.intensify = mat->mIntensify ? 2.0f : 1.0f;
         mu.prelit = mat->mPreLit ? 1.0f : 0.0f;
+        // CHAR_DBG: one-shot per skinned mesh — report whether the character
+        // outfit material resolved a diffuse texture (and what kind), to tell
+        // "untextured because no tex bound" from "untextured because the
+        // render-to-texture outfit composite never painted the target".
+        if (skinned && getenv("CHAR_DBG")) {
+            const char* mn = mesh->Name() ? mesh->Name() : "(null)";
+            static std::unordered_map<std::string,int> sCharDbgSeen;
+            if (sCharDbgSeen[mn]++ == 0) {
+                int texType = dt ? (int)dt->GetType() : -1;
+                fprintf(stderr,
+                    "CHAR_DBG: skinned mesh '%s' mat='%s' diffuse=%s type=0x%x hasTexView=%d "
+                    "color=(%.2f,%.2f,%.2f) bones=%d\n",
+                    mn,
+                    mat->Name() ? mat->Name() : "(null)",
+                    dt ? (dt->Name() ? dt->Name() : "(unnamed)") : "(null)",
+                    texType, hasTex ? 1 : 0,
+                    c.red, c.green, c.blue, owner->NumBones());
+            }
+        }
     } else {
         mu.color[0] = mu.color[1] = mu.color[2] = mu.color[3] = 1.0f;
         mu.useTexture = 0.0f; mu.intensify = 1.0f; mu.prelit = 0.0f;
@@ -1383,6 +1559,7 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     // drawing geometry, but every pixel ended up with alpha=0. Writing only
     // RGB keeps the readback opaque.
     key.alphaWrite = false;
+
     wgpu::RenderPipeline pipe = mPipelines.GetPipeline(key);
     if (!pipe) return;
 

@@ -168,7 +168,49 @@ bool AudioDevice::Init(int sampleRate) {
         close(devNull);
     }
 
+#if defined(__linux__) && !defined(__EMSCRIPTEN__)
+    // BOOT RELIABILITY (Linux): pin the backend to ALSA, not PulseAudio.
+    //
+    // miniaudio's default Linux backend order is PulseAudio-first. On a host
+    // running PipeWire (which provides the PulseAudio server via libpulse's
+    // pipewire-pulse shim), the libpulse client connection spins up SPA-plugin
+    // loader threads that dlopen EGL/GL plugins against the SAME GPU driver the
+    // renderer is mid-initialising. That concurrent driver touch faults an
+    // NVIDIA Vulkan driver worker thread (SIGSEGV deep in libnvidia-eglcore,
+    // never in our code) ~90% of headless boots. ALSA opens the device directly
+    // with no client/plugin threads, removing the contention. ALSA on a
+    // PipeWire host still routes through the pipewire-alsa plug. Override with
+    // MILO_AUDIO_BACKEND=pulseaudio|alsa|default to force a specific choice.
+    const char *beEnv = getenv("MILO_AUDIO_BACKEND");
+    ma_backend backends[1];
+    ma_uint32 backendCount = 0;
+    if (!beEnv || strcmp(beEnv, "default") != 0) {
+        if (beEnv && strcmp(beEnv, "pulseaudio") == 0)
+            backends[0] = ma_backend_pulseaudio;
+        else
+            backends[0] = ma_backend_alsa; // default + "alsa"
+        backendCount = 1;
+    }
+
+    ma_result result;
+    if (backendCount > 0) {
+        mContext = new ma_context;
+        ma_context_config ctxConfig = ma_context_config_init();
+        if (ma_context_init(backends, backendCount, &ctxConfig, mContext) == MA_SUCCESS) {
+            mContextInited = true;
+            result = ma_device_init(mContext, &config, mDevice);
+        } else {
+            // Backend unavailable — fall back to miniaudio's default selection.
+            delete mContext;
+            mContext = nullptr;
+            result = ma_device_init(nullptr, &config, mDevice);
+        }
+    } else {
+        result = ma_device_init(nullptr, &config, mDevice);
+    }
+#else
     ma_result result = ma_device_init(nullptr, &config, mDevice);
+#endif
 
     // Restore stderr
     if (savedStderr >= 0) {
@@ -180,6 +222,8 @@ bool AudioDevice::Init(int sampleRate) {
         fprintf(stderr, "AudioDevice: ma_device_init failed: %d\n", result);
         delete mDevice;
         mDevice = nullptr;
+        if (mContextInited) { ma_context_uninit(mContext); mContextInited = false; }
+        delete mContext; mContext = nullptr;
         return false;
     }
 
@@ -191,6 +235,8 @@ bool AudioDevice::Init(int sampleRate) {
         ma_device_uninit(mDevice);
         delete mDevice;
         mDevice = nullptr;
+        if (mContextInited) { ma_context_uninit(mContext); mContextInited = false; }
+        delete mContext; mContext = nullptr;
         return false;
     }
 
@@ -199,8 +245,9 @@ bool AudioDevice::Init(int sampleRate) {
     // Read master gain from environment
     const char *gainEnv = getenv("DC3_AUDIO_GAIN");
     if (gainEnv) sMasterGain = (float)atof(gainEnv);
-    printf("AudioDevice: initialized — %d Hz, %d channels, period %d frames, gain %.1f\n",
-           mSampleRate, 2, 512, sMasterGain);
+    printf("AudioDevice: initialized — %d Hz, %d channels, period %d frames, gain %.1f (backend=%s)\n",
+           mSampleRate, 2, 512, sMasterGain,
+           mContextInited ? ma_get_backend_name(mContext->backend) : "default");
 
     // --- WAV dump setup ---
     const char *dumpPath = getenv("DC3_DUMP_AUDIO");
@@ -240,6 +287,12 @@ void AudioDevice::Terminate() {
     ma_device_uninit(mDevice);
     delete mDevice;
     mDevice = nullptr;
+    if (mContextInited) {
+        ma_context_uninit(mContext);
+        mContextInited = false;
+    }
+    delete mContext;
+    mContext = nullptr;
     mInitialized = false;
     mSampleRate = 0;
 
