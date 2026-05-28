@@ -36,6 +36,16 @@ else()
     set(MILO_ENGINE_STANDALONE OFF)
 endif()
 
+# Snapshot the engine source dir so helpers defined in this file can refer to
+# engine-relative paths from inside a CMake function() body. CMake's
+# CMAKE_CURRENT_SOURCE_DIR resolves to the CALLER's source dir when used inside
+# a function (DC3's native/, RB3's native/, …), so engine assets resolved that
+# way disappear. Stash the engine's own source dir into an INTERNAL cache var
+# at top-level (where CMAKE_CURRENT_SOURCE_DIR == the engine repo root) and
+# reference it from the helper instead.
+set(MILO_ENGINE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}" CACHE INTERNAL
+    "milo-native-engine source root (snapshot for use inside helper functions)")
+
 # Clang autodetect when built standalone (consumers select their own compiler).
 if(MILO_ENGINE_STANDALONE AND NOT EMSCRIPTEN)
     if(NOT DEFINED CMAKE_C_COMPILER AND NOT DEFINED ENV{CC})
@@ -520,17 +530,29 @@ endif()
 # replace earlier ones, so the LAST occurrence wins. Example consumer:
 #
 #   milo_engine_apply_web_target_options(dc3-web)
+#   milo_engine_set_web_canvas_selector(dc3-web "#dc3-canvas")
 #   target_link_options(dc3-web PRIVATE
 #       -sEXPORTED_FUNCTIONS=["_main","_dc3MainLoopTick"]
 #       -sJSPI_EXPORTS=["_main","_dc3MainLoopTick","dc3MainLoopTick"])
-#   target_compile_definitions(dc3-web PRIVATE
-#       MILO_WEB_CANVAS_SELECTOR="#dc3-canvas"
-#       MILO_WEB_AUDIO_NS=dc3)
+#   target_compile_definitions(dc3-web PRIVATE MILO_WEB_AUDIO_NS=dc3)
 #
 # The optional second arg is the directory to copy audio-worklet.js into
 # (defaults to $<TARGET_FILE_DIR:tgt>, i.e. next to the .wasm). Pass an
 # explicit path to override (DC3's existing build.sh copies it to native/
 # web/build, for example).
+#
+# Asset paths (missing_stubs.js, audio-worklet.js) resolve via
+# MILO_ENGINE_SOURCE_DIR (snapshotted at the top of this file). Do NOT use
+# CMAKE_CURRENT_SOURCE_DIR here — inside a function() it resolves to the
+# CALLER's source dir, not the engine's.
+#
+# The canvas-selector parameter is intentionally NOT plumbed into this
+# helper: CMake refuses to pass macro values containing `#` on the compiler
+# command line (it strips or mangles them). milo_engine_set_web_canvas_selector
+# below routes the value through a configure_file'd, force-included header
+# instead; canvas selection is conceptually independent from the link/compile
+# option block this helper owns, so it stays a sibling helper rather than an
+# optional arg here.
 # -----------------------------------------------------------------------------
 function(milo_engine_apply_web_target_options _tgt)
     if(NOT EMSCRIPTEN)
@@ -565,7 +587,7 @@ function(milo_engine_apply_web_target_options _tgt)
         -sEXPORTED_RUNTIME_METHODS=[\"ccall\",\"cwrap\"]
         -fwasm-exceptions
         -g2
-        --pre-js ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/web/assets/missing_stubs.js)
+        --pre-js ${MILO_ENGINE_SOURCE_DIR}/src/platform/web/assets/missing_stubs.js)
 
     if(MILO_WEB_ASYNC)
         target_compile_definitions(${_tgt} PRIVATE MILO_WEB_ASYNCIFY=1)
@@ -580,9 +602,53 @@ function(milo_engine_apply_web_target_options _tgt)
     endif()
     add_custom_command(TARGET ${_tgt} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/web/assets/audio-worklet.js
+            ${MILO_ENGINE_SOURCE_DIR}/src/platform/web/assets/audio-worklet.js
             ${_asset_dest}/audio-worklet.js
         COMMENT "milo-engine: deploying audio-worklet.js next to ${_tgt}")
+endfunction()
+
+# -----------------------------------------------------------------------------
+# Helper: milo_engine_set_web_canvas_selector(<target> <selector>)
+#
+# Sets the MILO_WEB_CANVAS_SELECTOR preprocessor macro for <target> to the
+# given DOM selector string (e.g. "#dc3-canvas", "#rb3-canvas"). The macro
+# value contains `#`, which CMake refuses to pass on a compiler command line
+# (target_compile_definitions(... MILO_WEB_CANVAS_SELECTOR="#foo") silently
+# drops the macro with a warning; the SHELL:-D…="\#…" workaround gets mangled
+# by ninja/make into a compile error). So we route the value through a
+# per-target header generated via configure_file() and force-include it into
+# every TU compiled for <target>.
+#
+# Sibling helper rather than an optional arg on milo_engine_apply_web_target_options
+# because canvas selection is conceptually independent from the link/compile
+# option block — a consumer might want to set the selector but customise the
+# link options entirely (or vice versa).
+#
+# Example:
+#   milo_engine_set_web_canvas_selector(dc3-web "#dc3-canvas")
+#   milo_engine_set_web_canvas_selector(rb3-web "#rb3-canvas")
+# -----------------------------------------------------------------------------
+function(milo_engine_set_web_canvas_selector _tgt _selector)
+    if(NOT EMSCRIPTEN)
+        message(WARNING
+            "milo_engine_set_web_canvas_selector(${_tgt}) called without an "
+            "Emscripten toolchain — no-op. Configure with emcmake.")
+        return()
+    endif()
+
+    set(MILO_WEB_CANVAS_SELECTOR "${_selector}")
+    set(_out_dir "${CMAKE_CURRENT_BINARY_DIR}/milo-engine-web-config/${_tgt}")
+    set(_out_file "${_out_dir}/milo_web_config_${_tgt}.h")
+    configure_file(
+        "${MILO_ENGINE_SOURCE_DIR}/src/platform/web/milo_web_config.h.in"
+        "${_out_file}"
+        @ONLY)
+
+    target_include_directories(${_tgt} PRIVATE "${_out_dir}")
+    # SHELL: keeps the two tokens together so the generator doesn't split or
+    # de-dup them with adjacent -include flags from another helper call.
+    target_compile_options(${_tgt} PRIVATE
+        "SHELL:-include milo_web_config_${_tgt}.h")
 endfunction()
 
 # -----------------------------------------------------------------------------
