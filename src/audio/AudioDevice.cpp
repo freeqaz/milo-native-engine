@@ -140,7 +140,12 @@ bool AudioDevice::Init(int sampleRate) {
     // PipeWire/SPA plugins on some hosts crash on the audio thread during
     // device init; headless tests don't need audio output anyway.
     // DC3_NO_AUDIO=1 explicitly opts out; MILO_HEADLESS=1 implies it.
-    if (getenv("DC3_NO_AUDIO") || getenv("MILO_HEADLESS")) {
+    // MILO_AUDIO=1 overrides both skips — allows audio-on with headless rendering
+    // (e.g. V1 acceptance: MILO_HEADLESS=1 MILO_AUDIO=1 keeps Dawn windowless while
+    // still opening the miniaudio output device for RenderAudio validation).
+    bool forceAudio = (getenv("MILO_AUDIO") != nullptr &&
+                       getenv("MILO_AUDIO")[0] == '1');
+    if (!forceAudio && (getenv("DC3_NO_AUDIO") || getenv("MILO_HEADLESS"))) {
         printf("AudioDevice: skipped (DC3_NO_AUDIO or MILO_HEADLESS set)\n");
         return true;
     }

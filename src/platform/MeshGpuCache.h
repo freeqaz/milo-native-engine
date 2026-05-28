@@ -29,6 +29,15 @@ bool EnsureMeshUploaded(RndMesh* mesh);
 // Release GPU resources for a mesh (called from RndMesh destructor).
 void CleanupGpuMesh(RndMesh* mesh);
 
+// Clear all entries in the GPU mesh cache. Used by hosts that want to drop
+// every wgpu::Buffer ref the cache is holding before the underlying device /
+// Vulkan ICD is torn down (e.g. RB3 native's BandRnd::Shutdown exit callback,
+// which fires from Debug::Exit ahead of libc's exit() static destructors — by
+// the time libc tears statics down, the Vulkan ICD .so is unmapped and any
+// surviving wgpu::~ObjectBase that drops the last ref crashes on a dangling
+// vkDestroy* pointer).
+void ClearMeshGpuCache();
+
 // Set a debug label for GPU buffer names + frame capture.
 void SetMeshDebugLabel(RndMesh* mesh, const char* label);
 

@@ -77,16 +77,56 @@ option(MILO_BUILD_WEB           "Build the Emscripten/web target machinery"     
 # the excluded-source partition below). A .milo scene-tree dump needs no GPU,
 # so RB3 still reaches the load/dump path with this OFF.
 option(MILO_ENGINE_BUILD_GFX    "Build the rndobj-FREE WebGPU gfx core (GpuDevice, pipelines, screenshot, headless frame, …) + Dawn/glfw/imgui deps" ON)
-# GPU backend toggle — splits OFF the rndobj-COUPLED gfx TUs and the 8 Wgpu
-# platform backends from the rndobj-FREE gfx core above. DEFAULTS to the value
-# of MILO_ENGINE_BUILD_GFX, so a consumer that sets neither (DC3) gets ON+ON =
-# the full three-tier gfx set, byte-identical to before this split. RB3 keeps
-# the core ON but forces this OFF: the coupled TUs reference DC3's rndobj/ shapes
-# (RndMat/RndCam/RndMesh::Vert/RndPostProc/RndBitmap) and the backends derive
-# WgpuRnd from NgRnd — neither compiles against RB3's older 2010-era rndobj/.
-if(NOT DEFINED MILO_ENGINE_BUILD_GPU_BACKENDS)
-    set(MILO_ENGINE_BUILD_GPU_BACKENDS ${MILO_ENGINE_BUILD_GFX} CACHE BOOL
-        "Build the rndobj-coupled gfx TUs + Wgpu platform backends (default: =MILO_ENGINE_BUILD_GFX)")
+# -----------------------------------------------------------------------------
+# GPU backend FLAVOR. The rndobj-FREE gfx core above (MILO_ENGINE_BUILD_GFX) is
+# game-agnostic and shared by every consumer. The rndobj-COUPLED backend on top
+# of it is NOT — it reads a specific decomp's rndobj/ shapes. Pick which one:
+#
+#   off  no rndobj-coupled gfx (header-dump / clear-frame smoke only)
+#   dc3  WgpuRnd : NgRnd  + the 6 rndobj-coupled gfx TUs (DrawRect2D/DofPass/
+#        VertexFormats/ShadowPass/PostProcPass/TextureConvert) + 8 Wgpu platform
+#        backends. Reads DC3's 2012-era rndobj (RndMat/RndCam/RndMesh::Vert/
+#        RndPostProc/RndBitmap, WgpuRnd derives from NgRnd).
+#   rb3  BandRnd : Rnd (Rnd_Wgpu_RB3.cpp). Reads RB3's older 2010-era rndobj
+#        (no NgRnd; RndCam without GetViewProjectXfms; packed Color32 verts).
+#        Both backends share gfx/UniformStructs.h + gfx/VertexFormats.h (the
+#        decomp-agnostic shader contract). The 6 rndobj-coupled gfx TUs are
+#        DC3-only for now (their RB3 variants are deferred — see roadmap Phase 2).
+#
+# A consumer that builds gfx but names no backend gets `dc3` (back-compat: the
+# pre-split single-backend build == dc3). DC3 sets dc3 explicitly; RB3 sets rb3.
+#
+# Back-compat: the retired bool MILO_ENGINE_BUILD_GPU_BACKENDS maps onto the new
+# string (ON -> dc3, OFF -> off) with a deprecation warning, so a stale consumer
+# CMakeLists keeps working until it migrates.
+if(DEFINED MILO_ENGINE_BUILD_GPU_BACKENDS AND NOT DEFINED MILO_ENGINE_GPU_BACKEND)
+    if(MILO_ENGINE_BUILD_GPU_BACKENDS)
+        set(_milo_compat_backend dc3)
+    else()
+        set(_milo_compat_backend off)
+    endif()
+    message(WARNING
+        "MILO_ENGINE_BUILD_GPU_BACKENDS is deprecated; set "
+        "MILO_ENGINE_GPU_BACKEND={off,dc3,rb3} instead "
+        "(mapped '${MILO_ENGINE_BUILD_GPU_BACKENDS}' -> '${_milo_compat_backend}').")
+    set(MILO_ENGINE_GPU_BACKEND ${_milo_compat_backend} CACHE STRING "GPU backend flavor" FORCE)
+endif()
+if(NOT DEFINED MILO_ENGINE_GPU_BACKEND)
+    if(MILO_ENGINE_BUILD_GFX)
+        set(MILO_ENGINE_GPU_BACKEND dc3 CACHE STRING "GPU backend flavor: off, dc3, rb3")
+    else()
+        set(MILO_ENGINE_GPU_BACKEND off CACHE STRING "GPU backend flavor: off, dc3, rb3")
+    endif()
+endif()
+set_property(CACHE MILO_ENGINE_GPU_BACKEND PROPERTY STRINGS off dc3 rb3)
+if(NOT MILO_ENGINE_GPU_BACKEND MATCHES "^(off|dc3|rb3)$")
+    message(FATAL_ERROR
+        "MILO_ENGINE_GPU_BACKEND must be off, dc3, or rb3 (got '${MILO_ENGINE_GPU_BACKEND}').")
+endif()
+if(NOT MILO_ENGINE_GPU_BACKEND STREQUAL "off" AND NOT MILO_ENGINE_BUILD_GFX)
+    message(FATAL_ERROR
+        "MILO_ENGINE_GPU_BACKEND=${MILO_ENGINE_GPU_BACKEND} needs the gfx core: "
+        "set MILO_ENGINE_BUILD_GFX=ON (or MILO_ENGINE_GPU_BACKEND=off).")
 endif()
 option(MILO_ENGINE_BUILD_TESTS  "Build the engine-only convergence test suite"  ${MILO_ENGINE_STANDALONE})
 option(MILO_ENGINE_LP64_AUDIT   "Enable LP64 pointer-truncation warnings for auditing"          OFF)
@@ -187,8 +227,9 @@ set(MILO_ENGINE_GFX_SOURCES
 # Tier 2 — rndobj-COUPLED gfx. These include rndobj/ headers shaped for DC3
 # (DrawRect2D->RndMat, DofPass->RndCam, VertexFormats->RndMesh::Vert,
 # ShadowPass->RndCam/Env/Lit/Mat/Mesh, PostProcPass->RndPostProc,
-# TextureConvert->RndBitmap). Gated on MILO_ENGINE_BUILD_GPU_BACKENDS alongside
-# the Wgpu backends, so RB3 (older rndobj/) drops them.
+# TextureConvert->RndBitmap). Part of the `dc3` backend flavor, so RB3 (older
+# rndobj/) drops them. (RB3 variants of these are deferred — see roadmap Phase 2;
+# BandRnd does its own DXT decompress + static vert layout inline for now.)
 set(MILO_ENGINE_GFX_RNDOBJ_SOURCES
     src/gfx/DrawRect2D.cpp
     src/gfx/DofPass.cpp
@@ -206,13 +247,12 @@ set(MILO_ENGINE_CHAR_SOURCES
     src/char/CharTwistSolver.cpp
 )
 
-# GPU-coupled platform backends. These hard-depend on the DC3-shaped WebGPU
-# renderer (WgpuRnd : NgRnd, MeshGpuCache, RndTex_Native, MaterialSetup) and on
-# DC3's rndobj/ surface. They are EXCLUDED when MILO_ENGINE_BUILD_GFX is OFF.
-# RB3-Wii (GFX OFF) cannot compile any of these — its 2010-era rndobj/ predates
-# the DC3 shapes these files reference (e.g. Part_Wgpu calls
-# RndParticleSys::NumTilesAcross()/NumTilesDown() which RB3 lacks; Rnd_Wgpu's
-# WgpuRnd derives from NgRnd while RB3's Rnd is an older unrelated class).
+# GPU-coupled platform backends (the `dc3` flavor). These hard-depend on the
+# DC3-shaped WebGPU renderer (WgpuRnd : NgRnd, MeshGpuCache, RndTex_Native,
+# MaterialSetup) and on DC3's rndobj/ surface. RB3-Wii cannot compile any of
+# these — its 2010-era rndobj/ predates the DC3 shapes these files reference
+# (e.g. Part_Wgpu calls RndParticleSys::NumTilesAcross()/NumTilesDown() which RB3
+# lacks; Rnd_Wgpu's WgpuRnd derives from NgRnd while RB3's Rnd is older/unrelated).
 set(MILO_ENGINE_GPU_PLATFORM_SOURCES
     src/platform/MaterialSetup.cpp
     src/platform/MeshGpuCache.cpp
@@ -222,6 +262,16 @@ set(MILO_ENGINE_GPU_PLATFORM_SOURCES
     src/platform/Rnd_Wgpu.cpp
     src/platform/Tex_Wgpu.cpp
     src/platform/TransparentQueue.cpp
+)
+
+# GPU backend for the `rb3` flavor — BandRnd : Rnd, graduated from rb3/native/.
+# Self-contained: it owns its strong defs for the engine's weak-stubbed
+# RndMesh::DrawShowing / RndTex::SyncBitmap + VertexFormats::StaticLayout/
+# SkinnedLayout (CPU DXT decompress + static vert layout inline), so it needs
+# neither MILO_ENGINE_GFX_RNDOBJ_SOURCES nor the dc3 platform backends. Reads
+# RB3's matched-fork rndobj via the consumer-injected context.
+set(MILO_ENGINE_GPU_PLATFORM_SOURCES_RB3
+    src/platform/Rnd_Wgpu_RB3.cpp
 )
 
 # Non-GPU platform sources — kept regardless of MILO_ENGINE_BUILD_GFX (file I/O,
@@ -263,8 +313,10 @@ set(MILO_ENGINE_PLATFORM_SOURCES
     #                           pairs with HttpServer — factor the HTTP/telemetry
     #                           hook, then both move in together.
 )
-if(MILO_ENGINE_BUILD_GPU_BACKENDS)
+if(MILO_ENGINE_GPU_BACKEND STREQUAL "dc3")
     list(APPEND MILO_ENGINE_PLATFORM_SOURCES ${MILO_ENGINE_GPU_PLATFORM_SOURCES})
+elseif(MILO_ENGINE_GPU_BACKEND STREQUAL "rb3")
+    list(APPEND MILO_ENGINE_PLATFORM_SOURCES ${MILO_ENGINE_GPU_PLATFORM_SOURCES_RB3})
 endif()
 if(MILO_ENGINE_HAVE_FFMPEG)
     list(APPEND MILO_ENGINE_PLATFORM_SOURCES
@@ -280,7 +332,9 @@ set(MILO_ENGINE_FULL_SOURCES
 if(MILO_ENGINE_BUILD_GFX)
     list(APPEND MILO_ENGINE_FULL_SOURCES ${MILO_ENGINE_GFX_SOURCES})
 endif()
-if(MILO_ENGINE_BUILD_GPU_BACKENDS)
+# The 6 rndobj-coupled gfx TUs are part of the dc3 flavor only (their RB3
+# variants are deferred — Phase 2).
+if(MILO_ENGINE_GPU_BACKEND STREQUAL "dc3")
     list(APPEND MILO_ENGINE_FULL_SOURCES ${MILO_ENGINE_GFX_RNDOBJ_SOURCES})
 endif()
 
@@ -385,7 +439,7 @@ if(MILO_ENGINE_HAVE_CONTEXT)
     list(LENGTH MILO_ENGINE_FULL_SOURCES _n)
     message(STATUS "    engine sources       : ${_n} (+ EngineVersion)")
     message(STATUS "    gfx (WebGPU core)    : ${MILO_ENGINE_BUILD_GFX}")
-    message(STATUS "    gpu_backends         : ${MILO_ENGINE_BUILD_GPU_BACKENDS}")
+    message(STATUS "    gpu backend flavor   : ${MILO_ENGINE_GPU_BACKEND}")
     message(STATUS "    FFmpeg               : ${MILO_ENGINE_HAVE_FFMPEG}")
 else()
     message(STATUS "    engine sources       : placeholder-only (no decomp context)")

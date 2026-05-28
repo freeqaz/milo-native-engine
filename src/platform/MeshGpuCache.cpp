@@ -54,6 +54,10 @@ void CleanupGpuMesh(RndMesh* mesh) {
     sMeshGpuData.erase(mesh);
 }
 
+void ClearMeshGpuCache() {
+    sMeshGpuData.clear();
+}
+
 void SetMeshDebugLabel(RndMesh* mesh, const char* label) {
     sMeshGpuData[mesh].debugLabel = label;
 }
