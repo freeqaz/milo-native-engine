@@ -592,17 +592,44 @@ void BandRnd::CreateDefaultTextures() {
     mShadowSampler = mGpu.Device().CreateSampler(&cs);
 }
 
-bool BandRnd::InitGpu(int width, int height, bool headless) {
+// Start the async/sync GpuDevice bring-up. Returns true once the device
+// request has been DISPATCHED — on native (Dawn) the device is ready
+// synchronously when this returns; on web (emdawnwebgpu) the adapter/device
+// request is async and mGpu.IsReady() stays false until the JS callbacks fire.
+// Callers must wait on mGpu.IsReady() (polling PollEvents) before
+// InitGpuResources(). Does NOT touch any GPU resources (pipelines/textures).
+bool BandRnd::StartGpuInit(int width, int height, bool headless) {
     if (mGpuReady) return true;
     GpuDeviceDesc desc{};
     desc.headless = headless;
     desc.width = width;
     desc.height = height;
     desc.title = "rb3-native BandRnd";
-    if (!mGpu.Init(desc) || !mGpu.IsReady()) {
-        fprintf(stderr, "BandRnd: GpuDevice init FAILED\n");
+    if (!mGpu.Init(desc)) {
+        fprintf(stderr, "BandRnd: GpuDevice init dispatch FAILED\n");
         return false;
     }
+    return true;
+}
+
+// Create the pipelines / depth tex / 4 uniform rings / default textures and
+// latch mGpuReady. MUST be called only after mGpu.IsReady() is true (the
+// device + surface exist). Idempotent: re-entry is a no-op once mGpuReady.
+void BandRnd::InitGpuResources() {
+    if (mGpuReady) return;
+
+    // Pick the render-target format the pipelines must emit into. On web the
+    // canvas surface format is whatever the browser preferred (Chrome → BGRA8),
+    // queried by GpuDevice in the async device callback; the color attachment
+    // (AcquireNextFrame) is in that format, so the pipeline targetFormat must
+    // match or we hit "attachment format != pipeline" validation + swapped
+    // colors. On native HEADLESS the readback target is forced RGBA8Unorm
+    // (GpuDevice::AcquireHeadlessFrame), and mGpu.SurfaceFormat() is still the
+    // BGRA8 default at this point (headless never calls ConfigureSurface), so
+    // keep RGBA8 for headless to preserve the unchanged native PNG output.
+    mTargetFmt = mGpu.IsHeadless() ? wgpu::TextureFormat::RGBA8Unorm
+                                   : mGpu.SurfaceFormat();
+
     mPipelines.Init(&mGpu);
 
     const int W = mGpu.WindowWidth(), H = mGpu.WindowHeight();
@@ -624,8 +651,23 @@ bool BandRnd::InitGpu(int width, int height, bool headless) {
     CreateDefaultTextures();
 
     mGpuReady = true;
-    printf("BandRnd: GPU ready (%dx%d, %s)\n", W, H, headless ? "headless" : "windowed");
-    return true;
+    printf("BandRnd: GPU ready (%dx%d, fmt=%d, %s)\n", W, H, (int)mTargetFmt,
+           mGpu.IsHeadless() ? "headless" : "windowed");
+}
+
+// Monolithic init — used by native callers (main_native.cpp, rb3_render_mesh.cpp).
+// On native Dawn the device is ready synchronously after StartGpuInit, so this
+// stays a single blocking call. The web boot machine instead drives
+// StartGpuInit / poll-IsReady / InitGpuResources across separate frames.
+bool BandRnd::InitGpu(int width, int height, bool headless) {
+    if (mGpuReady) return true;
+    if (!StartGpuInit(width, height, headless)) return false;
+    if (!mGpu.IsReady()) {
+        fprintf(stderr, "BandRnd: GpuDevice not ready after sync init\n");
+        return false;
+    }
+    InitGpuResources();
+    return mGpuReady;
 }
 
 // Tear down all WebGPU handles owned by gBandRnd. Must run BEFORE libc's static
@@ -1204,13 +1246,17 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     }
     {
         uint64_t isz = indices.size() * sizeof(uint16_t);
-        // index buffer size must be a multiple of 4
+        // index buffer size must be a multiple of 4 (WebGPU WriteBuffer requirement).
+        // Resize the source vector to cover the padded byte count so WriteBuffer
+        // does not over-read past valid data.  The extra element (at most 1 u16)
+        // is zero-initialised by resize and never referenced by DrawIndexed.
         uint64_t padded = (isz + 3) & ~3ull;
+        indices.resize(padded / sizeof(uint16_t), 0);
         wgpu::BufferDescriptor bd{};
         bd.label = "MeshIB"; bd.size = padded;
         bd.usage = wgpu::BufferUsage::Index | wgpu::BufferUsage::CopyDst;
         ibuf = mGpu.Device().CreateBuffer(&bd);
-        mGpu.Queue().WriteBuffer(ibuf, 0, indices.data(), isz);
+        mGpu.Queue().WriteBuffer(ibuf, 0, indices.data(), padded);
     }
 
     // --- Object uniforms: world transform of the mesh ---

@@ -69,8 +69,19 @@ public:
     void PreInitRender();
 
     // Stand up the engine GpuDevice + pipelines + uniform buffers + default
-    // textures. Returns false on failure.
+    // textures in a single blocking call. Used by NATIVE callers (Dawn makes
+    // the device ready synchronously). On web the device request is async, so
+    // the web boot machine drives the two-phase split below instead.
     bool InitGpu(int width, int height, bool headless);
+
+    // Phase 1: dispatch the GpuDevice adapter/device request. Returns true once
+    // dispatched (true immediately on web — device not yet ready). No GPU
+    // resources are created here. Poll Gpu().IsReady() before phase 2.
+    bool StartGpuInit(int width, int height, bool headless);
+
+    // Phase 2: create pipelines + depth tex + uniform rings + default textures
+    // and latch mGpuReady. Call ONLY after Gpu().IsReady(). Idempotent.
+    void InitGpuResources();
 
     // Tear down all wgpu handles owned by this object. Must run BEFORE libc
     // static destructors (the Vulkan ICD .so is unmapped on exit() and any
