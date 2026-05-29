@@ -1650,6 +1650,19 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     // --- Material uniforms ---
     RndMat* mat = mesh->Mat();
     MaterialUniforms mu{};
+    // W5 text-mesh heuristic — mirror the DC3 draw path (Mesh_Wgpu.cpp:188).
+    // RndText::UpdateMesh / RndText::CreateLines build per-font sub-meshes via
+    // Hmx::Object::New<RndMesh>() (src/system/rndobj/Text.cpp:1766) and never
+    // assign a Name, so an empty first byte is a reliable text-mesh
+    // discriminator. Every gameplay/scene mesh in RB3 has a non-empty Name(),
+    // so the predicate only fires on RndText sub-meshes. This is the same
+    // condition MaterialSetup::BuildMaterialParams uses to set
+    // useAlphaAsRGB + prelit for text on the DC3 draw path; without it, RB3
+    // font atlases (DXT5 with glyphs in alpha, RGB == 0) collapse to black in
+    // the shader's non-text diffuse-sampling branch (standard_wgsl.inc:631),
+    // which is why menu / song-list / HUD text was invisible in the W4
+    // baseline screenshots. See docs/plans/web-port/W5_TEXT_RENDERING.md.
+    bool isTextMeshHeur = mesh->Name() && mesh->Name()[0] == '\0';
     if (mat) {
         const Hmx::Color& c = mat->GetColor();
         mu.color[0] = c.red; mu.color[1] = c.green; mu.color[2] = c.blue; mu.color[3] = c.alpha;
@@ -1667,7 +1680,16 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
         }
         mu.useTexture = hasTex ? 1.0f : 0.0f;
         mu.intensify = mat->mIntensify ? 2.0f : 1.0f;
-        mu.prelit = mat->mPreLit ? 1.0f : 0.0f;
+        // W5 Phase 1: force-prelit text so font glyph quads pick up the
+        // material colour directly without lighting attenuation.
+        mu.prelit = (mat->mPreLit || isTextMeshHeur) ? 1.0f : 0.0f;
+        // W5 Phase 1: route font atlas glyph alpha into RGB. Mirrors the
+        // shader's text branch (standard_wgsl.inc, useAlphaAsRGB == 1.0):
+        //   baseColor.rgb *= diffuseSample.a;
+        // instead of the default
+        //   baseColor.rgb *= diffuseSample.rgb;
+        // which is the actual root cause of W5's black-on-dark text.
+        mu.useAlphaAsRGB = isTextMeshHeur ? 1.0f : 0.0f;
         // CHAR_DBG: one-shot per skinned mesh — report whether the character
         // outfit material resolved a diffuse texture (and what kind), to tell
         // "untextured because no tex bound" from "untextured because the
@@ -1730,6 +1752,11 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
         int z = (int)mat->GetZMode();
         if (z >= 0 && z <= 4) zMode = (WgpuZMode)z;
     }
+    // W5 Phase 2: force depth-disabled rendering for text meshes so HUD /
+    // menu labels composite over the 3D scene regardless of panel transform
+    // Z (mirrors Mesh_Wgpu.cpp:202 on the DC3 draw path). Without this,
+    // text behind a closer 3D panel would get z-occluded and disappear.
+    if (isTextMeshHeur) zMode = WgpuZMode::Disable;
     if (gemForce) { blendMode = WgpuBlend::Src; zMode = WgpuZMode::Disable; }
     key.blend = blendMode;
     key.zMode = zMode;
