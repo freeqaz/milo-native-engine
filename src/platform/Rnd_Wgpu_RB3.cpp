@@ -1126,7 +1126,14 @@ void BandRnd::EndDrawTarget() {
     wgpu::RenderPassDepthStencilAttachment depthAtt{};
     depthAtt.view = mDepthView;
     depthAtt.depthLoadOp = wgpu::LoadOp::Load; depthAtt.depthStoreOp = wgpu::StoreOp::Store;
+    // Even with LoadOp::Load (no clear), WebGPU/Dawn validates that
+    // depthClearValue is finite in [0,1] on beginRenderPass. The wgpu C++
+    // struct defaults this field to NaN (kDepthClearValueUndefined), which
+    // fails validation and aborts the resumed main pass — freezing the web
+    // render loop. Set the standard depth clear (1.0) so it is valid.
+    depthAtt.depthClearValue = 1.0f;
     depthAtt.stencilLoadOp = wgpu::LoadOp::Load; depthAtt.stencilStoreOp = wgpu::StoreOp::Store;
+    depthAtt.stencilClearValue = 0;
 
     wgpu::RenderPassDescriptor rp{};
     rp.label = "BandMainPassResume";
