@@ -100,6 +100,20 @@ public:
     // Draw one RndMesh (called from the engine RndMesh::DrawShowing body).
     void DrawMesh(RndMesh* mesh);
 
+    // --- Render-to-texture (RTT) ---
+    // The shared rndobj/Cam.cpp only ever fires RndTex::FinishDrawTarget (the
+    // END hook); the BEGIN side lived in the per-platform Wii/Xenon RndCam,
+    // which this backend lacks. So DrawMesh hooks the begin lazily (when the
+    // current cam has a TargetTex that we haven't redirected to yet) via
+    // BeginDrawTarget, and RndTex::FinishDrawTarget calls EndDrawTarget.
+    //
+    // BeginDrawTarget: lazily create (once) an RGBA8 render target for `tex`
+    // (its Width()xHeight()), suspend the main pass, and begin a NEW render
+    // pass into the RT view (clear transparent, no depth). Subsequent draws
+    // land in the RT until EndDrawTarget re-opens the main pass.
+    void BeginDrawTarget(RndTex* tex);
+    void EndDrawTarget();
+
     GpuDevice& Gpu() { return mGpu; }
     wgpu::RenderPassEncoder& Pass() { return mPass; }
     bool InPass() const { return mInPass; }
@@ -140,6 +154,12 @@ public:
 
     wgpu::Texture mDepthTex;
     wgpu::TextureView mDepthView;
+
+    // RTT: the texture currently being painted into (the redirected target),
+    // or null when drawing into the main pass. While set, DrawMesh selects an
+    // RT-compatible pipeline variant (RGBA8 color, no depth, alpha writes on).
+    RndTex* mRtActiveTex = nullptr;
+    wgpu::TextureFormat mRtFmt = wgpu::TextureFormat::RGBA8Unorm;
 
     // Scene bind group (group 0). mLastSceneCam tracks which cam the bind
     // group was last written against — DrawMesh re-writes the scene uniforms

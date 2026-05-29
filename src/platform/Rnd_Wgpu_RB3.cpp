@@ -320,6 +320,12 @@ struct RB3TexEntry {
     const uint8_t*    lastPixels = nullptr;  // detect bitmap data churn
     uint32_t          fingerprint = 0;
     bool              uploaded = false;
+    // RTT: when isRenderTarget, `tex`/`view` hold a RENDER_ATTACHMENT |
+    // TEXTURE_BINDING texture that BandRnd paints into (instead of a
+    // CPU-uploaded bitmap). The sky-dome material then samples `view` to read
+    // the painted result. `uploaded` is set true once the RT texture exists so
+    // GetRB3TexView/MakeMaterialBindGroup bind the painted view.
+    bool              isRenderTarget = false;
 };
 static std::unordered_map<RndTex*, RB3TexEntry> sTexGpu;
 
@@ -436,6 +442,14 @@ static void ByteSwapDXT16(uint8_t* data, size_t size) {
 // view on any failure — caller falls back to mWhiteView.
 static wgpu::TextureView UploadRndTexIfNeeded(GpuDevice& gpu, RndTex* tex) {
     if (!tex) return {};
+    // RTT: a render-target entry has no CPU bitmap pixels — its texture is
+    // painted by BandRnd::BeginDrawTarget. Return its RT view (if created) and
+    // skip the pixel-upload path entirely.
+    {
+        auto it = sTexGpu.find(tex);
+        if (it != sTexGpu.end() && it->second.isRenderTarget)
+            return it->second.view;
+    }
     const RndBitmap& bmp = tex->mBitmap;
     int w = bmp.Width(), h = bmp.Height();
     int bpp = bmp.Bpp();
@@ -698,6 +712,7 @@ void BandRnd::Shutdown() {
     mFrameView = nullptr;
     mSceneBindGroup = nullptr;
     mInPass = false;
+    mRtActiveTex = nullptr;
 
     // Default textures + samplers + views.
     mShadowSampler = nullptr;
@@ -878,6 +893,11 @@ void BandRnd::BeginFrame(RndCam* cam) {
 void BandRnd::EndFrame() {
     if (!mGpuReady) return;
     if (mInPass) { mPass.End(); mInPass = false; }
+    // Defensive: if a render-target pass was somehow left open at frame end
+    // (it should always be closed by FinishDrawTarget within the same frame),
+    // clear the latch so the next frame starts clean rather than carrying a
+    // stale RT-redirect state into a fresh encoder.
+    mRtActiveTex = nullptr;
     wgpu::CommandBuffer cmd = mEncoder.Finish();
     mGpu.Queue().Submit(1, &cmd);
     mFrameView = nullptr;
@@ -1014,8 +1034,126 @@ static void BeUByte4(int packed, uint8_t out[4]) {
     out[2] = (v >> 16) & 0xFF; out[3] = (v >> 24) & 0xFF;
 }
 
+// ===========================================================================
+// Render-to-texture (RTT).
+//
+// BeginDrawTarget suspends the main pass and opens a fresh pass that draws into
+// a per-RndTex RGBA8 render target (no depth, transparent clear). EndDrawTarget
+// closes that pass and re-opens the main pass (preserving its contents via
+// LoadOp::Load). The begin hook is driven lazily from DrawMesh (the shared
+// rndobj/Cam.cpp only fires the END hook, FinishDrawTarget); the end hook is
+// driven from RndTex::FinishDrawTarget below.
+//
+// Disable with RB3_RTT_OFF=1 — then DrawMesh never redirects, so a render
+// target tex (e.g. clouds_rnd.tex) is never painted and the sky-dome material
+// samples an empty view (the prior static-sky behaviour).
+// ===========================================================================
+static bool RB3RttDisabled() {
+    static int s = -1;
+    if (s < 0) { const char* e = getenv("RB3_RTT_OFF"); s = (e && e[0] && e[0] != '0') ? 1 : 0; }
+    return s != 0;
+}
+
+void BandRnd::BeginDrawTarget(RndTex* tex) {
+    if (!mGpuReady || !tex || RB3RttDisabled()) return;
+    if (mRtActiveTex == tex) return;        // already redirected to this target
+    // Nested RT (already painting another target) is unsupported here — bail
+    // rather than corrupt the pass nesting. (RB3's clouds path never nests.)
+    if (mRtActiveTex) return;
+
+    int w = tex->Width(), h = tex->Height();
+    if (w <= 0 || h <= 0) return;
+
+    // Lazily create the RT texture + view ONCE, stored in the same side-table
+    // the diffuse-bind path reads (so the sky-dome material samples it).
+    RB3TexEntry& e = sTexGpu[tex];
+    if (!e.isRenderTarget || !e.tex) {
+        wgpu::TextureDescriptor td{};
+        td.label = "RB3RenderTarget";
+        td.size = {(uint32_t)w, (uint32_t)h, 1};
+        td.format = mRtFmt;   // RGBA8Unorm
+        td.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding;
+        td.mipLevelCount = 1;
+        wgpu::Texture t = mGpu.Device().CreateTexture(&td);
+        if (!t) return;
+        e.tex = t;
+        e.view = t.CreateView();
+        e.isRenderTarget = true;
+        e.uploaded = true;        // make GetRB3TexView/UploadRndTexIfNeeded bind it
+        e.lastPixels = nullptr;
+        e.fingerprint = 0;
+        if (getenv("RB3_RENDER_DBG"))
+            fprintf(stderr, "[dbg] RTT created %dx%d for tex '%s'\n",
+                    w, h, tex->Name() ? tex->Name() : "?");
+    }
+
+    // Suspend the main pass.
+    if (mInPass) { mPass.End(); mInPass = false; }
+
+    // Begin a new pass into the RT view: clear transparent, store, NO depth.
+    wgpu::RenderPassColorAttachment colorAtt{};
+    colorAtt.view = e.view;
+    colorAtt.loadOp = wgpu::LoadOp::Clear;
+    colorAtt.storeOp = wgpu::StoreOp::Store;
+    colorAtt.clearValue = {0.0, 0.0, 0.0, 0.0};
+
+    wgpu::RenderPassDescriptor rp{};
+    rp.label = "BandRTTPass";
+    rp.colorAttachmentCount = 1; rp.colorAttachments = &colorAtt;
+    rp.depthStencilAttachment = nullptr;
+
+    mPass = mEncoder.BeginRenderPass(&rp);
+    mInPass = true;
+    mPass.SetBindGroup(0, mSceneBindGroup, 0, nullptr);
+    mRtActiveTex = tex;
+}
+
+void BandRnd::EndDrawTarget() {
+    if (!mGpuReady || !mRtActiveTex) return;
+
+    // Close the RT pass.
+    if (mInPass) { mPass.End(); mInPass = false; }
+    mRtActiveTex = nullptr;
+
+    // Re-open the MAIN pass, PRESERVING whatever was already drawn this frame
+    // (LoadOp::Load on both color and depth — the RT pass ran mid-frame).
+    if (!mFrameView) return;   // frame already torn down (defensive)
+    wgpu::RenderPassColorAttachment colorAtt{};
+    colorAtt.view = mFrameView;
+    colorAtt.loadOp = wgpu::LoadOp::Load;
+    colorAtt.storeOp = wgpu::StoreOp::Store;
+
+    wgpu::RenderPassDepthStencilAttachment depthAtt{};
+    depthAtt.view = mDepthView;
+    depthAtt.depthLoadOp = wgpu::LoadOp::Load; depthAtt.depthStoreOp = wgpu::StoreOp::Store;
+    depthAtt.stencilLoadOp = wgpu::LoadOp::Load; depthAtt.stencilStoreOp = wgpu::StoreOp::Store;
+
+    wgpu::RenderPassDescriptor rp{};
+    rp.label = "BandMainPassResume";
+    rp.colorAttachmentCount = 1; rp.colorAttachments = &colorAtt;
+    rp.depthStencilAttachment = &depthAtt;
+
+    mPass = mEncoder.BeginRenderPass(&rp);
+    mInPass = true;
+    // The cam was restored to the prior scene cam (current->Select()) after the
+    // RT draw; force a scene-uniform re-write on the next DrawMesh by clearing
+    // the staleness latch, then bind the existing scene group for now.
+    mPass.SetBindGroup(0, mSceneBindGroup, 0, nullptr);
+    mLastSceneCam = nullptr;   // next DrawMesh re-resolves the active cam
+}
+
 void BandRnd::DrawMesh(RndMesh* mesh) {
     if (!mGpuReady || !mInPass || !mesh) return;
+
+    // RTT begin hook: the shared rndobj/Cam.cpp only fires the END side
+    // (FinishDrawTarget). When the current cam has a TargetTex set and we have
+    // not yet redirected to it, start the RT pass so this + subsequent draws
+    // land in the target texture instead of the main framebuffer.
+    if (!RB3RttDisabled() && RndCam::sCurrent) {
+        RndTex* tt = RndCam::sCurrent->TargetTex();
+        if (tt && tt != mRtActiveTex) BeginDrawTarget(tt);
+    }
+
     RndMesh* owner = mesh->GeomOwner();
     if (!owner) owner = mesh;
     if (getenv("RB3_RENDER_DBG")) fprintf(stderr, "[dbg] DrawMesh '%s' owner=%p\n",
@@ -1596,6 +1734,15 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     key.sampleCount = 1;
     key.hasDepth = true;
     key.alphaCut = mat ? mat->mAlphaCut : false;
+    // RTT: the render-target pass is an RGBA8 color attachment with NO depth.
+    // Select an RT-compatible pipeline variant (matching target format, no
+    // depth-stencil, and alpha writes enabled so the painted target carries a
+    // real alpha channel — the sky-dome material composites the clouds via it).
+    bool rtPass = (mRtActiveTex != nullptr);
+    if (rtPass) {
+        key.targetFormat = mRtFmt;
+        key.hasDepth = false;
+    }
     // Mask alpha writes so the framebuffer alpha stays at the clear value (1.0).
     // RB3 materials often have color.alpha=0 for UI/text fill quads — with Src
     // blending (One/Zero) that would propagate fragment alpha=0 to the
@@ -1604,7 +1751,11 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     // illusion that frames 04/05 (main_hub/quickplay) drew nothing — they were
     // drawing geometry, but every pixel ended up with alpha=0. Writing only
     // RGB keeps the readback opaque.
-    key.alphaWrite = false;
+    //
+    // RTT exception: the render-target pass MUST write alpha — the sky-dome
+    // material samples the painted target and composites the clouds via its
+    // alpha, so masking alpha would leave the target opaque-everywhere.
+    key.alphaWrite = rtPass ? true : false;
 
     wgpu::RenderPipeline pipe = mPipelines.GetPipeline(key);
     if (!pipe) return;
@@ -1636,11 +1787,20 @@ void RndMesh::OnSync(int) {
     // (we re-upload every draw). No-op.
 }
 
-// RndTex render-target entry points: not needed for the mesh render path (no
-// render-to-texture). Provide real no-op bodies so the engine methods
-// (declared HX_NATIVE virtual) link without the weak stubs.
+// RndTex render-target entry points.
+//
+// MakeDrawTarget (BEGIN): the shared rndobj/Cam.cpp never calls this — the
+// begin-side redirect lived in the per-platform Wii/Xenon RndCam this backend
+// lacks — so BandRnd::DrawMesh hooks the begin lazily instead. Kept a no-op.
+//
+// FinishDrawTarget (END): fired by RndCam::SetTargetTex(nullptr)/Select() when
+// the current cam's target tex is torn down (RndTexRenderer::DrawToTexture).
+// Close the RT pass and re-open the main pass — but only if THIS tex is the
+// one we redirected to (guards against a spurious end for an untracked target).
 void RndTex::MakeDrawTarget() {}
-void RndTex::FinishDrawTarget() {}
+void RndTex::FinishDrawTarget() {
+    if (gBandRnd.mRtActiveTex == this) gBandRnd.EndDrawTarget();
+}
 
 // V1: SyncBitmap uploads the bitmap data to a GPU texture (CPU-decompresses
 // DXT to RGBA8). The result is stashed in sTexGpu keyed by `this` and bound
