@@ -187,6 +187,15 @@ bool AudioDevice::Init(int sampleRate) {
     if (!beEnv || strcmp(beEnv, "default") != 0) {
         if (beEnv && strcmp(beEnv, "pulseaudio") == 0)
             backends[0] = ma_backend_pulseaudio;
+        else if (beEnv && strcmp(beEnv, "null") == 0)
+            // Always-openable dummy device on a real ~realtime clock. No
+            // hardware, no plugin/SPA loader threads (so no GPU-driver
+            // contention), but ma_device_init succeeds and the data callback
+            // (MixSources) runs — proving the mix/synth pipeline + the
+            // DC3_DUMP_AUDIO PCM-capture path on hosts with no usable audio
+            // sink. Opt-in only via MILO_AUDIO_BACKEND=null; default (unset /
+            // alsa / pulseaudio / default) is unchanged.
+            backends[0] = ma_backend_null;
         else
             backends[0] = ma_backend_alsa; // default + "alsa"
         backendCount = 1;
