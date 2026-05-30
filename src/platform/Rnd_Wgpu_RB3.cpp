@@ -17,6 +17,7 @@
 #include "math/Mtx.h"
 #include "math/Vec.h"
 #include "os/Debug.h"
+#include "platform/NativeSettings.h"
 
 #include <algorithm>
 #include <cmath>
@@ -615,6 +616,12 @@ void BandRnd::CreateDefaultTextures() {
 // InitGpuResources(). Does NOT touch any GPU resources (pipelines/textures).
 bool BandRnd::StartGpuInit(int width, int height, bool headless) {
     if (mGpuReady) return true;
+    // W8: pull NativeSettings camera-knob seeds out of the environment so the
+    // RB3 backend respects MILO_CAM_FOV_SCALE / MILO_CAM_NEAR / etc the same
+    // way DC3's Rnd_Wgpu.cpp does. Without this Init() the engine struct stays
+    // at its compile-time defaults regardless of env, and the FOV knob added
+    // below in WriteSceneUniforms can't be tuned without a rebuild.
+    NativeSettings::Get().Init();
     GpuDeviceDesc desc{};
     desc.headless = headless;
     desc.width = width;
@@ -791,9 +798,21 @@ void BandRnd::WriteSceneUniforms(RndCam* cam) {
         float n = cam->NearPlane() > 0 ? cam->NearPlane() : 0.1f;
         float f = cam->FarPlane()  > n ? cam->FarPlane()  : (n + 1000.0f);
         float aspect = (float)mGpu.WindowWidth() / (float)mGpu.WindowHeight();
+
+        // NativeSettings::fovScale — runtime knob to scale the effective FOV.
+        // fovScale > 1.0 narrows the FOV (zoom in, things get bigger);
+        // fovScale < 1.0 widens it (zoom out, things get smaller). Default 1.0
+        // (no-op). Defined in include/platform/NativeSettings.h, exposed via the
+        // HTTP settings endpoint and the ImGui DebugPanel. Was previously dead;
+        // wired here as part of the W8 investigation into menu-UI vertical
+        // sizing, so tooling can A/B FOV from the browser without rebuild.
+        // Applies as: tanHalf_effective = tanHalf / fovScale → sy = fovScale/tanHalf.
+        float fovScale = NativeSettings::Get().fovScale;
+        if (fovScale < 0.01f) fovScale = 1.0f;  // safety clamp
+
         float tanHalf = tanf(yfov * 0.5f);
-        float sy = 1.0f / tanHalf;        // vertical scale
-        float sx = sy / aspect;           // horizontal scale
+        float sy = fovScale / tanHalf;    // vertical scale (FOV-scaled)
+        float sx = sy / aspect;           // horizontal scale (keeps aspect)
 
         // Column-major perspective P. Camera-local p=(x,y,z): x=right, y=depth, z=up.
         //   clip.x =  sx * x
