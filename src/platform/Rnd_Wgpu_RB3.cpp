@@ -18,6 +18,7 @@
 #include "math/Vec.h"
 #include "os/Debug.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -1663,9 +1664,77 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     // which is why menu / song-list / HUD text was invisible in the W4
     // baseline screenshots. See docs/plans/web-port/W5_TEXT_RENDERING.md.
     bool isTextMeshHeur = mesh->Name() && mesh->Name()[0] == '\0';
+    // W7 Phase 3 Tier 1 — broaden the "looks like UI text" predicate to also
+    // catch dim NAMED meshes that the W5/Phase-1 empty-name discriminator
+    // misses. Static analysis (W5 doc + Text.cpp:1766) confirms RndText
+    // sub-meshes created via Hmx::Object::New<RndMesh>() ARE caught, but
+    // the W5p3 Tier-2 attempt (engine 08b3932) lifted those colours to
+    // max(0.6, c) and pixel output was BYTE-IDENTICAL to baseline, proving
+    // the residual song-row title + HUD-digit dimness is NOT on the
+    // empty-name path. The static trace identifies the missed widgets:
+    //
+    //   * BandScoreboard digit slots — src/system/bandobj/BandScoreboard.cpp
+    //     loads NAMED `num%d.mesh`, `thousands_comma.mesh`,
+    //     `millions_comma.mesh`, `%d_source.mesh` from the .milo
+    //     (BandScoreboard::SetupScore, lines 56-93). These are textured
+    //     digit-sprite quads using a normal RGB diffuse — NOT an alpha-only
+    //     font atlas — so useAlphaAsRGB would WRONGLY zero their RGB. We
+    //     therefore only apply the colour FLOOR for the broader set;
+    //     useAlphaAsRGB / prelit / zMode stay gated on the original
+    //     empty-name discriminator (correct for the per-glyph quads of
+    //     RndText::UpdateMesh).
+    //   * UILabel `*.lbl`-named widgets — drawn through UILabel::DrawShowing
+    //     which rewrites the font material's colour per draw from
+    //     data-driven UIColors (W5 Phase 3 root cause). The glyph quads
+    //     themselves are unnamed (already caught) but in some draw paths
+    //     the widget mesh carries the dim mat colour without a sub-mesh.
+    //   * Font/label materials by name — RB3 ships fonts as `*font*` /
+    //     `*label*` materials; catching the mat-name pattern adds a third
+    //     safety net for any text path that escapes both above heuristics.
+    //
+    // Predicate is conservative: pure name pattern matches, no nullptr
+    // deref (Name() pointers and mat pointer all guarded), and the lift
+    // uses std::max() so already-bright text (the W5-Phase-1 wins:
+    // news-ticker / FRIEND-RANKINGS / CHOOSE-INSTRUMENT) is unchanged.
+    const char* meshName = mesh->Name();
+    const char* matName = (mat && mat->Name()) ? mat->Name() : "";
+    bool isLikelyUiText = isTextMeshHeur;
+    if (!isLikelyUiText && meshName && meshName[0]) {
+        // BandScoreboard digit/source meshes — see BandScoreboard.cpp:79-91.
+        if ((meshName[0] == 'n' && std::strncmp(meshName, "num", 3) == 0) ||
+            std::strstr(meshName, "_source.mesh") ||
+            std::strstr(meshName, "_comma.mesh")) {
+            isLikelyUiText = true;
+        }
+        // Generic UILabel `*.lbl`-suffixed widgets.
+        else if (std::strstr(meshName, ".lbl")) {
+            isLikelyUiText = true;
+        }
+    }
+    if (!isLikelyUiText && matName[0]) {
+        // Font / label material name patterns — third safety net.
+        if (std::strstr(matName, "font") || std::strstr(matName, "label")) {
+            isLikelyUiText = true;
+        }
+    }
     if (mat) {
         const Hmx::Color& c = mat->GetColor();
         mu.color[0] = c.red; mu.color[1] = c.green; mu.color[2] = c.blue; mu.color[3] = c.alpha;
+        // W7 Phase 3 Tier 1 — colour floor for UI-text-class meshes.
+        // The Phase 3 static trace established that for some screens the
+        // shipping .milo data drives the font material's GetColor() to
+        // (0.20..0.50, ..., 1.0) — fine on a 480i CRT (retail target)
+        // but invisible on a 1280x720 canvas alpha-blended over near-
+        // black UI panels. Lift each channel to >= 0.6, preserving alpha
+        // (used downstream as the fringe-fade input). No-op for already-
+        // bright labels — max() guards regressions on the news-ticker /
+        // FRIEND-RANKINGS / CHOOSE-INSTRUMENT text the W5 Phase 1 fix
+        // recovered.
+        if (isLikelyUiText) {
+            mu.color[0] = std::max(0.6f, mu.color[0]);
+            mu.color[1] = std::max(0.6f, mu.color[1]);
+            mu.color[2] = std::max(0.6f, mu.color[2]);
+        }
         mu.alphaThreshold = mat->mAlphaCut ? (mat->mAlphaThresh / 255.0f) : 0.0f;
         // V1: enable texture sampling if the material has a valid diffuse map.
         // We attempt a lazy upload here so meshes whose textures load mid-frame
