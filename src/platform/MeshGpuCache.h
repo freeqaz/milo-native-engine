@@ -29,6 +29,14 @@ bool EnsureMeshUploaded(RndMesh* mesh);
 // Release GPU resources for a mesh (called from RndMesh destructor).
 void CleanupGpuMesh(RndMesh* mesh);
 
+// Invalidate the cached upload for a mesh so the next EnsureMeshUploaded()
+// re-reads from mesh->GetGeomOwner(). Used when SetGeomOwner() swaps in a
+// different source RndMesh (e.g. BandScoreboard digit-mesh hot-swap from
+// `num%d.mesh` -> `%d_source.mesh`). Without this, the cache returns the
+// already-uploaded geometry from the previous owner and the digit slot
+// keeps rendering whatever it had before (typically nothing).
+void InvalidateGpuMesh(RndMesh* mesh);
+
 // Clear all entries in the GPU mesh cache. Used by hosts that want to drop
 // every wgpu::Buffer ref the cache is holding before the underlying device /
 // Vulkan ICD is torn down (e.g. RB3 native's BandRnd::Shutdown exit callback,

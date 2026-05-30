@@ -54,6 +54,16 @@ void CleanupGpuMesh(RndMesh* mesh) {
     sMeshGpuData.erase(mesh);
 }
 
+void InvalidateGpuMesh(RndMesh* mesh) {
+    auto it = sMeshGpuData.find(mesh);
+    if (it != sMeshGpuData.end()) {
+        // Mark dirty without dropping the GPU buffers — the next
+        // EnsureMeshUploaded() will re-read mesh->GetGeomOwner() and
+        // overwrite the existing entry (creating new buffers).
+        it->second.uploaded = false;
+    }
+}
+
 void ClearMeshGpuCache() {
     sMeshGpuData.clear();
 }
