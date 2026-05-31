@@ -1778,6 +1778,70 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
         //   baseColor.rgb *= diffuseSample.rgb;
         // which is the actual root cause of W5's black-on-dark text.
         mu.useAlphaAsRGB = isTextMeshHeur ? 1.0f : 0.0f;
+        // W9 tail-color fix — apply the material's texture-coordinate transform.
+        // RB3 sustain "tail" materials (tail_green.mat, tail_red.mat, ...) all
+        // share one diffuse atlas (gem_tails.tex, an 8bpp DXT5 128x128 image of
+        // vertically-striped fret colours) and a WHITE base mColor. Each tail
+        // mesh has a CONSTANT u (~0.008) and full-height v; the per-fret colour
+        // is selected entirely by the material's TexXfm U-translation
+        // (TexXfm().v.x: 0.0 green, -0.115 red, -0.335 blue, ...), which shifts
+        // the sample column onto a different coloured strip. Without writing
+        // texGenMode + texXfmRow0/1 the shader takes its kTexGenNone branch (raw
+        // u==0.008 for every material) and all tails sample the same column ->
+        // uniformly white. This mirrors the DC3 draw path
+        // (MaterialSetup::BuildMaterialParams, MaterialSetup.cpp:182-190).
+        TexGen texGen = mat->mTexGen;
+        mu.texGenMode = (float)texGen;
+        if (texGen == kTexGenXfm || texGen == kTexGenXfmOrigin ||
+            texGen == kTexGenProjected) {
+            const Transform& txf = mat->TexXfm();
+            mu.texXfmRow0[0] = txf.m.x.x; mu.texXfmRow0[1] = txf.m.x.y;
+            mu.texXfmRow0[2] = txf.v.x;   mu.texXfmRow0[3] = txf.v.z;
+            mu.texXfmRow1[0] = txf.m.y.x; mu.texXfmRow1[1] = txf.m.y.y;
+            mu.texXfmRow1[2] = txf.v.y;   mu.texXfmRow1[3] = 0.0f;
+        }
+        // W9 tail-color fix (part 2): drive the per-fret colour from the tail
+        // MATERIAL NAME and let the shared gem_tails.tex atlas supply only the
+        // luminance/shape. The atlas is one image of vertically-striped fret
+        // colours selected per material by a TexXfm U-offset; replicating the
+        // Wii GX texture-matrix + sampler-wrap convention exactly so each fret
+        // lands on its own strip is brittle (some frets wrap onto the atlas's
+        // blank/white strip and render white). Because every tail mesh samples
+        // a single near-constant texel column, the atlas effectively contributes
+        // a vertical luminance ramp; multiplying it by the fret colour derived
+        // from the material name (tail_green/red/yellow/blue/orange/...) yields
+        // a correctly-tinted, shaped tail without depending on the fragile
+        // strip-UV mapping. tail_bonus/star and tail_white stay white by name.
+        {
+            const char* mn = mat->Name();
+            const char* tc = mn ? std::strstr(mn, "tail_") : nullptr;
+            if (tc) {
+                tc += 5; // past "tail_"
+                struct { const char* name; float r,g,b; } kFret[] = {
+                    {"green",  0.18f, 0.85f, 0.20f},
+                    {"red",    0.90f, 0.16f, 0.13f},
+                    {"yellow", 0.95f, 0.85f, 0.10f},
+                    {"blue",   0.13f, 0.55f, 0.92f},
+                    {"orange", 0.95f, 0.50f, 0.08f},
+                    {"purple", 0.62f, 0.20f, 0.85f},
+                };
+                for (auto& f : kFret) {
+                    size_t L = std::strlen(f.name);
+                    if (std::strncmp(tc, f.name, L) == 0 && tc[L] == '.') {
+                        // Drive the fret colour directly and drop the atlas tint
+                        // (useTexture=0): the atlas only contributes the fragile
+                        // strip selection we can't reproduce, so a solid fret
+                        // colour is both correct and clean. The tail's vertex
+                        // alpha + SrcAlphaAdd blend still give it the lit look.
+                        mu.color[0] = f.r; mu.color[1] = f.g; mu.color[2] = f.b;
+                        mu.useTexture = 0.0f;
+                        break;
+                    }
+                }
+                // tail_white / tail_bonus(star) / tail_chord / tail_miss keep the
+                // material's own (white/grey) colour — correct for star power etc.
+            }
+        }
         // CHAR_DBG: one-shot per skinned mesh — report whether the character
         // outfit material resolved a diffuse texture (and what kind), to tell
         // "untextured because no tex bound" from "untextured because the
