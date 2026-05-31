@@ -567,6 +567,21 @@ fn compressHighlights(color: vec3f) -> vec3f {
     );
 }
 
+// sRGB OETF (linear -> sRGB). The web canvas surface is configured as a
+// NON-sRGB format (RGBA8Unorm / BGRA8Unorm — caps.formats[0] on
+// Chrome/ANGLE), so the browser presents whatever bytes we write WITHOUT
+// applying the linear->display gamma encode. Our material/lighting math runs
+// in a linear working space, so writing those linear values straight to a
+// non-sRGB surface displays everything ~2.5x too dark (W9: scene avgLuma 34
+// vs Wii reference ~90). Apply the sRGB transfer function at the fragment
+// output so the displayed pixels carry the correct perceptual brightness, the
+// same encode the GPU would do for free on an *_UnormSrgb surface.
+fn linearToSrgb(color: vec3f) -> vec3f {
+    let lo = color * 12.92;
+    let hi = 1.055 * pow(max(color, vec3f(0.0)), vec3f(1.0 / 2.4)) - 0.055;
+    return select(lo, hi, color > vec3f(0.0031308));
+}
+
 // === Vertex Shader (static meshes) ===
 @vertex
 fn vs_main(vertex: VertexInput) -> VertexOutput {
@@ -741,6 +756,9 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
     if (baseColor.a < kAlphaFringeFadeStart) {
         finalColor *= baseColor.a / kAlphaFringeFadeStart;
     }
+
+    // W9: encode linear -> sRGB for the non-sRGB web surface (see linearToSrgb).
+    finalColor = linearToSrgb(finalColor);
 
     return vec4f(finalColor, baseColor.a);
 }
