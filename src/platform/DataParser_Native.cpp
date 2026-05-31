@@ -69,7 +69,7 @@ WEAK_SYMBOL bool ParseNode();
 extern int gNode;
 extern Symbol gFile;
 extern BinStream *gBinStream;
-extern DataType gDataLine;
+extern int gDataLine; // line counter (DataFile.cpp: `int gDataLine = 0;`); was wrongly DataType
 
 // ============================================================================
 // DataInput — feeds data from BinStream to the flex lexer
