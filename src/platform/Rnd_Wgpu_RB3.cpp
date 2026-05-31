@@ -944,10 +944,10 @@ void BandRnd::EndFrame() {
                 cur ? cur->WorldXfm().v.z : 0.f,
                 mClearColor.red, mClearColor.green, mClearColor.blue,
                 mDrawnMeshes, mDrawnTris, texCount);
-    } else {
-        // Quieter default — keep the original one-line tally.
-        printf("BandRnd: frame drawn — %d meshes, %d tris\n", mDrawnMeshes, mDrawnTris);
     }
+    // Default (no RENDER_DBG / RB3_RENDER_DBG): stay silent. Synchronous
+    // console.log() in the browser is extremely expensive; a per-frame tally
+    // here flooded the JS console (~60 msgs/s) and tanked menu FPS.
 }
 
 // Build a material bind group against an explicit buffer (used for pre-warm).
