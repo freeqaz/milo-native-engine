@@ -355,12 +355,11 @@ bool WebMovieImpl::CheckOpen(bool) {
     return mOpen;
 }
 
-bool WebMovieImpl::SetPaused(bool paused) {
+void WebMovieImpl::SetPaused(bool paused) {
     mPaused = paused;
     if (mVideoHandle > 0) {
         web_movie_set_paused(mVideoHandle, paused ? 1 : 0);
     }
-    return true;
 }
 
 void WebMovieImpl::SetVolume(float vol) {

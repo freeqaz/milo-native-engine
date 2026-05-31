@@ -208,9 +208,8 @@ bool FFmpegMovieImpl::CheckOpen(bool) {
     return mOpen;
 }
 
-bool FFmpegMovieImpl::SetPaused(bool paused) {
+void FFmpegMovieImpl::SetPaused(bool paused) {
     mPaused = paused;
-    return true;
 }
 
 float FFmpegMovieImpl::MsPerFrame() const {

@@ -28,7 +28,7 @@ public:
     virtual bool IsOpen() override { return mOpen; }
     virtual bool IsLoading() override { return false; }
     virtual bool CheckOpen(bool) override;
-    virtual bool SetPaused(bool paused) override;
+    virtual void SetPaused(bool paused) override;
     virtual bool Paused() const override { return mPaused; }
     virtual void UnlockThread() override {}
     virtual void LockThread() override {}
