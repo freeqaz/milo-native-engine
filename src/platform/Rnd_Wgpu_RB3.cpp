@@ -1029,9 +1029,18 @@ static void BeUV(int packed, float out[2]) {
     out[0] = Half2Float((v >> 16) & 0xFFFF); out[1] = Half2Float(v & 0xFFFF);
 }
 static void BeColor(int packed, float out[4]) {
+    // RB3's compressed vertex colour is a D3DCOLOR (D3DDECLTYPE_D3DCOLOR), ARGB
+    // packed as 0xAARRGGBB. The asset is big-endian (Xbox 360): 4 bytes on disc
+    // are [AA, RR, GG, BB]; read as a little-endian int then bswap32 restores
+    // the natural 0xAARRGGBB, so R = (v>>16), G = (v>>8), B = (v>>0), A = (v>>24).
+    // (The prior mapping read R from the low byte, swapping R<->B; this only
+    // affected meshes that actually use vertex colour — i.e. PRELIT meshes,
+    // since the shader now gates vertex-colour application on RndMat::mPreLit.)
     unsigned v = __builtin_bswap32((unsigned)packed);
-    out[0] = ((v >> 0) & 0xFF) / 255.0f; out[1] = ((v >> 8) & 0xFF) / 255.0f;
-    out[2] = ((v >> 16) & 0xFF) / 255.0f; out[3] = ((v >> 24) & 0xFF) / 255.0f;
+    out[0] = ((v >> 16) & 0xFF) / 255.0f; // R
+    out[1] = ((v >> 8)  & 0xFF) / 255.0f; // G
+    out[2] = ((v >> 0)  & 0xFF) / 255.0f; // B
+    out[3] = ((v >> 24) & 0xFF) / 255.0f; // A
 }
 static void BeDec4n(int packed, float out[3]) {
     unsigned v = __builtin_bswap32((unsigned)packed);

@@ -645,7 +645,16 @@ fn vs_skinned(vertex: SkinnedVertexInput) -> VertexOutput {
 @fragment
 fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
     let materialAlpha = material.color.a;
-    var baseColor = vec4f(material.color.rgb * surfaceInput.color.rgb, materialAlpha * surfaceInput.color.a);
+    // Vertex colour is the per-vertex baked lighting / AO. In the original
+    // engine it is "Use vertex color and alpha for base or ambient" — i.e. it
+    // ONLY contributes to the base colour when the material is prelit
+    // (RndMat::mPreLit). For dynamically-lit meshes (prelit == 0) the lighting
+    // comes from the scene lights below, and the baked vertex colour must NOT
+    // be multiplied into the base — doing so double-applies the venue's baked
+    // (cool/purple) per-vertex lighting on top of the white scene light, which
+    // washed the whole non-prelit scene (walls, floor, crowd) magenta/purple.
+    let vertexTint = select(vec3f(1.0), surfaceInput.color.rgb, isEnabled(material.prelit));
+    var baseColor = vec4f(material.color.rgb * vertexTint, materialAlpha * surfaceInput.color.a);
 
     if (isEnabled(material.useTexture)) {
         let diffuseSample = textureSample(diffuseTex, diffuseSampler, surfaceInput.uv);
