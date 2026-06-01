@@ -1235,6 +1235,63 @@ void BandRnd::EndDrawTarget() {
     mLastSceneCam = nullptr;   // next DrawMesh re-resolves the active cam
 }
 
+// Give the note highway ("track") a fresh depth buffer mid-frame so it always
+// composites ON TOP of the venue/band. The venue WorldDir (characters + stage
+// furniture) renders with the venue camera; the track renders with game.cam —
+// a SEPARATE camera with its own near/far (measured: near=30, far=224, vs the
+// venue cam's small near). Both write the ONE shared depth buffer, so venue
+// geometry close to its own camera gets a smaller NDC-z than the highway and
+// WINS the depth test, occluding it (chairs clipping the left lane, a band
+// member's arm covering the top of the track). Clearing depth here — after the
+// venue draws, before the track — reproduces the original game's "highway on
+// top" compositing: the track's own gem/smasher/surface layers still depth-sort
+// correctly among themselves in the cleared buffer, while the venue's depth (but
+// NOT its color) is wiped so it can no longer occlude them.
+//
+// Called once per frame from TrackPanel::Draw (the single per-frame top of the
+// track render, before any TrackDir::DrawShowing layer). Mirrors EndDrawTarget's
+// resume path — re-opens into MainColorTarget() (the postproc intermediate when
+// a grade is active, else the framebuffer) so the track stays inside the graded
+// path — differing only in depthLoadOp (Clear here vs Load there).
+void BandRnd::ClearDepthForOverlay() {
+    if (!mGpuReady || !mInPass || !mFrameView) return;
+    // Opt-out for A/B (negative control): RB3_NO_TRACK_DEPTH_CLEAR=1 keeps the
+    // old single-shared-depth behavior so the bug can be reproduced on demand.
+    static const bool sDisabled = getenv("RB3_NO_TRACK_DEPTH_CLEAR") != nullptr;
+    if (sDisabled) return;
+    // An RTT redirect must not be active — that pass owns mPass and has no depth.
+    if (mRtActiveTex) return;
+
+    // Close the current main pass (its color+depth are stored), then re-open it
+    // preserving color but clearing depth+stencil.
+    mPass.End();
+    mInPass = false;
+
+    wgpu::RenderPassColorAttachment colorAtt{};
+    colorAtt.view = MainColorTarget();      // intermediate under a grade, else FB
+    colorAtt.loadOp = wgpu::LoadOp::Load;   // keep the venue we already drew
+    colorAtt.storeOp = wgpu::StoreOp::Store;
+
+    wgpu::RenderPassDepthStencilAttachment depthAtt{};
+    depthAtt.view = mDepthView;
+    depthAtt.depthLoadOp = wgpu::LoadOp::Clear; depthAtt.depthStoreOp = wgpu::StoreOp::Store;
+    depthAtt.depthClearValue = 1.0f;        // reset to far: track owns depth now
+    depthAtt.stencilLoadOp = wgpu::LoadOp::Clear; depthAtt.stencilStoreOp = wgpu::StoreOp::Store;
+    depthAtt.stencilClearValue = 0;
+
+    wgpu::RenderPassDescriptor rp{};
+    rp.label = "BandTrackDepthClear";
+    rp.colorAttachmentCount = 1; rp.colorAttachments = &colorAtt;
+    rp.depthStencilAttachment = &depthAtt;
+
+    mPass = mEncoder.BeginRenderPass(&rp);
+    mInPass = true;
+    // Re-bind the existing scene group; force the next DrawMesh to re-resolve
+    // the active cam (the track's game.cam) and re-write the scene uniforms.
+    mPass.SetBindGroup(0, mSceneBindGroup, 0, nullptr);
+    mLastSceneCam = nullptr;
+}
+
 // ===========================================================================
 // Stage 2 postproc grade — PORTED VERBATIM from milo-native-engine
 // src/gfx/PostProcPass.cpp:9-166 (uniform struct + WGSL). Lives in its own

@@ -132,6 +132,18 @@ public:
     void BeginDrawing() override;
     // EndDrawing: end pass + submit + optionally capture screenshot.
     void EndDrawing() override;
+    // ClearDepthForOverlay: end the active main pass and re-open it (into the
+    // SAME color target — MainColorTarget(), i.e. the postproc intermediate when
+    // a grade is active, else the framebuffer) preserving color (LoadOp::Load)
+    // but CLEARING depth+stencil. Gives the note highway ("track") a fresh depth
+    // buffer so it always composites on top of the venue/band — the venue and
+    // the track render with DIFFERENT cameras (different near/far) into one
+    // shared depth buffer, so venue geometry near its own camera otherwise wins
+    // the depth test and occludes the highway. Called once per frame from
+    // TrackPanel::Draw (after the venue, before the track). Opt-out with
+    // RB3_NO_TRACK_DEPTH_CLEAR=1. No-op outside an active main pass / while an
+    // RTT redirect is live.
+    void ClearDepthForOverlay() override;
 
     // DrawRect: draw one textured/color-modulated 2D quad into the CURRENTLY
     // ACTIVE pass. Used by OutfitConfig::MatSwap::Compose to paint its base +
