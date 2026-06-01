@@ -154,8 +154,21 @@ private:
     // Compile-once shader module with vs_rect/fs_rect/fs_rect_notex entries
     // (Stage 2 adds vs_fullscreen/fs_postproc to the SAME module). Build the
     // rect bind-group layout (tex@0, samp@1, RectUB@2), the rect pipeline layout,
-    // the 6-vertex quad vbuf, and the 32-byte RectUB. Idempotent.
+    // the 6-vertex quad vbuf, and the 32-byte RectUB. Idempotent. Stage 2 extends
+    // it with the postproc bind-group layout (sceneTex@0, samp@1, PostProcUB@2,
+    // bloomTex@3) + the 160-byte PostProcUB.
     void EnsureQuadPipeline();
+
+    // --- Stage 2: postproc render-to-texture composite (§4 of the RTT plan) ---
+    // When RndPostProc::Current() is non-null (e.g. song_select's B+W_film02.pp),
+    // the main frame is drawn into mIntermediateTex first, then RunPostProcComposite
+    // grades it onto the framebuffer. MainColorTarget() returns the intermediate
+    // view while a postproc is active (so mid-frame RTT resume lands in it), else
+    // the real framebuffer view. EnsureIntermediate (re)creates the intermediate
+    // at the requested size using mTargetFmt (NEVER hardcoded RGBA8).
+    wgpu::TextureView MainColorTarget();
+    void EnsureIntermediate(int w, int h);
+    void RunPostProcComposite(wgpu::TextureView dst);
 
 public:
     GpuDevice mGpu;
@@ -213,6 +226,30 @@ public:
     // Per-(format,blend,depth,isPost) RenderPipeline cache so the composite +
     // repeated DrawRect calls don't recreate a pipeline every invocation.
     std::unordered_map<uint64_t, wgpu::RenderPipeline> mQuadPipelines;
+
+    // --- Stage 2: postproc composite infra (built by EnsureQuadPipeline) ---
+    // Postproc bind-group layout: sceneTex@0, sampler@1, PostProcUB@2 (160B,
+    // minBindingSize=160), bloomTex@3. mPostProcUB is the 160-byte uniform buffer
+    // (PostProcUniforms — ported verbatim from gfx/PostProcPass.cpp).
+    // The postproc grade entries (vs_fullscreen/fs_postproc) live in their own
+    // WGSL module because they need @group(0) binding 2 to be a DIFFERENT struct
+    // (PostProcUB, not RectUB) and add binding 3 (bloomTex) — WGSL forbids two
+    // global vars on the same @group/@binding, so they cannot share mQuadShader.
+    wgpu::ShaderModule mQuadPostShader;
+    wgpu::BindGroupLayout mQuadPostBGL;
+    wgpu::PipelineLayout mQuadPostPL;
+    wgpu::RenderPipeline mQuadPostPipeline;
+    wgpu::Buffer mPostProcUB;               // 160B PostProcUniforms
+
+    // Offscreen intermediate the main frame is rendered into when a postproc is
+    // active. Recreated on size change; format = mTargetFmt; usage
+    // RenderAttachment | TextureBinding. mPostProcFlushed guards the composite so
+    // it fires exactly once per frame.
+    wgpu::Texture mIntermediateTex;
+    wgpu::TextureView mIntermediateView;
+    int mIntermediateWidth = 0;
+    int mIntermediateHeight = 0;
+    bool mPostProcFlushed = false;
 
     bool mGpuReady = false;
     bool mPreInited = false;

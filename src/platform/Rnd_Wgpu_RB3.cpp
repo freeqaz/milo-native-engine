@@ -14,6 +14,8 @@
 #include "rndobj/Env.h"
 #include "rndobj/Lit.h"
 #include "rndobj/MultiMesh.h"
+#include "rndobj/PostProc.h"
+#include "rndobj/ColorXfm.h"
 #include "math/Mtx.h"
 #include "math/Vec.h"
 #include "os/Debug.h"
@@ -36,6 +38,11 @@ Rnd* TheRnd = &gBandRnd;
 // Registers the legacy short-name rndobj class aliases (Tex/Text/Dir). Defined
 // below; also called from the real game boot in main_native.cpp (RunGame).
 void RB3RegisterLegacyRndAliases();
+
+// Stage 2 A/B canary gate: RB3_PP_OFF=1 forces the whole postproc intermediate
+// path inactive (frame renders straight to the framebuffer, no composite) — used
+// to prove a postproc-active screen is pixel-identical with the grade skipped.
+static bool RB3PostProcDisabled();
 
 // ---------------------------------------------------------------------------
 // VertexFormats::StaticLayout()/SkinnedLayout() — the engine's PipelineManager
@@ -750,6 +757,18 @@ void BandRnd::Shutdown() {
     mRectUB = nullptr;
     mQuadReady = false;
 
+    // Stage-2 postproc composite infra.
+    mQuadPostPipeline = nullptr;
+    mQuadPostShader = nullptr;
+    mQuadPostBGL = nullptr;
+    mQuadPostPL = nullptr;
+    mPostProcUB = nullptr;
+    mIntermediateView = nullptr;
+    mIntermediateTex = nullptr;
+    mIntermediateWidth = 0;
+    mIntermediateHeight = 0;
+    mPostProcFlushed = false;
+
     // Pipeline manager: drops the pipeline+shader caches + layouts.
     mPipelines.Terminate();
 
@@ -896,8 +915,21 @@ void BandRnd::BeginFrame(RndCam* cam) {
 
     mEncoder = mGpu.Device().CreateCommandEncoder();
 
+    // Stage 2: if a post-process is selected (e.g. song_select's B+W_film02.pp),
+    // render the whole frame into an offscreen intermediate and grade it onto the
+    // framebuffer in EndFrame. When no postproc is active the path is inert —
+    // the main pass draws straight into mFrameView, exactly as before (canary).
+    bool hasPP = !RB3PostProcDisabled() && RndPostProc::Current() != nullptr;
+    mPostProcFlushed = false;
+    wgpu::TextureView mainTarget = mFrameView;
+    if (hasPP) {
+        int W = mGpu.WindowWidth(), H = mGpu.WindowHeight();
+        EnsureIntermediate(W, H);
+        if (mIntermediateView) mainTarget = mIntermediateView;
+    }
+
     wgpu::RenderPassColorAttachment colorAtt{};
-    colorAtt.view = mFrameView;
+    colorAtt.view = mainTarget;
     colorAtt.loadOp = wgpu::LoadOp::Clear;
     colorAtt.storeOp = wgpu::StoreOp::Store;
     colorAtt.clearValue = {(double)mClearColor.red, (double)mClearColor.green,
@@ -928,6 +960,16 @@ void BandRnd::EndFrame() {
     // clear the latch so the next frame starts clean rather than carrying a
     // stale RT-redirect state into a fresh encoder.
     mRtActiveTex = nullptr;
+
+    // Stage 2: if the frame was rendered into the offscreen intermediate (a
+    // postproc is selected), grade-composite it onto the real framebuffer view
+    // now — same encoder, before Finish(). Fires exactly once per frame.
+    if (mIntermediateView && RndPostProc::Current() && !mPostProcFlushed &&
+        !RB3PostProcDisabled()) {
+        RunPostProcComposite(mFrameView);
+        mPostProcFlushed = true;
+    }
+
     wgpu::CommandBuffer cmd = mEncoder.Finish();
     mGpu.Queue().Submit(1, &cmd);
     mFrameView = nullptr;
@@ -1158,7 +1200,12 @@ void BandRnd::EndDrawTarget() {
     // (LoadOp::Load on both color and depth — the RT pass ran mid-frame).
     if (!mFrameView) return;   // frame already torn down (defensive)
     wgpu::RenderPassColorAttachment colorAtt{};
-    colorAtt.view = mFrameView;
+    // Stage 2: when a postproc is active the main pass renders into the
+    // intermediate, so a mid-frame RTT (e.g. the clouds/sky-dome RndCam::TargetTex
+    // user) must RESUME into the intermediate too — not the framebuffer — or the
+    // post-RTT scene draws would land outside the graded path. MainColorTarget()
+    // returns mIntermediateView under a postproc, else mFrameView (unchanged).
+    colorAtt.view = MainColorTarget();
     colorAtt.loadOp = wgpu::LoadOp::Load;
     colorAtt.storeOp = wgpu::StoreOp::Store;
 
@@ -1186,6 +1233,359 @@ void BandRnd::EndDrawTarget() {
     // the staleness latch, then bind the existing scene group for now.
     mPass.SetBindGroup(0, mSceneBindGroup, 0, nullptr);
     mLastSceneCam = nullptr;   // next DrawMesh re-resolves the active cam
+}
+
+// ===========================================================================
+// Stage 2 postproc grade — PORTED VERBATIM from milo-native-engine
+// src/gfx/PostProcPass.cpp:9-166 (uniform struct + WGSL). Lives in its own
+// module (vs_fullscreen/fs_postproc) — see Rnd_Wgpu_RB3.h note on why it can't
+// share kRB3QuadShaderSource (binding-2 type clash + bloomTex@3).
+//
+// B+W_film02.pp is a pure grade (saturation -40, contrast +10, black-lift) +
+// bloom + vignette + noise — no refract/DOF/chromatic. v1 binds the black
+// default to bloomTex@3 and skips the blur (the grade alone removes the smear);
+// the screen-blend bloom term is then a no-op (bloom == black).
+// ===========================================================================
+struct PostProcUniforms {
+    float contrast;
+    float brightness;
+    float saturation;
+    float vignetteIntensity;
+    float vignetteColor[4];
+    float chromaticOffset;
+    float chromaticSharpen;
+    float posterLevels;
+    float posterMin;
+    float levelInLo[4];
+    float levelInHi[4];
+    float levelOutLo[4];
+    float levelOutHi[4];
+    float bloomIntensity;
+    float noiseIntensity;
+    float noiseMidtone;
+    float flickerMul;
+    float bloomColor[4];
+    float time;
+    float _pad0;
+    float _pad1;
+    float _pad2;
+};
+static_assert(sizeof(PostProcUniforms) == 160, "PostProcUniforms must be 160 bytes");
+
+static const char* kRB3PostProcShaderSource = R"WGSL(
+struct PostProcUB {
+    contrast: f32,
+    brightness: f32,
+    saturation: f32,
+    vignetteIntensity: f32,
+    vignetteColor: vec4f,
+    chromaticOffset: f32,
+    chromaticSharpen: f32,
+    posterLevels: f32,
+    posterMin: f32,
+    levelInLo: vec4f,
+    levelInHi: vec4f,
+    levelOutLo: vec4f,
+    levelOutHi: vec4f,
+    bloomIntensity: f32,
+    noiseIntensity: f32,
+    noiseMidtone: f32,
+    flickerMul: f32,
+    bloomColor: vec4f,
+    time: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
+};
+
+@group(0) @binding(0) var sceneTex: texture_2d<f32>;
+@group(0) @binding(1) var sceneSampler: sampler;
+@group(0) @binding(2) var<uniform> pp: PostProcUB;
+@group(0) @binding(3) var bloomTex: texture_2d<f32>;
+
+struct VOut {
+    @builtin(position) pos: vec4f,
+    @location(0) uv: vec2f,
+};
+
+@vertex fn vs_fullscreen(@builtin(vertex_index) idx: u32) -> VOut {
+    var out: VOut;
+    let x = f32(i32(idx & 1u)) * 4.0 - 1.0;
+    let y = f32(i32(idx >> 1u)) * 4.0 - 1.0;
+    out.pos = vec4f(x, y, 0.0, 1.0);
+    out.uv = vec2f((x + 1.0) * 0.5, (1.0 - y) * 0.5);
+    return out;
+}
+
+@fragment fn fs_postproc(in: VOut) -> @location(0) vec4f {
+    let texSize = vec2f(textureDimensions(sceneTex));
+
+    var color: vec3f;
+    if (pp.chromaticOffset > 0.0) {
+        let offset = pp.chromaticOffset / texSize;
+        let r = textureSample(sceneTex, sceneSampler, in.uv + vec2f(offset.x, 0.0)).r;
+        let g = textureSample(sceneTex, sceneSampler, in.uv).g;
+        let b = textureSample(sceneTex, sceneSampler, in.uv - vec2f(offset.x, 0.0)).b;
+        if (pp.chromaticSharpen > 0.5) {
+            let center = textureSample(sceneTex, sceneSampler, in.uv).rgb;
+            let blur = vec3f(r, g, b);
+            color = center + (center - blur) * 1.5;
+        } else {
+            color = vec3f(r, g, b);
+        }
+    } else {
+        color = textureSample(sceneTex, sceneSampler, in.uv).rgb;
+    }
+
+    let inRange = max(pp.levelInHi.rgb - pp.levelInLo.rgb, vec3f(0.001));
+    let normalized = clamp((color - pp.levelInLo.rgb) / inRange, vec3f(0.0), vec3f(1.0));
+    color = mix(pp.levelOutLo.rgb, pp.levelOutHi.rgb, normalized);
+
+    // Match Xbox's non-linear contrast formula (from RndColorXfm::AdjustContrast)
+    var contrastMul: f32;
+    let contrastNorm = pp.contrast / 100.0;
+    if (contrastNorm > 0.0) {
+        contrastMul = 1.0 / (contrastNorm * -0.9921875 + 1.0);
+    } else {
+        contrastMul = -(contrastNorm * -0.992126 - 1.0);
+    }
+    let contrastOff = (1.0 - contrastMul) * 0.5;
+    color = color * contrastMul + contrastOff;
+    // Brightness: match Xbox formula
+    let brightnessAdj = (pp.brightness + 100.0) / 200.0 - 0.5;
+    color = color + brightnessAdj;
+
+    let luma = dot(color, vec3f(0.2126, 0.7152, 0.0722));
+    color = mix(vec3f(luma), color, 1.0 + pp.saturation / 100.0);
+
+    if (pp.posterLevels > 1.0) {
+        let levels = pp.posterLevels;
+        let intensity = max(max(color.r, color.g), color.b);
+        if (intensity >= pp.posterMin) {
+            color = floor(color * levels + 0.5) / levels;
+        }
+    }
+
+    if (pp.vignetteIntensity > 0.0) {
+        let center = in.uv - 0.5;
+        let dist = length(center) * 1.414;
+        let vig = 1.0 - smoothstep(0.4, 1.0, dist) * pp.vignetteIntensity;
+        color = mix(pp.vignetteColor.rgb, color, vig);
+    }
+
+    // Flicker: time-based brightness modulation
+    if (pp.flickerMul != 1.0) {
+        color = color * pp.flickerMul;
+    }
+
+    // Noise/grain: procedural hash-based noise overlay
+    if (pp.noiseIntensity != 0.0) {
+        let px = in.uv * vec2f(textureDimensions(sceneTex));
+        let n1 = fract(sin(dot(px + pp.time * 43.17, vec2f(12.9898, 78.233))) * 43758.5453);
+        let noise = (n1 - 0.5) * pp.noiseIntensity;
+        if (pp.noiseMidtone > 0.5) {
+            // Overlay blend: noise affects midtones more than highlights/shadows
+            let luma = dot(color, vec3f(0.2126, 0.7152, 0.0722));
+            let midtoneMask = 4.0 * luma * (1.0 - luma);
+            color = color + noise * midtoneMask;
+        } else {
+            color = color + noise;
+        }
+    }
+
+    if (pp.bloomIntensity > 0.0) {
+        let bloom = textureSample(bloomTex, sceneSampler, in.uv).rgb;
+        // Clamp intensity to prevent overpowering bloom from aggressive game data
+        let clampedIntensity = min(pp.bloomIntensity, 1.0);
+        let bloomContrib = bloom * clampedIntensity * pp.bloomColor.rgb;
+        // Screen blend instead of additive — prevents blown-out whites
+        color = 1.0 - (1.0 - color) * (1.0 - bloomContrib * 0.25);
+    }
+
+    return vec4f(clamp(color, vec3f(0.0), vec3f(1.0)), 1.0);
+}
+)WGSL";
+
+// ===========================================================================
+// Stage 2: postproc render-to-texture composite (§4 of the RTT plan).
+//
+// MainColorTarget(): the color attachment the main scene draws into. When a
+// postproc is active the scene renders into the offscreen intermediate (so it
+// can be graded as a whole); otherwise straight into the framebuffer (the
+// default, canary-preserving path). RTT-resume (EndDrawTarget) routes through
+// this so a mid-frame RndCam::TargetTex draw resumes into the right surface.
+// ===========================================================================
+wgpu::TextureView BandRnd::MainColorTarget() {
+    if (!RB3PostProcDisabled() && RndPostProc::Current() && mIntermediateView)
+        return mIntermediateView;
+    return mFrameView;
+}
+
+// (Re)create the offscreen intermediate at w x h using mTargetFmt (RGBA8
+// headless / BGRA8 windowed — NEVER hardcoded). usage RenderAttachment (the
+// scene renders into it) | TextureBinding (the composite samples it). Recreate
+// on size change.
+void BandRnd::EnsureIntermediate(int w, int h) {
+    if (!mGpuReady || w <= 0 || h <= 0) return;
+    if (mIntermediateTex && mIntermediateView &&
+        mIntermediateWidth == w && mIntermediateHeight == h) {
+        return;  // already sized correctly
+    }
+    wgpu::TextureDescriptor td{};
+    td.label = "RB3PostProcIntermediate";
+    td.size = {(uint32_t)w, (uint32_t)h, 1};
+    td.format = mTargetFmt;   // matches the framebuffer the composite writes to
+    td.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding;
+    td.mipLevelCount = 1;
+    wgpu::Texture t = mGpu.Device().CreateTexture(&td);
+    if (!t) return;
+    mIntermediateTex = t;
+    mIntermediateView = t.CreateView();
+    mIntermediateWidth = w;
+    mIntermediateHeight = h;
+}
+
+// Grade the intermediate onto `dst` (the framebuffer): a single fullscreen
+// triangle (vs_fullscreen, no vbuf) running fs_postproc — ported verbatim from
+// gfx/PostProcPass.cpp. No blend, no depth, LoadOp::Clear (full-screen
+// overwrite — no Load reliance, web BGRA8 safe). Reads grade params from
+// RndPostProc::Current() via the HX_NATIVE accessors. Bloom is v1-skipped:
+// mBlackView is bound to bloomTex@3, so the screen-blend bloom term is a no-op.
+static bool RB3PostProcDisabled() {
+    static int s = -1;
+    if (s < 0) { const char* e = getenv("RB3_PP_OFF"); s = (e && e[0] && e[0] != '0') ? 1 : 0; }
+    return s != 0;
+}
+
+void BandRnd::RunPostProcComposite(wgpu::TextureView dst) {
+    if (!mGpuReady || !dst || !mIntermediateView) return;
+    RndPostProc* pp = RndPostProc::Current();
+    if (!pp) return;
+
+    EnsureQuadPipeline();
+    if (!mQuadPostShader || !mPostProcUB) return;
+
+    // --- Fill the uniform block (ported from PostProcPass::Run :260-303) ---
+    PostProcUniforms uni{};
+    const RndColorXfm& cxfm = pp->GetColorXfm();
+    uni.contrast = cxfm.mContrast;
+    uni.brightness = cxfm.mBrightness;
+    uni.saturation = cxfm.mSaturation;
+    uni.vignetteIntensity = pp->GetVignetteIntensity();
+    const Hmx::Color& vc = pp->GetVignetteColor();
+    uni.vignetteColor[0] = vc.red;   uni.vignetteColor[1] = vc.green;
+    uni.vignetteColor[2] = vc.blue;  uni.vignetteColor[3] = vc.alpha;
+    uni.chromaticOffset = pp->GetChromaticAberrationOffset();
+    uni.chromaticSharpen = pp->GetChromaticSharpen() ? 1.0f : 0.0f;
+    uni.posterLevels = pp->GetPosterLevels();
+    uni.posterMin = pp->GetPosterMin();
+
+    uni.levelInLo[0] = cxfm.mLevelInLo.red;   uni.levelInLo[1] = cxfm.mLevelInLo.green;
+    uni.levelInLo[2] = cxfm.mLevelInLo.blue;  uni.levelInLo[3] = 0;
+    uni.levelInHi[0] = cxfm.mLevelInHi.red;   uni.levelInHi[1] = cxfm.mLevelInHi.green;
+    uni.levelInHi[2] = cxfm.mLevelInHi.blue;  uni.levelInHi[3] = 1;
+    uni.levelOutLo[0] = cxfm.mLevelOutLo.red; uni.levelOutLo[1] = cxfm.mLevelOutLo.green;
+    uni.levelOutLo[2] = cxfm.mLevelOutLo.blue; uni.levelOutLo[3] = 0;
+    uni.levelOutHi[0] = cxfm.mLevelOutHi.red; uni.levelOutHi[1] = cxfm.mLevelOutHi.green;
+    uni.levelOutHi[2] = cxfm.mLevelOutHi.blue; uni.levelOutHi[3] = 1;
+
+    // v1 bloom: skip the blur, bind black to bloomTex → bloomIntensity 0 keeps
+    // the screen-blend term inert. (The grade alone removes the album-art smear.)
+    uni.bloomIntensity = 0.0f;
+    const Hmx::Color& bc = pp->GetBloomColor();
+    uni.bloomColor[0] = bc.red; uni.bloomColor[1] = bc.green;
+    uni.bloomColor[2] = bc.blue; uni.bloomColor[3] = 1.0f;
+
+    uni.time = (float)mFrameCount;
+    // v1 NOISE SKIP (mirrors the bloom skip): RB3's postproc noise is a TILED
+    // NOISE TEXTURE (mNoiseMap + mNoiseBaseScale/mNoiseTopScale, midtone-overlay
+    // blended) — a subtle film grain on the Wii. We don't bind that texture, and
+    // the engine reference's PROCEDURAL hash fallback at RB3's real intensities
+    // (noise=3.0 on the menu/world postprocs) washes the whole frame to gray.
+    // Crucially, with noise off the grade is an EXACT identity passthrough for a
+    // neutral postproc (sat=0/contrast=0/outLo=0/outHi=1/vignette=0 — every
+    // menu/gameplay env postproc), which is what keeps the regression canary
+    // pixel-clean. The desaturation grade (saturation/levels) is unaffected.
+    uni.noiseIntensity = 0.0f;
+    uni.noiseMidtone = 0.0f;
+    uni.flickerMul = 1.0f;   // flicker disabled (B+W_film02 has no active flicker)
+
+    mGpu.Queue().WriteBuffer(mPostProcUB, 0, &uni, sizeof(uni));
+
+    // --- Pipeline (cached): format mTargetFmt, no blend, no depth ---
+    if (!mQuadPostPipeline) {
+        wgpu::ColorTargetState ct{};
+        ct.format = mTargetFmt;
+        ct.writeMask = wgpu::ColorWriteMask::All;   // no blend (opaque overwrite)
+
+        wgpu::FragmentState frag{};
+        frag.module = mQuadPostShader;
+        frag.entryPoint = "fs_postproc";
+        frag.targetCount = 1;
+        frag.targets = &ct;
+
+        wgpu::RenderPipelineDescriptor pd{};
+        pd.layout = mQuadPostPL;
+        pd.vertex.module = mQuadPostShader;
+        pd.vertex.entryPoint = "vs_fullscreen";
+        pd.fragment = &frag;
+        pd.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+        pd.depthStencil = nullptr;   // composite has no depth attachment
+        pd.multisample.count = 1;    // rb3 backend is single-sampled
+        mQuadPostPipeline = mGpu.Device().CreateRenderPipeline(&pd);
+    }
+    if (!mQuadPostPipeline) return;
+
+    wgpu::BindGroupEntry bge[4] = {};
+    bge[0].binding = 0; bge[0].textureView = mIntermediateView;
+    bge[1].binding = 1; bge[1].sampler = mSampler;
+    bge[2].binding = 2; bge[2].buffer = mPostProcUB; bge[2].offset = 0; bge[2].size = sizeof(PostProcUniforms);
+    bge[3].binding = 3; bge[3].textureView = mBlackView;   // v1 bloom skip
+    wgpu::BindGroupDescriptor bgd{};
+    bgd.layout = mQuadPostBGL;
+    bgd.entryCount = 4;
+    bgd.entries = bge;
+    wgpu::BindGroup bg = mGpu.Device().CreateBindGroup(&bgd);
+
+    wgpu::RenderPassColorAttachment colorAtt{};
+    colorAtt.view = dst;
+    colorAtt.loadOp = wgpu::LoadOp::Clear;     // full-screen overwrite (no Load)
+    colorAtt.storeOp = wgpu::StoreOp::Store;
+    colorAtt.clearValue = {0, 0, 0, 1};
+
+    wgpu::RenderPassDescriptor rp{};
+    rp.label = "BandPostProcComposite";
+    rp.colorAttachmentCount = 1; rp.colorAttachments = &colorAtt;
+    rp.depthStencilAttachment = nullptr;
+
+    wgpu::RenderPassEncoder pass = mEncoder.BeginRenderPass(&rp);
+    pass.SetPipeline(mQuadPostPipeline);
+    pass.SetBindGroup(0, bg, 0, nullptr);
+    pass.Draw(3);
+    pass.End();
+
+    // RB3_RENDER_DBG: prove the composite fires ONLY on postproc screens
+    // (song_select / etched), NEVER on plain gameplay or main_hub. Log on every
+    // CHANGE of the active postproc object (name + full grade) plus a periodic
+    // heartbeat, so the verify can confirm B+W_film02 is the active grade.
+    if (getenv("RB3_RENDER_DBG")) {
+        static RndPostProc* sLastPP = nullptr;
+        RndCam* cur = RndCam::sCurrent;
+        const char* camName = (cur && cur->Name()) ? cur->Name() : "<none>";
+        if (pp != sLastPP) {
+            sLastPP = pp;
+            // Log the active postproc + its grade whenever Current() changes —
+            // proves the composite fires ONLY on postproc-active screens, and
+            // which grade (name + sat/contrast/levels/vignette) is applied.
+            fprintf(stderr,
+                "[RB3_RENDER_DBG] postproc composite active f%d pp='%s' cam=%s sat=%.1f "
+                "contrast=%.1f bright=%.1f vignette=%.2f outLo=(%.3f,%.3f,%.3f) %dx%d\n",
+                mFrameCount, pp->Name() ? pp->Name() : "?", camName,
+                uni.saturation, uni.contrast, uni.brightness, uni.vignetteIntensity,
+                uni.levelOutLo[0], uni.levelOutLo[1], uni.levelOutLo[2],
+                mIntermediateWidth, mIntermediateHeight);
+        }
+    }
 }
 
 // ===========================================================================
@@ -1311,6 +1711,46 @@ void BandRnd::EnsureQuadPipeline() {
     ubDesc.size = sizeof(RB3RectUB);
     ubDesc.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
     mRectUB = dev.CreateBuffer(&ubDesc);
+
+    // --- Stage 2: postproc grade module + bind-group layout + UB ---
+    wgpu::ShaderSourceWGSL ppWgsl{};
+    ppWgsl.code = kRB3PostProcShaderSource;
+    wgpu::ShaderModuleDescriptor ppSmDesc{};
+    ppSmDesc.nextInChain = &ppWgsl;
+    mQuadPostShader = dev.CreateShaderModule(&ppSmDesc);
+
+    // sceneTex@0, sampler@1, PostProcUB@2 (160B, minBindingSize=160), bloomTex@3.
+    wgpu::BindGroupLayoutEntry ppEntries[4] = {};
+    ppEntries[0].binding = 0;
+    ppEntries[0].visibility = wgpu::ShaderStage::Fragment;
+    ppEntries[0].texture.sampleType = wgpu::TextureSampleType::Float;
+    ppEntries[0].texture.viewDimension = wgpu::TextureViewDimension::e2D;
+    ppEntries[1].binding = 1;
+    ppEntries[1].visibility = wgpu::ShaderStage::Fragment;
+    ppEntries[1].sampler.type = wgpu::SamplerBindingType::Filtering;
+    ppEntries[2].binding = 2;
+    ppEntries[2].visibility = wgpu::ShaderStage::Fragment;
+    ppEntries[2].buffer.type = wgpu::BufferBindingType::Uniform;
+    ppEntries[2].buffer.minBindingSize = sizeof(PostProcUniforms);  // 160
+    ppEntries[3].binding = 3;
+    ppEntries[3].visibility = wgpu::ShaderStage::Fragment;
+    ppEntries[3].texture.sampleType = wgpu::TextureSampleType::Float;
+    ppEntries[3].texture.viewDimension = wgpu::TextureViewDimension::e2D;
+
+    wgpu::BindGroupLayoutDescriptor ppBglDesc{};
+    ppBglDesc.entryCount = 4;
+    ppBglDesc.entries = ppEntries;
+    mQuadPostBGL = dev.CreateBindGroupLayout(&ppBglDesc);
+
+    wgpu::PipelineLayoutDescriptor ppPlDesc{};
+    ppPlDesc.bindGroupLayoutCount = 1;
+    ppPlDesc.bindGroupLayouts = &mQuadPostBGL;
+    mQuadPostPL = dev.CreatePipelineLayout(&ppPlDesc);
+
+    wgpu::BufferDescriptor ppUbDesc{};
+    ppUbDesc.size = sizeof(PostProcUniforms);
+    ppUbDesc.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
+    mPostProcUB = dev.CreateBuffer(&ppUbDesc);
 
     mQuadReady = true;
 }
