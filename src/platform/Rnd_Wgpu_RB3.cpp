@@ -740,6 +740,16 @@ void BandRnd::Shutdown() {
     mDepthView = nullptr;
     mDepthTex = nullptr;
 
+    // Shared 2D quad pipeline infra (DrawRect / Stage-2 composite). Drop the
+    // cached pipelines first, then the shader/layouts/buffers.
+    mQuadPipelines.clear();
+    mQuadShader = nullptr;
+    mQuadRectBGL = nullptr;
+    mQuadRectPL = nullptr;
+    mQuadVertexBuffer = nullptr;
+    mRectUB = nullptr;
+    mQuadReady = false;
+
     // Pipeline manager: drops the pipeline+shader caches + layouts.
     mPipelines.Terminate();
 
@@ -1176,6 +1186,330 @@ void BandRnd::EndDrawTarget() {
     // the staleness latch, then bind the existing scene group for now.
     mPass.SetBindGroup(0, mSceneBindGroup, 0, nullptr);
     mLastSceneCam = nullptr;   // next DrawMesh re-resolves the active cam
+}
+
+// ===========================================================================
+// Shared 2D quad pipeline infra (§3 of the RTT engine plan).
+//
+// ONE WGSL module holds every quad entry point so Stage 2's postproc composite
+// reuses the same shader handle:
+//   - vs_rect            : explicit 6-vertex NDC quad (positions mapped CPU-side
+//                          in DrawRect; passes uv + per-vertex color through).
+//   - fs_rect            : textured/color-modulated rect — tex*mod*vtxColor, with
+//                          colorMod==kColorModAlphaUnpackModulate(2) sampling the
+//                          diffuse's ALPHA as a grayscale mask (v1 approx).
+//   - fs_rect_notex      : mod*vtxColor (base layer has a null diffuse).
+//   - vs_fullscreen      : Stage-2 fullscreen-triangle (no vbuf) — added later.
+//   - fs_postproc        : Stage-2 grade fragment — added later.
+//
+// RectUB (32B, group 0 binding 2): mod (vec4) + flags (uvec4; only .x =
+// colorMod is read). mod = mat->GetColor() * paramColor — the KEY divergence
+// from dc3's DrawRect2D (which ignores matColor and would yield NO tint here,
+// because Compose passes a white param color and sets the real tint via
+// sMat->SetColor()).
+// ===========================================================================
+static const char* kRB3QuadShaderSource = R"WGSL(
+struct VertexRect {
+    @location(0) pos: vec2f,
+    @location(1) uv: vec2f,
+    @location(2) color: vec4f,
+};
+
+struct VSOut {
+    @builtin(position) pos: vec4f,
+    @location(0) uv: vec2f,
+    @location(1) color: vec4f,
+};
+
+struct RectUB {
+    modColor: vec4f,
+    flags: vec4u,   // flags.x = colorMod
+};
+
+@group(0) @binding(0) var rectTex: texture_2d<f32>;
+@group(0) @binding(1) var rectSampler: sampler;
+@group(0) @binding(2) var<uniform> rectUB: RectUB;
+
+@vertex fn vs_rect(in: VertexRect) -> VSOut {
+    var out: VSOut;
+    out.pos = vec4f(in.pos, 0.0, 1.0);
+    out.uv = in.uv;
+    out.color = in.color;
+    return out;
+}
+
+@fragment fn fs_rect(in: VSOut) -> @location(0) vec4f {
+    let tex = textureSample(rectTex, rectSampler, in.uv);
+    // colorMod == kColorModAlphaUnpackModulate (2): treat the diffuse alpha as a
+    // grayscale mask (v1 approximation of the Wii alpha-unpack-modulate path).
+    var src = tex;
+    if (rectUB.flags.x == 2u) {
+        src = vec4f(tex.a, tex.a, tex.a, tex.a);
+    }
+    return src * rectUB.modColor * in.color;
+}
+
+@fragment fn fs_rect_notex(in: VSOut) -> @location(0) vec4f {
+    return rectUB.modColor * in.color;
+}
+)WGSL";
+
+// CPU mirror of the 32-byte RectUB (matches the WGSL struct std140 layout:
+// vec4 + uvec4 = 16 + 16 = 32 bytes).
+struct RB3RectUB {
+    float mod[4];
+    uint32_t flags[4];
+};
+
+// CPU mirror of the per-vertex 2D quad layout (matches vs_rect inputs).
+struct RB3RectVertex {
+    float pos[2];
+    float uv[2];
+    float color[4];
+};
+
+void BandRnd::EnsureQuadPipeline() {
+    if (mQuadReady) return;
+    auto& dev = mGpu.Device();
+
+    wgpu::ShaderSourceWGSL wgsl{};
+    wgsl.code = kRB3QuadShaderSource;
+    wgpu::ShaderModuleDescriptor smDesc{};
+    smDesc.nextInChain = &wgsl;
+    mQuadShader = dev.CreateShaderModule(&smDesc);
+
+    // Rect bind-group layout: tex@0, sampler@1, RectUB@2.
+    wgpu::BindGroupLayoutEntry entries[3] = {};
+    entries[0].binding = 0;
+    entries[0].visibility = wgpu::ShaderStage::Fragment;
+    entries[0].texture.sampleType = wgpu::TextureSampleType::Float;
+    entries[0].texture.viewDimension = wgpu::TextureViewDimension::e2D;
+    entries[1].binding = 1;
+    entries[1].visibility = wgpu::ShaderStage::Fragment;
+    entries[1].sampler.type = wgpu::SamplerBindingType::Filtering;
+    entries[2].binding = 2;
+    entries[2].visibility = wgpu::ShaderStage::Fragment;
+    entries[2].buffer.type = wgpu::BufferBindingType::Uniform;
+    entries[2].buffer.minBindingSize = sizeof(RB3RectUB);
+
+    wgpu::BindGroupLayoutDescriptor bglDesc{};
+    bglDesc.entryCount = 3;
+    bglDesc.entries = entries;
+    mQuadRectBGL = dev.CreateBindGroupLayout(&bglDesc);
+
+    wgpu::PipelineLayoutDescriptor plDesc{};
+    plDesc.bindGroupLayoutCount = 1;
+    plDesc.bindGroupLayouts = &mQuadRectBGL;
+    mQuadRectPL = dev.CreatePipelineLayout(&plDesc);
+
+    wgpu::BufferDescriptor vbDesc{};
+    vbDesc.size = 6 * sizeof(RB3RectVertex);
+    vbDesc.usage = wgpu::BufferUsage::Vertex | wgpu::BufferUsage::CopyDst;
+    mQuadVertexBuffer = dev.CreateBuffer(&vbDesc);
+
+    wgpu::BufferDescriptor ubDesc{};
+    ubDesc.size = sizeof(RB3RectUB);
+    ubDesc.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
+    mRectUB = dev.CreateBuffer(&ubDesc);
+
+    mQuadReady = true;
+}
+
+// Get-or-create a rect RenderPipeline keyed on (format, blend, hasDepth, isPost,
+// hasTex). The composite (Stage 2) and repeated DrawRect calls share the cache
+// so we never CreateRenderPipeline per invocation. `notex` selects the
+// fs_rect_notex entry (base layer, null diffuse).
+static uint64_t RB3QuadPipeKey(wgpu::TextureFormat fmt, WgpuBlend blend,
+                               bool hasDepth, bool isPost, bool notex) {
+    return ((uint64_t)(uint32_t)fmt << 8) | ((uint64_t)(uint32_t)blend << 3) |
+           ((uint64_t)(hasDepth ? 1 : 0) << 2) | ((uint64_t)(isPost ? 1 : 0) << 1) |
+           (uint64_t)(notex ? 1 : 0);
+}
+
+void BandRnd::DrawRect(const Hmx::Rect& rect, const Hmx::Color& paramColor,
+                       RndMat* mat, const Hmx::Color* topRight,
+                       const Hmx::Color* botLeft) {
+    if (!mGpuReady || !mInPass) return;
+
+    // CRITICAL RTT begin-hook (mirrors DrawMesh ~:1188): Compose calls DrawRect
+    // BEFORE any DrawMesh, so the lazy begin-redirect that DrawMesh normally
+    // performs has not run yet. If the current cam targets an RTT tex we haven't
+    // redirected to, open the RT pass now — otherwise the outfit tint paints the
+    // MAIN framebuffer instead of the RTT diffuse texture.
+    if (!RB3RttDisabled() && RndCam::sCurrent) {
+        RndTex* tt = RndCam::sCurrent->TargetTex();
+        if (tt && tt != mRtActiveTex) BeginDrawTarget(tt);
+    }
+    if (!mInPass) return;   // BeginDrawTarget bailed and left no open pass
+
+    EnsureQuadPipeline();
+    if (!mQuadShader || !mQuadVertexBuffer || !mRectUB) return;
+
+    // Rect is absolute Rnd-PIXEL space (e.g. 0..Width x 0..Height). Map to NDC
+    // via TheRnd->Width()/Height() — NOT the GPU framebuffer size.
+    float w = (float)Width();
+    float h = (float)Height();
+    if (w <= 0.0f || h <= 0.0f) return;
+
+    float x0 = rect.x / w * 2.0f - 1.0f;
+    float y0 = 1.0f - rect.y / h * 2.0f;
+    float x1 = (rect.x + rect.w) / w * 2.0f - 1.0f;
+    float y1 = 1.0f - (rect.y + rect.h) / h * 2.0f;
+
+    // Per-vertex color carries the optional top-right / bottom-left gradient
+    // (Compose always passes white + null gradients; the real tint is the UB
+    // mod). cTL = paramColor; cBR averaged.
+    float cTL[4] = { paramColor.red, paramColor.green, paramColor.blue, paramColor.alpha };
+    float cTR[4], cBL[4], cBR[4];
+    if (topRight) { cTR[0]=topRight->red; cTR[1]=topRight->green; cTR[2]=topRight->blue; cTR[3]=topRight->alpha; }
+    else          { std::memcpy(cTR, cTL, sizeof(cTL)); }
+    if (botLeft)  { cBL[0]=botLeft->red;  cBL[1]=botLeft->green;  cBL[2]=botLeft->blue;  cBL[3]=botLeft->alpha; }
+    else          { std::memcpy(cBL, cTL, sizeof(cTL)); }
+    for (int i = 0; i < 4; i++) cBR[i] = (cTR[i] + cBL[i]) * 0.5f;
+
+    RB3RectVertex verts[6] = {
+        {{x0, y0}, {0, 0}, {cTL[0], cTL[1], cTL[2], cTL[3]}},
+        {{x0, y1}, {0, 1}, {cBL[0], cBL[1], cBL[2], cBL[3]}},
+        {{x1, y0}, {1, 0}, {cTR[0], cTR[1], cTR[2], cTR[3]}},
+        {{x1, y0}, {1, 0}, {cTR[0], cTR[1], cTR[2], cTR[3]}},
+        {{x0, y1}, {0, 1}, {cBL[0], cBL[1], cBL[2], cBL[3]}},
+        {{x1, y1}, {1, 1}, {cBR[0], cBR[1], cBR[2], cBR[3]}},
+    };
+    mGpu.Queue().WriteBuffer(mQuadVertexBuffer, 0, verts, sizeof(verts));
+
+    // Modulation = mat->GetColor() * paramColor. THE key DC3 divergence:
+    // Compose passes a white paramColor and sets the real tint via
+    // sMat->SetColor(), so the modulation MUST fold mat->GetColor().
+    int colorMod = 0;
+    Hmx::Color matCol(1.0f, 1.0f, 1.0f, 1.0f);
+    if (mat) {
+        matCol = mat->GetColor();
+        colorMod = (int)mat->mColorModFlags;
+    }
+    RB3RectUB ub{};
+    ub.mod[0] = matCol.red   * paramColor.red;
+    ub.mod[1] = matCol.green * paramColor.green;
+    ub.mod[2] = matCol.blue  * paramColor.blue;
+    ub.mod[3] = matCol.alpha * paramColor.alpha;
+    ub.flags[0] = (uint32_t)colorMod;
+    mGpu.Queue().WriteBuffer(mRectUB, 0, &ub, sizeof(ub));
+
+    // Diffuse: GetRB3TexView(mat->GetDiffuseTex()), uploading on first use, with
+    // mWhiteView fallback. The base layer has a null diffuse → fs_rect_notex.
+    bool hasTex = false;
+    wgpu::TextureView texView;
+    RndTex* diffuse = mat ? mat->GetDiffuseTex() : nullptr;
+    if (diffuse) {
+        texView = GetRB3TexView(diffuse);
+        if (!texView) texView = UploadRndTexIfNeeded(mGpu, diffuse);
+        if (texView) hasTex = true;
+    }
+    if (!hasTex) texView = mWhiteView;
+
+    // Blend via the shared MapBlend; target format/depth per the ACTIVE pass.
+    WgpuBlend blend = WgpuBlend::Src;
+    if (mat) {
+        int b = (int)mat->GetBlend();
+        if (b >= 0 && b <= 10) blend = (WgpuBlend)b;
+    }
+    bool rtPass = (mRtActiveTex != nullptr);
+    wgpu::TextureFormat fmt = rtPass ? mRtFmt : mTargetFmt;   // NEVER hardcode RGBA8
+    bool hasDepth = !rtPass;   // RT pass: no depth; main pass: depth-disabled D24S8
+
+    uint64_t pkey = RB3QuadPipeKey(fmt, blend, hasDepth, /*isPost*/ false, /*notex*/ !hasTex);
+    wgpu::RenderPipeline pipe;
+    {
+        auto it = mQuadPipelines.find(pkey);
+        if (it != mQuadPipelines.end()) {
+            pipe = it->second;
+        } else {
+            wgpu::BlendState bs = mPipelines.MapBlend(blend);
+            wgpu::ColorTargetState ct{};
+            ct.format = fmt;
+            ct.blend = &bs;
+            ct.writeMask = wgpu::ColorWriteMask::All;
+
+            wgpu::FragmentState frag{};
+            frag.module = mQuadShader;
+            frag.entryPoint = hasTex ? "fs_rect" : "fs_rect_notex";
+            frag.targetCount = 1;
+            frag.targets = &ct;
+
+            wgpu::VertexAttribute attrs[3] = {};
+            attrs[0].format = wgpu::VertexFormat::Float32x2; attrs[0].offset = 0;  attrs[0].shaderLocation = 0;
+            attrs[1].format = wgpu::VertexFormat::Float32x2; attrs[1].offset = 8;  attrs[1].shaderLocation = 1;
+            attrs[2].format = wgpu::VertexFormat::Float32x4; attrs[2].offset = 16; attrs[2].shaderLocation = 2;
+            wgpu::VertexBufferLayout vbl{};
+            vbl.arrayStride = sizeof(RB3RectVertex);
+            vbl.stepMode = wgpu::VertexStepMode::Vertex;
+            vbl.attributeCount = 3;
+            vbl.attributes = attrs;
+
+            // Main pass attaches a Depth24PlusStencil8 buffer; the pipeline must
+            // declare a matching depth-stencil state. Disable depth entirely
+            // (compare Always, write false) so the 2D quad always paints.
+            wgpu::DepthStencilState ds{};
+            ds.format = wgpu::TextureFormat::Depth24PlusStencil8;
+            ds.depthWriteEnabled = wgpu::OptionalBool::False;
+            ds.depthCompare = wgpu::CompareFunction::Always;
+
+            wgpu::RenderPipelineDescriptor pd{};
+            pd.layout = mQuadRectPL;
+            pd.vertex.module = mQuadShader;
+            pd.vertex.entryPoint = "vs_rect";
+            pd.vertex.bufferCount = 1;
+            pd.vertex.buffers = &vbl;
+            pd.fragment = &frag;
+            pd.depthStencil = hasDepth ? &ds : nullptr;
+            pd.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+            pd.multisample.count = 1;   // rb3 backend is single-sampled
+
+            pipe = mGpu.Device().CreateRenderPipeline(&pd);
+            mQuadPipelines[pkey] = pipe;
+        }
+    }
+    if (!pipe) return;
+
+    wgpu::BindGroupEntry bge[3] = {};
+    bge[0].binding = 0; bge[0].textureView = texView;
+    bge[1].binding = 1; bge[1].sampler = mSampler;
+    bge[2].binding = 2; bge[2].buffer = mRectUB; bge[2].offset = 0; bge[2].size = sizeof(RB3RectUB);
+    wgpu::BindGroupDescriptor bgd{};
+    bgd.layout = mQuadRectBGL;
+    bgd.entryCount = 3;
+    bgd.entries = bge;
+    wgpu::BindGroup bg = mGpu.Device().CreateBindGroup(&bgd);
+
+    mPass.SetPipeline(pipe);
+    mPass.SetBindGroup(0, bg, 0, nullptr);
+    mPass.SetVertexBuffer(0, mQuadVertexBuffer, 0, sizeof(verts));
+    mPass.Draw(6);
+
+    // CRITICAL: restore the SCENE bind group at group 0 — DrawRect rebinds
+    // group 0 to its own 2D layout, and the next DrawMesh aborts in Dawn
+    // (bind-group/layout mismatch) unless we put the scene group back.
+    mPass.SetBindGroup(0, mSceneBindGroup, 0, nullptr);
+
+    // One-shot RB3_DRAWRECT_DBG: report the rect, modulation color, diffuse
+    // name, colorMod, and whether the RT redirect was active (verification
+    // fallback when the live outfit-compose path is hard to frame).
+    if (getenv("RB3_DRAWRECT_DBG")) {
+        // Cap per kind (main-pass vs RTT) so a per-frame full-screen background
+        // rect (e.g. movie.tex, rtActive=0) can't drown out the rarer outfit
+        // RTT-compose rects (rtActive=1, the path this stage targets).
+        static int sShotsMain = 0, sShotsRtt = 0;
+        int& cnt = rtPass ? sShotsRtt : sShotsMain;
+        if (cnt++ < 12) {
+            const char* dn = diffuse ? (diffuse->Name() ? diffuse->Name() : "?") : "<null>";
+            fprintf(stderr,
+                "[RB3_DRAWRECT_DBG] rect=(%.1f,%.1f,%.1f,%.1f) mod=(%.3f,%.3f,%.3f,%.3f) "
+                "matCol=(%.3f,%.3f,%.3f,%.3f) diffuse='%s' colorMod=%d rtActive=%d fmt=%d hasDepth=%d\n",
+                rect.x, rect.y, rect.w, rect.h,
+                ub.mod[0], ub.mod[1], ub.mod[2], ub.mod[3],
+                matCol.red, matCol.green, matCol.blue, matCol.alpha,
+                dn, colorMod, rtPass ? 1 : 0, (int)fmt, hasDepth ? 1 : 0);
+        }
+    }
 }
 
 void BandRnd::DrawMesh(RndMesh* mesh) {

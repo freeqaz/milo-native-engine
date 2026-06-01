@@ -30,7 +30,9 @@
 #include "rndobj/Rnd.h"
 
 #include <webgpu/webgpu_cpp.h>
+#include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 // RB3's vertex-name alias for in-file readability. Same 64-byte layout as
@@ -131,11 +133,29 @@ public:
     // EndDrawing: end pass + submit + optionally capture screenshot.
     void EndDrawing() override;
 
+    // DrawRect: draw one textured/color-modulated 2D quad into the CURRENTLY
+    // ACTIVE pass. Used by OutfitConfig::MatSwap::Compose to paint its base +
+    // two-color diffuse/interp/mask tint layers into an RTT outfit diffuse tex.
+    // Self-contained (the dc3 DrawRect2D.cpp TU is excluded for the rb3 backend);
+    // builds on the SHARED quad pipeline infra below (EnsureQuadPipeline +
+    // mQuad*), which Stage 2's postproc composite reuses. Modulation =
+    // mat->GetColor() * paramColor (Compose passes white param + sets the real
+    // tint via sMat->SetColor — unlike dc3 DrawRect2D which ignores matColor).
+    void DrawRect(const Hmx::Rect&, const Hmx::Color&, RndMat*,
+                  const Hmx::Color*, const Hmx::Color*) override;
+
 private:
     void WriteSceneUniforms(RndCam* cam);
     void CreateDefaultTextures();
     wgpu::BindGroup MakeMaterialBindGroup(uint32_t off, RndMat* mat);
     wgpu::BindGroup MakeMaterialBindGroupRaw(wgpu::Buffer buf, uint32_t off);
+
+    // --- Shared 2D quad pipeline infra (§3 of the RTT engine plan) ---
+    // Compile-once shader module with vs_rect/fs_rect/fs_rect_notex entries
+    // (Stage 2 adds vs_fullscreen/fs_postproc to the SAME module). Build the
+    // rect bind-group layout (tex@0, samp@1, RectUB@2), the rect pipeline layout,
+    // the 6-vertex quad vbuf, and the 32-byte RectUB. Idempotent.
+    void EnsureQuadPipeline();
 
 public:
     GpuDevice mGpu;
@@ -180,6 +200,19 @@ public:
     wgpu::Texture mWhiteTex, mBlackTex, mFlatNormalTex, mBlackCubeTex, mShadowTex;
     wgpu::TextureView mWhiteView, mBlackView, mFlatNormalView, mBlackCubeView, mShadowView;
     wgpu::Sampler mSampler, mShadowSampler;
+
+    // --- Shared 2D quad pipeline infra (built by EnsureQuadPipeline) ---
+    // Stage 1 (drawrect) uses mQuadRect*; Stage 2 (postproc) will add mQuadPost*
+    // + mPostProcUB to this same group (left as TODO members below for reuse).
+    wgpu::ShaderModule mQuadShader;
+    wgpu::BindGroupLayout mQuadRectBGL;     // tex@0, samp@1, RectUB@2
+    wgpu::PipelineLayout mQuadRectPL;
+    wgpu::Buffer mQuadVertexBuffer;         // 6 verts x 32B (pos2/uv2/color4)
+    wgpu::Buffer mRectUB;                   // 32B: mod(4) + flags(4) [+pad]
+    bool mQuadReady = false;
+    // Per-(format,blend,depth,isPost) RenderPipeline cache so the composite +
+    // repeated DrawRect calls don't recreate a pipeline every invocation.
+    std::unordered_map<uint64_t, wgpu::RenderPipeline> mQuadPipelines;
 
     bool mGpuReady = false;
     bool mPreInited = false;
