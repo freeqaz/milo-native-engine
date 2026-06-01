@@ -22,6 +22,7 @@
 
 #pragma once
 
+#include "gfx/BloomPass.h"        // Stage-2 bloom (V2 postproc; Tier-1 gfx)
 #include "gfx/GpuDevice.h"
 #include "gfx/PipelineManager.h"
 #include "gfx/Screenshot.h"
@@ -250,6 +251,13 @@ public:
     int mIntermediateWidth = 0;
     int mIntermediateHeight = 0;
     bool mPostProcFlushed = false;
+
+    // V2 bloom: threshold/blur/upsample mip chain run on the intermediate before
+    // the grade composite samples its OutputView() into bloomTex@3. Self-contained
+    // (its own pipelines/textures at GpuDevice::SurfaceFormat()); the composite
+    // samples its output as a plain float texture (format-agnostic), so it works
+    // regardless of the intermediate's mTargetFmt (RGBA8 headless / BGRA8 windowed).
+    BloomPass mBloom;
 
     bool mGpuReady = false;
     bool mPreInited = false;

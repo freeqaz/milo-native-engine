@@ -679,6 +679,10 @@ void BandRnd::InitGpuResources() {
 
     CreateDefaultTextures();
 
+    // V2 bloom: grab the default sampler (pipelines/textures are lazily built on
+    // first BloomPass::Run, sized to the scene). Cheap; safe to Init unconditionally.
+    mBloom.Init(mGpu);
+
     mGpuReady = true;
     printf("BandRnd: GPU ready (%dx%d, fmt=%d, %s)\n", W, H, (int)mTargetFmt,
            mGpu.IsHeadless() ? "headless" : "windowed");
@@ -758,6 +762,7 @@ void BandRnd::Shutdown() {
     mQuadReady = false;
 
     // Stage-2 postproc composite infra.
+    mBloom.Terminate();
     mQuadPostPipeline = nullptr;
     mQuadPostShader = nullptr;
     mQuadPostBGL = nullptr;
@@ -1431,8 +1436,14 @@ struct VOut {
         // Clamp intensity to prevent overpowering bloom from aggressive game data
         let clampedIntensity = min(pp.bloomIntensity, 1.0);
         let bloomContrib = bloom * clampedIntensity * pp.bloomColor.rgb;
-        // Screen blend instead of additive — prevents blown-out whites
-        color = 1.0 - (1.0 - color) * (1.0 - bloomContrib * 0.25);
+        // ADDITIVE blend (not screen): screen-blend `1-(1-c)*(1-b*k)` lifts DARK
+        // pixels hardest (the (1-c) term is large there) → the whole dark
+        // background washes milky-bright (the v1-bloom failure mode on the dark-blue
+        // menu). Additive `c + b*k` instead lifts every pixel by the SAME absolute
+        // amount, so a tight highlight halo reads as a glow while the dark
+        // background stays dark. bloomColor.a carries the blend factor (CPU-set;
+        // see RunPostProcComposite) so it's tunable without a uniform-layout change.
+        color = color + bloomContrib * pp.bloomColor.a;
     }
 
     return vec4f(clamp(color, vec3f(0.0), vec3f(1.0)), 1.0);
@@ -1522,12 +1533,71 @@ void BandRnd::RunPostProcComposite(wgpu::TextureView dst) {
     uni.levelOutHi[0] = cxfm.mLevelOutHi.red; uni.levelOutHi[1] = cxfm.mLevelOutHi.green;
     uni.levelOutHi[2] = cxfm.mLevelOutHi.blue; uni.levelOutHi[3] = 1;
 
-    // v1 bloom: skip the blur, bind black to bloomTex → bloomIntensity 0 keeps
-    // the screen-blend term inert. (The grade alone removes the album-art smear.)
-    uni.bloomIntensity = 0.0f;
+    // V2 BLOOM. Run the threshold/blur/upsample mip chain on the intermediate
+    // (the fully-rendered, pre-grade scene) and additive-blend its OutputView()
+    // into bloomTex@3 (the shader branch at kRB3PostProcShaderSource's
+    // `bloomIntensity > 0.0`). Mirrors gfx/PostProcPass.cpp:251-257 / :330-331
+    // (DC3's path) but with two corrections for the rb3 backend:
+    //
+    //   THRESHOLD SCALE. RndPostProc::mBloomThreshold is in the Wii's pre-tonemap
+    //   luminance scale (default 4.0; world.pp + subwayhangout.pp both ship 10.0),
+    //   NOT the [0,1] normalized luma our composite operates in. PostProcPass only
+    //   FLOORS it (max(thr,0.7)), so a raw 10.0 passes straight through and
+    //   fs_bloom_threshold's `luma - 10 + knee` is negative for every SDR pixel →
+    //   bloom NEVER fires (verified: world.pp raw thr=10 → zero visible bloom). And
+    //   fs_bloom_threshold's soft knee is `knee = threshold*0.5`, so the EFFECTIVE
+    //   onset is threshold*0.5 — a nominal 0.9 actually blooms everything above 0.45
+    //   (washes the whole frame, verified). So we IGNORE the inflated Wii value and
+    //   pass a FIXED normalized cutoff: kBloomThreshold 1.8 → onset 0.9, i.e. only
+    //   the brightest ~few-% highlights bloom (ground-truth SP/venue frames bloom
+    //   only the brightest ~2%, p99 luma ~0.75). Combined with the small additive
+    //   blend (bloomColor.a, set below) this is a tight halo, never a wash/blowout.
+    //
+    // The mip chain records its own render passes into mEncoder; this runs AFTER
+    // the main pass closed (EndFrame ends mPass before calling us) and BEFORE the
+    // composite's BeginRenderPass below, so the intermediate is fully written and
+    // the bloom textures are ready when the composite samples them.
+    static const float kBloomThreshold = 1.8f;   // → fs_bloom_threshold onset ~0.9
+    float bloomIntensity = std::min(pp->GetBloomIntensity(), 1.0f);
+    float bloomThreshold = kBloomThreshold;
+    wgpu::TextureView bloomView = mBlackView;   // inert default (branch won't sample)
+    {
+        // RB3_BLOOM_OFF: A/B isolation — disable ONLY the bloom term while keeping
+        // the rest of the composite byte-identical (so a same-scene bloom-on vs
+        // bloom-off diff measures exactly the bloom, not the grade/grain).
+        static int s = -1;
+        if (s < 0) { const char* e = getenv("RB3_BLOOM_OFF"); s = (e && e[0] && e[0] != '0') ? 1 : 0; }
+        if (s) bloomIntensity = 0.0f;
+    }
+    // RB3_BLOOM_THRESH / RB3_BLOOM_SCALE: tuning overrides (sweep without rebuild).
+    {
+        const char* t = getenv("RB3_BLOOM_THRESH");
+        if (t && t[0]) bloomThreshold = (float)atof(t);
+        const char* sc = getenv("RB3_BLOOM_SCALE");
+        if (sc && sc[0]) bloomIntensity *= (float)atof(sc);
+    }
+    if (bloomIntensity > 0.0f) {
+        mBloom.Run(mEncoder, mIntermediateView, mIntermediateWidth, mIntermediateHeight,
+                   bloomIntensity, bloomThreshold, pp->GetBloomColor(), mGpu);
+        if (mBloom.HasOutput()) bloomView = mBloom.OutputView();
+    }
+    uni.bloomIntensity = bloomIntensity;
     const Hmx::Color& bc = pp->GetBloomColor();
     uni.bloomColor[0] = bc.red; uni.bloomColor[1] = bc.green;
-    uni.bloomColor[2] = bc.blue; uni.bloomColor[3] = 1.0f;
+    uni.bloomColor[2] = bc.blue;
+    // bloomColor.a = additive blend factor for the composite (see the bloom branch
+    // in kRB3PostProcShaderSource). Kept low so only true highlights produce a
+    // visible halo and the dark background never washes. RB3_BLOOM_BLEND overrides.
+    {
+        // 0.02: at threshold-onset 0.9 the bloom output still has wide low-frequency
+        // spread (the BloomPass mip chain blurs highlights broadly), so the additive
+        // factor must stay small — verified the dark menu background lifts <1.5/255
+        // (no wash) while bright text/album-art/SP highlights gain a visible halo.
+        float blend = 0.02f;
+        const char* b = getenv("RB3_BLOOM_BLEND");
+        if (b && b[0]) blend = (float)atof(b);
+        uni.bloomColor[3] = blend;
+    }
 
     uni.time = (float)mFrameCount;
     // V2 NOISE GRAIN. RB3's postproc noise is a TILED NOISE TEXTURE (mNoiseMap +
@@ -1564,7 +1634,7 @@ void BandRnd::RunPostProcComposite(wgpu::TextureView dst) {
         if (s) uni.noiseIntensity = 0.0f;
     }
 
-    // v1 bloom stays skipped here (separate follow-up). flicker disabled.
+    // flicker disabled (separate follow-up).
     uni.flickerMul = 1.0f;
 
     mGpu.Queue().WriteBuffer(mPostProcUB, 0, &uni, sizeof(uni));
@@ -1597,7 +1667,7 @@ void BandRnd::RunPostProcComposite(wgpu::TextureView dst) {
     bge[0].binding = 0; bge[0].textureView = mIntermediateView;
     bge[1].binding = 1; bge[1].sampler = mSampler;
     bge[2].binding = 2; bge[2].buffer = mPostProcUB; bge[2].offset = 0; bge[2].size = sizeof(PostProcUniforms);
-    bge[3].binding = 3; bge[3].textureView = mBlackView;   // v1 bloom skip
+    bge[3].binding = 3; bge[3].textureView = bloomView;    // V2 bloom output (or black when inactive)
     bge[4].binding = 4; bge[4].textureView = noiseView;    // V2 tiled noise (or black fallback)
     wgpu::BindGroupDescriptor bgd{};
     bgd.layout = mQuadPostBGL;
@@ -1638,13 +1708,17 @@ void BandRnd::RunPostProcComposite(wgpu::TextureView dst) {
             fprintf(stderr,
                 "[RB3_RENDER_DBG] postproc composite active f%d pp='%s' cam=%s sat=%.1f "
                 "contrast=%.1f bright=%.1f vignette=%.2f outLo=(%.3f,%.3f,%.3f) %dx%d "
-                "noise[int=%.2f midtone=%.0f hasMap=%.0f scale=(%.1f,%.1f)]\n",
+                "noise[int=%.2f midtone=%.0f hasMap=%.0f scale=(%.1f,%.1f)] "
+                "bloom[int=%.2f thresh=%.2f color=(%.2f,%.2f,%.2f) raw=%.2f rawThr=%.2f]\n",
                 mFrameCount, pp->Name() ? pp->Name() : "?", camName,
                 uni.saturation, uni.contrast, uni.brightness, uni.vignetteIntensity,
                 uni.levelOutLo[0], uni.levelOutLo[1], uni.levelOutLo[2],
                 mIntermediateWidth, mIntermediateHeight,
                 uni.noiseIntensity, uni.noiseMidtone, uni.noiseHasMap,
-                uni.noiseScaleX, uni.noiseScaleY);
+                uni.noiseScaleX, uni.noiseScaleY,
+                uni.bloomIntensity, bloomThreshold,
+                uni.bloomColor[0], uni.bloomColor[1], uni.bloomColor[2],
+                pp->GetBloomIntensity(), pp->GetBloomThreshold());
         }
     }
 }
