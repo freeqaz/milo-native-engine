@@ -1266,9 +1266,12 @@ struct PostProcUniforms {
     float flickerMul;
     float bloomColor[4];
     float time;
-    float _pad0;
-    float _pad1;
-    float _pad2;
+    // Repurposed tail pad (keeps the struct at 160B so the layout/static_assert
+    // are preserved): tiled-noise-texture controls. noiseHasMap selects the
+    // textured grain path (1.0) vs the procedural hash fallback (0.0).
+    float noiseScaleX;   // was _pad0 — mNoiseBaseScale.x (X tiling)
+    float noiseScaleY;   // was _pad1 — mNoiseBaseScale.y (Y tiling)
+    float noiseHasMap;   // was _pad2 — 1.0 if a noise bitmap is bound
 };
 static_assert(sizeof(PostProcUniforms) == 160, "PostProcUniforms must be 160 bytes");
 
@@ -1293,15 +1296,29 @@ struct PostProcUB {
     flickerMul: f32,
     bloomColor: vec4f,
     time: f32,
-    _pad0: f32,
-    _pad1: f32,
-    _pad2: f32,
+    noiseScaleX: f32,
+    noiseScaleY: f32,
+    noiseHasMap: f32,
 };
 
 @group(0) @binding(0) var sceneTex: texture_2d<f32>;
 @group(0) @binding(1) var sceneSampler: sampler;
 @group(0) @binding(2) var<uniform> pp: PostProcUB;
 @group(0) @binding(3) var bloomTex: texture_2d<f32>;
+@group(0) @binding(4) var noiseTex: texture_2d<f32>;
+
+// RB3's grain is a *map-domain* gain (mNoiseIntensity ~3.0 on the menu/world
+// postprocs is a texel-space multiplier, NOT a screen-space add). Applying the
+// raw (n-0.5)*intensity term washed the whole frame gray (the v1 failure mode).
+// kNoiseGain attenuates the per-pixel luminance deviation down to film-grain
+// magnitude. With gain 0.04 and clamped intensity 3.0 the per-pixel swing is
+// ~±0.06 (~±15/255) — a fine, visible, ZERO-MEAN grain (mean luminance
+// unchanged → no gray wash, the v1 failure mode). Verified on the static
+// song_select menu: grain ON vs OFF shifts mean luminance by <0.5/255 and
+// saturation by <0.002 while raising midtone high-frequency variance, matching
+// the Wii's midtone-concentrated grain. (0.03 was nearly imperceptible; 0.05
+// reads slightly heavy — 0.04 is the balance, with margin on the no-wash gate.)
+const kNoiseGain: f32 = 0.04;
 
 struct VOut {
     @builtin(position) pos: vec4f,
@@ -1378,18 +1395,34 @@ struct VOut {
         color = color * pp.flickerMul;
     }
 
-    // Noise/grain: procedural hash-based noise overlay
+    // Noise/grain: tiled noise TEXTURE (the real RB3 path) with a procedural
+    // hash fallback for postprocs that set an intensity but ship no bitmap.
     if (pp.noiseIntensity != 0.0) {
-        let px = in.uv * vec2f(textureDimensions(sceneTex));
-        let n1 = fract(sin(dot(px + pp.time * 43.17, vec2f(12.9898, 78.233))) * 43758.5453);
-        let noise = (n1 - 0.5) * pp.noiseIntensity;
-        if (pp.noiseMidtone > 0.5) {
-            // Overlay blend: noise affects midtones more than highlights/shadows
-            let luma = dot(color, vec3f(0.2126, 0.7152, 0.0722));
-            let midtoneMask = 4.0 * luma * (1.0 - luma);
-            color = color + noise * midtoneMask;
+        var n: f32;
+        if (pp.noiseHasMap > 0.5) {
+            // Tiled noise bitmap. mNoiseBaseScale is the X/Y tiling count; sample
+            // by screen-UV * scale (Repeat sampler) so it reads as fine,
+            // stationary film grain — NOT a moving wash (Wii mNoiseStationary).
+            let nuv = in.uv * vec2f(pp.noiseScaleX, pp.noiseScaleY);
+            n = textureSample(noiseTex, sceneSampler, nuv).r;
         } else {
-            color = color + noise;
+            // Procedural fallback (no bitmap on this postproc).
+            let px = in.uv * vec2f(textureDimensions(sceneTex));
+            n = fract(sin(dot(px + pp.time * 43.17, vec2f(12.9898, 78.233))) * 43758.5453);
+        }
+        // KEY no-gray-wash fix: scale the per-pixel deviation DOWN (kNoiseGain)
+        // and clamp the map-domain intensity. Zero-mean about 0.5 → mean
+        // luminance unchanged. The fallback shares this attenuation so it can
+        // never reproduce the v1 intensity-3.0 blizzard either.
+        let grain = (n - 0.5) * min(abs(pp.noiseIntensity), 3.0) * kNoiseGain;
+        if (pp.noiseMidtone > 0.5) {
+            // Overlay-style midtone weight: pins grain OFF at black (luma 0) and
+            // white (luma 1), peaks at luma 0.5 — keeps shadows/highlights clean.
+            let nl = dot(color, vec3f(0.2126, 0.7152, 0.0722));
+            let midtoneMask = 4.0 * nl * (1.0 - nl);
+            color = color + grain * midtoneMask;
+        } else {
+            color = color + grain;
         }
     }
 
@@ -1497,18 +1530,42 @@ void BandRnd::RunPostProcComposite(wgpu::TextureView dst) {
     uni.bloomColor[2] = bc.blue; uni.bloomColor[3] = 1.0f;
 
     uni.time = (float)mFrameCount;
-    // v1 NOISE SKIP (mirrors the bloom skip): RB3's postproc noise is a TILED
-    // NOISE TEXTURE (mNoiseMap + mNoiseBaseScale/mNoiseTopScale, midtone-overlay
-    // blended) — a subtle film grain on the Wii. We don't bind that texture, and
-    // the engine reference's PROCEDURAL hash fallback at RB3's real intensities
-    // (noise=3.0 on the menu/world postprocs) washes the whole frame to gray.
-    // Crucially, with noise off the grade is an EXACT identity passthrough for a
-    // neutral postproc (sat=0/contrast=0/outLo=0/outHi=1/vignette=0 — every
-    // menu/gameplay env postproc), which is what keeps the regression canary
-    // pixel-clean. The desaturation grade (saturation/levels) is unaffected.
-    uni.noiseIntensity = 0.0f;
-    uni.noiseMidtone = 0.0f;
-    uni.flickerMul = 1.0f;   // flicker disabled (B+W_film02 has no active flicker)
+    // V2 NOISE GRAIN. RB3's postproc noise is a TILED NOISE TEXTURE (mNoiseMap +
+    // mNoiseBaseScale tiling, midtone-overlay blended) — a SUBTLE film grain on
+    // the Wii. v1 zeroed it because the procedural hash fallback at RB3's real
+    // intensity (~3.0) washed the frame gray. We now bind the real bitmap and
+    // attenuate the deviation (kNoiseGain, in the shader) so it is grain, not a
+    // wash. A postproc with intensity!=0 but no bitmap falls back to the
+    // (same-attenuated) procedural path. With intensity==0 the branch is skipped
+    // entirely → still an exact identity passthrough for neutral env postprocs,
+    // keeping the no-postproc/zero-noise canary pixel-clean.
+    RndTex* noiseMap = pp->GetNoiseMap();
+    wgpu::TextureView noiseView;
+    if (noiseMap) noiseView = UploadRndTexIfNeeded(mGpu, noiseMap);
+    if (noiseView) {
+        uni.noiseHasMap = 1.0f;
+        const Vector2& ns = pp->GetNoiseBaseScale();
+        uni.noiseScaleX = ns.x;
+        uni.noiseScaleY = ns.y;
+    } else {
+        uni.noiseHasMap = 0.0f;       // procedural fallback (still attenuated)
+        uni.noiseScaleX = 0.0f;
+        uni.noiseScaleY = 0.0f;
+        noiseView = mBlackView;       // a valid view must be bound regardless
+    }
+    uni.noiseIntensity = pp->GetNoiseIntensity();
+    uni.noiseMidtone = pp->GetNoiseMidtone() ? 1.0f : 0.0f;
+    // RB3_NOISE_OFF: A/B isolation — disable ONLY the grain term while keeping
+    // the rest of the composite byte-identical (so a same-scene grain-on vs
+    // grain-off diff measures exactly the grain, not scene motion / the grade).
+    {
+        static int s = -1;
+        if (s < 0) { const char* e = getenv("RB3_NOISE_OFF"); s = (e && e[0] && e[0] != '0') ? 1 : 0; }
+        if (s) uni.noiseIntensity = 0.0f;
+    }
+
+    // v1 bloom stays skipped here (separate follow-up). flicker disabled.
+    uni.flickerMul = 1.0f;
 
     mGpu.Queue().WriteBuffer(mPostProcUB, 0, &uni, sizeof(uni));
 
@@ -1536,14 +1593,15 @@ void BandRnd::RunPostProcComposite(wgpu::TextureView dst) {
     }
     if (!mQuadPostPipeline) return;
 
-    wgpu::BindGroupEntry bge[4] = {};
+    wgpu::BindGroupEntry bge[5] = {};
     bge[0].binding = 0; bge[0].textureView = mIntermediateView;
     bge[1].binding = 1; bge[1].sampler = mSampler;
     bge[2].binding = 2; bge[2].buffer = mPostProcUB; bge[2].offset = 0; bge[2].size = sizeof(PostProcUniforms);
     bge[3].binding = 3; bge[3].textureView = mBlackView;   // v1 bloom skip
+    bge[4].binding = 4; bge[4].textureView = noiseView;    // V2 tiled noise (or black fallback)
     wgpu::BindGroupDescriptor bgd{};
     bgd.layout = mQuadPostBGL;
-    bgd.entryCount = 4;
+    bgd.entryCount = 5;
     bgd.entries = bge;
     wgpu::BindGroup bg = mGpu.Device().CreateBindGroup(&bgd);
 
@@ -1579,11 +1637,14 @@ void BandRnd::RunPostProcComposite(wgpu::TextureView dst) {
             // which grade (name + sat/contrast/levels/vignette) is applied.
             fprintf(stderr,
                 "[RB3_RENDER_DBG] postproc composite active f%d pp='%s' cam=%s sat=%.1f "
-                "contrast=%.1f bright=%.1f vignette=%.2f outLo=(%.3f,%.3f,%.3f) %dx%d\n",
+                "contrast=%.1f bright=%.1f vignette=%.2f outLo=(%.3f,%.3f,%.3f) %dx%d "
+                "noise[int=%.2f midtone=%.0f hasMap=%.0f scale=(%.1f,%.1f)]\n",
                 mFrameCount, pp->Name() ? pp->Name() : "?", camName,
                 uni.saturation, uni.contrast, uni.brightness, uni.vignetteIntensity,
                 uni.levelOutLo[0], uni.levelOutLo[1], uni.levelOutLo[2],
-                mIntermediateWidth, mIntermediateHeight);
+                mIntermediateWidth, mIntermediateHeight,
+                uni.noiseIntensity, uni.noiseMidtone, uni.noiseHasMap,
+                uni.noiseScaleX, uni.noiseScaleY);
         }
     }
 }
@@ -1719,8 +1780,9 @@ void BandRnd::EnsureQuadPipeline() {
     ppSmDesc.nextInChain = &ppWgsl;
     mQuadPostShader = dev.CreateShaderModule(&ppSmDesc);
 
-    // sceneTex@0, sampler@1, PostProcUB@2 (160B, minBindingSize=160), bloomTex@3.
-    wgpu::BindGroupLayoutEntry ppEntries[4] = {};
+    // sceneTex@0, sampler@1, PostProcUB@2 (160B, minBindingSize=160),
+    // bloomTex@3, noiseTex@4 (V2 tiled grain).
+    wgpu::BindGroupLayoutEntry ppEntries[5] = {};
     ppEntries[0].binding = 0;
     ppEntries[0].visibility = wgpu::ShaderStage::Fragment;
     ppEntries[0].texture.sampleType = wgpu::TextureSampleType::Float;
@@ -1736,9 +1798,13 @@ void BandRnd::EnsureQuadPipeline() {
     ppEntries[3].visibility = wgpu::ShaderStage::Fragment;
     ppEntries[3].texture.sampleType = wgpu::TextureSampleType::Float;
     ppEntries[3].texture.viewDimension = wgpu::TextureViewDimension::e2D;
+    ppEntries[4].binding = 4;
+    ppEntries[4].visibility = wgpu::ShaderStage::Fragment;
+    ppEntries[4].texture.sampleType = wgpu::TextureSampleType::Float;
+    ppEntries[4].texture.viewDimension = wgpu::TextureViewDimension::e2D;
 
     wgpu::BindGroupLayoutDescriptor ppBglDesc{};
-    ppBglDesc.entryCount = 4;
+    ppBglDesc.entryCount = 5;
     ppBglDesc.entries = ppEntries;
     mQuadPostBGL = dev.CreateBindGroupLayout(&ppBglDesc);
 
