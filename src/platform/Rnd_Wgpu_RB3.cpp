@@ -957,20 +957,23 @@ void BandRnd::BeginFrame(RndCam* cam) {
     mInPass = true;
     mPass.SetBindGroup(0, mSceneBindGroup, 0, nullptr);
 
-    // VERIFY-ONLY (RB3_PRECLEAR): dispatch the engine's pre-clear render-to-
-    // texture pass once the main pass is open. The shared Rnd::DrawPreClear()
-    // iterates the registered pre-clear drawables (TexRenderer, TexMovie-to-tex,
-    // and crucially OutfitConfig — whose DrawPreClear drives MatSwap::Compose,
-    // the ONLY caller of the DrawRect RTT-outfit-tint branch we are verifying).
-    // The mid-frame RTT suspend/resume contract (BeginDrawTarget/EndDrawTarget)
-    // already handles running these after the main clear: each RT compose
-    // suspends the freshly-cleared main pass and resumes it with LoadOp::Load.
-    // Gated behind an env var so the default frame loop is byte-identical (the
-    // BandRnd backend has never dispatched DrawPreClear; turning it on
-    // unconditionally is a separate, larger decision).
+    // Dispatch the engine's pre-clear render-to-texture pass once the main pass is
+    // open. The shared Rnd::DrawPreClear() iterates the registered pre-clear
+    // drawables (TexRenderer, TexMovie-to-tex, and crucially OutfitConfig — whose
+    // DrawPreClear drives MatSwap::Compose, the ONLY caller of the DrawRect
+    // RTT-outfit-tint branch). The mid-frame RTT suspend/resume contract
+    // (BeginDrawTarget/EndDrawTarget) handles running these after the main clear:
+    // each RT compose suspends the freshly-cleared main pass and resumes it with
+    // LoadOp::Load.
+    //
+    // ON BY DEFAULT so character-outfit RTT tints actually render. Verified
+    // regression-safe across boot/main_hub/song_select/gameplay (no Dawn aborts,
+    // no artifacts; OutfitConfig::Compose composes its tints into the outfit RTT
+    // diffuse). Opt-out RB3_NO_PRECLEAR=1 restores the byte-identical no-pre-clear
+    // loop (the original BandRnd behaviour) for A/B / debugging.
     {
         static int s = -1;
-        if (s < 0) { const char* e = getenv("RB3_PRECLEAR"); s = (e && e[0] && e[0] != '0') ? 1 : 0; }
+        if (s < 0) { const char* e = getenv("RB3_NO_PRECLEAR"); s = (e && e[0] && e[0] != '0') ? 0 : 1; }
         if (s) Rnd::DrawPreClear();
     }
 }
