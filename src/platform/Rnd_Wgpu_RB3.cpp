@@ -926,11 +926,12 @@ void BandRnd::BeginFrame(RndCam* cam) {
     // the main pass draws straight into mFrameView, exactly as before (canary).
     bool hasPP = !RB3PostProcDisabled() && RndPostProc::Current() != nullptr;
     mPostProcFlushed = false;
+    mRenderedToIntermediate = false;
     wgpu::TextureView mainTarget = mFrameView;
     if (hasPP) {
         int W = mGpu.WindowWidth(), H = mGpu.WindowHeight();
         EnsureIntermediate(W, H);
-        if (mIntermediateView) mainTarget = mIntermediateView;
+        if (mIntermediateView) { mainTarget = mIntermediateView; mRenderedToIntermediate = true; }
     }
 
     wgpu::RenderPassColorAttachment colorAtt{};
@@ -986,8 +987,16 @@ void BandRnd::EndFrame() {
     // Stage 2: if the frame was rendered into the offscreen intermediate (a
     // postproc is selected), grade-composite it onto the real framebuffer view
     // now — same encoder, before Finish(). Fires exactly once per frame.
-    if (mIntermediateView && RndPostProc::Current() && !mPostProcFlushed &&
-        !RB3PostProcDisabled()) {
+    //
+    // Tier 2: when the venue was composited MID-FRAME (DoPostProcess / EndWorld
+    // fired before the HUD/track panel drew), mPostProcFlushed is already true and
+    // the framebuffer holds graded-venue + ungraded-HUD — DO NOT composite again
+    // (that would re-grade the HUD). The !mPostProcFlushed guard makes this path
+    // exclusive with the mid-frame flush. Screens with no postprocs_before_draw
+    // panel (song_select 2D composite, menus) never flush mid-frame, so they take
+    // THIS path unchanged (canary preserved).
+    if (mRenderedToIntermediate && mIntermediateView && RndPostProc::Current() &&
+        !mPostProcFlushed && !RB3PostProcDisabled()) {
         RunPostProcComposite(mFrameView);
         mPostProcFlushed = true;
     }
@@ -1258,6 +1267,125 @@ void BandRnd::EndDrawTarget() {
 }
 
 // ===========================================================================
+// Tier 2 mid-frame layering — grade the VENUE, draw highway+HUD over it ungraded
+//
+// Retail layers the post-process as a fullscreen TEV blit of the world RTT inside
+// EndWorld (WiiRnd::DoPostProcess), AFTER the venue scene and BEFORE the HUD/track
+// panel. We reproduce that: when EndWorld fires (PanelDir::DrawShowing, once per
+// frame, via the engine's mWorldEnded latch), the fully-rendered venue
+// intermediate is graded onto the framebuffer here, then the main pass RESUMES
+// targeting the framebuffer — color LoadOp::Load keeps the graded venue, depth
+// LoadOp::Clear lets the highway/gems/HUD composite ON TOP, UNGRADED. Reuses the
+// EndDrawTarget suspend/resume machinery (no new GPU plumbing).
+// ===========================================================================
+void BandRnd::FlushPostProcMidFrame() {
+    if (!mGpuReady || mPostProcFlushed || !mRenderedToIntermediate) return;
+    if (RB3PostProcDisabled() || !RndPostProc::Current() || !mIntermediateView) return;
+    if (!mFrameView) return;                 // frame already torn down (defensive)
+    if (mRtActiveTex) return;                // never flush while a mid-frame RTT pass is open
+
+    // 1. Close the main (intermediate) pass so the venue is fully written.
+    if (mInPass) { mPass.End(); mInPass = false; }
+
+    // 2. Grade the intermediate onto the framebuffer (runs bloom + composite; opens
+    //    and closes its own render pass against mFrameView).
+    RunPostProcComposite(mFrameView);
+    mPostProcFlushed = true;
+
+    // 3. Re-open the main pass targeting the FRAMEBUFFER. Color LoadOp::Load keeps
+    //    the graded venue; depth LoadOp::Clear resets z so the highway/gems/HUD
+    //    (drawn with their own game.cam) composite on top instead of being occluded
+    //    by venue geometry depth. (Same suspend/resume contract as EndDrawTarget;
+    //    depthClearValue must be finite for Dawn validation even with Load.)
+    wgpu::RenderPassColorAttachment colorAtt{};
+    colorAtt.view = mFrameView;
+    colorAtt.loadOp = wgpu::LoadOp::Load;    // preserve the graded venue blit
+    colorAtt.storeOp = wgpu::StoreOp::Store;
+
+    wgpu::RenderPassDepthStencilAttachment depthAtt{};
+    depthAtt.view = mDepthView;
+    depthAtt.depthLoadOp = wgpu::LoadOp::Clear; depthAtt.depthStoreOp = wgpu::StoreOp::Store;
+    depthAtt.depthClearValue = 1.0f;
+    depthAtt.stencilLoadOp = wgpu::LoadOp::Clear; depthAtt.stencilStoreOp = wgpu::StoreOp::Store;
+    depthAtt.stencilClearValue = 0;
+
+    wgpu::RenderPassDescriptor rp{};
+    rp.label = "BandMainPassPostGrade";
+    rp.colorAttachmentCount = 1; rp.colorAttachments = &colorAtt;
+    rp.depthStencilAttachment = &depthAtt;
+
+    mPass = mEncoder.BeginRenderPass(&rp);
+    mInPass = true;
+    mPass.SetBindGroup(0, mSceneBindGroup, 0, nullptr);
+    mLastSceneCam = nullptr;   // next DrawMesh re-resolves the active cam
+
+    if (getenv("RB3_RENDER_DBG") || getenv("RB3_TIER2_DBG"))
+        fprintf(stderr, "[RB3_TIER2_DBG] mid-frame venue composite flushed f%d "
+                "meshesDrawnSoFar=%d (highway/HUD draws ungraded over graded venue)\n",
+                mFrameCount, mDrawnMeshes);
+}
+
+void BandRnd::DoPostProcess() {
+    // Preserve the base post-processor bookkeeping (mPostProcessors is empty on
+    // the native backend, but DoWorldEnd/DoPost state stays consistent), then run
+    // the mid-frame venue grade composite. Fires once per frame via the
+    // mWorldEnded latch in Rnd::EndWorld (the caller).
+    Rnd::DoPostProcess();
+    if (getenv("RB3_TIER2_DBG"))
+        fprintf(stderr, "[RB3_TIER2_DBG] DoPostProcess f%d meshes=%d hasPP=%d flushed=%d toInt=%d\n",
+                mFrameCount, mDrawnMeshes, RndPostProc::Current() != nullptr,
+                mPostProcFlushed, mRenderedToIntermediate);
+    FlushPostProcMidFrame();
+}
+
+void BandRnd::ClearDepthForOverlay() {
+    if (!mGpuReady) return;
+    if (getenv("RB3_TIER2_DBG"))
+        fprintf(stderr, "[RB3_TIER2_DBG] ClearDepthForOverlay f%d meshes=%d flushed=%d toInt=%d\n",
+                mFrameCount, mDrawnMeshes, mPostProcFlushed, mRenderedToIntermediate);
+    // TrackPanel::Draw calls this at the venue->highway boundary. If the venue
+    // composite hasn't flushed yet (e.g. a screen whose panel ordering didn't fire
+    // EndWorld before the track panel), run it now — FlushPostProcMidFrame both
+    // composites the venue and clears depth as part of resuming into the
+    // framebuffer, which is exactly this method's intent.
+    if (!mPostProcFlushed && mRenderedToIntermediate && !RB3PostProcDisabled() &&
+        RndPostProc::Current() && mIntermediateView) {
+        FlushPostProcMidFrame();
+        return;
+    }
+    // Otherwise just clear depth (color preserved) in the CURRENT pass so the
+    // highway/gems composite over whatever is already drawn (the original
+    // note-highway depth fix). Suspend + resume the current target with color
+    // LoadOp::Load + depth LoadOp::Clear.
+    if (!mInPass || mRtActiveTex) return;    // nothing open / RTT pass — skip
+    wgpu::TextureView dst = MainColorTarget();
+    if (!dst) return;
+    mPass.End(); mInPass = false;
+
+    wgpu::RenderPassColorAttachment colorAtt{};
+    colorAtt.view = dst;
+    colorAtt.loadOp = wgpu::LoadOp::Load;
+    colorAtt.storeOp = wgpu::StoreOp::Store;
+
+    wgpu::RenderPassDepthStencilAttachment depthAtt{};
+    depthAtt.view = mDepthView;
+    depthAtt.depthLoadOp = wgpu::LoadOp::Clear; depthAtt.depthStoreOp = wgpu::StoreOp::Store;
+    depthAtt.depthClearValue = 1.0f;
+    depthAtt.stencilLoadOp = wgpu::LoadOp::Clear; depthAtt.stencilStoreOp = wgpu::StoreOp::Store;
+    depthAtt.stencilClearValue = 0;
+
+    wgpu::RenderPassDescriptor rp{};
+    rp.label = "BandMainPassDepthClear";
+    rp.colorAttachmentCount = 1; rp.colorAttachments = &colorAtt;
+    rp.depthStencilAttachment = &depthAtt;
+
+    mPass = mEncoder.BeginRenderPass(&rp);
+    mInPass = true;
+    mPass.SetBindGroup(0, mSceneBindGroup, 0, nullptr);
+    mLastSceneCam = nullptr;
+}
+
+// ===========================================================================
 // Stage 2 postproc grade — PORTED VERBATIM from milo-native-engine
 // src/gfx/PostProcPass.cpp:9-166 (uniform struct + WGSL). Lives in its own
 // module (vs_fullscreen/fs_postproc) — see Rnd_Wgpu_RB3.h note on why it can't
@@ -1477,7 +1605,13 @@ struct VOut {
 // this so a mid-frame RndCam::TargetTex draw resumes into the right surface.
 // ===========================================================================
 wgpu::TextureView BandRnd::MainColorTarget() {
-    if (!RB3PostProcDisabled() && RndPostProc::Current() && mIntermediateView)
+    // Tier 2: once the mid-frame venue composite has flushed onto the framebuffer,
+    // the main pass renders into the FRAMEBUFFER (the graded venue is already
+    // there). Any further mid-frame RTT resume after the flush must therefore
+    // resume into mFrameView, not the now-stale intermediate.
+    if (mPostProcFlushed)
+        return mFrameView;
+    if (!RB3PostProcDisabled() && RndPostProc::Current() && mIntermediateView && mRenderedToIntermediate)
         return mIntermediateView;
     return mFrameView;
 }

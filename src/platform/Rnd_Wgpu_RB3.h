@@ -134,6 +134,25 @@ public:
     // EndDrawing: end pass + submit + optionally capture screenshot.
     void EndDrawing() override;
 
+    // DoPostProcess: the retail post-process boundary. Driven by the engine's own
+    // Rnd::EndWorld() latch (PanelDir::DrawShowing calls EndWorld() once per frame,
+    // before the HUD/track panel draws). Overridden here so the venue grade
+    // composites MID-FRAME — the fully-rendered venue intermediate is graded onto
+    // the framebuffer NOW, then the main pass resumes into the framebuffer so the
+    // gem highway + fret buttons + HUD draw OVER the graded venue, UNGRADED. This
+    // matches retail's TEV-blit-on-world-RTT layering (WiiRnd::DoPostProcess inside
+    // EndWorld). Screens with no postprocs_before_draw panel (song_select 2D
+    // composite, menus) never call EndWorld mid-frame, so this never fires for them
+    // and the EndFrame composite path runs unchanged (canary preserved).
+    void DoPostProcess() override;
+
+    // ClearDepthForOverlay: called by TrackPanel::Draw at the venue->highway
+    // boundary. If the mid-frame venue composite hasn't run yet, run it now
+    // (it clears depth as part of resuming into the framebuffer). Otherwise just
+    // clear depth in the current (framebuffer) pass so the highway/gems composite
+    // over venue geometry instead of being z-occluded by it.
+    void ClearDepthForOverlay() override;
+
     // DrawRect: draw one textured/color-modulated 2D quad into the CURRENTLY
     // ACTIVE pass. Used by OutfitConfig::MatSwap::Compose to paint its base +
     // two-color diffuse/interp/mask tint layers into an RTT outfit diffuse tex.
@@ -170,6 +189,14 @@ private:
     wgpu::TextureView MainColorTarget();
     void EnsureIntermediate(int w, int h);
     void RunPostProcComposite(wgpu::TextureView dst);
+
+    // Tier 2 mid-frame layering: close the main (intermediate) pass, grade the
+    // venue intermediate onto the framebuffer, then re-open the main pass
+    // targeting the framebuffer (LoadOp::Load color = keep the graded venue;
+    // LoadOp::Clear depth = let the highway/HUD composite on top, ungraded).
+    // Fires exactly once per frame (guarded by mPostProcFlushed). No-op when no
+    // postproc is active or the frame never rendered to the intermediate.
+    void FlushPostProcMidFrame();
 
 public:
     GpuDevice mGpu;
@@ -251,6 +278,11 @@ public:
     int mIntermediateWidth = 0;
     int mIntermediateHeight = 0;
     bool mPostProcFlushed = false;
+    // True for the current frame iff the main scene was rendered into the
+    // offscreen intermediate (a postproc was active at BeginFrame). The mid-frame
+    // flush only composites when this holds (otherwise the framebuffer already
+    // holds the scene directly and there is nothing to grade-blit).
+    bool mRenderedToIntermediate = false;
 
     // V2 bloom: threshold/blur/upsample mip chain run on the intermediate before
     // the grade composite samples its OutputView() into bloomTex@3. Self-contained
