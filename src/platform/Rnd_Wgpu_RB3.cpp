@@ -1268,6 +1268,9 @@ void BandRnd::EndDrawTarget() {
 
 // ===========================================================================
 // Tier 2 mid-frame layering — grade the VENUE, draw highway+HUD over it ungraded
+// (this supersedes the concurrent depth-only ClearDepthForOverlay from engine
+//  6498fab: the Tier 2 ClearDepthForOverlay below does the venue-grade flush AND
+//  the original depth-clear as its fallback — see its body.)
 //
 // Retail layers the post-process as a fullscreen TEV blit of the world RTT inside
 // EndWorld (WiiRnd::DoPostProcess), AFTER the venue scene and BEFORE the HUD/track

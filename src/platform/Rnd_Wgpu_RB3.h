@@ -133,7 +133,6 @@ public:
     void BeginDrawing() override;
     // EndDrawing: end pass + submit + optionally capture screenshot.
     void EndDrawing() override;
-
     // DoPostProcess: the retail post-process boundary. Driven by the engine's own
     // Rnd::EndWorld() latch (PanelDir::DrawShowing calls EndWorld() once per frame,
     // before the HUD/track panel draws). Overridden here so the venue grade
