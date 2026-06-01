@@ -30,7 +30,9 @@
 #include "rndobj/Rnd.h"
 
 #include <webgpu/webgpu_cpp.h>
+#include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 // RB3's vertex-name alias for in-file readability. Same 64-byte layout as
@@ -131,11 +133,42 @@ public:
     // EndDrawing: end pass + submit + optionally capture screenshot.
     void EndDrawing() override;
 
+    // DrawRect: draw one textured/color-modulated 2D quad into the CURRENTLY
+    // ACTIVE pass. Used by OutfitConfig::MatSwap::Compose to paint its base +
+    // two-color diffuse/interp/mask tint layers into an RTT outfit diffuse tex.
+    // Self-contained (the dc3 DrawRect2D.cpp TU is excluded for the rb3 backend);
+    // builds on the SHARED quad pipeline infra below (EnsureQuadPipeline +
+    // mQuad*), which Stage 2's postproc composite reuses. Modulation =
+    // mat->GetColor() * paramColor (Compose passes white param + sets the real
+    // tint via sMat->SetColor — unlike dc3 DrawRect2D which ignores matColor).
+    void DrawRect(const Hmx::Rect&, const Hmx::Color&, RndMat*,
+                  const Hmx::Color*, const Hmx::Color*) override;
+
 private:
     void WriteSceneUniforms(RndCam* cam);
     void CreateDefaultTextures();
     wgpu::BindGroup MakeMaterialBindGroup(uint32_t off, RndMat* mat);
     wgpu::BindGroup MakeMaterialBindGroupRaw(wgpu::Buffer buf, uint32_t off);
+
+    // --- Shared 2D quad pipeline infra (§3 of the RTT engine plan) ---
+    // Compile-once shader module with vs_rect/fs_rect/fs_rect_notex entries
+    // (Stage 2 adds vs_fullscreen/fs_postproc to the SAME module). Build the
+    // rect bind-group layout (tex@0, samp@1, RectUB@2), the rect pipeline layout,
+    // the 6-vertex quad vbuf, and the 32-byte RectUB. Idempotent. Stage 2 extends
+    // it with the postproc bind-group layout (sceneTex@0, samp@1, PostProcUB@2,
+    // bloomTex@3) + the 160-byte PostProcUB.
+    void EnsureQuadPipeline();
+
+    // --- Stage 2: postproc render-to-texture composite (§4 of the RTT plan) ---
+    // When RndPostProc::Current() is non-null (e.g. song_select's B+W_film02.pp),
+    // the main frame is drawn into mIntermediateTex first, then RunPostProcComposite
+    // grades it onto the framebuffer. MainColorTarget() returns the intermediate
+    // view while a postproc is active (so mid-frame RTT resume lands in it), else
+    // the real framebuffer view. EnsureIntermediate (re)creates the intermediate
+    // at the requested size using mTargetFmt (NEVER hardcoded RGBA8).
+    wgpu::TextureView MainColorTarget();
+    void EnsureIntermediate(int w, int h);
+    void RunPostProcComposite(wgpu::TextureView dst);
 
 public:
     GpuDevice mGpu;
@@ -180,6 +213,43 @@ public:
     wgpu::Texture mWhiteTex, mBlackTex, mFlatNormalTex, mBlackCubeTex, mShadowTex;
     wgpu::TextureView mWhiteView, mBlackView, mFlatNormalView, mBlackCubeView, mShadowView;
     wgpu::Sampler mSampler, mShadowSampler;
+
+    // --- Shared 2D quad pipeline infra (built by EnsureQuadPipeline) ---
+    // Stage 1 (drawrect) uses mQuadRect*; Stage 2 (postproc) will add mQuadPost*
+    // + mPostProcUB to this same group (left as TODO members below for reuse).
+    wgpu::ShaderModule mQuadShader;
+    wgpu::BindGroupLayout mQuadRectBGL;     // tex@0, samp@1, RectUB@2
+    wgpu::PipelineLayout mQuadRectPL;
+    wgpu::Buffer mQuadVertexBuffer;         // 6 verts x 32B (pos2/uv2/color4)
+    wgpu::Buffer mRectUB;                   // 32B: mod(4) + flags(4) [+pad]
+    bool mQuadReady = false;
+    // Per-(format,blend,depth,isPost) RenderPipeline cache so the composite +
+    // repeated DrawRect calls don't recreate a pipeline every invocation.
+    std::unordered_map<uint64_t, wgpu::RenderPipeline> mQuadPipelines;
+
+    // --- Stage 2: postproc composite infra (built by EnsureQuadPipeline) ---
+    // Postproc bind-group layout: sceneTex@0, sampler@1, PostProcUB@2 (160B,
+    // minBindingSize=160), bloomTex@3. mPostProcUB is the 160-byte uniform buffer
+    // (PostProcUniforms — ported verbatim from gfx/PostProcPass.cpp).
+    // The postproc grade entries (vs_fullscreen/fs_postproc) live in their own
+    // WGSL module because they need @group(0) binding 2 to be a DIFFERENT struct
+    // (PostProcUB, not RectUB) and add binding 3 (bloomTex) — WGSL forbids two
+    // global vars on the same @group/@binding, so they cannot share mQuadShader.
+    wgpu::ShaderModule mQuadPostShader;
+    wgpu::BindGroupLayout mQuadPostBGL;
+    wgpu::PipelineLayout mQuadPostPL;
+    wgpu::RenderPipeline mQuadPostPipeline;
+    wgpu::Buffer mPostProcUB;               // 160B PostProcUniforms
+
+    // Offscreen intermediate the main frame is rendered into when a postproc is
+    // active. Recreated on size change; format = mTargetFmt; usage
+    // RenderAttachment | TextureBinding. mPostProcFlushed guards the composite so
+    // it fires exactly once per frame.
+    wgpu::Texture mIntermediateTex;
+    wgpu::TextureView mIntermediateView;
+    int mIntermediateWidth = 0;
+    int mIntermediateHeight = 0;
+    bool mPostProcFlushed = false;
 
     bool mGpuReady = false;
     bool mPreInited = false;
