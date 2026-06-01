@@ -20,6 +20,12 @@ const kTexGenXfmOrigin = 4.0;
 const kTexGenEnviron = 5.0;
 const kHighlightCompressionKnee = 0.9;
 const kAlphaFringeFadeStart = 0.1;
+// Fraction of baked per-vertex chroma kept on non-prelit SKINNED (character)
+// meshes when their skin/cloth textures are absent. 0 = fully desaturated (grey
+// shading, no colour cast), 1 = raw vertex colour (re-casts the crowd purple).
+// A low value keeps characters shaded (not flat white) without re-magenta-ing
+// the crowd. See fs_main vertex-tint gate.
+const kSkinnedVtxChroma = 0.25;
 
 // === Bind Group 0: Per-scene (camera, environment) ===
 struct SceneUniforms {
@@ -157,6 +163,14 @@ struct VertexOutput {
     @location(3) uv: vec2f,
     @location(4) worldTangent: vec3f,
     @location(5) worldBitangent: vec3f,
+    // 1.0 for skinned (character) meshes, 0.0 for static. Lets fs_main keep the
+    // baked per-vertex colour on band/crowd characters — whose vertex colour is
+    // their entire visible skin/cloth tint when textures are absent — while still
+    // suppressing it on non-prelit STATIC venue geometry (whose baked cool/purple
+    // vertex lighting double-applied with the scene light, washing it magenta).
+    // Set per vertex entry point (vs_main=0.0 / vs_skinned=1.0); flat-interpolated
+    // since it is constant across a primitive.
+    @location(6) @interpolate(flat) isSkinned: f32,
 };
 
 struct LightingTerms {
@@ -599,6 +613,7 @@ fn vs_main(vertex: VertexInput) -> VertexOutput {
     vertexOutput.uv = computeTexGenUV(vertex.uv, worldPos, worldNormal, viewDir);
     vertexOutput.worldTangent = worldTangent;
     vertexOutput.worldBitangent = cross(worldNormal, worldTangent) * vertex.tangent.w;
+    vertexOutput.isSkinned = 0.0;
 
     return vertexOutput;
 }
@@ -637,6 +652,7 @@ fn vs_skinned(vertex: SkinnedVertexInput) -> VertexOutput {
     vertexOutput.uv = computeTexGenUV(vertex.uv, worldPos, worldNormal, viewDir);
     vertexOutput.worldTangent = worldTangent;
     vertexOutput.worldBitangent = cross(worldNormal, worldTangent) * vertex.tangent.w;
+    vertexOutput.isSkinned = 1.0;
 
     return vertexOutput;
 }
@@ -648,12 +664,44 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
     // Vertex colour is the per-vertex baked lighting / AO. In the original
     // engine it is "Use vertex color and alpha for base or ambient" — i.e. it
     // ONLY contributes to the base colour when the material is prelit
-    // (RndMat::mPreLit). For dynamically-lit meshes (prelit == 0) the lighting
-    // comes from the scene lights below, and the baked vertex colour must NOT
-    // be multiplied into the base — doing so double-applies the venue's baked
+    // (RndMat::mPreLit). For non-prelit STATIC venue geometry the lighting comes
+    // from the scene lights below, and the baked vertex colour must NOT be
+    // multiplied into the base — doing so double-applies the venue's baked
     // (cool/purple) per-vertex lighting on top of the white scene light, which
-    // washed the whole non-prelit scene (walls, floor, crowd) magenta/purple.
-    let vertexTint = select(vec3f(1.0), surfaceInput.color.rgb, isEnabled(material.prelit));
+    // washed the static scene (walls, floor, storefronts) magenta/purple.
+    //
+    // SKINNED character meshes (band + crowd) are the exception: their baked
+    // per-vertex colour is the character's skin/cloth/hair shading, and with the
+    // RB3 skin/cloth textures absent from the extracted asset set it is their
+    // ENTIRE visible colour. Suppressing it there (as the flat prelit gate did)
+    // rendered them as flat-WHITE silhouettes. So we keep it for skinned meshes.
+    //
+    // BUT the band and the crowd are the SAME mesh class (RB3 draws on-stage
+    // characters as `*_extras*` / `crowd_*` skinned meshes — there is no separate
+    // band-member dir), so the discriminator can NOT be band-vs-crowd. And the
+    // raw baked vertex colour carries strong per-vertex chroma: kept verbatim it
+    // re-casts the crowd PURPLE (empirically ~20% magenta pixels on crowd-facing
+    // shots — the baked Wii AO has high-R/high-B cool lobes). The static venue is
+    // even more pervasively cool (mean B-G = +0.082) which is why it must stay
+    // fully suppressed.
+    //
+    // The fix that satisfies all three constraints (band coloured, venue NOT
+    // magenta, crowd NOT magenta) is: suppress vertex colour for non-prelit
+    // STATIC meshes (venue) entirely, and for non-prelit SKINNED meshes keep it
+    // but DESATURATE toward luminance — this preserves the per-vertex shading /
+    // value variation that stops the white-silhouette look while removing the
+    // chroma that pushed the crowd purple. Prelit meshes (text/UI) keep their
+    // exact authored colour as before.
+    let rawVtx = surfaceInput.color.rgb;
+    let vtxLuma = vec3f(dot(rawVtx, vec3f(0.299, 0.587, 0.114)));
+    // Desaturate kept skinned tint to kSkinnedVtxChroma of its chroma.
+    let skinnedTint = mix(vtxLuma, rawVtx, kSkinnedVtxChroma);
+    var vertexTint = vec3f(1.0);
+    if (isEnabled(material.prelit)) {
+        vertexTint = rawVtx;                          // prelit: authored colour verbatim
+    } else if (isEnabled(surfaceInput.isSkinned)) {
+        vertexTint = skinnedTint;                     // skinned char: desaturated shading
+    }                                                 // static non-prelit venue: white (suppress)
     var baseColor = vec4f(material.color.rgb * vertexTint, materialAlpha * surfaceInput.color.a);
 
     if (isEnabled(material.useTexture)) {
