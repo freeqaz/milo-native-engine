@@ -879,12 +879,81 @@ void BandRnd::WriteSceneUniforms(RndCam* cam) {
     std::memcpy(s.viewProj, viewProj, sizeof(viewProj));
     s.cameraPos[0] = camPos[0]; s.cameraPos[1] = camPos[1]; s.cameraPos[2] = camPos[2];
 
-    // One directional key light + bright ambient so unlit materials still read.
-    s.numLights = 1;
-    s.lightDirs[0][0] = -0.4f; s.lightDirs[0][1] = -0.5f; s.lightDirs[0][2] = -0.75f; s.lightDirs[0][3] = 0;
-    s.lightColors[0][0] = 1.0f; s.lightColors[0][1] = 1.0f; s.lightColors[0][2] = 1.0f; s.lightColors[0][3] = 1.0f;
-    s.ambientColor[0] = s.ambientColor[1] = s.ambientColor[2] = 0.45f; s.ambientColor[3] = 1.0f;
-    s.numPointLights = 0;
+    // Lighting. Default (all cams): one white directional + 0.45 grey ambient so
+    // unlit materials read on every screen. VENUE PATH (world.cam ONLY): read the
+    // venue's RndEnviron and feed its real lights — including the POINT lights that
+    // actually illuminate the band/stage (the *_silhouette.lit spots + colored
+    // theater accents) — so the backdrop gets moody venue lighting instead of a flat
+    // grey flood. The shader already implements point lights (computePointLight,
+    // range falloff). Iterate mLightsApprox ONLY (never ObjDirItr<RndLight> — WASM
+    // hang); guard owner ptrs (AmbientColor()/GetColor() deref them). Scoped to
+    // world.cam so game.cam (the Track-A look) and menu cams are byte-identical.
+    // Default-OFF, opt-in via RB3_VENUE_LIGHT=1. The point-light read WORKS (runtime
+    // probe confirmed the *_silhouette.lit type-0 point lights ARE in mLightsApprox at
+    // gameplay, numReal=0 — so they engage), but with the venue's WHITE stage lights +
+    // a knocked-down ambient the wall-dominated backdrop reads washed/desaturated-grey
+    // rather than retail's moody/colored look, and the ambient pull-down also darkens
+    // the band/crowd (also world.cam). Kept as an opt-in foundation until exposure +
+    // light-colour preservation are tuned (and optionally mLightsReal is also read for
+    // venues that route points there). game.cam (the track look) + menus are unaffected.
+    static int sVenueLight = -1;
+    if (sVenueLight < 0) { const char* e = getenv("RB3_VENUE_LIGHT"); sVenueLight = (e && e[0] && e[0] != '0') ? 1 : 0; }
+    const char* camNm = cam ? cam->Name() : nullptr;
+    RndEnviron* venv = RndEnviron::sCurrent;
+    if (sVenueLight && camNm && std::strcmp(camNm, "world.cam") == 0 && venv && venv->mAmbientFogOwner) {
+        // Ambient: a near-white ambient is the engine's degenerate default (not an
+        // authored flood), so pull it down — the point/dir lights provide the real
+        // illumination and a low ambient keeps the dark-venue contrast. Floor so
+        // nothing crushes to pure black.
+        const Hmx::Color& amb = venv->AmbientColor();
+        float ar = amb.red, ag = amb.green, ab = amb.blue;
+        if (std::max(ar, std::max(ag, ab)) > 0.85f) { ar *= 0.25f; ag *= 0.25f; ab *= 0.25f; }
+        s.ambientColor[0] = std::max(ar, 0.07f);
+        s.ambientColor[1] = std::max(ag, 0.07f);
+        s.ambientColor[2] = std::max(ab, 0.07f);
+        s.ambientColor[3] = 1.0f;
+        int dl = 0, pl = 0;
+        for (ObjPtrList<RndLight>::iterator it = venv->mLightsApprox.begin();
+             it != venv->mLightsApprox.end() && (dl < 4 || pl < 4); ++it) {
+            RndLight* L = *it;
+            if (!L || !L->mColorOwner || !L->Showing()) continue;
+            const Hmx::Color& lc = L->GetColor();
+            if (lc.red + lc.green + lc.blue <= 0.01f) continue;     // skip off/black lights
+            int ty = (int)L->GetType();                            // 0=point, 1=directional, 2=spot
+            if (ty == 1 && dl < 4) {
+                const Vector3& d = L->WorldXfm().m.y;
+                s.lightDirs[dl][0] = d.x; s.lightDirs[dl][1] = d.y; s.lightDirs[dl][2] = d.z; s.lightDirs[dl][3] = 0;
+                s.lightColors[dl][0] = std::min(lc.red, 1.5f);
+                s.lightColors[dl][1] = std::min(lc.green, 1.5f);
+                s.lightColors[dl][2] = std::min(lc.blue, 1.5f);
+                s.lightColors[dl][3] = 1.0f;
+                dl++;
+            } else if (ty == 0 && pl < 4) {
+                const Vector3& p = L->WorldXfm().v;                // point light WORLD POSITION
+                s.pointLightPos[pl][0] = p.x; s.pointLightPos[pl][1] = p.y; s.pointLightPos[pl][2] = p.z; s.pointLightPos[pl][3] = 0;
+                s.pointLightColors[pl][0] = std::min(lc.red, 1.8f);
+                s.pointLightColors[pl][1] = std::min(lc.green, 1.8f);
+                s.pointLightColors[pl][2] = std::min(lc.blue, 1.8f);
+                s.pointLightColors[pl][3] = 1.0f;
+                s.pointLightRanges[pl] = L->Range() > 0.f ? L->Range() : 100.f;
+                pl++;
+            }
+        }
+        if (dl == 0) {
+            // No directional in this env — soft default key so geometry has form.
+            s.lightDirs[0][0] = -0.4f; s.lightDirs[0][1] = -0.5f; s.lightDirs[0][2] = -0.75f; s.lightDirs[0][3] = 0;
+            s.lightColors[0][0] = 0.6f; s.lightColors[0][1] = 0.6f; s.lightColors[0][2] = 0.6f; s.lightColors[0][3] = 1.0f;
+            dl = 1;
+        }
+        s.numLights = dl;
+        s.numPointLights = pl;
+    } else {
+        s.numLights = 1;
+        s.lightDirs[0][0] = -0.4f; s.lightDirs[0][1] = -0.5f; s.lightDirs[0][2] = -0.75f; s.lightDirs[0][3] = 0;
+        s.lightColors[0][0] = 1.0f; s.lightColors[0][1] = 1.0f; s.lightColors[0][2] = 1.0f; s.lightColors[0][3] = 1.0f;
+        s.ambientColor[0] = s.ambientColor[1] = s.ambientColor[2] = 0.45f; s.ambientColor[3] = 1.0f;
+        s.numPointLights = 0;
+    }
     s.fogEnabled = 0;
     s.shadowEnabled = 0;
     s.numProjLights = 0;
@@ -3019,10 +3088,12 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
             // brightness (self-lit lanes), matching the dark-highway/bright-lane look.
             else if (std::strcmp(mname, "rails.mat") == 0) {
                 mu.prelit = 1.0f;
-                // rails.tex is authored bright-white; at full prelit the lanes read
-                // hotter than retail's subtler dividers and out-compete the gems for
-                // attention. Pull them back so gems stay the focal point.
-                mu.color[0] *= 0.7f; mu.color[1] *= 0.7f; mu.color[2] *= 0.7f;
+                // rails.tex is authored bright-white; retail's lane dividers are a
+                // cooler blue-white (measured normalized ~0.58/0.70/1.00 — blue
+                // dominant, red suppressed). Apply a per-channel cool tint whose mean
+                // is ~0.7, so overall lane brightness matches the prior flat ×0.7 but
+                // the hue shifts toward retail and the gems stay the focal point.
+                mu.color[0] *= 0.53f; mu.color[1] *= 0.64f; mu.color[2] *= 0.92f;
             }
             RndTex* emTex = (RndTex*)mat->mEmissiveMap;
             mu.emissiveMultiplier = emTex ? mat->mEmissiveMultiplier : 0.0f;
@@ -3031,6 +3102,14 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
             // than retail's luminous now bar — boost its emissive contribution.
             if (std::strcmp(mname, "gem_smasher_glow.mat") == 0) {
                 mu.emissiveMultiplier *= 2.0f;
+            }
+            // SP "peak state" blue track overlay (peakstate_plane, spotlight_*_track.tex
+            // filigree) fades in via PropAnim once the streak hits 4x, but draws faint
+            // (gray base color × blue diffuse, alpha-blended). Brighten its color so the
+            // blue reads as a glow over the dark track (retail's SP track is vividly
+            // blue); the anim's alpha still drives the fade-in.
+            if (std::strstr(mname, "peakstate") != nullptr) {
+                mu.color[0] *= 2.0f; mu.color[1] *= 2.0f; mu.color[2] *= 2.0f;
             }
         }
     }
