@@ -14,6 +14,7 @@
 #include "rndobj/Env.h"
 #include "rndobj/Lit.h"
 #include "rndobj/MultiMesh.h"
+#include "rndobj/Part.h"
 #include "rndobj/PostProc.h"
 #include "rndobj/ColorXfm.h"
 #include "math/Mtx.h"
@@ -3080,4 +3081,328 @@ void RndTex::SyncBitmap() {
 void RndTex::PresyncBitmap() {
     if (!gBandRnd.mGpuReady) return;
     UploadRndTexIfNeeded(gBandRnd.mGpu, this);
+}
+
+// ===========================================================================
+// Particle billboard renderer (A1 fix-B).
+//
+// On the RB3 BandRnd backend, RndParticleSys::DrawShowing (matched fork,
+// HX_NATIVE) calls the free `DrawParticlesBillboard(RndParticleSys*)`, which
+// was a weak no-op stub (rndobj_synth_link_stubs.s) — particles never drew.
+// This file provides a STRONG def that forwards to BandRnd::DrawParticles,
+// generating camera-facing quads per active particle. Mirrors the dc3
+// Part_Wgpu.cpp geometry/shader and BandRnd::DrawRect's resource pattern.
+//
+// RB3 divergences from the dc3 reference:
+//   - RB3's RndParticleSys has NO UV tiling (no NumTilesAcross/Down, no
+//     per-particle mCurrentTileIndex), so each quad samples the full texture
+//     (UV 0..1).
+//   - Positions are stored in the system's RELATIVE frame; world pos =
+//     mRelativeXfm * p->pos (Multiply(localPos, sys->RelativeXfm(), worldPos)).
+//     Absolute systems keep mRelativeXfm == identity (venue particles
+//     unaffected); relative-motion smasher FX need it or they cluster at the
+//     world origin instead of the strike line.
+// ===========================================================================
+
+namespace {
+struct RB3ParticleVertex {
+    float pos[3];
+    float uv[2];
+    float color[4];
+};
+
+// WGSL: vs projects world→clip via the SHARED scene group-0 viewProj; fs
+// samples tex × per-vertex color with an alpha discard. Group 0 reuses the
+// main renderer's SceneLayout (5 bindings) so mSceneBindGroup binds directly —
+// the vs only reads binding 0 (viewProj), the unused shadow/white entries are
+// allowed by WebGPU bind-group/layout compatibility.
+const char* kRB3ParticleShaderSource = R"WGSL(
+struct SceneUB {
+    viewProj: mat4x4f,
+};
+@group(0) @binding(0) var<uniform> scene: SceneUB;
+
+@group(1) @binding(0) var particleTex: texture_2d<f32>;
+@group(1) @binding(1) var particleSampler: sampler;
+
+struct VIn {
+    @location(0) pos: vec3f,
+    @location(1) uv: vec2f,
+    @location(2) color: vec4f,
+};
+struct VOut {
+    @builtin(position) clip: vec4f,
+    @location(0) uv: vec2f,
+    @location(1) color: vec4f,
+};
+
+@vertex fn vs_particle(in: VIn) -> VOut {
+    var out: VOut;
+    out.clip = scene.viewProj * vec4f(in.pos, 1.0);
+    out.uv = in.uv;
+    out.color = in.color;
+    return out;
+}
+
+@fragment fn fs_particle(in: VOut) -> @location(0) vec4f {
+    let tex = textureSample(particleTex, particleSampler, in.uv);
+    let c = tex * in.color;
+    if (c.a < 0.004) { discard; }
+    return c;
+}
+)WGSL";
+
+uint64_t RB3PartPipeKey(wgpu::TextureFormat fmt, WgpuBlend blend, bool hasDepth) {
+    return ((uint64_t)(uint32_t)fmt << 8) | ((uint64_t)(uint32_t)blend << 1) |
+           (uint64_t)(hasDepth ? 1 : 0);
+}
+} // namespace
+
+void BandRnd::EnsureParticlePipeline() {
+    if (mPartReady) return;
+
+    wgpu::ShaderSourceWGSL src;
+    src.code = kRB3ParticleShaderSource;
+    wgpu::ShaderModuleDescriptor smDesc{};
+    smDesc.nextInChain = &src;
+    mPartShader = mGpu.Device().CreateShaderModule(&smDesc);
+
+    // Group 1: diffuse tex + sampler.
+    wgpu::BindGroupLayoutEntry e1[2] = {};
+    e1[0].binding = 0;
+    e1[0].visibility = wgpu::ShaderStage::Fragment;
+    e1[0].texture.sampleType = wgpu::TextureSampleType::Float;
+    e1[0].texture.viewDimension = wgpu::TextureViewDimension::e2D;
+    e1[1].binding = 1;
+    e1[1].visibility = wgpu::ShaderStage::Fragment;
+    e1[1].sampler.type = wgpu::SamplerBindingType::Filtering;
+    wgpu::BindGroupLayoutDescriptor bgl1Desc{};
+    bgl1Desc.entryCount = 2;
+    bgl1Desc.entries = e1;
+    mPartTexBGL = mGpu.Device().CreateBindGroupLayout(&bgl1Desc);
+
+    // Group 0 reuses the shared scene layout (mSceneBindGroup is compatible).
+    wgpu::BindGroupLayout layouts[2] = { mPipelines.SceneLayout(), mPartTexBGL };
+    wgpu::PipelineLayoutDescriptor plDesc{};
+    plDesc.bindGroupLayoutCount = 2;
+    plDesc.bindGroupLayouts = layouts;
+    mPartPL = mGpu.Device().CreatePipelineLayout(&plDesc);
+
+    mPartReady = true;
+}
+
+void BandRnd::DrawParticles(RndParticleSys* sys) {
+    if (!mGpuReady || !mInPass || !sys) return;
+
+    RndParticle* head = sys->ActiveParticles();
+    if (!head) return;
+    RndMat* mat = sys->GetMat();
+    if (!mat) return;
+
+    // Camera axes for billboarding. Milo convention (per CAM_DBG in DrawMesh):
+    // m.x = right, m.y = forward, m.z = up.
+    RndCam* cam = RndCam::Current();
+    if (!cam) return;
+    const Transform& camXfm = cam->WorldXfm();
+    float rx = camXfm.m.x.x, ry = camXfm.m.x.y, rz = camXfm.m.x.z;  // right
+    float ux = camXfm.m.z.x, uy = camXfm.m.z.y, uz = camXfm.m.z.z;  // up
+
+    const Transform& relXfm = sys->RelativeXfm();
+
+    // Build the vertex stream (4 verts/particle: TL, BL, TR, BR).
+    static std::vector<RB3ParticleVertex> sVerts;   // reused across calls
+    sVerts.clear();
+    sVerts.reserve(256);
+
+    Vector3 worldPos;
+    for (RndParticle* p = head; p; p = p->Next()) {
+        // Relative-frame → world. Absolute systems keep relXfm == identity.
+        Multiply(p->Pos3(), relXfm, worldPos);
+
+        float halfSize = p->size * 0.5f;
+        float srx = rx * halfSize, sry = ry * halfSize, srz = rz * halfSize;
+        float sux = ux * halfSize, suy = uy * halfSize, suz = uz * halfSize;
+
+        // Optional per-particle rotation about the view axis.
+        if (p->angle != 0.0f) {
+            float cosA = cosf(p->angle);
+            float sinA = sinf(p->angle);
+            float nrx = srx * cosA + sux * sinA;
+            float nry = sry * cosA + suy * sinA;
+            float nrz = srz * cosA + suz * sinA;
+            float nux = -srx * sinA + sux * cosA;
+            float nuy = -sry * sinA + suy * cosA;
+            float nuz = -srz * sinA + suz * cosA;
+            srx = nrx; sry = nry; srz = nrz;
+            sux = nux; suy = nuy; suz = nuz;
+        }
+
+        float cx = worldPos.x, cy = worldPos.y, cz = worldPos.z;
+        float cr = p->col.red, cg = p->col.green, cb = p->col.blue, ca = p->col.alpha;
+
+        RB3ParticleVertex v;
+        v.color[0] = cr; v.color[1] = cg; v.color[2] = cb; v.color[3] = ca;
+
+        // TL: -right +up
+        v.pos[0] = cx - srx + sux; v.pos[1] = cy - sry + suy; v.pos[2] = cz - srz + suz;
+        v.uv[0] = 0.0f; v.uv[1] = 0.0f; sVerts.push_back(v);
+        // BL: -right -up
+        v.pos[0] = cx - srx - sux; v.pos[1] = cy - sry - suy; v.pos[2] = cz - srz - suz;
+        v.uv[0] = 0.0f; v.uv[1] = 1.0f; sVerts.push_back(v);
+        // TR: +right +up
+        v.pos[0] = cx + srx + sux; v.pos[1] = cy + sry + suy; v.pos[2] = cz + srz + suz;
+        v.uv[0] = 1.0f; v.uv[1] = 0.0f; sVerts.push_back(v);
+        // BR: +right -up
+        v.pos[0] = cx + srx - sux; v.pos[1] = cy + sry - suy; v.pos[2] = cz + srz - suz;
+        v.uv[0] = 1.0f; v.uv[1] = 1.0f; sVerts.push_back(v);
+    }
+
+    int numParticles = (int)sVerts.size() / 4;
+    if (numParticles == 0) return;
+
+    EnsureParticlePipeline();
+
+    // Grow the dynamic VB/IB on demand. IB indices are static per slot
+    // (0,1,2, 2,1,3 per quad) so we only rewrite them when the buffer grows.
+    int neededVerts = numParticles * 4;
+    int neededIndices = numParticles * 6;
+    if (neededVerts > mPartVBCapacity) {
+        int cap = neededVerts < 256 ? 256 : neededVerts;
+        wgpu::BufferDescriptor desc{};
+        desc.size = (uint64_t)cap * sizeof(RB3ParticleVertex);
+        desc.usage = wgpu::BufferUsage::Vertex | wgpu::BufferUsage::CopyDst;
+        mPartVB = mGpu.Device().CreateBuffer(&desc);
+        mPartVBCapacity = cap;
+    }
+    if (neededIndices > mPartIBCapacity) {
+        int quads = (mPartVBCapacity / 4);
+        int cap = quads * 6;
+        std::vector<uint16_t> indices(cap);
+        for (int i = 0; i < quads; i++) {
+            int base = i * 4;
+            int idx = i * 6;
+            indices[idx + 0] = (uint16_t)(base + 0);
+            indices[idx + 1] = (uint16_t)(base + 1);
+            indices[idx + 2] = (uint16_t)(base + 2);
+            indices[idx + 3] = (uint16_t)(base + 2);
+            indices[idx + 4] = (uint16_t)(base + 1);
+            indices[idx + 5] = (uint16_t)(base + 3);
+        }
+        wgpu::BufferDescriptor desc{};
+        desc.size = (uint64_t)cap * sizeof(uint16_t);
+        desc.usage = wgpu::BufferUsage::Index | wgpu::BufferUsage::CopyDst;
+        mPartIB = mGpu.Device().CreateBuffer(&desc);
+        mGpu.Queue().WriteBuffer(mPartIB, 0, indices.data(), cap * sizeof(uint16_t));
+        mPartIBCapacity = cap;
+    }
+    if (!mPartVB || !mPartIB) return;
+
+    mGpu.Queue().WriteBuffer(mPartVB, 0, sVerts.data(),
+                             sVerts.size() * sizeof(RB3ParticleVertex));
+
+    // Blend from the system material. Target format/depth per the ACTIVE pass
+    // (RT pass: mRtFmt, no depth; main pass: mTargetFmt, D24S8 depth — read-only
+    // LessEqual so particles z-test against the scene but don't write depth, so
+    // overlapping additive sprites composite correctly).
+    WgpuBlend blend = WgpuBlend::SrcAlpha;
+    {
+        int b = (int)mat->GetBlend();
+        if (b >= 0 && b <= 10) blend = (WgpuBlend)b;
+    }
+    bool rtPass = (mRtActiveTex != nullptr);
+    wgpu::TextureFormat fmt = rtPass ? mRtFmt : mTargetFmt;
+    bool hasDepth = !rtPass;
+
+    uint64_t pkey = RB3PartPipeKey(fmt, blend, hasDepth);
+    wgpu::RenderPipeline pipe;
+    {
+        auto it = mPartPipelines.find(pkey);
+        if (it != mPartPipelines.end()) {
+            pipe = it->second;
+        } else {
+            wgpu::BlendState bs = mPipelines.MapBlend(blend);
+            wgpu::ColorTargetState ct{};
+            ct.format = fmt;
+            ct.blend = &bs;
+            ct.writeMask = wgpu::ColorWriteMask::All;
+
+            wgpu::FragmentState frag{};
+            frag.module = mPartShader;
+            frag.entryPoint = "fs_particle";
+            frag.targetCount = 1;
+            frag.targets = &ct;
+
+            wgpu::VertexAttribute attrs[3] = {};
+            attrs[0].format = wgpu::VertexFormat::Float32x3; attrs[0].offset = 0;  attrs[0].shaderLocation = 0;
+            attrs[1].format = wgpu::VertexFormat::Float32x2; attrs[1].offset = 12; attrs[1].shaderLocation = 1;
+            attrs[2].format = wgpu::VertexFormat::Float32x4; attrs[2].offset = 20; attrs[2].shaderLocation = 2;
+            wgpu::VertexBufferLayout vbl{};
+            vbl.arrayStride = sizeof(RB3ParticleVertex);
+            vbl.stepMode = wgpu::VertexStepMode::Vertex;
+            vbl.attributeCount = 3;
+            vbl.attributes = attrs;
+
+            // Main pass has a D24S8 depth buffer; test (LessEqual) but never
+            // write — particles are translucent and order-independent under
+            // additive/alpha blend.
+            wgpu::DepthStencilState ds{};
+            ds.format = wgpu::TextureFormat::Depth24PlusStencil8;
+            ds.depthWriteEnabled = wgpu::OptionalBool::False;
+            ds.depthCompare = wgpu::CompareFunction::LessEqual;
+
+            wgpu::RenderPipelineDescriptor pd{};
+            pd.layout = mPartPL;
+            pd.vertex.module = mPartShader;
+            pd.vertex.entryPoint = "vs_particle";
+            pd.vertex.bufferCount = 1;
+            pd.vertex.buffers = &vbl;
+            pd.fragment = &frag;
+            pd.depthStencil = hasDepth ? &ds : nullptr;
+            pd.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+            pd.primitive.cullMode = wgpu::CullMode::None;
+            pd.multisample.count = 1;   // rb3 backend is single-sampled
+
+            pipe = mGpu.Device().CreateRenderPipeline(&pd);
+            mPartPipelines[pkey] = pipe;
+        }
+    }
+    if (!pipe) return;
+
+    // Diffuse tex (mWhiteView fallback) → group 1.
+    wgpu::TextureView texView;
+    RndTex* diffuse = mat->GetDiffuseTex();
+    if (diffuse) {
+        texView = GetRB3TexView(diffuse);
+        if (!texView) texView = UploadRndTexIfNeeded(mGpu, diffuse);
+    }
+    if (!texView) texView = mWhiteView;
+
+    wgpu::BindGroupEntry bge[2] = {};
+    bge[0].binding = 0; bge[0].textureView = texView;
+    bge[1].binding = 1; bge[1].sampler = mSampler;
+    wgpu::BindGroupDescriptor bgd{};
+    bgd.layout = mPartTexBGL;
+    bgd.entryCount = 2;
+    bgd.entries = bge;
+    wgpu::BindGroup texBG = mGpu.Device().CreateBindGroup(&bgd);
+
+    mPass.SetPipeline(pipe);
+    mPass.SetBindGroup(0, mSceneBindGroup, 0, nullptr);
+    mPass.SetBindGroup(1, texBG, 0, nullptr);
+    mPass.SetVertexBuffer(0, mPartVB, 0, sVerts.size() * sizeof(RB3ParticleVertex));
+    mPass.SetIndexBuffer(mPartIB, wgpu::IndexFormat::Uint16, 0,
+                         (uint64_t)neededIndices * sizeof(uint16_t));
+    mPass.DrawIndexed(neededIndices);
+
+    // Restore the scene bind group at group 0 for the next DrawMesh (mirrors
+    // DrawRect — though we already bound mSceneBindGroup at group 0 here, the
+    // next DrawMesh re-binds anyway; explicit for symmetry/safety).
+    mPass.SetBindGroup(0, mSceneBindGroup, 0, nullptr);
+}
+
+// Strong def displacing the weak no-op stub
+// (_Z22DrawParticlesBillboardP14RndParticleSys in rndobj_synth_link_stubs.s).
+// Called by RndParticleSys::DrawShowing (matched fork, HX_NATIVE).
+void DrawParticlesBillboard(RndParticleSys* sys) {
+    gBandRnd.DrawParticles(sys);
 }

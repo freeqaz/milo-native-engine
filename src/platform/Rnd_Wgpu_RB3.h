@@ -43,6 +43,7 @@ using GpuVertexRB3 = GpuVertex;
 class RndCam;
 class RndMesh;
 class RndMat;
+class RndParticleSys;
 
 // Simple bump-allocated uniform ring (mirrors Rnd_Wgpu.h UniformRingBuffer).
 class BandUniformRing {
@@ -163,7 +164,20 @@ public:
     void DrawRect(const Hmx::Rect&, const Hmx::Color&, RndMat*,
                   const Hmx::Color*, const Hmx::Color*) override;
 
+    // DrawParticles: render one RndParticleSys' active particles as
+    // camera-facing billboard quads into the CURRENTLY ACTIVE pass. Called from
+    // the free `DrawParticlesBillboard(RndParticleSys*)` that the matched-fork
+    // RndParticleSys::DrawShowing (HX_NATIVE) invokes. Each particle becomes a
+    // quad oriented to the current cam's right(X)/up(Z) axes, sized by p->size,
+    // tinted by p->col, positioned at mRelativeXfm * p->pos (relative-frame →
+    // world), blended per the system material's RndMat::Blend.
+    void DrawParticles(RndParticleSys* sys);
+
 private:
+    // Lazily build the particle billboard pipeline infra (shader + group-1
+    // tex/sampler BGL + pipeline layout reusing mPipelines.SceneLayout() at
+    // group 0). Idempotent.
+    void EnsureParticlePipeline();
     void WriteSceneUniforms(RndCam* cam);
     void CreateDefaultTextures();
     wgpu::BindGroup MakeMaterialBindGroup(uint32_t off, RndMat* mat);
@@ -253,6 +267,21 @@ public:
     // Per-(format,blend,depth,isPost) RenderPipeline cache so the composite +
     // repeated DrawRect calls don't recreate a pipeline every invocation.
     std::unordered_map<uint64_t, wgpu::RenderPipeline> mQuadPipelines;
+
+    // --- Particle billboard infra (built by EnsureParticlePipeline) ---
+    // Group 0 = mPipelines.SceneLayout() (reused; the vs only reads binding 0 =
+    // viewProj). Group 1 = particle diffuse tex@0 + sampler@1. The VB/IB are
+    // dynamic; grown on demand. Pipelines are cached per (format,blend,depth)
+    // so a per-frame burst of many particle systems never recreates a pipeline.
+    wgpu::ShaderModule mPartShader;
+    wgpu::BindGroupLayout mPartTexBGL;        // group 1: tex@0, samp@1
+    wgpu::PipelineLayout mPartPL;
+    wgpu::Buffer mPartVB;                     // dynamic, 4 verts/particle
+    wgpu::Buffer mPartIB;                     // dynamic, 6 indices/particle
+    int mPartVBCapacity = 0;                  // in vertices
+    int mPartIBCapacity = 0;                  // in indices
+    bool mPartReady = false;
+    std::unordered_map<uint64_t, wgpu::RenderPipeline> mPartPipelines;
 
     // --- Stage 2: postproc composite infra (built by EnsureQuadPipeline) ---
     // Postproc bind-group layout: sceneTex@0, sampler@1, PostProcUB@2 (160B,
