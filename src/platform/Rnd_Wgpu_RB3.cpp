@@ -801,6 +801,10 @@ void BandRnd::WriteSceneUniforms(RndCam* cam) {
     float camPos[3] = {0, 0, 0};
 
     if (getenv("RB3_RENDER_DBG")) fprintf(stderr, "[dbg] WriteSceneUniforms cam=%p\n", (void*)cam);
+    if (getenv("RB3_LIGHT_PROBE") && cam) {
+        fprintf(stderr, "[LIGHT_PROBE] WriteSceneUniforms cam='%s' near=%.1f far=%.1f\n",
+                cam->Name() ? cam->Name() : "<noname>", cam->NearPlane(), cam->FarPlane());
+    }
     if (cam) {
         cam->UpdateLocal();          // refresh mLocalProjectXfm + mWorldProjectXfm
         const Transform& world = cam->WorldXfm();
@@ -1063,12 +1067,22 @@ wgpu::BindGroup BandRnd::MakeMaterialBindGroup(uint32_t off, RndMat* mat) {
     // ensures texture data arrives even when the matched-fork PostLoad path
     // doesn't call SyncBitmap before the first DrawMesh.
     wgpu::TextureView diffuse = mWhiteView;
+    wgpu::TextureView emissive = mBlackView;
     if (mat) {
         RndTex* dt = mat->GetDiffuseTex();
         if (dt) {
             wgpu::TextureView v = GetRB3TexView(dt);
             if (!v) v = UploadRndTexIfNeeded(mGpu, dt);
             if (v) diffuse = v;
+        }
+        // Track-A glow: resolve the emissive (self-illumination) map so the shader's
+        // emissive term has real data. Mirrors the diffuse path (texture cache +
+        // lazy upload). Inert unless DrawMesh sets emissiveMultiplier > 0.
+        RndTex* et = (RndTex*)mat->mEmissiveMap;
+        if (et) {
+            wgpu::TextureView v = GetRB3TexView(et);
+            if (!v) v = UploadRndTexIfNeeded(mGpu, et);
+            if (v) emissive = v;
         }
     }
     wgpu::BindGroupEntry e[11] = {};
@@ -1077,7 +1091,7 @@ wgpu::BindGroup BandRnd::MakeMaterialBindGroup(uint32_t off, RndMat* mat) {
     e[2].binding = 2;  e[2].sampler = mSampler;
     e[3].binding = 3;  e[3].textureView = mFlatNormalView;
     e[4].binding = 4;  e[4].textureView = mBlackView;
-    e[5].binding = 5;  e[5].textureView = mBlackView;
+    e[5].binding = 5;  e[5].textureView = emissive;
     e[6].binding = 6;  e[6].textureView = mBlackView;
     e[7].binding = 7;  e[7].sampler = mSampler;
     e[8].binding = 8;  e[8].textureView = mBlackCubeView;
@@ -2956,6 +2970,69 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     } else {
         mu.color[0] = mu.color[1] = mu.color[2] = mu.color[3] = 1.0f;
         mu.useTexture = 0.0f; mu.intensify = 1.0f; mu.prelit = 0.0f;
+    }
+    if (getenv("RB3_LIGHT_PROBE")) {
+        const char* mn = mesh->Name() ? mesh->Name() : "<noname>";
+        static std::unordered_map<std::string,int> sLightProbeSeen;
+        if (sLightProbeSeen[mn]++ == 0) {
+            RndCam* pc = RndCam::sCurrent;
+            RndTex* em = mat ? (RndTex*)mat->mEmissiveMap : nullptr;
+            RndTex* dt = mat ? mat->GetDiffuseTex() : nullptr;
+            Hmx::Color mc = mat ? mat->GetColor() : Hmx::Color(1,1,1,1);
+            fprintf(stderr,
+                "[LIGHT_PROBE] mesh='%s' cam='%s' prelit=%d blend=%d color=(%.2f,%.2f,%.2f,%.2f) mat='%s' diff=%s emisMul=%.2f emisMap=%s\n",
+                mn, (pc && pc->Name()) ? pc->Name() : "<none>",
+                mat ? (mat->mPreLit ? 1 : 0) : -1,
+                mat ? (int)mat->GetBlend() : -1,
+                mc.red, mc.green, mc.blue, mc.alpha,
+                (mat && mat->Name()) ? mat->Name() : "<nomat>",
+                dt ? (dt->Name() ? dt->Name() : "<unnamed>") : "null",
+                mat ? mat->mEmissiveMultiplier : 0.f,
+                em ? (em->Name() ? em->Name() : "<unnamed>") : "null");
+        }
+    }
+    // Track-A glow: the gameplay-track look, applied ONLY under game.cam
+    // (near30/far224) so the venue/band/crowd (drawn under world.cam) are untouched.
+    // Parts:
+    //  (1) Darken the prelit highway SURFACE so the prelit gems/lanes pop against a
+    //      near-black track (retail's highway is dark, not the native mid-gray).
+    //      surface.mat is prelit white; scale its base down (its bass-clef watermark
+    //      survives via the emissive term below).
+    //  (2) Re-enable material EMISSIVE (this backend's DrawMesh dropped it). Set the
+    //      multiplier here (guarded by emissive-map presence — many mats have mult>0
+    //      but a null map); the map texture itself is bound in MakeMaterialBindGroup.
+    // Default-ON (the dark-track look is the correct native gameplay appearance);
+    // RB3_TRACK_LIGHT_OFF=1 is the opt-out escape hatch for A/B (mirrors RB3_BLOOM_OFF).
+    static int sTrackLight = -1;
+    if (sTrackLight < 0) { const char* e = getenv("RB3_TRACK_LIGHT_OFF"); sTrackLight = (e && e[0] && e[0] != '0') ? 0 : 1; }
+    if (sTrackLight && mat) {
+        RndCam* pc = RndCam::sCurrent;
+        if (pc && pc->Name() && std::strcmp(pc->Name(), "game.cam") == 0) {
+            const char* mname = mat->Name() ? mat->Name() : "";
+            if (std::strcmp(mname, "surface.mat") == 0) {
+                mu.color[0] *= 0.12f; mu.color[1] *= 0.12f; mu.color[2] *= 0.12f;
+            }
+            // Lit lanes: the track rails (rails.tex) are non-prelit, so they're
+            // dimmed by the flat ambient and read as near-black separators on the
+            // now-dark surface — the opposite of retail's bright glowing lane
+            // dividers. Force them prelit so rails.tex shows at full authored
+            // brightness (self-lit lanes), matching the dark-highway/bright-lane look.
+            else if (std::strcmp(mname, "rails.mat") == 0) {
+                mu.prelit = 1.0f;
+                // rails.tex is authored bright-white; at full prelit the lanes read
+                // hotter than retail's subtler dividers and out-compete the gems for
+                // attention. Pull them back so gems stay the focal point.
+                mu.color[0] *= 0.7f; mu.color[1] *= 0.7f; mu.color[2] *= 0.7f;
+            }
+            RndTex* emTex = (RndTex*)mat->mEmissiveMap;
+            mu.emissiveMultiplier = emTex ? mat->mEmissiveMultiplier : 0.0f;
+            // Brighter "now bar": the additive strike-line glow (gem_smasher_glow,
+            // square_smasher_bright_*.tex, ships emissive mul 0.90) is dimmer/narrower
+            // than retail's luminous now bar — boost its emissive contribution.
+            if (std::strcmp(mname, "gem_smasher_glow.mat") == 0) {
+                mu.emissiveMultiplier *= 2.0f;
+            }
+        }
     }
     // GEM_FORCE: debug — render prism gems as opaque bright magenta with depth
     // disabled, to disambiguate "geometry missing/off-screen/clipped" from
