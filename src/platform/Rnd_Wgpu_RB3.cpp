@@ -2858,7 +2858,18 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
         // instead of the default
         //   baseColor.rgb *= diffuseSample.rgb;
         // which is the actual root cause of W5's black-on-dark text.
-        mu.useAlphaAsRGB = isTextMeshHeur ? 1.0f : 0.0f;
+        //
+        // EXCEPTION — colour-icon glyph fonts (the overshell instrument-icon
+        // font instrument_icons_small*, whose material name contains "icon"):
+        // these are unnamed RndText glyph submeshes (so isTextMeshHeur fires)
+        // but their atlas holds real RGB artwork (the guitar/bass/drums/vocals/
+        // keys rings) with alpha as a solid circular cell MASK. useAlphaAsRGB
+        // would discard the RGB artwork and multiply the (white) base colour by
+        // the solid-circle alpha -> a SOLID WHITE CIRCLE (the overshell
+        // white-blob bug). Letter fonts (Pentatonic_*) carry no "icon" in their
+        // material name, so they keep the alpha->RGB glyph path.
+        bool isColorIconFont = matName[0] && std::strstr(matName, "icon") != nullptr;
+        mu.useAlphaAsRGB = (isTextMeshHeur && !isColorIconFont) ? 1.0f : 0.0f;
         // W9 tail-color fix — apply the material's texture-coordinate transform.
         // RB3 sustain "tail" materials (tail_green.mat, tail_red.mat, ...) all
         // share one diffuse atlas (gem_tails.tex, an 8bpp DXT5 128x128 image of
