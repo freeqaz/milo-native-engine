@@ -673,7 +673,14 @@ void BandRnd::InitGpuResources() {
         mDepthView = mDepthTex.CreateView();
     }
 
-    mSceneRing.Init(mGpu.Device(), 16 * 1024, "SceneUBO");
+    // 64KB = ~85 scene-uniform slots (768B aligned each). The per-environ
+    // re-write (venue lighting) makes a busy world.cam frame do ~24 scene writes
+    // (vs ~3-15 typical); the ring wraps to offset 0 at capacity, and since each
+    // bind group pins a fixed offset, >slots writes/frame would clobber an
+    // earlier draw's uniforms mid-frame (all queue writes land before submit).
+    // 85 slots >> the measured 24 worst-case keeps every frame's offsets
+    // distinct with wide margin for busier venues. (Was 16KB = ~21 slots.)
+    mSceneRing.Init(mGpu.Device(), 64 * 1024, "SceneUBO");
     mMaterialRing.Init(mGpu.Device(), 256 * 1024, "MaterialUBO");
     mObjectRing.Init(mGpu.Device(), 256 * 1024, "ObjectUBO");
     mBoneRing.Init(mGpu.Device(), 256 * 1024, "BoneUBO");
@@ -794,6 +801,21 @@ void RB3RegisterBandRndShutdown() {
     TheDebug.AddExitCallback(BandRndShutdownExitCallback);
 }
 
+// Venue colour/point lighting (P4): read the venue's per-environ RndEnviron
+// lights into the scene uniforms under world.cam (the venue scopes ~20 environs
+// to mesh groups per frame; see the per-environ re-write in DrawMesh). DEFAULT-ON
+// — opt out via RB3_VENUE_LIGHT_OFF=1 (mirrors RB3_TRACK_LIGHT_OFF). This drives
+// the moody, coloured, stage-lit venue look (matching retail's dark backdrop so
+// the highway pops) instead of the old flat one-white-directional + 0.45-grey
+// flood. Used by both WriteSceneUniforms (gate the read) and DrawMesh (gate the
+// per-environ re-write), so they stay in lock-step. game.cam (the gameplay
+// highway) and cams that aren't world.cam are byte-identical to before.
+static bool sVenueLightEnabled() {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("RB3_VENUE_LIGHT_OFF"); v = (e && e[0] && e[0] != '0') ? 0 : 1; }
+    return v != 0;
+}
+
 void BandRnd::WriteSceneUniforms(RndCam* cam) {
     SceneUniforms s{};
 
@@ -879,28 +901,26 @@ void BandRnd::WriteSceneUniforms(RndCam* cam) {
     std::memcpy(s.viewProj, viewProj, sizeof(viewProj));
     s.cameraPos[0] = camPos[0]; s.cameraPos[1] = camPos[1]; s.cameraPos[2] = camPos[2];
 
-    // Lighting. Default (all cams): one white directional + 0.45 grey ambient so
-    // unlit materials read on every screen. VENUE PATH (world.cam ONLY): read the
-    // venue's RndEnviron and feed its real lights — including the POINT lights that
-    // actually illuminate the band/stage (the *_silhouette.lit spots + colored
-    // theater accents) — so the backdrop gets moody venue lighting instead of a flat
-    // grey flood. The shader already implements point lights (computePointLight,
-    // range falloff). Iterate mLightsApprox ONLY (never ObjDirItr<RndLight> — WASM
-    // hang); guard owner ptrs (AmbientColor()/GetColor() deref them). Scoped to
-    // world.cam so game.cam (the Track-A look) and menu cams are byte-identical.
-    // Default-OFF, opt-in via RB3_VENUE_LIGHT=1. The point-light read WORKS (runtime
-    // probe confirmed the *_silhouette.lit type-0 point lights ARE in mLightsApprox at
-    // gameplay, numReal=0 — so they engage), but with the venue's WHITE stage lights +
-    // a knocked-down ambient the wall-dominated backdrop reads washed/desaturated-grey
-    // rather than retail's moody/colored look, and the ambient pull-down also darkens
-    // the band/crowd (also world.cam). Kept as an opt-in foundation until exposure +
-    // light-colour preservation are tuned (and optionally mLightsReal is also read for
-    // venues that route points there). game.cam (the track look) + menus are unaffected.
-    static int sVenueLight = -1;
-    if (sVenueLight < 0) { const char* e = getenv("RB3_VENUE_LIGHT"); sVenueLight = (e && e[0] && e[0] != '0') ? 1 : 0; }
+    // Lighting. Default (non-venue cams): one white directional + 0.45 grey ambient
+    // so unlit materials read on every screen. VENUE PATH (world.cam, DEFAULT-ON):
+    // read the CURRENT RndEnviron's real lights — directional (type 1) + the POINT
+    // lights that actually illuminate each group (the *_silhouette.lit spots, the
+    // coloured theater/street/foreground accents) — so the backdrop gets the moody,
+    // coloured, stage-lit look that matches retail (dark venue so the highway pops)
+    // instead of a flat grey flood. The venue scopes ~20 environs to mesh groups
+    // per world.cam frame; DrawMesh re-writes these uniforms on each environ change
+    // (RndEnviron::sCurrent), so the coloured lights land on their own group rather
+    // than one environ lighting the whole venue. The shader implements point lights
+    // (computePointLight range falloff). Iterate mLightsApprox ONLY (never
+    // ObjDirItr<RndLight> — WASM hang); guard owner ptrs (AmbientColor()/GetColor()
+    // deref them). Scoped to world.cam so game.cam (the Track-A highway look) and
+    // menu cams are byte-identical to the old single-directional default. Opt out
+    // via RB3_VENUE_LIGHT_OFF=1 (see sVenueLightEnabled). Verified clean across
+    // gameplay (clear win), song-select (unchanged) and the menu hub (moodier);
+    // ring-buffer sized for the extra per-environ writes (see InitGpuResources).
     const char* camNm = cam ? cam->Name() : nullptr;
     RndEnviron* venv = RndEnviron::sCurrent;
-    if (sVenueLight && camNm && std::strcmp(camNm, "world.cam") == 0 && venv && venv->mAmbientFogOwner) {
+    if (sVenueLightEnabled() && camNm && std::strcmp(camNm, "world.cam") == 0 && venv && venv->mAmbientFogOwner) {
         // Ambient: a near-white ambient is the engine's degenerate default (not an
         // authored flood), so pull it down — the point/dir lights provide the real
         // illumination and a low ambient keeps the dark-venue contrast. Floor so
@@ -912,12 +932,34 @@ void BandRnd::WriteSceneUniforms(RndCam* cam) {
         s.ambientColor[1] = std::max(ag, 0.07f);
         s.ambientColor[2] = std::max(ab, 0.07f);
         s.ambientColor[3] = 1.0f;
+        // RB3_VENUE_PROBE: dump what each DISTINCT venue RndEnviron contains (once
+        // per env name), so tuning is grounded in real light data not static
+        // analysis. With per-environ re-writes this fires for every env group.
+        static int sVenueProbe = -1;
+        if (sVenueProbe < 0) { const char* e = getenv("RB3_VENUE_PROBE"); sVenueProbe = (e && e[0] && e[0] != '0') ? 1 : 0; }
+        static std::unordered_map<std::string,int> sProbedEnvs;
+        const char* envNm = venv->Name() ? venv->Name() : "<noname>";
+        bool probe = sVenueProbe && (sProbedEnvs[envNm]++ == 0);
+        if (probe) {
+            int total = 0, showing = 0;
+            for (ObjPtrList<RndLight>::iterator pit = venv->mLightsApprox.begin();
+                 pit != venv->mLightsApprox.end(); ++pit) { total++; if (*pit && (*pit)->Showing()) showing++; }
+            fprintf(stderr, "[VENUE_PROBE] env=%s ambRaw=(%.2f,%.2f,%.2f) ambAdj=(%.2f,%.2f,%.2f) numApprox=%d showing=%d\n",
+                    venv->Name() ? venv->Name() : "<noname>",
+                    amb.red, amb.green, amb.blue, s.ambientColor[0], s.ambientColor[1], s.ambientColor[2], total, showing);
+        }
         int dl = 0, pl = 0;
         for (ObjPtrList<RndLight>::iterator it = venv->mLightsApprox.begin();
              it != venv->mLightsApprox.end() && (dl < 4 || pl < 4); ++it) {
             RndLight* L = *it;
             if (!L || !L->mColorOwner || !L->Showing()) continue;
             const Hmx::Color& lc = L->GetColor();
+            if (probe) {
+                const Vector3& lp = L->WorldXfm().v;
+                fprintf(stderr, "[VENUE_PROBE]   light '%s' type=%d color=(%.2f,%.2f,%.2f) range=%.1f pos=(%.1f,%.1f,%.1f)\n",
+                        L->Name() ? L->Name() : "<noname>", (int)L->GetType(),
+                        lc.red, lc.green, lc.blue, L->Range(), lp.x, lp.y, lp.z);
+            }
             if (lc.red + lc.green + lc.blue <= 0.01f) continue;     // skip off/black lights
             int ty = (int)L->GetType();                            // 0=point, 1=directional, 2=spot
             if (ty == 1 && dl < 4) {
@@ -939,8 +981,11 @@ void BandRnd::WriteSceneUniforms(RndCam* cam) {
                 pl++;
             }
         }
-        if (dl == 0) {
-            // No directional in this env — soft default key so geometry has form.
+        if (dl == 0 && pl == 0) {
+            // Env has NO real lights (ambient-only, e.g. sky.env) — soft default
+            // key so geometry still has form. NOT added when the env has point
+            // lights (e.g. theater.env's coloured stage spots), else a grey key
+            // would wash the authored colour out.
             s.lightDirs[0][0] = -0.4f; s.lightDirs[0][1] = -0.5f; s.lightDirs[0][2] = -0.75f; s.lightDirs[0][3] = 0;
             s.lightColors[0][0] = 0.6f; s.lightColors[0][1] = 0.6f; s.lightColors[0][2] = 0.6f; s.lightColors[0][3] = 1.0f;
             dl = 1;
@@ -2421,6 +2466,20 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
         const Transform& cw = RndCam::sCurrent->WorldXfm();
         mLastSceneCamPose[0] = cw.v.x; mLastSceneCamPose[1] = cw.v.y; mLastSceneCamPose[2] = cw.v.z;
         mLastSceneCamPose[3] = cw.m.y.x; mLastSceneCamPose[4] = cw.m.y.y; mLastSceneCamPose[5] = cw.m.y.z;
+        mLastSceneEnv = (void*)RndEnviron::sCurrent;
+    }
+    // Per-environ re-write: the venue scopes many RndEnvirons to mesh groups
+    // within one world.cam frame; without this, every venue mesh is lit by the
+    // single environ that was current at the last CAMERA write. Only matters
+    // when venue lighting is on and the active cam is the venue (world.cam) — the
+    // gameplay highway (game.cam) and menu cams keep their single per-cam write,
+    // so they're byte-identical to before. Gated by RB3_VENUE_LIGHT.
+    else if (sVenueLightEnabled() && RndCam::sCurrent &&
+             RndCam::sCurrent->Name() && std::strcmp(RndCam::sCurrent->Name(), "world.cam") == 0 &&
+             (void*)RndEnviron::sCurrent != mLastSceneEnv) {
+        WriteSceneUniforms(RndCam::sCurrent);
+        mPass.SetBindGroup(0, mSceneBindGroup, 0, nullptr);
+        mLastSceneEnv = (void*)RndEnviron::sCurrent;
     }
 
     RndMesh::VertVector& verts = owner->mVerts;
@@ -3045,12 +3104,14 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
         static std::unordered_map<std::string,int> sLightProbeSeen;
         if (sLightProbeSeen[mn]++ == 0) {
             RndCam* pc = RndCam::sCurrent;
+            RndEnviron* pe = RndEnviron::sCurrent;
             RndTex* em = mat ? (RndTex*)mat->mEmissiveMap : nullptr;
             RndTex* dt = mat ? mat->GetDiffuseTex() : nullptr;
             Hmx::Color mc = mat ? mat->GetColor() : Hmx::Color(1,1,1,1);
             fprintf(stderr,
-                "[LIGHT_PROBE] mesh='%s' cam='%s' prelit=%d blend=%d color=(%.2f,%.2f,%.2f,%.2f) mat='%s' diff=%s emisMul=%.2f emisMap=%s\n",
+                "[LIGHT_PROBE] mesh='%s' cam='%s' env='%s' prelit=%d blend=%d color=(%.2f,%.2f,%.2f,%.2f) mat='%s' diff=%s emisMul=%.2f emisMap=%s\n",
                 mn, (pc && pc->Name()) ? pc->Name() : "<none>",
+                (pe && pe->Name()) ? pe->Name() : "<none>",
                 mat ? (mat->mPreLit ? 1 : 0) : -1,
                 mat ? (int)mat->GetBlend() : -1,
                 mc.red, mc.green, mc.blue, mc.alpha,

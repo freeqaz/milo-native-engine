@@ -249,6 +249,14 @@ public:
     // stationary pose and fall beyond the far plane. Track the pose so we
     // re-write scene uniforms when game.cam's transform changes mid-frame.
     float mLastSceneCamPose[6] = {0,0,0,0,0,0};
+    // Last RndEnviron the scene uniforms were written against. The venue scopes
+    // ~20 RndEnvirons to mesh-groups within ONE world.cam frame (sky / buildings
+    // / characters / theater stage-lights / geom interior …), so a per-CAMERA
+    // write applies one environ's lighting to the whole venue. When venue
+    // lighting is enabled we ALSO re-write on RndEnviron::sCurrent change so each
+    // mesh-group gets its own environ's lights (the coloured theater point
+    // lights actually land on the stage, the dim-building env stays dim, etc.).
+    void* mLastSceneEnv = nullptr;
 
     // Default textures
     wgpu::Texture mWhiteTex, mBlackTex, mFlatNormalTex, mBlackCubeTex, mShadowTex;
