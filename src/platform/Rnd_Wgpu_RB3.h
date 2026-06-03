@@ -211,7 +211,7 @@ private:
     // postproc is active or the frame never rendered to the intermediate.
     void FlushPostProcMidFrame();
 
-    // --- P1 additive-halo-only highway gem bloom (RB3_HIGHWAY_BLOOM) ---
+    // --- P1 additive-halo-only highway gem bloom (default-on; RB3_HIGHWAY_BLOOM_OFF) ---
     // Design B (capture-and-replay; NOT the rejected redirect/Design A). During
     // the live game.cam highway pass, DrawMesh CAPTURES (no GPU work) a small
     // per-draw record for each bloom-source mesh (pipeline + the LIVE pose-baked
@@ -220,10 +220,11 @@ private:
     // transparent-cleared sampleable halo buffer, REPLAYS those captured draws
     // verbatim against their authored poses, runs a 2nd BloomPass over it, and
     // ADDITIVE-blits ONLY the blurred halo onto mFrameView (LoadOp::Load). The
-    // base highway is NEVER redirected or re-composited. Default OFF; every site
-    // is inert when RB3_HIGHWAY_BLOOM is unset.
-    bool HighwayBloomEnabled();                  // env latch (RB3_HIGHWAY_BLOOM)
-    bool IsHaloSourceMat(RndMat* mat);           // property-based halo-source test
+    // base highway is NEVER redirected or re-composited. Default ON; every site
+    // is inert when RB3_HIGHWAY_BLOOM_OFF=1. The halo is confined to the emissive
+    // gem cores + now-bar (IsHaloSourceMat excludes the full-quad surface + HUD).
+    bool HighwayBloomEnabled();                  // env latch (default-on; RB3_HIGHWAY_BLOOM_OFF opts out)
+    bool IsHaloSourceMat(RndMat* mat);           // emissive gem/now-bar test (excludes surface.mat + HUD)
     void EnsureHaloTarget(int w, int h);         // (re)create mHaloTex/mHaloView
     void EnsureHaloBlitPipeline();               // build mHaloBlit* (additive-only)
     void CompositeHaloBloom();                   // EndFrame: replay + bloom + add
@@ -344,7 +345,7 @@ public:
     // regardless of the intermediate's mTargetFmt (RGBA8 headless / BGRA8 windowed).
     BloomPass mBloom;
 
-    // --- P1 additive-halo-only highway gem bloom (RB3_HIGHWAY_BLOOM) state ---
+    // --- P1 additive-halo-only highway gem bloom (default-on) state ---
     // Sampleable transparent-cleared buffer the captured halo-source draws are
     // REPLAYED into at EndFrame (format mTargetFmt, usage RenderAttachment |
     // TextureBinding; sized to the window — matches mDepthView). A SECOND BloomPass

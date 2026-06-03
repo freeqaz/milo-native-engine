@@ -1053,7 +1053,7 @@ void BandRnd::BeginFrame(RndCam* cam) {
     // P1 highway bloom: drop last frame's captured replay records. Keeps the
     // per-draw bind-group handles (refcounted) valid only through THIS frame's
     // EndFrame; menus / world.cam frames leave it empty so CompositeHaloBloom is
-    // a no-op. Inert allocation when RB3_HIGHWAY_BLOOM is unset (vector stays empty).
+    // a no-op. Inert allocation when RB3_HIGHWAY_BLOOM_OFF=1 (vector stays empty).
     mHaloDraws.clear();
 
     mFrameView = mGpu.IsHeadless() ? mGpu.AcquireHeadlessFrame() : mGpu.AcquireNextFrame();
@@ -1151,7 +1151,7 @@ void BandRnd::EndFrame() {
     // the grade block, before Finish(): replay this frame's captured halo-source
     // draws into a transparent buffer, bloom it, and ADDITIVE-blit the halo onto
     // mFrameView (LoadOp::Load). The base highway is never redirected. Inert when
-    // RB3_HIGHWAY_BLOOM is unset (mHaloDraws empty) or off a gameplay frame.
+    // RB3_HIGHWAY_BLOOM_OFF=1 (mHaloDraws empty) or off a gameplay frame.
     if (HighwayBloomEnabled() && !mHaloDraws.empty() && mFrameView)
         CompositeHaloBloom();
 
@@ -1493,35 +1493,48 @@ void BandRnd::FlushPostProcMidFrame() {
 }
 
 // ===========================================================================
-// P1 additive-halo-only highway gem bloom (RB3_HIGHWAY_BLOOM). DESIGN B:
-// capture-and-replay, NOT the rejected redirect (Design A). The live highway
-// pass (game.cam) is NEVER touched — DrawMesh only CAPTURES a per-draw replay
-// record for each halo-source mesh (the live pose-baked scene bind group handle
-// + mat/obj/bone bind groups + vbuf/ibuf). At EndFrame, CompositeHaloBloom
+// P1 additive-halo-only highway gem bloom (DEFAULT-ON; opt out RB3_HIGHWAY_BLOOM_OFF).
+// DESIGN B: capture-and-replay, NOT the rejected redirect (Design A). The live
+// highway pass (game.cam) is NEVER touched — DrawMesh only CAPTURES a per-draw
+// replay record for each halo-source mesh (the live pose-baked scene bind group
+// handle + mat/obj/bone bind groups + vbuf/ibuf). At EndFrame, CompositeHaloBloom
 // replays those draws into a transparent buffer, blooms it, and ADDITIVE-blits
 // ONLY the blurred halo onto mFrameView. The base track is unaffected, so
-// RB3_HIGHWAY_BLOOM_BLEND=0 is visually identical to OFF.
+// RB3_HIGHWAY_BLOOM_BLEND=0 is visually identical to OFF (negative control).
 //
-// When RB3_HIGHWAY_BLOOM is unset, HighwayBloomEnabled() returns false and every
-// site (the DrawMesh capture, the EndFrame composite) is a no-op — byte-identical
-// to today.
+// When RB3_HIGHWAY_BLOOM_OFF=1, HighwayBloomEnabled() returns false and every site
+// (the DrawMesh capture, the EndFrame composite) is a no-op — byte-identical to
+// the pre-bloom path. The halo is confined to the emissive gem cores + now-bar
+// (IsHaloSourceMat): the full-quad track surface and HUD meter-glass are excluded
+// so the dark track + HUD are never washed.
 // ===========================================================================
 bool BandRnd::HighwayBloomEnabled() {
+    // DEFAULT-ON (gems/now-bar additive bloom — retail-accurate, confined to the
+    // emissive gem cores + strike line, never the track surface or HUD). Opt out
+    // via RB3_HIGHWAY_BLOOM_OFF=1 (mirrors RB3_TRACK_LIGHT_OFF / RB3_VENUE_LIGHT_OFF).
     static int s = -1;
-    if (s < 0) { const char* e = getenv("RB3_HIGHWAY_BLOOM"); s = (e && e[0] && e[0] != '0') ? 1 : 0; }
+    if (s < 0) { const char* e = getenv("RB3_HIGHWAY_BLOOM_OFF"); s = (e && e[0] && e[0] != '0') ? 0 : 1; }
     return s != 0;
 }
 
-// Property-based halo-source classifier (NOT a name whitelist). A material is a
-// bloom source if it is emissive (an emissive map present AND a positive
-// multiplier) or uses an additive blend (kBlendAdd / kBlendSrcAlphaAdd — the
-// gem_smasher_glow now-bar ships kBlendSrcAlphaAdd). Safe only under the
-// game.cam guard at the call site (other cams never reach this).
+// Halo-source classifier. The halo must be CONFINED to the small, bright emissive
+// meshes — the gem cores (prism_mat, emisMap=prism_gem_emissive, mult 1.0) and the
+// now-bar/strike (gem_smasher_glow, emisMap + mult 0.90). Two exclusions keep it
+// from washing the scene (the first attempt did both):
+//   - surface.mat (the highway watermark) is also emissive but is a FULL QUAD;
+//     blooming a full quad washes the whole track + lifts the black point. Exclude
+//     it by name — it's the one full-plane emissive on the highway.
+//   - The additive-blend test (kBlendAdd/kBlendSrcAlphaAdd) was dropped: its only
+//     unique catches were the HUD overdrive/streak meter-glass lenses, which bloom
+//     into the HUD. The now-bar is already selected by its emissive map, so the
+//     blend test added only spill.
+// Safe only under the game.cam guard at the call site (other cams never reach this).
 bool BandRnd::IsHaloSourceMat(RndMat* mat) {
     if (!mat) return false;
-    if ((RndTex*)mat->mEmissiveMap != nullptr && mat->mEmissiveMultiplier > 0.0f) return true;
-    RndMat::Blend b = mat->GetBlend();
-    return b == RndMat::kBlendAdd || b == RndMat::kBlendSrcAlphaAdd;
+    if ((RndTex*)mat->mEmissiveMap == nullptr || mat->mEmissiveMultiplier <= 0.0f) return false;
+    const char* mn = mat->Name();
+    if (mn && std::strstr(mn, "surface")) return false;   // full-quad track plane — would wash
+    return true;
 }
 
 // (Re)create the halo replay target at w x h. Same format/usage as
@@ -3561,7 +3574,7 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     // halo; capturing the per-draw bind-group handle replays each source against
     // its authored pose), the mat/obj/bone bind groups, and the vbuf/ibuf/count.
     // No GPU work here — a leaf push onto mHaloDraws, consumed in EndFrame's
-    // CompositeHaloBloom. Inert when RB3_HIGHWAY_BLOOM is unset.
+    // CompositeHaloBloom. Inert when RB3_HIGHWAY_BLOOM_OFF=1.
     if (HighwayBloomEnabled() && RndCam::sCurrent && RndCam::sCurrent->Name() &&
         std::strcmp(RndCam::sCurrent->Name(), "game.cam") == 0 && IsHaloSourceMat(mat)) {
         if (mHaloDraws.capacity() == 0) mHaloDraws.reserve(16);
