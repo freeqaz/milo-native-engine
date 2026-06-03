@@ -211,6 +211,23 @@ private:
     // postproc is active or the frame never rendered to the intermediate.
     void FlushPostProcMidFrame();
 
+    // --- P1 additive-halo-only highway gem bloom (RB3_HIGHWAY_BLOOM) ---
+    // Design B (capture-and-replay; NOT the rejected redirect/Design A). During
+    // the live game.cam highway pass, DrawMesh CAPTURES (no GPU work) a small
+    // per-draw record for each bloom-source mesh (pipeline + the LIVE pose-baked
+    // mSceneBindGroup HANDLE + mat/obj/bone bind groups + vbuf/ibuf + indexCount).
+    // At EndFrame (after mPass.End(), before Finish()), CompositeHaloBloom opens a
+    // transparent-cleared sampleable halo buffer, REPLAYS those captured draws
+    // verbatim against their authored poses, runs a 2nd BloomPass over it, and
+    // ADDITIVE-blits ONLY the blurred halo onto mFrameView (LoadOp::Load). The
+    // base highway is NEVER redirected or re-composited. Default OFF; every site
+    // is inert when RB3_HIGHWAY_BLOOM is unset.
+    bool HighwayBloomEnabled();                  // env latch (RB3_HIGHWAY_BLOOM)
+    bool IsHaloSourceMat(RndMat* mat);           // property-based halo-source test
+    void EnsureHaloTarget(int w, int h);         // (re)create mHaloTex/mHaloView
+    void EnsureHaloBlitPipeline();               // build mHaloBlit* (additive-only)
+    void CompositeHaloBloom();                   // EndFrame: replay + bloom + add
+
 public:
     GpuDevice mGpu;
     PipelineManager mPipelines;
@@ -326,6 +343,38 @@ public:
     // samples its output as a plain float texture (format-agnostic), so it works
     // regardless of the intermediate's mTargetFmt (RGBA8 headless / BGRA8 windowed).
     BloomPass mBloom;
+
+    // --- P1 additive-halo-only highway gem bloom (RB3_HIGHWAY_BLOOM) state ---
+    // Sampleable transparent-cleared buffer the captured halo-source draws are
+    // REPLAYED into at EndFrame (format mTargetFmt, usage RenderAttachment |
+    // TextureBinding; sized to the window — matches mDepthView). A SECOND BloomPass
+    // instance (mHaloBloom) keeps its own mip chain so the venue's mBloom (already
+    // consumed by the grade) is untouched.
+    wgpu::Texture mHaloTex;
+    wgpu::TextureView mHaloView;
+    int mHaloWidth = 0;
+    int mHaloHeight = 0;
+    BloomPass mHaloBloom;
+    // Additive fullscreen-blit infra (its own minimal WGSL module: vs_fullscreen +
+    // fs_blit textureSample). Group 0 = srcTex@0, sampler@1. ONLY the additive
+    // pipeline is built (color One/One) — the rejected Design A's premultiplied-OVER
+    // pipeline is intentionally dropped (additive halo only; base track untouched).
+    wgpu::ShaderModule mHaloBlitShader;
+    wgpu::BindGroupLayout mHaloBlitBGL;
+    wgpu::PipelineLayout mHaloBlitPL;
+    wgpu::RenderPipeline mHaloAddPipeline;       // additive (One/One)
+    bool mHaloBlitReady = false;
+    // Per-frame replay list. CAPTURES the LIVE mSceneBindGroup HANDLE per draw (NOT
+    // a uint32_t offset — a dynamicOffsetCount mismatch on replay would discard the
+    // whole command buffer). Cleared each BeginFrame; refcounted handles stay valid
+    // through EndFrame. reserve(16) once on first use.
+    struct HaloDraw {
+        wgpu::RenderPipeline pipe;
+        wgpu::BindGroup scene, mat, obj, bone;
+        wgpu::Buffer vbuf, ibuf;
+        uint32_t indexCount;
+    };
+    std::vector<HaloDraw> mHaloDraws;
 
     bool mGpuReady = false;
     bool mPreInited = false;

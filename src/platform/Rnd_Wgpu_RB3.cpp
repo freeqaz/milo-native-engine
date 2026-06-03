@@ -690,6 +690,12 @@ void BandRnd::InitGpuResources() {
     // V2 bloom: grab the default sampler (pipelines/textures are lazily built on
     // first BloomPass::Run, sized to the scene). Cheap; safe to Init unconditionally.
     mBloom.Init(mGpu);
+    // P1 highway bloom: its own BloomPass instance + own mip chain. Init() is
+    // MANDATORY even though pipelines/textures build lazily on first Run() —
+    // BloomPass::Run does NOT build mDefaultSampler (only Init() does); a null
+    // sampler yields an invalid command buffer that discards the whole frame.
+    // mDefaultSampler is per-instance, so mBloom.Init() does not cover this one.
+    mHaloBloom.Init(mGpu);
 
     mGpuReady = true;
     printf("BandRnd: GPU ready (%dx%d, fmt=%d, %s)\n", W, H, (int)mTargetFmt,
@@ -768,6 +774,19 @@ void BandRnd::Shutdown() {
     mQuadVertexBuffer = nullptr;
     mRectUB = nullptr;
     mQuadReady = false;
+
+    // P1 highway-halo bloom infra (drop refs before Dawn teardown).
+    mHaloDraws.clear();
+    mHaloBloom.Terminate();
+    mHaloAddPipeline = nullptr;
+    mHaloBlitPL = nullptr;
+    mHaloBlitBGL = nullptr;
+    mHaloBlitShader = nullptr;
+    mHaloView = nullptr;
+    mHaloTex = nullptr;
+    mHaloWidth = 0;
+    mHaloHeight = 0;
+    mHaloBlitReady = false;
 
     // Stage-2 postproc composite infra.
     mBloom.Terminate();
@@ -1031,6 +1050,11 @@ void BandRnd::BeginFrame(RndCam* cam) {
     mMaterialRing.Reset();
     mObjectRing.Reset();
     mBoneRing.Reset();
+    // P1 highway bloom: drop last frame's captured replay records. Keeps the
+    // per-draw bind-group handles (refcounted) valid only through THIS frame's
+    // EndFrame; menus / world.cam frames leave it empty so CompositeHaloBloom is
+    // a no-op. Inert allocation when RB3_HIGHWAY_BLOOM is unset (vector stays empty).
+    mHaloDraws.clear();
 
     mFrameView = mGpu.IsHeadless() ? mGpu.AcquireHeadlessFrame() : mGpu.AcquireNextFrame();
     if (!mFrameView) { fprintf(stderr, "BandRnd: frame acquire failed\n"); return; }
@@ -1122,6 +1146,14 @@ void BandRnd::EndFrame() {
         RunPostProcComposite(mFrameView);
         mPostProcFlushed = true;
     }
+
+    // P1 additive-halo-only highway gem bloom (Design B). After the main pass +
+    // the grade block, before Finish(): replay this frame's captured halo-source
+    // draws into a transparent buffer, bloom it, and ADDITIVE-blit the halo onto
+    // mFrameView (LoadOp::Load). The base highway is never redirected. Inert when
+    // RB3_HIGHWAY_BLOOM is unset (mHaloDraws empty) or off a gameplay frame.
+    if (HighwayBloomEnabled() && !mHaloDraws.empty() && mFrameView)
+        CompositeHaloBloom();
 
     wgpu::CommandBuffer cmd = mEncoder.Finish();
     mGpu.Queue().Submit(1, &cmd);
@@ -1458,6 +1490,273 @@ void BandRnd::FlushPostProcMidFrame() {
         fprintf(stderr, "[RB3_TIER2_DBG] mid-frame venue composite flushed f%d "
                 "meshesDrawnSoFar=%d (highway/HUD draws ungraded over graded venue)\n",
                 mFrameCount, mDrawnMeshes);
+}
+
+// ===========================================================================
+// P1 additive-halo-only highway gem bloom (RB3_HIGHWAY_BLOOM). DESIGN B:
+// capture-and-replay, NOT the rejected redirect (Design A). The live highway
+// pass (game.cam) is NEVER touched — DrawMesh only CAPTURES a per-draw replay
+// record for each halo-source mesh (the live pose-baked scene bind group handle
+// + mat/obj/bone bind groups + vbuf/ibuf). At EndFrame, CompositeHaloBloom
+// replays those draws into a transparent buffer, blooms it, and ADDITIVE-blits
+// ONLY the blurred halo onto mFrameView. The base track is unaffected, so
+// RB3_HIGHWAY_BLOOM_BLEND=0 is visually identical to OFF.
+//
+// When RB3_HIGHWAY_BLOOM is unset, HighwayBloomEnabled() returns false and every
+// site (the DrawMesh capture, the EndFrame composite) is a no-op — byte-identical
+// to today.
+// ===========================================================================
+bool BandRnd::HighwayBloomEnabled() {
+    static int s = -1;
+    if (s < 0) { const char* e = getenv("RB3_HIGHWAY_BLOOM"); s = (e && e[0] && e[0] != '0') ? 1 : 0; }
+    return s != 0;
+}
+
+// Property-based halo-source classifier (NOT a name whitelist). A material is a
+// bloom source if it is emissive (an emissive map present AND a positive
+// multiplier) or uses an additive blend (kBlendAdd / kBlendSrcAlphaAdd — the
+// gem_smasher_glow now-bar ships kBlendSrcAlphaAdd). Safe only under the
+// game.cam guard at the call site (other cams never reach this).
+bool BandRnd::IsHaloSourceMat(RndMat* mat) {
+    if (!mat) return false;
+    if ((RndTex*)mat->mEmissiveMap != nullptr && mat->mEmissiveMultiplier > 0.0f) return true;
+    RndMat::Blend b = mat->GetBlend();
+    return b == RndMat::kBlendAdd || b == RndMat::kBlendSrcAlphaAdd;
+}
+
+// (Re)create the halo replay target at w x h. Same format/usage as
+// EnsureIntermediate (mTargetFmt, RenderAttachment | TextureBinding) so the
+// replay can render into it and CompositeHaloBloom can sample it. Sized to the
+// window (matches mDepthView), NOT mIntermediate*. Early-out if unchanged.
+void BandRnd::EnsureHaloTarget(int w, int h) {
+    if (!mGpuReady || w <= 0 || h <= 0) return;
+    if (mHaloTex && mHaloView && mHaloWidth == w && mHaloHeight == h) return;
+    wgpu::TextureDescriptor td{};
+    td.label = "RB3HaloBloomTarget";
+    td.size = {(uint32_t)w, (uint32_t)h, 1};
+    td.format = mTargetFmt;
+    td.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding;
+    td.mipLevelCount = 1;
+    wgpu::Texture t = mGpu.Device().CreateTexture(&td);
+    if (!t) return;
+    mHaloTex = t;
+    mHaloView = t.CreateView();
+    mHaloWidth = w;
+    mHaloHeight = h;
+}
+
+// A minimal WGSL module: vs_fullscreen (fullscreen triangle, no vbuf) + fs_blit
+// (plain textureSample). Builds ONLY the ADDITIVE pipeline (color & alpha
+// One/One) — the premultiplied-OVER pipeline of the rejected Design A is dropped
+// (we additively lay ONLY the halo over the untouched framebuffer).
+static const char* kRB3HaloBlitShaderSource = R"WGSL(
+struct VOut {
+    @builtin(position) pos: vec4f,
+    @location(0) uv: vec2f,
+};
+
+@group(0) @binding(0) var srcTex: texture_2d<f32>;
+@group(0) @binding(1) var srcSampler: sampler;
+
+@vertex fn vs_fullscreen(@builtin(vertex_index) idx: u32) -> VOut {
+    var out: VOut;
+    let x = f32(i32(idx & 1u)) * 4.0 - 1.0;
+    let y = f32(i32(idx >> 1u)) * 4.0 - 1.0;
+    out.pos = vec4f(x, y, 0.0, 1.0);
+    out.uv = vec2f((x + 1.0) * 0.5, (1.0 - y) * 0.5);
+    return out;
+}
+
+@fragment fn fs_blit(in: VOut) -> @location(0) vec4f {
+    return textureSample(srcTex, srcSampler, in.uv);
+}
+)WGSL";
+
+void BandRnd::EnsureHaloBlitPipeline() {
+    if (mHaloBlitReady) return;
+    auto& dev = mGpu.Device();
+
+    wgpu::ShaderSourceWGSL wgsl{};
+    wgsl.code = kRB3HaloBlitShaderSource;
+    wgpu::ShaderModuleDescriptor smDesc{};
+    smDesc.nextInChain = &wgsl;
+    mHaloBlitShader = dev.CreateShaderModule(&smDesc);
+
+    // group 0: srcTex@0 (Float, 2D), sampler@1 (Filtering)
+    wgpu::BindGroupLayoutEntry entries[2] = {};
+    entries[0].binding = 0;
+    entries[0].visibility = wgpu::ShaderStage::Fragment;
+    entries[0].texture.sampleType = wgpu::TextureSampleType::Float;
+    entries[0].texture.viewDimension = wgpu::TextureViewDimension::e2D;
+    entries[1].binding = 1;
+    entries[1].visibility = wgpu::ShaderStage::Fragment;
+    entries[1].sampler.type = wgpu::SamplerBindingType::Filtering;
+
+    wgpu::BindGroupLayoutDescriptor bglDesc{};
+    bglDesc.entryCount = 2;
+    bglDesc.entries = entries;
+    mHaloBlitBGL = dev.CreateBindGroupLayout(&bglDesc);
+
+    wgpu::PipelineLayoutDescriptor plDesc{};
+    plDesc.bindGroupLayoutCount = 1;
+    plDesc.bindGroupLayouts = &mHaloBlitBGL;
+    mHaloBlitPL = dev.CreatePipelineLayout(&plDesc);
+
+    // ONLY the additive pipeline (color One/One, alpha One/One).
+    wgpu::BlendState bs{};
+    bs.color.srcFactor = wgpu::BlendFactor::One;
+    bs.color.dstFactor = wgpu::BlendFactor::One;
+    bs.color.operation = wgpu::BlendOperation::Add;
+    bs.alpha.srcFactor = wgpu::BlendFactor::One;
+    bs.alpha.dstFactor = wgpu::BlendFactor::One;
+    bs.alpha.operation = wgpu::BlendOperation::Add;
+
+    wgpu::ColorTargetState ct{};
+    ct.format = mTargetFmt;
+    ct.blend = &bs;
+    ct.writeMask = wgpu::ColorWriteMask::All;
+
+    wgpu::FragmentState frag{};
+    frag.module = mHaloBlitShader;
+    frag.entryPoint = "fs_blit";
+    frag.targetCount = 1;
+    frag.targets = &ct;
+
+    wgpu::RenderPipelineDescriptor pd{};
+    pd.layout = mHaloBlitPL;
+    pd.vertex.module = mHaloBlitShader;
+    pd.vertex.entryPoint = "vs_fullscreen";
+    pd.fragment = &frag;
+    pd.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+    pd.depthStencil = nullptr;
+    pd.multisample.count = 1;
+    mHaloAddPipeline = mGpu.Device().CreateRenderPipeline(&pd);
+
+    mHaloBlitReady = true;
+}
+
+// EndFrame composite (Design B): replay the captured halo-source draws into the
+// transparent halo buffer, bloom it, and ADDITIVE-blit ONLY the blurred halo
+// onto mFrameView (LoadOp::Load — base track preserved). Same encoder, after
+// mPass.End() and before mEncoder.Finish(). Clears mHaloDraws (keeps capacity).
+void BandRnd::CompositeHaloBloom() {
+    if (!mGpuReady || mHaloDraws.empty() || !mFrameView) { mHaloDraws.clear(); return; }
+
+    // Read tunables up front so the neg-control (BLEND=0) can short-circuit to a
+    // TRUE no-op. The engine's BloomPass does NOT scale its threshold/blur output
+    // by the Run `intensity` arg (only the upsample mip-merge uses a SEPARATE
+    // weight), so OutputView() is non-zero even at intensity=0 — i.e. passing
+    // blend=0 to Run() would still add the base-mip halo. To honor the contract
+    // "RB3_HIGHWAY_BLOOM_BLEND=0 is visually identical to OFF", skip the replay +
+    // bloom + composite entirely when blend<=0 (touches NOTHING on mFrameView).
+    float thresh = 0.55f;
+    float blend = 0.7f;
+    {
+        const char* t = getenv("RB3_HIGHWAY_BLOOM_THRESH");
+        if (t && t[0]) thresh = (float)atof(t);
+        const char* b = getenv("RB3_HIGHWAY_BLOOM_BLEND");
+        if (b && b[0]) blend = (float)atof(b);
+    }
+    if (blend <= 0.0f) {
+        if (getenv("RB3_RENDER_DBG") || getenv("RB3_TIER2_DBG"))
+            fprintf(stderr, "[RB3_HALOBLOOM] f%d blend=0 -> no-op (identical to OFF)\n",
+                    mFrameCount);
+        mHaloDraws.clear();
+        return;
+    }
+
+    int W = mGpu.WindowWidth(), H = mGpu.WindowHeight();
+    EnsureHaloTarget(W, H);
+    EnsureHaloBlitPipeline();
+    if (!mHaloView || !mHaloAddPipeline || !mHaloBlitBGL || !mDepthView) {
+        mHaloDraws.clear();
+        return;
+    }
+
+    // (b) Replay pass: clear the halo buffer TRANSPARENT (only halo-source pixels
+    //     become non-zero) and clear depth (the captured draws were authored with
+    //     depth on). Replay each captured draw verbatim against its pose-baked
+    //     scene bind group — NO dynamic offset (the bind group pins mSceneOffset
+    //     directly, so dynamicOffsetCount must be 0 to match the live draw).
+    {
+        wgpu::RenderPassColorAttachment colorAtt{};
+        colorAtt.view = mHaloView;
+        colorAtt.loadOp = wgpu::LoadOp::Clear;
+        colorAtt.storeOp = wgpu::StoreOp::Store;
+        colorAtt.clearValue = {0, 0, 0, 0};
+
+        wgpu::RenderPassDepthStencilAttachment depthAtt{};
+        depthAtt.view = mDepthView;
+        depthAtt.depthLoadOp = wgpu::LoadOp::Clear; depthAtt.depthStoreOp = wgpu::StoreOp::Store;
+        depthAtt.depthClearValue = 1.0f;
+        depthAtt.stencilLoadOp = wgpu::LoadOp::Clear; depthAtt.stencilStoreOp = wgpu::StoreOp::Store;
+        depthAtt.stencilClearValue = 0;
+
+        wgpu::RenderPassDescriptor rp{};
+        rp.label = "BandHaloReplay";
+        rp.colorAttachmentCount = 1; rp.colorAttachments = &colorAtt;
+        rp.depthStencilAttachment = &depthAtt;
+
+        wgpu::RenderPassEncoder pass = mEncoder.BeginRenderPass(&rp);
+        for (const HaloDraw& d : mHaloDraws) {
+            pass.SetPipeline(d.pipe);
+            pass.SetBindGroup(0, d.scene, 0, nullptr);
+            pass.SetBindGroup(1, d.mat, 0, nullptr);
+            pass.SetBindGroup(2, d.obj, 0, nullptr);
+            pass.SetBindGroup(3, d.bone, 0, nullptr);
+            pass.SetVertexBuffer(0, d.vbuf, 0, WGPU_WHOLE_SIZE);
+            pass.SetIndexBuffer(d.ibuf, wgpu::IndexFormat::Uint16, 0, WGPU_WHOLE_SIZE);
+            pass.DrawIndexed(d.indexCount, 1, 0, 0, 0);
+        }
+        pass.End();
+    }
+
+    // (c) Bloom the halo buffer (its own BloomPass instance / mip chain).
+    wgpu::TextureView haloView;
+    {
+        Hmx::Color tint(1.f, 1.f, 1.f, 1.f);
+        mHaloBloom.Run(mEncoder, mHaloView, mHaloWidth, mHaloHeight,
+                       blend, thresh, tint, mGpu);
+        if (mHaloBloom.HasOutput()) haloView = mHaloBloom.OutputView();
+    }
+
+    // (d) ADDITIVE composite ONLY: one fullscreen pass on mFrameView
+    //     (LoadOp::Load → keep the base frame), no depth. Add ONLY the blurred
+    //     halo. NO over-draw, NO blit of mHaloView itself. With blend==0 the
+    //     bloom output is black → this is a no-op → visually identical to OFF.
+    {
+        wgpu::RenderPassColorAttachment colorAtt{};
+        colorAtt.view = mFrameView;
+        colorAtt.loadOp = wgpu::LoadOp::Load;
+        colorAtt.storeOp = wgpu::StoreOp::Store;
+
+        wgpu::RenderPassDescriptor rp{};
+        rp.label = "BandHaloBloomComposite";
+        rp.colorAttachmentCount = 1; rp.colorAttachments = &colorAtt;
+        rp.depthStencilAttachment = nullptr;
+
+        wgpu::RenderPassEncoder pass = mEncoder.BeginRenderPass(&rp);
+        if (haloView) {
+            wgpu::BindGroupEntry bge[2] = {};
+            bge[0].binding = 0; bge[0].textureView = haloView;
+            bge[1].binding = 1; bge[1].sampler = mSampler;
+            wgpu::BindGroupDescriptor bgd{};
+            bgd.layout = mHaloBlitBGL; bgd.entryCount = 2; bgd.entries = bge;
+            wgpu::BindGroup bg = mGpu.Device().CreateBindGroup(&bgd);
+            pass.SetPipeline(mHaloAddPipeline);
+            pass.SetBindGroup(0, bg, 0, nullptr);
+            pass.Draw(3);
+        }
+        pass.End();
+    }
+
+    if (getenv("RB3_RENDER_DBG") || getenv("RB3_TIER2_DBG"))
+        fprintf(stderr, "[RB3_HALOBLOOM] f%d %dx%d draws=%zu thresh=%.2f blend=%.2f halo=%d\n",
+                mFrameCount, mHaloWidth, mHaloHeight, mHaloDraws.size(), thresh, blend,
+                haloView != nullptr);
+
+    // (e) Done — keep capacity for next frame.
+    mHaloDraws.clear();
 }
 
 void BandRnd::DoPostProcess() {
@@ -3254,6 +3553,21 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
 
     wgpu::RenderPipeline pipe = mPipelines.GetPipeline(key);
     if (!pipe) return;
+
+    // P1 highway bloom CAPTURE (Design B): under the live game.cam highway pass,
+    // record a verbatim replay of each halo-source draw — pipeline, the LIVE
+    // pose-baked mSceneBindGroup HANDLE (NOT mSceneOffset: game.cam is re-posed
+    // mid-frame, so replaying against the single final pose would mis-place every
+    // halo; capturing the per-draw bind-group handle replays each source against
+    // its authored pose), the mat/obj/bone bind groups, and the vbuf/ibuf/count.
+    // No GPU work here — a leaf push onto mHaloDraws, consumed in EndFrame's
+    // CompositeHaloBloom. Inert when RB3_HIGHWAY_BLOOM is unset.
+    if (HighwayBloomEnabled() && RndCam::sCurrent && RndCam::sCurrent->Name() &&
+        std::strcmp(RndCam::sCurrent->Name(), "game.cam") == 0 && IsHaloSourceMat(mat)) {
+        if (mHaloDraws.capacity() == 0) mHaloDraws.reserve(16);
+        mHaloDraws.push_back({pipe, mSceneBindGroup, matBG, objBG, boneBG,
+                              vbuf, ibuf, (uint32_t)indices.size()});
+    }
 
     mPass.SetPipeline(pipe);
     mPass.SetBindGroup(0, mSceneBindGroup, 0, nullptr);
