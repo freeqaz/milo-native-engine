@@ -2811,6 +2811,28 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     // and select VertexLayoutType::Skinned so vs_skinned blends the verts.
     bool skinned = owner->IsSkinned();
 
+    // DIAG: skip-skinned / skip-static draw bisection.
+    if (skinned && getenv("RB3_SKIP_SKINNED")) return;
+    if (!skinned && getenv("RB3_SKIP_STATIC")) return;
+
+    // SKIN_PROBE: ground-truth diagnostic for character skinning. Logs, once per
+    // unique mesh name, whether the INSTANCE vs the GEOM-OWNER carries the bones,
+    // which path the mesh takes, face count, and the bone palette source object.
+    if (getenv("SKIN_PROBE")) {
+        const char* mn = mesh->Name() ? mesh->Name() : "?";
+        static std::unordered_map<std::string, int> sProbeSeen;
+        if (sProbeSeen[mn]++ == 0) {
+            fprintf(stderr,
+                "[SKIN_PROBE] mesh='%s' owner='%s' (same=%d) "
+                "mesh.IsSkinned=%d mesh.NumBones=%d  owner.IsSkinned=%d owner.NumBones=%d  "
+                "nf=%d nv=%d -> %s\n",
+                mn, owner->Name() ? owner->Name() : "?", (owner == mesh),
+                mesh->IsSkinned(), mesh->NumBones(),
+                owner->IsSkinned(), owner->NumBones(),
+                nf, nv, skinned ? "SKINNED-PATH" : "STATIC-PATH");
+        }
+    }
+
     // --- Unpack vertices into engine GpuVertexRB3 / GpuVertexSkinned layout ---
     std::vector<GpuVertexRB3> gpuVerts;
     std::vector<GpuVertexSkinned> gpuVertsSkinned;
@@ -2833,6 +2855,26 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
                 g.boneIndices[2] = (uint8_t)v.boneIndices[2]; g.boneIndices[3] = (uint8_t)v.boneIndices[3];
                 g.pad = 0.0f;
                 g.tangent[0] = 1.0f; g.tangent[1] = 0; g.tangent[2] = 0; g.tangent[3] = 1.0f;
+            }
+            // VERT_PROBE: dump uncompressed-skinned bind verts (pos bounds + a
+            // few samples w/ weights+indices) once per mesh, to ground-truth the
+            // band-character geometry that takes the uncompressed path.
+            if (getenv("VERT_PROBE") && mesh->Name()) {
+                static std::unordered_map<std::string,int> sVP;
+                const char* mn = mesh->Name();
+                if (sVP[mn]++ == 0) {
+                    float mn3[3]={1e30f,1e30f,1e30f}, mx3[3]={-1e30f,-1e30f,-1e30f};
+                    for (int i=0;i<nv;i++){ for(int k=0;k<3;k++){ float p=gpuVertsSkinned[i].pos[k];
+                        if(p<mn3[k])mn3[k]=p; if(p>mx3[k])mx3[k]=p; } }
+                    fprintf(stderr,"[VERT_PROBE] mesh='%s' nv=%d posBounds min(%.1f,%.1f,%.1f) max(%.1f,%.1f,%.1f) span(%.1f,%.1f,%.1f)\n",
+                        mn, nv, mn3[0],mn3[1],mn3[2], mx3[0],mx3[1],mx3[2],
+                        mx3[0]-mn3[0],mx3[1]-mn3[1],mx3[2]-mn3[2]);
+                    for (int i=0;i<nv && i<6;i++){ const GpuVertexSkinned& g=gpuVertsSkinned[i];
+                        fprintf(stderr,"   v%d pos(%.2f,%.2f,%.2f) w(%.3f,%.3f,%.3f,%.3f sum=%.3f) idx(%d,%d,%d,%d)\n",
+                            i, g.pos[0],g.pos[1],g.pos[2], g.boneWeights[0],g.boneWeights[1],g.boneWeights[2],g.boneWeights[3],
+                            g.boneWeights[0]+g.boneWeights[1]+g.boneWeights[2]+g.boneWeights[3],
+                            g.boneIndices[0],g.boneIndices[1],g.boneIndices[2],g.boneIndices[3]); }
+                }
             }
         } else {
             gpuVerts.resize(nv);
@@ -2994,13 +3036,218 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     if (skinned) {
         int numBones = owner->NumBones();
         if (numBones > kMaxBones) numBones = kMaxBones;
+        // BONE_PROBE: once, for the first body-sized skinned mesh (>=20 bones),
+        // dump each bone's local-rotation orthonormality (det), world pose, the
+        // inverse-bind offset, and the composed skin determinant. Localizes
+        // whether deformation is the local pose, the hierarchy, or the offset.
+        static bool sBoneProbeDone = false;
+        const char* probeName = getenv("BONE_PROBE_NAME");
+        bool nameMatch = mesh->Name() && (probeName ? (strstr(mesh->Name(), probeName) != nullptr) :
+                         (strstr(mesh->Name(), "plaidshirt") ||
+                         strstr(mesh->Name(), "trackjacket") || strstr(mesh->Name(), "shirt") ||
+                         strstr(mesh->Name(), "jacket") || strstr(mesh->Name(), "vestdenim")));
+        bool doBoneProbe = getenv("BONE_PROBE") && !sBoneProbeDone &&
+                           nameMatch && owner->NumBones() >= 8 && mesh->Name();
+        auto det3 = [](const Hmx::Matrix3& m) {
+            return m.x.x*(m.y.y*m.z.z - m.y.z*m.z.y)
+                 - m.x.y*(m.y.x*m.z.z - m.y.z*m.z.x)
+                 + m.x.z*(m.y.x*m.z.y - m.y.y*m.z.x);
+        };
+        if (doBoneProbe) {
+            sBoneProbeDone = true;
+            fprintf(stderr, "\n=== BONE_PROBE mesh='%s' numBones=%d (actual=%d) ===\n",
+                    mesh->Name(), numBones, owner->NumBones());
+        }
+        // RB3_RECOMPUTE_OFFSETS (test): once per skinned mesh, recompute each
+        // bone's inverse-bind offset from the LIVE skeleton pose:
+        //   mOffset = meshWorldXfm * inverse(boneWorldXfm)
+        // i.e. SetBone(i, bone, true). This makes skin = identity at the current
+        // (neutral) pose BY CONSTRUCTION, regardless of the authored offset. Used
+        // to prove whether the deformation is an authored-offset/bind mismatch
+        // (recompute fixes it) vs a runtime-pose bug (recompute can't help).
+        // NOTE: this is a DIAGNOSTIC, not a fix. It recomputes against the LIVE
+        // (already idle-animating) pose at first draw, which is NOT the bind pose
+        // — so it visually WORSENS playback (bakes a mid-idle pose; later frames
+        // fling worse). It DOES prove the root cause under RB3_NO_CLIP=1
+        // RB3_NO_IK=1 (static bind): then trackjacket's skinPos collapses to 0,
+        // confirming an authored-offset-vs-skeleton-bind mismatch. The real fix is
+        // per-character skeleton instancing (see CHAR_SKINNING_DEFORM_INVESTIGATION.md).
+        if (getenv("RB3_RECOMPUTE_OFFSETS")) {
+            static std::unordered_map<void*,int> sRecomp;
+            if (sRecomp[(void*)owner]++ == 0) {
+                for (int b = 0; b < numBones; b++)
+                    owner->SetBone(b, owner->BoneTransAt(b), true);
+            }
+        }
+        // SKEL_REBAKE pre-pass (wave-06): scoped, one-time inverse-bind rebake for the
+        // female band outfit (trackjacket) whose female-baked offsets land on the
+        // shared MALE-bind band skeleton. The whole native band skeleton is PROVABLY
+        // STATIC (XBONE_TRACK: bone_R-upperArm worldPos byte-identical across 1424
+        // draws over a whole song, clip+IK on) — no member's Poll animates the shared
+        // char/main/skeleton.milo magnet, so there is no live female pose to bind to (a
+        // SyncObjects rebind is a no-op: Find(boneName) returns the SAME magnet) and no
+        // recompute trap (the magnet never moves). The 3 males look correct only because
+        // their outfit invBind already matches the static male bind. We bring the female
+        // to that SAME quality by rebaking HER outfit's inverse-bind offsets against the
+        // static skeleton pose (mOffset = meshWorld * inverse(boneWorld), SetBone(b,bone,
+        // true)) so her skin composes to identity -> a coherent, correctly-posed arm,
+        // not the clamp's authored-T-pose stub. Triggered only when the mesh actually
+        // shards (worst bone's mesh-local skin > 12u); clean meshes (males) never rebake.
+        // One-time per mesh (mNativeBonesRebound flag, which also tells the clamp to skip
+        // this mesh). Default-on; opt-out RB3_NO_SKEL_REBAKE=1.
+        {
+            static int sRebake = -1;
+            if (sRebake < 0) sRebake = getenv("RB3_NO_SKEL_REBAKE") ? 0 : 1;
+            // MESH-LEVEL DYNAMIC EXCLUSION: face / hair / fingernail outfit meshes are
+            // skinned to bones driven every frame by CharFaceServo / CharHair /
+            // CharIKFingers, so a one-time static rebake of those does not stick (the
+            // bones move) and would only swap the shipped clamp's coherent bind pose for
+            // a re-flinging one (regression). Leave those meshes to the per-frame fling
+            // clamp (the shipped backstop). Only the STATIC arm/twist/torso/leg outfit
+            // meshes (trackjacket, buttflappants, ...) are rebaked — their bind mismatch
+            // on the provably-static band skeleton is the real ~20u fling, and a static
+            // rebake there is a permanent correction. (The 650u goatee/hair flings stay
+            // exactly as the shipped clamp left them.)
+            const char* mn0 = mesh->Name();
+            bool dynamicMesh = mn0 && (strstr(mn0, "facehair") || strstr(mn0, "goatee") ||
+                strstr(mn0, "hair") || strstr(mn0, "bedhead") || strstr(mn0, "blownback") ||
+                strstr(mn0, "mohawk") || strstr(mn0, "fingernails") ||
+                strstr(mn0, "eyebrow") || strstr(mn0, "tongue") || strstr(mn0, "facial"));
+            if (sRebake && !dynamicMesh && numBones >= 8 && !mesh->mNativeBonesRebound &&
+                (!owner || !owner->mNativeBonesRebound)) {
+                const Transform& mw = mesh->WorldXfm();
+                Transform invMw; Invert(mw, invMw);
+                float worst2 = 0.f; int worstB = -1;
+                for (int b = 0; b < numBones; b++) {
+                    RndTransformable* bt = owner->BoneTransAt(b);
+                    if (!bt) continue;
+                    const Transform& wt = bt->WorldXfm();
+                    if (!(std::fabs(wt.v.x) < 1e5f && std::fabs(wt.v.y) < 1e5f &&
+                          std::fabs(wt.v.z) < 1e5f)) continue;
+                    Transform skin; Multiply(owner->BoneOffsetAt(b), wt, skin);
+                    Transform local; Multiply(skin, invMw, local);
+                    float ml2 = local.v.x*local.v.x + local.v.y*local.v.y +
+                                local.v.z*local.v.z;
+                    if (ml2 > worst2) { worst2 = ml2; worstB = b; }
+                }
+                // BAND-ONLY scope: only the on-stage band outfit meshes bind to the
+                // STATIC, shared char/main/skeleton_unshared.milo magnet (a root dir,
+                // never animated). The crowd/extras clap/lighter/fist/body meshes bind
+                // their OWN per-character skeletons (char/crowd/*, char/extras/*) which
+                // DO animate — rebaking those against a live pose would FREEZE the
+                // animation mid-motion (the recompute trap). Gate the rebake on the
+                // worst bone's owning dir being skeleton_unshared.milo so only the band
+                // (static-skeleton) meshes are touched.
+                RndTransformable* wbone = (worstB >= 0) ? owner->BoneTransAt(worstB) : 0;
+                ObjectDir* wdir = wbone ? wbone->Dir() : 0;
+                bool bandStatic = wdir && !wdir->mStoredFile.empty() &&
+                    strstr(wdir->mStoredFile.c_str(), "skeleton_unshared.milo") != 0;
+                if (worst2 > 144.0f && bandStatic) {
+                    // Rebake ONLY the individual flung bones (mesh-local skin > 12u) to
+                    // the current pose. On the band the upper-body arm/twist chain is
+                    // STATIC (XBONE_TRACK), so its rebaked offset is a permanent, stable
+                    // correction -> coherent posed female arm. The female hair/face/
+                    // finger chains (bone_hair*, bone_*lid*, finger bones) ARE driven on
+                    // top by CharHair/CharFaceServo/CharIKFingers, so a rebake of those
+                    // is only momentarily valid; we DELIBERATELY do NOT set
+                    // mNativeBonesRebound, so the per-frame fling clamp below stays LIVE
+                    // and catches any bone that drifts off its rebaked pose (the dynamic
+                    // chains), clamping them to bind exactly as the shipped backstop did,
+                    // while the static arm renders correctly posed. Clean bones (the 3
+                    // males, and the static bones already at I) are never touched.
+                    Transform mwInv; { const Transform& mw2 = mesh->WorldXfm();
+                        Invert(mw2, mwInv); }
+                    int reb = 0;
+                    for (int b = 0; b < numBones; b++) {
+                        RndTransformable* bt = owner->BoneTransAt(b);
+                        if (!bt) continue;
+                        // DYNAMIC-CHAIN EXCLUSION: the female hair / facial / finger
+                        // bones are driven every frame by CharHair / CharFaceServo /
+                        // CharIKFingers ON TOP of the static base skeleton, so a one-time
+                        // static rebake of those does not stick (they move). Leave them to
+                        // the per-frame fling clamp (clamps to bind, the shipped backstop)
+                        // — exactly the baseline behaviour, no regression. We rebake ONLY
+                        // the STATIC arm/twist/torso/leg chain (the real ~20u bind
+                        // mismatch), which is provably static so its correction is
+                        // permanent. Identify dynamic bones by name.
+                        const char* bn = bt->Name();
+                        if (bn && (strstr(bn, "hair") || strstr(bn, "-lid") ||
+                                   strstr(bn, "_lid") || strstr(bn, "jaw") ||
+                                   strstr(bn, "lip") || strstr(bn, "brow") ||
+                                   strstr(bn, "eye") || strstr(bn, "mouth") ||
+                                   strstr(bn, "cheek") || strstr(bn, "nose") ||
+                                   strstr(bn, "tongue") || strstr(bn, "goatee") ||
+                                   strstr(bn, "index") || strstr(bn, "middle") ||
+                                   strstr(bn, "pinky") || strstr(bn, "ring") ||
+                                   strstr(bn, "thumb") || strstr(bn, "finger")))
+                            continue;
+                        const Transform& wt2 = bt->WorldXfm();
+                        if (!(std::fabs(wt2.v.x) < 1e5f && std::fabs(wt2.v.y) < 1e5f &&
+                              std::fabs(wt2.v.z) < 1e5f)) continue;
+                        Transform sk2; Multiply(owner->BoneOffsetAt(b), wt2, sk2);
+                        Transform lo2; Multiply(sk2, mwInv, lo2);
+                        float bml2 = lo2.v.x*lo2.v.x + lo2.v.y*lo2.v.y + lo2.v.z*lo2.v.z;
+                        if (bml2 > 144.0f) { owner->SetBone(b, bt, true); reb++; }
+                    }
+                    if (getenv("SKEL_REBAKE_PROBE")) {
+                        fprintf(stderr,
+                            "[SKEL_REBAKE] mesh='%s' worstBone='%s' boneDir='%s' meshLocal=%.1fu -> rebaked %d flung bones (clamp stays live)\n",
+                            mesh->Name()?mesh->Name():"?",
+                            (wbone && wbone->Name())?wbone->Name():"?",
+                            wdir?wdir->mStoredFile.c_str():"-", std::sqrt(worst2), reb);
+                    }
+                }
+            }
+        }
+        // BISECT: force identity palette to test mesh/weights/indices vs posing.
+        static int sBonesIdentity = -1;
+        if (sBonesIdentity < 0) sBonesIdentity = getenv("RB3_BONES_IDENTITY") ? 1 : 0;
         for (int b = 0; b < numBones; b++) {
             RndTransformable* bt = owner->BoneTransAt(b);
             // Identity fallback for a null/garbage bone.
             float* dst = bones.bones[b];
             for (int i = 0; i < 16; i++) dst[i] = (i % 5 == 0) ? 1.f : 0.f;
-            if (!bt) { sFallbackBones++; continue; }
+            if (sBonesIdentity) continue; // TRUE identity palette -> worldPos == bindPos
+            if (!bt) { sFallbackBones++;
+                if (doBoneProbe) fprintf(stderr, "  bone[%d] NULL\n", b);
+                continue; }
             const Transform& wt = bt->WorldXfm();
+            if (doBoneProbe) {
+                const Transform& lx = bt->LocalXfm();
+                const Transform& off = owner->BoneOffsetAt(b);
+                Transform sk; Multiply(off, wt, sk);
+                // PTR_PROBE: dump bone object pointer + its owning ObjectDir to test
+                // whether trackjacket's bones are the SHARED skeleton bones (remapped
+                // at merge) or trackjacket's own un-posed bind-pose copies.
+                ObjectDir* bdir = bt->Dir();
+                ObjectDir* mdir = mesh->Dir();
+                fprintf(stderr,
+                    "  bone[%d] '%s' ptr=%p dir='%s' meshPtr=%p meshDir='%s'\n",
+                    b, bt->Name() ? bt->Name() : "?", (void*)bt,
+                    bdir && bdir->Name() ? bdir->Name() : "-",
+                    (void*)mesh, mdir && mdir->Name() ? mdir->Name() : "-");
+                fprintf(stderr,
+                    "  bone[%d] '%s' parent='%s'\n"
+                    "    localPos=(%.2f,%.2f,%.2f) localRot=[%.3f %.3f %.3f / %.3f %.3f %.3f / %.3f %.3f %.3f]\n"
+                    "    worldPos=(%.2f,%.2f,%.2f) worldRot=[%.3f %.3f %.3f / %.3f %.3f %.3f / %.3f %.3f %.3f]\n"
+                    "    offDet=%.4f offPos=(%.2f,%.2f,%.2f) skinPos=(%.2f,%.2f,%.2f)\n",
+                    b, bt->Name() ? bt->Name() : "?",
+                    bt->TransParent() && bt->TransParent()->Name() ? bt->TransParent()->Name() : "-",
+                    lx.v.x, lx.v.y, lx.v.z,
+                    lx.m.x.x, lx.m.x.y, lx.m.x.z, lx.m.y.x, lx.m.y.y, lx.m.y.z, lx.m.z.x, lx.m.z.y, lx.m.z.z,
+                    wt.v.x, wt.v.y, wt.v.z,
+                    wt.m.x.x, wt.m.x.y, wt.m.x.z, wt.m.y.x, wt.m.y.y, wt.m.y.z, wt.m.z.x, wt.m.z.y, wt.m.z.z,
+                    det3(off.m), off.v.x, off.v.y, off.v.z, sk.v.x, sk.v.y, sk.v.z);
+                // Q4 EXT: dump the composed SKIN rotation (what the GPU palette
+                // gets). At bind pose this should be ~identity (det 1, diagonal 1).
+                float sd = det3(sk.m);
+                fprintf(stderr,
+                    "    skinDet=%.4f skinRot=[%.3f %.3f %.3f / %.3f %.3f %.3f / %.3f %.3f %.3f]\n"
+                    "    offRot=[%.3f %.3f %.3f / %.3f %.3f %.3f / %.3f %.3f %.3f]\n",
+                    sd,
+                    sk.m.x.x, sk.m.x.y, sk.m.x.z, sk.m.y.x, sk.m.y.y, sk.m.y.z, sk.m.z.x, sk.m.z.y, sk.m.z.z,
+                    off.m.x.x, off.m.x.y, off.m.x.z, off.m.y.x, off.m.y.y, off.m.y.z, off.m.z.x, off.m.z.y, off.m.z.z);
+            }
             if (!(std::fabs(wt.v.x) < 1e5f && std::fabs(wt.v.y) < 1e5f &&
                   std::fabs(wt.v.z) < 1e5f)) {
                 sFallbackBones++;
@@ -3035,7 +3282,190 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
                 }
                 if (bad) { sFallbackBones++; continue; } // keep identity
             }
+            // CROWD/EXTRAS skin fling clamp (backstop). The crowd and extras bind their
+            // skin meshes to separate char/crowd & char/extras skeletons whose bind does
+            // not match their meshes' inverse-bind offsets under the native load, so their
+            // clapping/lighter hand poses fling vertices thousands of units into shards.
+            // This block detects a bone whose composed skin, in the MESH's own frame, is
+            // far off bind (skin * inverse(meshWorld) translation > 12u) and falls it back
+            // to identity so its weighted vertices stay at their authored model-space bind
+            // instead of shattering. Gated to multi-bone SKIN meshes (NumBones>=8) so
+            // single-bone props (e.g. the mic) are never clamped. Opt-out: RB3_NO_SKIN_CLAMP=1.
+            //
+            // The BAND members are NOT handled here — the faithful fix lives in DECOMP
+            // (BandCharacter::RebindOutfitBonesToOwnSkeleton): the female member's outfit
+            // skin bones are repointed to her own gender-posed live skeleton, so her arms
+            // compose correctly AND animate. Those rebound meshes set
+            // RndMesh::mNativeBonesRebound and are SKIPPED below (this heuristic would
+            // wrongly freeze a correctly-animating arm to bind). See
+            // docs/native/CHAR_SKINNING_DEFORM_INVESTIGATION.md.
+            {
+                static int sSkinClamp = -1;
+                if (sSkinClamp < 0) sSkinClamp = getenv("RB3_NO_SKIN_CLAMP") ? 0 : 1;
+                // Skip the clamp for band-member outfit meshes that have been
+                // rebound to the member's own gender-posed skeleton
+                // (BandCharacter::RebindOutfitBonesToOwnSkeleton). Those are now
+                // correctly bound and ANIMATE — the mesh-local heuristic below
+                // would otherwise freeze a swinging arm to bind. The clamp stays
+                // active for the crowd/extras' separate broken skeletons. Test the
+                // DRAWN mesh's flag, never the GeomOwner's (band outfit skin meshes
+                // are self-owned; using GeomOwner would mis-flag crowd meshes that
+                // share char_shared geometry).
+                bool reboundSkip = mesh->mNativeBonesRebound;
+                // DRAW-TIME authoritative AFTER measure for the wave-08 rebind: for a
+                // rebound band mesh, report the worst bone's |skinWorld - boneWorld|
+                // delta — how far the composed skin places vertices from the bone
+                // itself. Clean skinning keeps this within limb/joint extent (~40-65u,
+                // MEASURED); a broken bind flings it to hundreds. (A skinned mesh's own
+                // WorldXfm is identity here, so a "mesh-local" measure would just read
+                // back the character's far-from-origin world position — misleading.)
+                // Gated REBIND_DRAW_SKINPOS=1. Measured at the exact palette-compose.
+                if (reboundSkip && numBones >= 8 && getenv("REBIND_DRAW_SKINPOS") &&
+                    mesh->Name()) {
+                    float dx = skin.v.x - wt.v.x, dy = skin.v.y - wt.v.y,
+                          dz = skin.v.z - wt.v.z;
+                    float delta = std::sqrt(dx*dx + dy*dy + dz*dz);
+                    static std::unordered_map<std::string,float> sMax;
+                    std::string key = mesh->Name();
+                    if (delta > sMax[key]) {
+                        sMax[key] = delta;
+                        fprintf(stderr,
+                            "[REBIND_DRAW_SKINPOS] mesh='%s' bone='%s' "
+                            "skinToBoneDelta(max)=%.3fu (clean<~65u; fling=hundreds)\n",
+                            mesh->Name(), bt->Name()?bt->Name():"?", delta);
+                    }
+                    // also flag ANY individual bone that flings past 120u (a real shard)
+                    if (delta > 120.f && getenv("REBIND_DRAW_FLING")) {
+                        static int sFc = 0;
+                        if (sFc++ < 60)
+                            fprintf(stderr,
+                                "[REBIND_DRAW_FLING] mesh='%s' bone='%s' delta=%.1fu "
+                                "skinDet=%.3f\n", mesh->Name(),
+                                bt->Name()?bt->Name():"?", delta,
+                                skin.m.x.x*(skin.m.y.y*skin.m.z.z-skin.m.y.z*skin.m.z.y)
+                              - skin.m.x.y*(skin.m.y.x*skin.m.z.z-skin.m.y.z*skin.m.z.x)
+                              + skin.m.x.z*(skin.m.y.x*skin.m.z.y-skin.m.y.y*skin.m.z.x));
+                    }
+                }
+                if (sSkinClamp && !reboundSkip && numBones >= 8) {
+                    // skin in mesh-local space = skin * inverse(meshWorld); its
+                    // translation magnitude is the per-bone bind mismatch (~0 clean).
+                    const Transform& mw = mesh->WorldXfm();
+                    Transform invMw; Invert(mw, invMw);
+                    Transform local; Multiply(skin, invMw, local);
+                    float ml2 = local.v.x*local.v.x + local.v.y*local.v.y + local.v.z*local.v.z;
+                    // Threshold 12u: the female static bind mismatch is ~20u, while a
+                    // legitimately animated (clean) arm bone displaces only a few u in
+                    // mesh space, so 12u cleanly separates a shard from real motion.
+                    if (ml2 > 144.0f) { // > 12u bind mismatch in mesh space -> would shard
+                        sFallbackBones++;
+                        if (getenv("SKIN_CLAMP_PROBE")) {
+                            static std::unordered_map<std::string,int> sCl;
+                            std::string key = std::string(mesh->Name()?mesh->Name():"?");
+                            if (sCl[key]++ % 240 == 0)
+                                fprintf(stderr, "[SKIN_CLAMP] mesh='%s' bone='%s' meshLocal=%.1fu (clamped to bind)\n",
+                                    mesh->Name()?mesh->Name():"?", bt->Name()?bt->Name():"?",
+                                    std::sqrt(ml2));
+                        }
+                        continue; // keep identity for this bone (vertices stay at bind)
+                    }
+                }
+            }
+            // SHARD_CATCH: report any bone whose composed skin translation is far
+            // from origin (>8u) — that's a vertex-flinging shard. Prints mesh+bone
+            // name so we can see WHICH bone breaks during normal play.
+            if (getenv("SHARD_CATCH")) {
+                float sp = std::sqrt(skin.v.x*skin.v.x+skin.v.y*skin.v.y+skin.v.z*skin.v.z);
+                if (sp > 8.0f) {
+                    static std::unordered_map<std::string,int> sSC;
+                    std::string key = std::string(mesh->Name()?mesh->Name():"?") + "/" +
+                                      std::string(bt->Name()?bt->Name():"?");
+                    if (sSC[key]++ % 120 == 0)
+                        fprintf(stderr,"[SHARD_CATCH] mesh='%s' bone[%d]='%s' skinPos=(%.1f,%.1f,%.1f) |%.1f| parent='%s'\n",
+                            mesh->Name()?mesh->Name():"?", b, bt->Name()?bt->Name():"?",
+                            skin.v.x,skin.v.y,skin.v.z, sp,
+                            bt->TransParent()&&bt->TransParent()->Name()?bt->TransParent()->Name():"-");
+                }
+            }
             MiloXfmToColMajor(skin, dst);
+        }
+        // XBONE_TRACK: print the named bone's worldPos for the trackjacket mesh on
+        // EVERY draw, to settle whether the shared band skeleton magnet ANIMATES
+        // (worldPos varies frame to frame) or is STATIC (constant). Decides whether
+        // a constant per-bone correction would yield a frozen vs trackable female.
+        if (const char* xt = getenv("XBONE_TRACK")) {
+            if (mesh->Name() && strstr(mesh->Name(), "trackjacket")) {
+                for (int b = 0; b < numBones; b++) {
+                    RndTransformable* bt = owner->BoneTransAt(b);
+                    if (!bt || !bt->Name() || strstr(bt->Name(), xt) == nullptr) continue;
+                    const Transform& wt = bt->WorldXfm();
+                    static int sN = 0;
+                    fprintf(stderr, "[XBONE_TRACK] #%d bone='%s' worldPos=(%.4f,%.4f,%.4f) worldRot.x=(%.4f,%.4f,%.4f)\n",
+                        sN++, bt->Name(), wt.v.x, wt.v.y, wt.v.z, wt.m.x.x, wt.m.x.y, wt.m.x.z);
+                    break;
+                }
+            }
+        }
+        // XBONE: cross-mesh single-bone probe. For env XBONE=<bonename>, dump that
+        // named bone's POINTER + worldRot + THIS mesh's offset/skinPos, once per
+        // (mesh,bone) pair. Lets us compare the SAME bone object across two outfit
+        // meshes (vestdenim clean vs trackjacket flung) in ONE run, to see if the
+        // bone pointer / worldRot is shared and only the offset differs.
+        if (const char* xb = getenv("XBONE")) {
+            for (int b = 0; b < numBones; b++) {
+                RndTransformable* bt = owner->BoneTransAt(b);
+                if (!bt || !bt->Name() || strstr(bt->Name(), xb) == nullptr) continue;
+                static std::unordered_map<std::string,int> sXB;
+                std::string key = std::string(mesh->Name()?mesh->Name():"?") + "@" + bt->Name();
+                if (sXB[key]++ != 0) continue;
+                const Transform& wt = bt->WorldXfm();
+                const Transform& off = owner->BoneOffsetAt(b);
+                Transform sk; Multiply(off, wt, sk);
+                // Walk the bone's TransParent chain to the root, to identify which
+                // character/skeleton instance this bone belongs to.
+                RndTransformable* root = bt; int depth = 0;
+                while (root->TransParent() && depth++ < 64) root = root->TransParent();
+                ObjectDir* bdir = bt->Dir();
+                ObjectDir* bparent = bdir ? bdir->Dir() : nullptr;
+                fprintf(stderr,
+                    "[XBONE] showing=%d rootBone='%s' rootPtr=%p boneDirPtr=%p boneDirFile='%s' parentDir=%p parentName='%s'\n",
+                    (int)mesh->Showing(), root->Name()?root->Name():"?", (void*)root,
+                    (void*)bdir,
+                    (bdir && bdir->mStoredFile.c_str())?bdir->mStoredFile.c_str():"-",
+                    (void*)bparent, (bparent && bparent->Name())?bparent->Name():"-");
+                fprintf(stderr,
+                    "[XBONE] mesh='%s' bone='%s' bonePtr=%p meshPtr=%p worldPos=(%.1f,%.1f,%.1f) meshDir='%s'\n"
+                    "    worldRot=[%.3f %.3f %.3f / %.3f %.3f %.3f / %.3f %.3f %.3f]\n"
+                    "    offRot=[%.3f %.3f %.3f / %.3f %.3f %.3f / %.3f %.3f %.3f]\n"
+                    "    skinPos=(%.2f,%.2f,%.2f)\n",
+                    mesh->Name()?mesh->Name():"?", bt->Name(), (void*)bt, (void*)mesh,
+                    wt.v.x, wt.v.y, wt.v.z,
+                    mesh->Dir() && mesh->Dir()->Name() ? mesh->Dir()->Name() : "-",
+                    wt.m.x.x, wt.m.x.y, wt.m.x.z, wt.m.y.x, wt.m.y.y, wt.m.y.z, wt.m.z.x, wt.m.z.y, wt.m.z.z,
+                    off.m.x.x, off.m.x.y, off.m.x.z, off.m.y.x, off.m.y.y, off.m.y.z, off.m.z.x, off.m.z.y, off.m.z.z,
+                    sk.v.x, sk.v.y, sk.v.z);
+            }
+        }
+        // SKEW_PROBE: under NO_CLIP+NO_IK (bind pose) every skin matrix should be
+        // identity. Report any skinned mesh whose worst bone deviates from
+        // identity (max |element - I|), to find the mesh whose bind skinning is
+        // broken (the static deformer). One line per mesh, throttled.
+        if (getenv("SKEW_PROBE") && mesh->Name()) {
+            float worst = 0.f; int worstB = -1;
+            for (int b = 0; b < numBones; b++) {
+                const float* d = bones.bones[b];
+                float idn[16]; for (int i=0;i<16;i++) idn[i]=(i%5==0)?1.f:0.f;
+                float mx = 0.f;
+                for (int i=0;i<12;i++){ float e=std::fabs(d[i]-idn[i]); if(e>mx)mx=e; }
+                if (mx>worst){ worst=mx; worstB=b; }
+            }
+            static std::unordered_map<std::string,int> sSK;
+            const char* mn = mesh->Name();
+            if (worst > 0.05f && sSK[mn]++ % 120 == 0) {
+                RndTransformable* wb = (worstB>=0)?owner->BoneTransAt(worstB):nullptr;
+                fprintf(stderr,"[SKEW_PROBE] mesh='%s' numBones=%d worstDev=%.3f worstBone[%d]='%s'\n",
+                    mn, numBones, worst, worstB, (wb&&wb->Name())?wb->Name():"?");
+            }
         }
         for (int b = numBones; b < kMaxBones; b++)
             for (int i = 0; i < 16; i++) bones.bones[b][i] = (i % 5 == 0) ? 1.f : 0.f;

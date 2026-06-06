@@ -218,28 +218,11 @@ void FillBoneUniforms(RndMesh* mesh, BoneUniforms& out) {
                 Transform skinMatrix;
                 Multiply(mesh->BoneOffsetAt(i), wt, skinMatrix);
 
-                // TODO HACK: Raise foot bones at render time to compensate
-                // for IK ankle corrections lost to pelvis dirty cascade.
-                // The IK correctly sets ankle Z during Poll, but pelvis IK
-                // runs after and cascades SetDirty through the leg chain,
-                // causing WorldXfm_Force to recompute from stale mLocalXfm.
-                // This render-time offset is purely visual — no IK feedback.
-                // Tunable via DC3_FOOT_OFFSET env var (default 3.5, 0 to disable).
-                // Remove when dirty cascade root cause is fixed.
-                {
-                    static float sFootOffset = -1.0f;
-                    if (sFootOffset < 0.0f) {
-                        const char* env = getenv("DC3_FOOT_OFFSET");
-                        sFootOffset = (env && env[0]) ? (float)atof(env) : 3.5f;
-                    }
-                    if (sFootOffset > 0.0f) {
-                        const char* name = boneTrans->Name();
-                        if (strstr(name, "ankle") || strstr(name, "toe")
-                            || strstr(name, "ball")) {
-                            skinMatrix.v.z += sFootOffset;
-                        }
-                    }
-                }
+                // NOTE: the DC3_FOOT_OFFSET render-time foot raise was removed
+                // (2026-06-03). It was a cosmetic band-aid (default +3.5z on
+                // ankle/toe/ball) masking the real IK neutral-anchor bug. The
+                // fix now lives in the neutral-skeleton posing path; this skin
+                // matrix is used verbatim so the true foot position is visible.
 
                 TransformToMat4(skinMatrix, out.bones[i]);
                 if (doDiag && (i < 3 || isArm)) {
