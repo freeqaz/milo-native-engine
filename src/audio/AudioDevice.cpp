@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -29,10 +30,32 @@ static FILE *sDumpFile = nullptr;
 static int sDumpMaxFrames = 0;       // total frames to capture
 static int sDumpFramesWritten = 0;   // frames captured so far
 
-// Master gain applied to all mixed audio output.
-// Default 2.0 compensates for quiet mix levels in the native port.
-// Override with DC3_AUDIO_GAIN=<float> environment variable.
-static float sMasterGain = 1.1f;
+// Master-bus peak limiter (replaces the old fixed master-gain boost). A song mixes
+// 11-15 separate stems; even at their authored ~-4 dB vols the additive sum peaks
+// ~3x full scale, so the prior 1.1x boost + hard clamp square-wave-clipped every
+// loud section ("clipped noise"). The real Wii had a unity master fader and relied
+// on the AX/DSP hardware mixer for saturation. A content-adaptive one-pole peak
+// limiter tames only the transient peaks (the ~95% body passes through untouched),
+// so it is correct for both RB3 and DC3 from one constant set — no per-game gain.
+// The existing [-1,1] hard clamp is kept as a sub-ms brick-wall backstop (a
+// lookahead-free limiter can't catch the very first sample of a fast attack).
+// sPreGain is an optional pre-limiter trim, overridable via DC3_AUDIO_GAIN.
+static float sPreGain = 1.0f;
+static const float kLimThreshold = 0.90f;   // begin gain reduction when |peak| > this
+static const float kLimAttackMs  = 3.0f;    // fast attack (catch peaks)
+static const float kLimReleaseMs = 80.0f;   // slow release (no pumping)
+
+// Soft-knee saturator: transparent below kSoftKnee, smoothly compresses the region
+// above it toward (but never reaching) full scale. Replaces the hard clamp as the
+// limiter's safety net so the rare transient tips a lookahead-free one-pole can't
+// pre-duck round off smoothly instead of square-wave clipping. Peak stays < 1.0.
+static const float kSoftKnee = 0.95f;
+static inline float SoftClip(float x) {
+    float a = x < 0.0f ? -x : x;
+    if (a <= kSoftKnee) return x;
+    float shaped = kSoftKnee + (1.0f - kSoftKnee) * tanhf((a - kSoftKnee) / (1.0f - kSoftKnee));
+    return x < 0.0f ? -shaped : shaped;
+}
 static std::atomic<bool> sDumpFinalized{false};
 
 // Write a 44-byte RIFF/WAV header for 16-bit stereo PCM.
@@ -251,11 +274,11 @@ bool AudioDevice::Init(int sampleRate) {
 
     mInitialized = true;
 
-    // Read master gain from environment
+    // Optional pre-limiter trim from environment (default unity).
     const char *gainEnv = getenv("DC3_AUDIO_GAIN");
-    if (gainEnv) sMasterGain = (float)atof(gainEnv);
-    printf("AudioDevice: initialized — %d Hz, %d channels, period %d frames, gain %.1f (backend=%s)\n",
-           mSampleRate, 2, 512, sMasterGain,
+    if (gainEnv) sPreGain = (float)atof(gainEnv);
+    printf("AudioDevice: initialized — %d Hz, %d channels, period %d frames, pregain %.2f (backend=%s)\n",
+           mSampleRate, 2, 512, sPreGain,
            mContextInited ? ma_get_backend_name(mContext->backend) : "default");
 
     // --- WAV dump setup ---
@@ -329,6 +352,7 @@ void AudioDevice::Suspend() {
 }
 
 void AudioDevice::Resume() {
+    mLimiterEnv = 1.0f;   // reset gain-reduction envelope across a suspend gap
     mSuspended.store(false, std::memory_order_release);
 }
 
@@ -373,12 +397,27 @@ void AudioDevice::MixSources(float *output, int frameCount) {
                 }
             }
 
-            // Apply master gain and clamp to [-1, 1]
-            for (int i = 0; i < totalSamples; i++) {
-                output[i] *= sMasterGain;
-                if (output[i] > 1.0f) output[i] = 1.0f;
-                else if (output[i] < -1.0f) output[i] = -1.0f;
+            // Master bus: optional pre-gain, one-pole stereo-LINKED peak limiter,
+            // then the hard clamp as a sub-ms transient backstop. Stereo-linked
+            // (one envelope driven by max(|L|,|R|)) keeps the stereo image stable.
+            const float aAtk = expf(-1.0f / (mSampleRate * (kLimAttackMs  / 1000.0f)));
+            const float aRel = expf(-1.0f / (mSampleRate * (kLimReleaseMs / 1000.0f)));
+            float env = mLimiterEnv;
+            for (int f = 0; f < frameCount; f++) {
+                float l = output[f * 2 + 0] * sPreGain;
+                float r = output[f * 2 + 1] * sPreGain;
+                float la = l < 0.0f ? -l : l;
+                float ra = r < 0.0f ? -r : r;
+                float level = la > ra ? la : ra;
+                float desired = (level > kLimThreshold) ? (kLimThreshold / level) : 1.0f;
+                float coeff = (desired < env) ? aAtk : aRel;   // fast down, slow up
+                env = coeff * env + (1.0f - coeff) * desired;
+                l *= env;
+                r *= env;
+                output[f * 2 + 0] = SoftClip(l);
+                output[f * 2 + 1] = SoftClip(r);
             }
+            mLimiterEnv = env;
         }
     }
 

@@ -17,6 +17,7 @@
 #include "audio/AudioDevice.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <emscripten.h>
@@ -47,6 +48,17 @@ static const int MIX_BUF_FRAMES = 8192; // mix in chunks
 
 // Whether the AudioWorklet has been set up
 static bool sWorkletReady = false;
+
+// Soft-knee saturator (mirrors AudioDevice.cpp): transparent below kSoftKnee, then
+// smoothly compresses toward (never reaching) full scale — the limiter's safety net
+// so residual transient tips round off instead of square-wave clipping. Peak < 1.0.
+static const float kSoftKnee = 0.95f;
+static inline float SoftClip(float x) {
+    float a = x < 0.0f ? -x : x;
+    if (a <= kSoftKnee) return x;
+    float shaped = kSoftKnee + (1.0f - kSoftKnee) * tanhf((a - kSoftKnee) / (1.0f - kSoftKnee));
+    return x < 0.0f ? -shaped : shaped;
+}
 
 // ---- Audio capture for debugging ----
 static const int CAPTURE_SECONDS = 3;
@@ -407,10 +419,30 @@ void AudioDevice::MixSources(float *output, int frameCount) {
         }
     }
 
-    // Clamp to [-1, 1]
-    for (int i = 0; i < totalSamples; i++) {
-        if (output[i] > 1.0f) output[i] = 1.0f;
-        else if (output[i] < -1.0f) output[i] = -1.0f;
+    // Master bus: one-pole stereo-LINKED peak limiter (web has no master gain),
+    // then the hard clamp as a sub-ms transient backstop. Same processor + constants
+    // as the native path (AudioDevice.cpp) so the browser output matches the desktop
+    // A/B. Content-adaptive -> correct for both RB3 and DC3 without a per-game gain.
+    {
+        const float kLimThreshold = 0.90f, kLimAttackMs = 3.0f, kLimReleaseMs = 80.0f;
+        const float aAtk = expf(-1.0f / (mSampleRate * (kLimAttackMs  / 1000.0f)));
+        const float aRel = expf(-1.0f / (mSampleRate * (kLimReleaseMs / 1000.0f)));
+        float env = mLimiterEnv;
+        for (int f = 0; f < frameCount; f++) {
+            float l = output[f * 2 + 0];
+            float r = output[f * 2 + 1];
+            float la = l < 0.0f ? -l : l;
+            float ra = r < 0.0f ? -r : r;
+            float level = la > ra ? la : ra;
+            float desired = (level > kLimThreshold) ? (kLimThreshold / level) : 1.0f;
+            float coeff = (desired < env) ? aAtk : aRel;   // fast down, slow up
+            env = coeff * env + (1.0f - coeff) * desired;
+            l *= env;
+            r *= env;
+            output[f * 2 + 0] = SoftClip(l);
+            output[f * 2 + 1] = SoftClip(r);
+        }
+        mLimiterEnv = env;
     }
 }
 

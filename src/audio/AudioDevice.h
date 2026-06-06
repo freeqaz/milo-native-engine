@@ -83,4 +83,8 @@ private:
     std::vector<float> mMixBuffer;
 
     std::atomic<bool> mSuspended{false};
+
+    // One-pole stereo-linked peak-limiter gain-reduction envelope (1.0 = no
+    // reduction). Persists across audio callbacks so the release is continuous.
+    float mLimiterEnv = 1.0f;
 };
