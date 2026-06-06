@@ -42,8 +42,7 @@ static int sDumpFramesWritten = 0;   // frames captured so far
 // sPreGain is an optional pre-limiter trim, overridable via DC3_AUDIO_GAIN.
 static float sPreGain = 1.0f;
 static const float kLimThreshold = 0.90f;   // begin gain reduction when |peak| > this
-static const float kLimAttackMs  = 3.0f;    // fast attack (catch peaks)
-static const float kLimReleaseMs = 80.0f;   // slow release (no pumping)
+static const float kLimReleaseMs = 80.0f;   // slow one-pole release (no pumping)
 
 // Soft-knee saturator: transparent below kSoftKnee, smoothly compresses the region
 // above it toward (but never reaching) full scale. Replaces the hard clamp as the
@@ -400,7 +399,6 @@ void AudioDevice::MixSources(float *output, int frameCount) {
             // Master bus: optional pre-gain, one-pole stereo-LINKED peak limiter,
             // then the hard clamp as a sub-ms transient backstop. Stereo-linked
             // (one envelope driven by max(|L|,|R|)) keeps the stereo image stable.
-            const float aAtk = expf(-1.0f / (mSampleRate * (kLimAttackMs  / 1000.0f)));
             const float aRel = expf(-1.0f / (mSampleRate * (kLimReleaseMs / 1000.0f)));
             float env = mLimiterEnv;
             for (int f = 0; f < frameCount; f++) {
@@ -410,12 +408,17 @@ void AudioDevice::MixSources(float *output, int frameCount) {
                 float ra = r < 0.0f ? -r : r;
                 float level = la > ra ? la : ra;
                 float desired = (level > kLimThreshold) ? (kLimThreshold / level) : 1.0f;
-                float coeff = (desired < env) ? aAtk : aRel;   // fast down, slow up
-                env = coeff * env + (1.0f - coeff) * desired;
-                l *= env;
-                r *= env;
-                output[f * 2 + 0] = SoftClip(l);
-                output[f * 2 + 1] = SoftClip(r);
+                // INSTANT attack: the gain drops immediately to the exact value that
+                // holds the post-gain sample at the threshold (|out| <= kLimThreshold),
+                // so the softclip/clamp never engage on a real peak and the output
+                // cannot rail. A finite attack — even 0.05 ms — lets the FIRST sample
+                // of a fast bass transient (a 1/4-cycle of 200 Hz is 1.25 ms) overshoot
+                // into the rail (the old 3 ms attack square-wave-clipped loud sections).
+                // One-pole release recovers smoothly with no pumping.
+                if (desired < env) env = desired;
+                else env = aRel * env + (1.0f - aRel) * desired;
+                output[f * 2 + 0] = SoftClip(l * env);
+                output[f * 2 + 1] = SoftClip(r * env);
             }
             mLimiterEnv = env;
         }

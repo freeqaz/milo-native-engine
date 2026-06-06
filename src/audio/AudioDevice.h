@@ -44,6 +44,13 @@ public:
     bool IsInitialized() const { return mInitialized; }
 
     int GetSampleRate() const { return mSampleRate; }
+#ifdef __EMSCRIPTEN__
+    // Web only: the ACTUAL AudioContext rate (mDeviceSampleRate), which may differ
+    // from the requested/mix rate (mSampleRate). Returns 0 before Init. PumpAudio
+    // resamples mSampleRate -> this rate. == mSampleRate when the browser honored
+    // the requested rate.
+    int GetDeviceSampleRate() const { return mDeviceSampleRate; }
+#endif
 
     // Source management (thread-safe)
     void AddSource(AudioSource *source);
@@ -87,4 +94,20 @@ private:
     // One-pole stereo-linked peak-limiter gain-reduction envelope (1.0 = no
     // reduction). Persists across audio callbacks so the release is continuous.
     float mLimiterEnv = 1.0f;
+
+#ifdef __EMSCRIPTEN__
+    // Web only. The engine mixes at mSampleRate (the mogg/decode rate, 44100). The
+    // browser AudioContext may run at a DIFFERENT rate (commonly 48000, hardware-
+    // locked — the requested 44100 is only a hint). mDeviceSampleRate holds the
+    // ACTUAL ctx.sampleRate read back at init; PumpAudio resamples the mix from
+    // mSampleRate -> mDeviceSampleRate before the SAB push so the worklet (which
+    // runs at ctx.sampleRate) plays at the correct pitch instead of 48000/44100 =
+    // 1.0884x fast ("chipmunks"). Persistent linear-resampler phase state below
+    // keeps the resampling continuous across PumpAudio chunk boundaries.
+    int mDeviceSampleRate = 0;     // 0 until Init reads it back; == mSampleRate when equal
+    double mResamplePos = 0.0;     // fractional read position into the mix-rate stream
+    float mResampleLastL = 0.0f;   // last mix-rate sample (L) carried across chunks
+    float mResampleLastR = 0.0f;   // last mix-rate sample (R)
+    bool mResampleHavePrev = false;
+#endif
 };

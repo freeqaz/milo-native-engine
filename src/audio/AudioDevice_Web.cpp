@@ -42,9 +42,13 @@ static const int RING_FRAMES = 32768;
 static const int RING_SAMPLES = RING_FRAMES * 2; // stereo interleaved
 static const int HEADER_BYTES = 8; // 2 x Int32 (writePos, readPos)
 
-// Local mix buffer (WASM heap) -- MixSources writes here, then we copy to SAB
+// Local mix buffer (WASM heap) -- MixSources writes here (at the MIX/engine rate).
 static float *sMixBuffer = nullptr;
 static const int MIX_BUF_FRAMES = 8192; // mix in chunks
+// Output buffer (WASM heap) -- the mix resampled to the DEVICE/ctx rate, pushed to
+// the SAB. Only used when ctx rate != mix rate; same frame capacity as the mix buf
+// (we always produce <= MIX_BUF_FRAMES device-rate frames per inner iteration).
+static float *sOutBuffer = nullptr;
 
 // Whether the AudioWorklet has been set up
 static bool sWorkletReady = false;
@@ -58,6 +62,27 @@ static inline float SoftClip(float x) {
     if (a <= kSoftKnee) return x;
     float shaped = kSoftKnee + (1.0f - kSoftKnee) * tanhf((a - kSoftKnee) / (1.0f - kSoftKnee));
     return x < 0.0f ? -shaped : shaped;
+}
+
+// ---- Debug rate/pitch verification tone (opt-in via rb3_debug_tone(hz)) ----
+// When sDebugToneHz > 0, PumpAudio overwrites the freshly-mixed MIX-rate block
+// with a pure sine at sDebugToneHz generated AT mSampleRate (the engine rate),
+// using a persistent phase. The resampler then converts it to the device rate. A
+// correct resampler keeps the captured tone at sDebugToneHz (NOT hz*devRate/mixRate),
+// giving a deterministic, content-controlled, single-run proof of the rate fix.
+static double sDebugToneHz = 0.0;
+static double sDebugTonePhase = 0.0;
+static void FillDebugTone(float *mixStereo, int frames, int mixRate) {
+    if (sDebugToneHz <= 0.0 || mixRate <= 0) return;
+    const double inc = 2.0 * 3.14159265358979323846 * sDebugToneHz / (double)mixRate;
+    for (int f = 0; f < frames; f++) {
+        float v = (float)(0.5 * sin(sDebugTonePhase));
+        mixStereo[f * 2 + 0] = v;
+        mixStereo[f * 2 + 1] = v;
+        sDebugTonePhase += inc;
+        if (sDebugTonePhase > 2.0 * 3.14159265358979323846)
+            sDebugTonePhase -= 2.0 * 3.14159265358979323846;
+    }
 }
 
 // ---- Audio capture for debugging ----
@@ -76,7 +101,11 @@ static bool sCaptureReady = false;
 // We pass the namespace string as a parameter to each EM_JS so the JS body
 // can compose bracket-form globals (window[stateKey]) and string literals.
 
-EM_JS(void, js_audio_init,
+// Returns the ACTUAL AudioContext sample rate (the browser may ignore the
+// requested rate and lock to the hardware rate, commonly 48000). The caller
+// resamples the mix from the engine rate to this rate before the SAB push.
+// Returns 0 on failure (caller falls back to the requested rate).
+EM_JS(int, js_audio_init,
       (int totalBytes, int sampleRate, int bufFrames,
        const char *stateKey, const char *workletName),
 {
@@ -96,6 +125,8 @@ EM_JS(void, js_audio_init,
 
         var ctx = new AudioContext({ sampleRate: sampleRate });
         window[key].ctx = ctx;
+        // The browser may have clamped/ignored the requested rate.
+        var actualRate = ctx.sampleRate;
 
         ctx.audioWorklet.addModule('audio-worklet.js').then(function() {
             var node = new AudioWorkletNode(ctx, worklet, {
@@ -113,7 +144,9 @@ EM_JS(void, js_audio_init,
 
             window[key].worklet = node;
             window[key].started = true;
-            console.log('AudioDevice: AudioWorklet connected (' + sampleRate + ' Hz, ring ' + bufFrames + ' frames)');
+            console.log('AudioDevice: AudioWorklet connected (ctx ' + actualRate + ' Hz' +
+                        (actualRate !== sampleRate ? ' [requested ' + sampleRate + ', resampling]' : '') +
+                        ', ring ' + bufFrames + ' frames)');
         }).catch(function(e) {
             console.error('AudioDevice: AudioWorklet failed: ' + e);
         });
@@ -134,11 +167,13 @@ EM_JS(void, js_audio_init,
         if (ctx.state === 'suspended') {
             ctx.resume().catch(function() {});
         }
+        return actualRate;
     } catch (e) {
         console.error('AudioDevice: init failed: ' + e);
         if (e.message && e.message.indexOf('SharedArrayBuffer') >= 0) {
             console.error('AudioDevice: SharedArrayBuffer not available. Check COOP/COEP headers.');
         }
+        return 0;
     }
 });
 
@@ -301,8 +336,9 @@ bool AudioDevice::Init(int sampleRate) {
 
     mSampleRate = (sampleRate > 0) ? sampleRate : 44100;
 
-    // Allocate local mix buffer
+    // Allocate local mix + resample-output buffers
     sMixBuffer = new float[MIX_BUF_FRAMES * 2];
+    sOutBuffer = new float[MIX_BUF_FRAMES * 2];
 
     // Per-consumer namespaced JS globals + symbol names.
     static const char *kStateKey       = "_" MILO_WEB_AUDIO_NS_STR "Audio";
@@ -316,9 +352,16 @@ bool AudioDevice::Init(int sampleRate) {
     static const char *kFnAudioStats   = MILO_WEB_AUDIO_FN_STR(audio_stats);
     static const char *kNs             = MILO_WEB_AUDIO_NS_STR;
 
-    // Create SharedArrayBuffer + AudioContext + AudioWorklet
+    // Create SharedArrayBuffer + AudioContext + AudioWorklet. The browser may
+    // ignore the requested rate (mSampleRate, the mogg/decode rate) and lock the
+    // AudioContext to the hardware rate — js_audio_init returns the ACTUAL rate.
     int totalBytes = HEADER_BYTES + RING_SAMPLES * sizeof(float);
-    js_audio_init(totalBytes, mSampleRate, RING_FRAMES, kStateKey, kWorkletName);
+    int actualRate = js_audio_init(totalBytes, mSampleRate, RING_FRAMES, kStateKey, kWorkletName);
+    mDeviceSampleRate = (actualRate > 0) ? actualRate : mSampleRate;
+    // Reset the linear-resampler phase (mix-rate mSampleRate -> mDeviceSampleRate).
+    mResamplePos = 0.0;
+    mResampleLastL = mResampleLastR = 0.0f;
+    mResampleHavePrev = false;
 
     // Set up console commands for audio debugging
     EM_ASM({
@@ -349,7 +392,12 @@ bool AudioDevice::Init(int sampleRate) {
 
     mInitialized = true;
     sWorkletReady = true;
-    printf("AudioDevice: initialized (web) -- %d Hz, ring %d frames\n", mSampleRate, RING_FRAMES);
+    if (mDeviceSampleRate != mSampleRate) {
+        printf("AudioDevice: initialized (web) -- mix %d Hz -> ctx %d Hz (RESAMPLING %.4fx), ring %d frames\n",
+               mSampleRate, mDeviceSampleRate, (double)mSampleRate / mDeviceSampleRate, RING_FRAMES);
+    } else {
+        printf("AudioDevice: initialized (web) -- %d Hz, ring %d frames\n", mSampleRate, RING_FRAMES);
+    }
     return true;
 }
 
@@ -362,6 +410,8 @@ void AudioDevice::Terminate() {
 
     delete[] sMixBuffer;
     sMixBuffer = nullptr;
+    delete[] sOutBuffer;
+    sOutBuffer = nullptr;
     delete[] sCaptureBuffer;
     sCaptureBuffer = nullptr;
     sWorkletReady = false;
@@ -424,8 +474,7 @@ void AudioDevice::MixSources(float *output, int frameCount) {
     // as the native path (AudioDevice.cpp) so the browser output matches the desktop
     // A/B. Content-adaptive -> correct for both RB3 and DC3 without a per-game gain.
     {
-        const float kLimThreshold = 0.90f, kLimAttackMs = 3.0f, kLimReleaseMs = 80.0f;
-        const float aAtk = expf(-1.0f / (mSampleRate * (kLimAttackMs  / 1000.0f)));
+        const float kLimThreshold = 0.90f, kLimReleaseMs = 80.0f;
         const float aRel = expf(-1.0f / (mSampleRate * (kLimReleaseMs / 1000.0f)));
         float env = mLimiterEnv;
         for (int f = 0; f < frameCount; f++) {
@@ -435,12 +484,12 @@ void AudioDevice::MixSources(float *output, int frameCount) {
             float ra = r < 0.0f ? -r : r;
             float level = la > ra ? la : ra;
             float desired = (level > kLimThreshold) ? (kLimThreshold / level) : 1.0f;
-            float coeff = (desired < env) ? aAtk : aRel;   // fast down, slow up
-            env = coeff * env + (1.0f - coeff) * desired;
-            l *= env;
-            r *= env;
-            output[f * 2 + 0] = SoftClip(l);
-            output[f * 2 + 1] = SoftClip(r);
+            // INSTANT attack (see AudioDevice.cpp): gain drops immediately to hold the
+            // post-gain sample at the threshold so it cannot rail; one-pole release.
+            if (desired < env) env = desired;
+            else env = aRel * env + (1.0f - aRel) * desired;
+            output[f * 2 + 0] = SoftClip(l * env);
+            output[f * 2 + 1] = SoftClip(r * env);
         }
         mLimiterEnv = env;
     }
@@ -465,16 +514,99 @@ void AudioDevice::PumpAudio() {
 
     sPumpCount++;
 
-    // Mix and push in chunks
+    const bool resample = (mDeviceSampleRate != mSampleRate && mDeviceSampleRate > 0 && mSampleRate > 0);
+    // freeFrames is counted in DEVICE-rate (output / ctx) frames. When resampling,
+    // each output frame consumes (mSampleRate/mDeviceSampleRate) mix-rate frames.
+    const double step = resample ? ((double)mSampleRate / (double)mDeviceSampleRate) : 1.0;
+
+    // Mix and push in chunks (all chunk sizes below are DEVICE-rate frames).
     while (freeFrames > 0) {
-        int chunk = std::min(freeFrames, MIX_BUF_FRAMES);
+        int outChunk = std::min(freeFrames, MIX_BUF_FRAMES);
 
-        MixSources(sMixBuffer, chunk);
+        if (!resample) {
+            // Fast path: ctx rate == mix rate, push mix straight through.
+            MixSources(sMixBuffer, outChunk);
+            FillDebugTone(sMixBuffer, outChunk, mSampleRate);
 
-        // Audio capture: record MixSources output pre-SAB
+            if (sCapturing && sCaptureBuffer && sCapturePos < CAPTURE_FRAMES) {
+                int framesToCapture = std::min(outChunk, CAPTURE_FRAMES - sCapturePos);
+                memcpy(sCaptureBuffer + sCapturePos * 2, sMixBuffer, framesToCapture * 2 * sizeof(float));
+                sCapturePos += framesToCapture;
+                if (sCapturePos >= CAPTURE_FRAMES) {
+                    sCapturing = false;
+                    sCaptureReady = true;
+                    printf("AudioDevice: capture complete (%d frames). Call %sDownloadAudio() to save.\n",
+                           sCapturePos, MILO_WEB_AUDIO_NS_STR);
+                }
+            }
+            js_audio_ring_write(sMixBuffer, outChunk, kStateKey);
+            freeFrames -= outChunk;
+            continue;
+        }
+
+        // Resampling path (mix rate -> device/ctx rate), continuous linear
+        // interpolation. To stay click-free across PumpAudio chunk boundaries we
+        // prepend the previous chunk's LAST mix-rate sample at index 0 of the mix
+        // buffer (so a fractional read position in [0,1) interpolates from that
+        // carried sample into the new block). mResamplePos in [0,1) is the leftover
+        // sub-sample phase from the previous chunk.
+        //
+        // Layout: sMixBuffer[0] = carried prev sample (mResampleLast*), then
+        // MixSources fills [1 .. newMix]. Read position s walks from mResamplePos.
+        // The last output frame reads at s_max = mResamplePos + (outChunk-1)*step
+        // and needs index floor(s_max)+1, so newMix = floor(s_max)+1 fresh frames.
+        double sStart = mResamplePos;
+        double sEnd = sStart + (double)(outChunk - 1) * step;
+        int newMix = (int)sEnd + 1;            // fresh mix-rate frames needed (>= 1)
+        if (newMix < 1) newMix = 1;
+        if (1 + newMix > MIX_BUF_FRAMES) {
+            // Cap: shrink the output chunk to fit the mix buffer (incl. the prepended
+            // carry sample at index 0). Recompute newMix for the reduced outChunk.
+            newMix = MIX_BUF_FRAMES - 1;
+            outChunk = (int)(((double)newMix - sStart) / step) + 1;
+            if (outChunk <= 0) break;
+        }
+
+        if (mResampleHavePrev) {
+            sMixBuffer[0] = mResampleLastL;
+            sMixBuffer[1] = mResampleLastR;
+        } else {
+            sMixBuffer[0] = 0.0f;
+            sMixBuffer[1] = 0.0f;
+        }
+        MixSources(sMixBuffer + 2, newMix); // fill frames [1 .. newMix] (stereo offset 2)
+        if (sDebugToneHz > 0.0) {
+            // Overwrite fresh block with the tone; index 0 keeps the carried sample
+            // so the resampler's first interp tap stays continuous.
+            FillDebugTone(sMixBuffer + 2, newMix, mSampleRate);
+        }
+
+        double s = sStart;
+        for (int o = 0; o < outChunk; o++) {
+            int i0 = (int)s;
+            double t = s - i0;
+            float l0 = sMixBuffer[i0 * 2 + 0];
+            float r0 = sMixBuffer[i0 * 2 + 1];
+            float l1 = sMixBuffer[(i0 + 1) * 2 + 0];
+            float r1 = sMixBuffer[(i0 + 1) * 2 + 1];
+            sOutBuffer[o * 2 + 0] = (float)(l0 + (l1 - l0) * t);
+            sOutBuffer[o * 2 + 1] = (float)(r0 + (r1 - r0) * t);
+            s += step;
+        }
+        // Carry phase: after the loop s = sStart + outChunk*step. floor(s) whole mix
+        // frames were fully consumed; the carry sample for the next chunk is mix
+        // frame `consumed` (always in [1..newMix], a valid filled index), and the
+        // leftover sub-sample fraction seeds the next chunk's read position.
+        int consumed = (int)s;              // floor(s), in [1 .. newMix]
+        if (consumed > newMix) consumed = newMix;  // numerical guard
+        mResamplePos = s - consumed;        // in [0,1)
+        mResampleLastL = sMixBuffer[consumed * 2 + 0];
+        mResampleLastR = sMixBuffer[consumed * 2 + 1];
+        mResampleHavePrev = true;
+
         if (sCapturing && sCaptureBuffer && sCapturePos < CAPTURE_FRAMES) {
-            int framesToCapture = std::min(chunk, CAPTURE_FRAMES - sCapturePos);
-            memcpy(sCaptureBuffer + sCapturePos * 2, sMixBuffer, framesToCapture * 2 * sizeof(float));
+            int framesToCapture = std::min(outChunk, CAPTURE_FRAMES - sCapturePos);
+            memcpy(sCaptureBuffer + sCapturePos * 2, sOutBuffer, framesToCapture * 2 * sizeof(float));
             sCapturePos += framesToCapture;
             if (sCapturePos >= CAPTURE_FRAMES) {
                 sCapturing = false;
@@ -483,10 +615,8 @@ void AudioDevice::PumpAudio() {
                        sCapturePos, MILO_WEB_AUDIO_NS_STR);
             }
         }
-
-        js_audio_ring_write(sMixBuffer, chunk, kStateKey);
-
-        freeFrames -= chunk;
+        js_audio_ring_write(sOutBuffer, outChunk, kStateKey);
+        freeFrames -= outChunk;
     }
 }
 
@@ -524,7 +654,23 @@ EMSCRIPTEN_KEEPALIVE void MILO_WEB_AUDIO_FN(download_capture)() {
         return;
     }
     static const char *kWavName = MILO_WEB_AUDIO_NS_STR "_web_capture.wav";
-    js_download_wav(sCaptureBuffer, sCapturePos, CAPTURE_RATE, kWavName);
+    // The capture records the post-resample SAB-bound output, which is at the
+    // DEVICE/ctx rate (mDeviceSampleRate). When the ctx rate differs from the mix
+    // rate (the resampling path), tag the WAV with the device rate so the file
+    // plays/measures at the correct pitch; otherwise it's the mix rate (==44100).
+    auto &dev = AudioDevice::GetInstance();
+    int capRate = dev.GetSampleRate(); // mix/engine rate (44100)
+    int devRate = dev.GetDeviceSampleRate();
+    if (devRate > 0) capRate = devRate;
+    js_download_wav(sCaptureBuffer, sCapturePos, capRate, kWavName);
+}
+
+// Debug: set a pure-tone override (Hz) generated at the engine/mix rate. 0 = off.
+// Used to deterministically verify the mix-rate -> ctx-rate resampler keeps pitch.
+EMSCRIPTEN_KEEPALIVE void MILO_WEB_AUDIO_FN(debug_tone)(int hz) {
+    sDebugToneHz = (double)hz;
+    sDebugTonePhase = 0.0;
+    printf("AudioDevice: debug tone %s (%d Hz at mix rate)\n", hz > 0 ? "ON" : "OFF", hz);
 }
 
 EMSCRIPTEN_KEEPALIVE void MILO_WEB_AUDIO_FN(dump_sab)(int count) {
