@@ -173,7 +173,15 @@ void ThreadCallPreInit() {
 #ifndef __EMSCRIPTEN__
     gMainThreadID = (u32)(uintptr_t)pthread_self();
 #else
-    gMainThreadID = 0;
+    // Single-threaded web build: everything runs on the one (main) thread, so
+    // thread-affinity checks are meaningless. We can't match GetCurrentThreadId()
+    // here (it lives in the consumer's xdk shim as pthread_self(), and this TU is
+    // SDK-agnostic with no pthread.h on Emscripten), and a hardcoded 0 never
+    // equalled that non-zero pthread_self() value — making MainThread() always
+    // false and flooding RandomFloat/RandomInt's MILO_ASSERT(MainThread()) so the
+    // engine never finished booting. -1 is the documented "thread checks disabled"
+    // sentinel (see the consumer's os/OSFuncs.h MainThread()).
+    gMainThreadID = (u32)-1;
 #endif
 }
 
