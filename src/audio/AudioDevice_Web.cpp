@@ -554,32 +554,82 @@ void AudioDevice::PumpAudio() {
     if (freeFrames <= 0)
         return;
 
-    // --- Output-latency cap (wave-09 probe D) --------------------------------
-    // Without this, the while(freeFrames>0) loop below greedily fills the ENTIRE
-    // ring every pump (~RING_FRAMES-1 = 32767 frames ≈ 673 ms @48000), so any source
-    // appended at writePos — especially a one-shot SFX — waits behind that whole
-    // queue before the worklet reaches it (keydown→audio measured ~685 ms). Underruns
-    // measured 0 over 30 s, so only a SMALL queue ahead of the read cursor is needed.
-    // Cap the queued depth to a target latency (env RB3_AUDIO_LATENCY_MS, default
-    // 100 ms). RING_FRAMES (allocation) is unchanged, so a transient frame stall up to
-    // the target is still absorbed; raise the env if real-hardware dropouts appear.
-    static int sTargetLatencyMs = -1;
-    if (sTargetLatencyMs < 0) {
-        const char *env = getenv("RB3_AUDIO_LATENCY_MS");
-        sTargetLatencyMs = env ? atoi(env) : 100;
-        if (sTargetLatencyMs < 10) sTargetLatencyMs = 10;   // sane floor
+    // --- Adaptive output-latency cap (wave-09 probe D + adaptive follow-up) ---
+    // The while(freeFrames>0) loop below would otherwise fill the ENTIRE ring every
+    // pump (~RING_FRAMES-1 = 32767 frames ≈ 673 ms), so every newly-added source —
+    // especially a one-shot SFX — waits behind that whole queue (keydown→audio
+    // ~685 ms). We cap the QUEUED depth to a target latency and ADAPT that target to
+    // the worklet's underrun feedback: keep it as LOW as possible for snappy SFX, but
+    // GROW it fast the moment the worklet pads silence (a main-thread stall starved
+    // the ring), then ease it back toward the floor while playback stays clean. This
+    // self-tunes to each machine — no per-device knob needed. RING_FRAMES (the
+    // allocation) is unchanged. Env overrides: RB3_AUDIO_LATENCY_MS pins a FIXED
+    // target (disables adaptation, for testing); RB3_AUDIO_LAT_MIN_MS / _MAX_MS set
+    // the adaptive bounds.
+    const int arate = (mDeviceSampleRate > 0) ? mDeviceSampleRate
+                    : (mSampleRate > 0 ? mSampleRate : 48000);
+    static int sFixedFrames  = -2;   // -2 uninit; -1 adaptive; >=0 env-fixed
+    static int sMinFrames    = 0;
+    static int sMaxFrames    = 0;
+    static int sGrowFrames   = 0;
+    static int sShrinkFrames = 0;
+    static int sTargetFrames = 0;    // current adaptive target (device frames ahead of read)
+    static int sCleanPumps   = 0;
+    static int sLastUnderrun = -1;   // -1 until baselined past the boot backlog
+    if (sFixedFrames == -2) {
+        const char *fenv = getenv("RB3_AUDIO_LATENCY_MS");
+        int fixedMs = fenv ? atoi(fenv) : 0;
+        sFixedFrames = fenv ? (int)((long long)arate * (fixedMs < 5 ? 5 : fixedMs) / 1000) : -1;
+        int minMs = getenv("RB3_AUDIO_LAT_MIN_MS") ? atoi(getenv("RB3_AUDIO_LAT_MIN_MS")) : 50;
+        int maxMs = getenv("RB3_AUDIO_LAT_MAX_MS") ? atoi(getenv("RB3_AUDIO_LAT_MAX_MS")) : 500;
+        if (minMs < 5) minMs = 5;
+        sMinFrames    = (int)((long long)arate * minMs / 1000);
+        sMaxFrames    = (int)((long long)arate * maxMs / 1000);
+        if (sMaxFrames > RING_FRAMES - 1) sMaxFrames = RING_FRAMES - 1;
+        sGrowFrames   = (int)((long long)arate * 30 / 1000);   // +30 ms per stall-report (catch up fast)
+        sShrinkFrames = (int)((long long)arate * 10 / 1000);   // -10 ms per clean window (recover, not ratchet)
+        sTargetFrames = (int)((long long)arate * 120 / 1000);  // start moderate (no first-song stutter)
+        if (sTargetFrames < sMinFrames) sTargetFrames = sMinFrames;
+        if (sTargetFrames > sMaxFrames) sTargetFrames = sMaxFrames;
     }
-    {
-        int rate = (mDeviceSampleRate > 0) ? mDeviceSampleRate : mSampleRate;
-        int targetFrames = (int)((long long)rate * sTargetLatencyMs / 1000);
-        if (targetFrames > RING_FRAMES - 1) targetFrames = RING_FRAMES - 1;
-        int queued = (RING_FRAMES - 1) - freeFrames;   // frames already ahead of read cursor
-        int writable = targetFrames - queued;
-        if (writable <= 0)
-            return;                                    // already at/above target this pump
-        if (freeFrames > writable)
-            freeFrames = writable;                     // top up only to the target depth
+
+    int targetFrames;
+    if (sFixedFrames >= 0) {
+        targetFrames = sFixedFrames;                 // env-pinned: no adaptation
+    } else {
+        int u[4];
+        if (js_audio_underrun_stats(u, kStateKey)) {
+            if (sLastUnderrun < 0) {
+                sLastUnderrun = u[0];                 // baseline past the boot backlog (don't grow for it)
+            } else if (u[0] > sLastUnderrun) {
+                sLastUnderrun = u[0];                 // the ring starved -> grow fast
+                sCleanPumps = 0;
+                if (sTargetFrames < sMaxFrames) {
+                    sTargetFrames += sGrowFrames;
+                    if (sTargetFrames > sMaxFrames) sTargetFrames = sMaxFrames;
+                    printf("AudioDevice: latency GROW -> %d ms (underrun)\n",
+                           (int)((long long)sTargetFrames * 1000 / arate));
+                }
+            } else if (++sCleanPumps >= 180) {        // sustained clean -> ease latency down
+                sCleanPumps = 0;
+                if (sTargetFrames > sMinFrames) {
+                    sTargetFrames -= sShrinkFrames;
+                    if (sTargetFrames < sMinFrames) sTargetFrames = sMinFrames;
+                    printf("AudioDevice: latency shrink -> %d ms (clean)\n",
+                           (int)((long long)sTargetFrames * 1000 / arate));
+                }
+            }
+        }
+        targetFrames = sTargetFrames;
     }
+    if (targetFrames > RING_FRAMES - 1) targetFrames = RING_FRAMES - 1;
+
+    int queued = (RING_FRAMES - 1) - freeFrames;     // frames already queued ahead of read cursor
+    int writable = targetFrames - queued;
+    if (writable <= 0)
+        return;                                       // already at/above target this pump
+    if (freeFrames > writable)
+        freeFrames = writable;                        // top up only to the target depth
 
     sPumpCount++;
 
