@@ -617,6 +617,7 @@ void AudioDevice::PumpAudio() {
     static int sTargetFrames = 0;    // current adaptive target (device frames ahead of read)
     static int sPressure     = 0;    // fixed-point /256 underrun pressure accumulator
     static int sLastUnderrun = -1;   // -1 until baselined past the boot backlog
+    static int sLastQuanta   = -1;   // worklet totalQuanta at last law step (edge-trigger guard)
     static bool sHighFlagged = false;// has the "near ceiling" log already fired in this excursion?
     if (sFixedFrames == -2) {
         const char *fenv = getenv("RB3_AUDIO_LATENCY_MS");
@@ -645,7 +646,19 @@ void AudioDevice::PumpAudio() {
         targetFrames = sFixedFrames;                 // env-pinned: no adaptation
     } else {
         int u[4];
-        if (js_audio_underrun_stats(u, kStateKey)) {
+        // EDGE-TRIGGER: the pressure law is a PER-WINDOW law (one grow/decay step
+        // per ~0.5s worklet report), but PumpAudio runs every frame (~33ms, called
+        // from rb3 App.cpp). The worklet's underrun summary is replaced wholesale on
+        // each 'underrun-stats' postMessage; u[2]=totalQuanta is monotonically
+        // increasing and only takes a NEW value when a fresh window has been posted.
+        // Gating the law on `u[2] != sLastQuanta` makes each constant (kPressureOne,
+        // kPressureGrow, the >>=1 decay, the 25% shrink) mean one window — without
+        // this guard a single stale window re-fired the branch ~15-30x per window
+        // (~33ms apart, all citing the same stale minDepth), so 4 pumps reached
+        // kPressureGrow and the target walked the whole 50->500ms floor<->ceiling
+        // range in <0.4s (latency thrash). See handoff 01-audio lines 99-100.
+        if (js_audio_underrun_stats(u, kStateKey) && u[2] != sLastQuanta) {
+            sLastQuanta = u[2];
             // SOFT-PRESSURE input: the worklet's per-window ring low-water mark. A
             // dip to well below the target (but still >=128 frames, so the hard
             // underrun counter stays 0) is a near-miss the old law was blind to.
@@ -663,6 +676,10 @@ void AudioDevice::PumpAudio() {
             }
             // Half the target: the "comfortably ahead" line. Dipping under it means
             // the pump was late enough this window that one more stall would underrun.
+            // NOTE: a FULL-DRAIN window leaves minDepth==0 (no quantum saw any audio),
+            // which fails (minDepth > 0) and skips soft pressure — but such a window
+            // necessarily bumped the hard underrun counter (u[0]), so the hard branch
+            // below covers it. softNearMiss is for the >=128-frame near-misses only.
             const bool softNearMiss = (sLastUnderrun >= 0) && sourcesActive &&
                                       (minDepth > 0) && (minDepth < sTargetFrames / 2);
 
