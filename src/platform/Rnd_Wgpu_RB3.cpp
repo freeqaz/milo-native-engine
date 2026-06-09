@@ -339,6 +339,82 @@ struct RB3TexEntry {
 };
 static std::unordered_map<RndTex*, RB3TexEntry> sTexGpu;
 
+// ===========================================================================
+// Per-mesh GPU vertex/index buffer cache.
+//
+// THE FIX for the unbounded WebGPU buffer leak: before this cache, DrawMesh
+// created a fresh MeshVB + MeshIB wgpu::Buffer on EVERY draw, EVERY frame, for
+// EVERY mesh — with nothing reusing them. On native Dawn the transient handles
+// recycle within a frame, but on browser WebGPU the GPU-process resources
+// accumulate without bound (real-GPU interpose measured ~73k buffers idle at
+// main_hub, growing ~1.5k/sec until the GPU process SIGSEGVs at song_select).
+//
+// This mirrors the existing sTexGpu texture cache (and the dc3 backend's
+// MeshGpuCache::EnsureMeshUploaded): the VB/IB are uploaded ONCE per mesh and
+// reused every subsequent frame. They are re-uploaded only when the geometry
+// changes — detected by a fingerprint (geom owner pointer + vert/face counts +
+// skinned flag) AND by RndMesh::OnSync() marking the entry dirty (the signal
+// RndText / dynamic meshes already fire via RndMesh::Sync when their verts
+// mutate). Skinned characters animate via the per-frame bone palette
+// (mBoneRing), NOT vertex re-upload, so caching their bind-pose verts is safe.
+struct RB3MeshEntry {
+    // --- Geometry (uploaded once per mesh, reused every frame) ---
+    wgpu::Buffer vbuf;
+    wgpu::Buffer ibuf;
+    uint32_t     indexCount = 0;  // == 3 * numFaces (the original, unpadded count)
+    bool         skinned = false;
+    bool         uploaded = false;
+    // Fingerprint: the geometry source we last uploaded. A change in any field
+    // (owner swapped, vert/face count changed, skinned-ness flipped) forces a
+    // re-upload even without an OnSync — defends shared-geom-owner instances and
+    // SetGeomOwner hot-swaps that don't route through this exact mesh's OnSync.
+    const void*  ownerKey = nullptr;
+    int          fpVerts = -1;
+    int          fpFaces = -1;
+    bool         fpSkinned = false;
+
+    // --- Per-mesh persistent uniform buffers + bind groups ---
+    // Before this cache, DrawMesh allocated the object/bone/material uniforms out
+    // of a shared per-frame RING and built a FRESH bind group against the ring
+    // offset every draw. On browser WebGPU, submit-queue backpressure pins each
+    // frame's bind groups (and the ring) across all in-flight command buffers, so
+    // the per-frame bind-group creates accumulate unbounded alongside the VB/IB.
+    // Instead we give each mesh its OWN tiny uniform buffer (object/bone/material)
+    // and ONE bind group bound to it at offset 0, created ONCE. Per frame we only
+    // WriteBuffer the updated uniforms into the existing buffer and reuse the
+    // bind group — zero per-frame buffer/bind-group creation at steady state. This
+    // needs no bind-group-LAYOUT change, so the shared dc3 backend is untouched.
+    wgpu::Buffer    objUB;       // sizeof(ObjectUniforms) = 128B
+    wgpu::BindGroup objBG;
+    wgpu::Buffer    boneUB;      // sizeof(BoneUniforms) = 2560B (skinned only)
+    wgpu::BindGroup boneBG;
+    wgpu::Buffer    matUB;       // sizeof(MaterialUniforms) = 192B
+    wgpu::BindGroup matBG;
+    // Material bind-group cache invalidation: the material bind group also binds
+    // the resolved diffuse/emissive texture VIEWS, which can change when a lazy
+    // texture upload completes or the material pointer is swapped. Rebuild matBG
+    // only when any of these change.
+    const void*     matKey = nullptr;      // last RndMat*
+    void*           matDiffuseView = nullptr;  // last wgpu diffuse view handle
+    void*           matEmissiveView = nullptr; // last wgpu emissive view handle
+};
+static std::unordered_map<RndMesh*, RB3MeshEntry> sMeshGpu;
+
+// Per-frame GPU-resource CREATE counter — proves the leak is fixed. Incremented
+// at every CreateBuffer in DrawMesh's upload path (and the per-mesh bind-group
+// builds), reset in BeginFrame, logged in EndFrame under RENDER_DBG. At steady
+// state (no new geometry entering the scene) this drops to ~0.
+static int sMeshBufCreatesThisFrame = 0;
+static int sMeshBGCreatesThisFrame = 0;
+
+// Drop a mesh's cached GPU buffers. Strong def displaces the weak no-op
+// link-stub (native: rndobj_synth_link_stubs.s; web: missing_stubs.js). Called
+// from RndMesh's HX_NATIVE destructor so freed meshes release their GPU buffers
+// instead of leaking the cache slot for the lifetime of the process.
+void CleanupGpuMesh(RndMesh* mesh) {
+    sMeshGpu.erase(mesh);
+}
+
 static uint32_t TexFingerprint(const uint8_t* p, int sz) {
     if (!p || sz < 16) return 0;
     uint32_t h = 0; int step = sz / 8; if (step < 1) step = 1;
@@ -719,11 +795,13 @@ bool BandRnd::InitGpu(int width, int height, bool headless) {
 void BandRnd::Shutdown() {
     if (!mGpuReady) return;
 
-    // File-static GPU cache that holds wgpu::Texture / wgpu::TextureView refs.
-    // It would otherwise destruct during libc's static-destructor phase (after
-    // the Vulkan ICD .so is unmapped) and drop its last refs there, leading to
-    // dangling vkDestroy* calls. Drop it while Dawn is still alive.
+    // File-static GPU caches that hold wgpu::Texture / wgpu::TextureView /
+    // wgpu::Buffer / wgpu::BindGroup refs. They would otherwise destruct during
+    // libc's static-destructor phase (after the Vulkan ICD .so is unmapped) and
+    // drop their last refs there, leading to dangling vkDestroy* calls. Drop them
+    // while Dawn is still alive.
     sTexGpu.clear();
+    sMeshGpu.clear();
 
     // Release uniform-ring buffers (refs on wgpu::Buffer / wgpu::Device).
     mSceneRing.Release();
@@ -1038,6 +1116,10 @@ void BandRnd::BeginFrame(RndCam* cam) {
     if (!mGpuReady) return;
     mDrawnMeshes = 0;
     mDrawnTris = 0;
+    // Per-frame GPU-resource CREATE counters — proves the mesh leak is fixed.
+    // At steady state (no new geometry entering the scene) these drop to ~0.
+    sMeshBufCreatesThisFrame = 0;
+    sMeshBGCreatesThisFrame = 0;
     mSceneRing.Reset();
     mMaterialRing.Reset();
     mObjectRing.Reset();
@@ -1185,13 +1267,15 @@ void BandRnd::EndFrame() {
         const char* camName = (cur && cur->Name()) ? cur->Name() : "<none>";
         int texCount = (int)sTexGpu.size();
         fprintf(stderr, "[render f%d] cam=%s pos=(%.2f,%.2f,%.2f) clear=(%.2f,%.2f,%.2f) "
-                        "meshes=%d tris=%d uploaded_tex=%d\n",
+                        "meshes=%d tris=%d uploaded_tex=%d cached_meshes=%d "
+                        "buf_creates=%d bg_creates=%d\n",
                 mFrameCount, camName,
                 cur ? cur->WorldXfm().v.x : 0.f,
                 cur ? cur->WorldXfm().v.y : 0.f,
                 cur ? cur->WorldXfm().v.z : 0.f,
                 mClearColor.red, mClearColor.green, mClearColor.blue,
-                mDrawnMeshes, mDrawnTris, texCount);
+                mDrawnMeshes, mDrawnTris, texCount, (int)sMeshGpu.size(),
+                sMeshBufCreatesThisFrame, sMeshBGCreatesThisFrame);
     }
     // Default (no RENDER_DBG / RB3_RENDER_DBG): stay silent. Synchronous
     // console.log() in the browser is extremely expensive; a per-frame tally
@@ -1207,6 +1291,56 @@ wgpu::BindGroup BandRnd::MakeMaterialBindGroupRaw(wgpu::Buffer buf, uint32_t off
     e[3].binding = 3;  e[3].textureView = mFlatNormalView;
     e[4].binding = 4;  e[4].textureView = mBlackView;
     e[5].binding = 5;  e[5].textureView = mBlackView;
+    e[6].binding = 6;  e[6].textureView = mBlackView;
+    e[7].binding = 7;  e[7].sampler = mSampler;
+    e[8].binding = 8;  e[8].textureView = mBlackCubeView;
+    e[9].binding = 9;  e[9].sampler = mSampler;
+    e[10].binding = 10; e[10].textureView = mFlatNormalView;
+    wgpu::BindGroupDescriptor bd{};
+    bd.layout = mPipelines.MaterialLayout();
+    bd.entryCount = 11; bd.entries = e;
+    return mGpu.Device().CreateBindGroup(&bd);
+}
+
+// Resolve a material's diffuse + emissive GPU texture views (performing a lazy
+// upload if needed). Pulled out of bind-group construction so DrawMesh can probe
+// for a late texture arrival WITHOUT creating a throwaway bind group every frame.
+void BandRnd::ResolveMaterialViews(RndMat* mat, wgpu::TextureView& diffuse,
+                                   wgpu::TextureView& emissive) {
+    diffuse = mWhiteView;
+    emissive = mBlackView;
+    if (mat) {
+        RndTex* dt = mat->GetDiffuseTex();
+        if (dt) {
+            wgpu::TextureView v = GetRB3TexView(dt);
+            if (!v) v = UploadRndTexIfNeeded(mGpu, dt);
+            if (v) diffuse = v;
+        }
+        RndTex* et = (RndTex*)mat->mEmissiveMap;
+        if (et) {
+            wgpu::TextureView v = GetRB3TexView(et);
+            if (!v) v = UploadRndTexIfNeeded(mGpu, et);
+            if (v) emissive = v;
+        }
+    }
+}
+
+// Per-mesh-cache material bind group: identical texture/sampler wiring to
+// MakeMaterialBindGroup, but binds the uniform at offset 0 of the mesh's OWN
+// persistent matUB (not a per-frame ring offset) and takes already-resolved
+// diffuse/emissive views (resolved by ResolveMaterialViews above) so DrawMesh
+// can cache the bind group and rebuild it only when those views (or the material
+// pointer) actually change.
+wgpu::BindGroup BandRnd::MakeMaterialBindGroupCached(wgpu::Buffer buf,
+                                                     wgpu::TextureView diffuse,
+                                                     wgpu::TextureView emissive) {
+    wgpu::BindGroupEntry e[11] = {};
+    e[0].binding = 0;  e[0].buffer = buf; e[0].offset = 0; e[0].size = sizeof(MaterialUniforms);
+    e[1].binding = 1;  e[1].textureView = diffuse;
+    e[2].binding = 2;  e[2].sampler = mSampler;
+    e[3].binding = 3;  e[3].textureView = mFlatNormalView;
+    e[4].binding = 4;  e[4].textureView = mBlackView;
+    e[5].binding = 5;  e[5].textureView = emissive;
     e[6].binding = 6;  e[6].textureView = mBlackView;
     e[7].binding = 7;  e[7].sampler = mSampler;
     e[8].binding = 8;  e[8].textureView = mBlackCubeView;
@@ -2856,6 +2990,36 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     if (skinned && getenv("RB3_SKIP_SKINNED")) return;
     if (!skinned && getenv("RB3_SKIP_STATIC")) return;
 
+    // --- Per-mesh GPU cache: decide whether VB/IB need (re)uploading ---
+    // Reuse the cached vertex/index buffers unless the geometry actually changed.
+    // `uploaded` is cleared by RndMesh::OnSync() (the dirty signal dynamic meshes
+    // fire via RndMesh::Sync — RndText sub-meshes call mesh->Sync() from
+    // RndText::SyncMeshes every time their glyphs change) and by a fingerprint
+    // mismatch (owner swap, vert/face-count change, skinned flip). We rely on that
+    // OnSync dirty signal for text rather than force-re-uploading every text mesh
+    // each frame: on browser WebGPU, submit-queue backpressure pins each frame's
+    // freshly-created VB/IB across all in-flight command buffers, so a per-frame
+    // text re-upload still accumulates unboundedly (measured 1k -> 22k MeshVB at
+    // song_select before this change). Trusting OnSync drops that to ~0.
+    // Opt-out (RB3_NO_MESH_CACHE=1) restores the legacy per-draw upload for A/B.
+    static int sMeshCacheOff = -1;
+    if (sMeshCacheOff < 0) {
+        const char* e = getenv("RB3_NO_MESH_CACHE");
+        sMeshCacheOff = (e && e[0] && e[0] != '0') ? 1 : 0;
+    }
+    // Stable source-vertex-count key: uncompressed meshes carry verts in
+    // owner->mVerts (nv = verts.size()); Xbox-compressed meshes carry them in
+    // owner->mCompressedVerts (verts.size() == 0). The unpack path below
+    // reassigns `nv` to the compressed count, so fingerprint against a value
+    // that is identical pre- and post-unpack — otherwise compressed meshes would
+    // re-upload every frame and the cache would be a no-op for most scene geom.
+    int fpVertsKey = (nv > 0) ? nv : (int)owner->mNumCompressedVerts;
+    RB3MeshEntry& meshEntry = sMeshGpu[mesh];
+    bool needUpload = sMeshCacheOff || !meshEntry.uploaded ||
+                      meshEntry.ownerKey != (const void*)owner ||
+                      meshEntry.fpVerts != fpVertsKey || meshEntry.fpFaces != nf ||
+                      meshEntry.fpSkinned != skinned;
+
     // SKIN_PROBE: ground-truth diagnostic for character skinning. Logs, once per
     // unique mesh name, whether the INSTANCE vs the GEOM-OWNER carries the bones,
     // which path the mesh takes, face count, and the bone palette source object.
@@ -2875,6 +3039,11 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     }
 
     // --- Unpack vertices into engine GpuVertexRB3 / GpuVertexSkinned layout ---
+    // NB: the unpack runs UNCONDITIONALLY (not gated on needUpload) because the
+    // skinned shard-guard below re-blends these bind-pose verts against the LIVE
+    // bone pose every frame. The GPU UPLOAD (the leaky part) is what's gated on
+    // needUpload — the CPU unpack is cheap and feeds both consumers. (Caching the
+    // unpacked verts CPU-side to skip this too is the tracked follow-up perf win.)
     std::vector<GpuVertexRB3> gpuVerts;
     std::vector<GpuVertexSkinned> gpuVertsSkinned;
     if (nv > 0) {
@@ -3005,7 +3174,9 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
             }
         }
     }
-    bool dbg = getenv("RB3_RENDER_DBG") != nullptr;
+  // --- GPU upload (the leaky part): only on cache miss / dirty / fingerprint
+  // change. The unpacked verts above are always available to the shard guard. ---
+  if (needUpload) {
     std::vector<uint16_t> indices;
     indices.reserve(nf * 3);
     for (int i = 0; i < nf; i++) {
@@ -3014,15 +3185,15 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
         indices.push_back(faces[i].v3);
     }
 
-    wgpu::Buffer vbuf, ibuf;
     {
         wgpu::BufferDescriptor bd{};
         bd.label = "MeshVB";
         bd.size = skinned ? ((uint64_t)nv * sizeof(GpuVertexSkinned))
                           : ((uint64_t)nv * sizeof(GpuVertexRB3));
         bd.usage = wgpu::BufferUsage::Vertex | wgpu::BufferUsage::CopyDst;
-        vbuf = mGpu.Device().CreateBuffer(&bd);
-        mGpu.Queue().WriteBuffer(vbuf, 0,
+        meshEntry.vbuf = mGpu.Device().CreateBuffer(&bd);
+        sMeshBufCreatesThisFrame++;
+        mGpu.Queue().WriteBuffer(meshEntry.vbuf, 0,
                                  skinned ? (const void*)gpuVertsSkinned.data()
                                          : (const void*)gpuVerts.data(),
                                  bd.size);
@@ -3038,9 +3209,29 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
         wgpu::BufferDescriptor bd{};
         bd.label = "MeshIB"; bd.size = padded;
         bd.usage = wgpu::BufferUsage::Index | wgpu::BufferUsage::CopyDst;
-        ibuf = mGpu.Device().CreateBuffer(&bd);
-        mGpu.Queue().WriteBuffer(ibuf, 0, indices.data(), padded);
+        meshEntry.ibuf = mGpu.Device().CreateBuffer(&bd);
+        sMeshBufCreatesThisFrame++;
+        mGpu.Queue().WriteBuffer(meshEntry.ibuf, 0, indices.data(), padded);
     }
+
+    // Stamp the cache fingerprint so subsequent frames reuse these buffers.
+    // indexCount is the UNPADDED count (3*nf); DrawIndexed draws exactly that
+    // (the original code passed the padded size, whose trailing partial triangle
+    // the rasterizer always dropped — identical output, fewer fetched indices).
+    meshEntry.indexCount = (uint32_t)(nf * 3);
+    meshEntry.skinned    = skinned;
+    meshEntry.ownerKey   = (const void*)owner;
+    meshEntry.fpVerts    = fpVertsKey;
+    meshEntry.fpFaces    = nf;
+    meshEntry.fpSkinned  = skinned;
+    meshEntry.uploaded   = true;
+  } // if (needUpload)
+
+    // Cached buffers reused this frame (no GPU work when !needUpload).
+    wgpu::Buffer vbuf = meshEntry.vbuf;
+    wgpu::Buffer ibuf = meshEntry.ibuf;
+    uint32_t cachedIndexCount = meshEntry.indexCount;
+    if (!vbuf || !ibuf) return;  // upload failed / no geometry
 
     // --- Object uniforms: world transform of the mesh ---
     // For a SKINNED mesh the bone palette (below) already composes the bone's
@@ -3056,15 +3247,27 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     // worldInvTranspose: for unscaled rigid xfm, the rotation part suffices.
     // Use the world rotation as-is (good enough for normals on rigid meshes).
     std::memcpy(obj.worldInvTranspose, obj.world, sizeof(obj.world));
-    uint32_t objOff = mObjectRing.Write(mGpu.Queue(), &obj, sizeof(obj));
-    wgpu::BindGroup objBG;
-    {
+    // Per-mesh persistent object uniform buffer + bind group (created once,
+    // reused every frame). The world transform changes per frame (animation /
+    // panel pose) so we WriteBuffer it each draw — but into the SAME buffer, so
+    // no new GPU resource is created. Replaces the old per-draw ring-offset
+    // bind group that accumulated unbounded under web submit-queue backpressure.
+    if (!meshEntry.objUB) {
+        wgpu::BufferDescriptor ubd{};
+        ubd.label = "MeshObjUB";
+        ubd.size = sizeof(ObjectUniforms);
+        ubd.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
+        meshEntry.objUB = mGpu.Device().CreateBuffer(&ubd);
+        sMeshBufCreatesThisFrame++;
         wgpu::BindGroupEntry e{};
-        e.binding = 0; e.buffer = mObjectRing.Buffer(); e.offset = objOff; e.size = sizeof(ObjectUniforms);
+        e.binding = 0; e.buffer = meshEntry.objUB; e.offset = 0; e.size = sizeof(ObjectUniforms);
         wgpu::BindGroupDescriptor bd{};
         bd.layout = mPipelines.ObjectLayout(); bd.entryCount = 1; bd.entries = &e;
-        objBG = mGpu.Device().CreateBindGroup(&bd);
+        meshEntry.objBG = mGpu.Device().CreateBindGroup(&bd);
+        sMeshBGCreatesThisFrame++;
     }
+    mGpu.Queue().WriteBuffer(meshEntry.objUB, 0, &obj, sizeof(obj));
+    wgpu::BindGroup objBG = meshEntry.objBG;
 
     // --- Bone uniforms ---
     // Static: identity palette (vs_main ignores it; bound only to satisfy the
@@ -3663,15 +3866,28 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
         }
     }
 
-    uint32_t boneOff = mBoneRing.Write(mGpu.Queue(), &bones, sizeof(bones));
-    wgpu::BindGroup boneBG;
-    {
+    // Per-mesh persistent bone uniform buffer + bind group (created once, reused).
+    // The bone palette is this mesh's per-frame ANIMATION data — it changes every
+    // frame for skinned meshes (static meshes get a constant identity palette) —
+    // so we WriteBuffer it each draw, but into the SAME buffer. The bind group is
+    // built once. (Was a per-draw ring-offset bind group → unbounded under web
+    // submit-queue backpressure.)
+    if (!meshEntry.boneUB) {
+        wgpu::BufferDescriptor ubd{};
+        ubd.label = "MeshBoneUB";
+        ubd.size = sizeof(BoneUniforms);
+        ubd.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
+        meshEntry.boneUB = mGpu.Device().CreateBuffer(&ubd);
+        sMeshBufCreatesThisFrame++;
         wgpu::BindGroupEntry e{};
-        e.binding = 0; e.buffer = mBoneRing.Buffer(); e.offset = boneOff; e.size = sizeof(BoneUniforms);
+        e.binding = 0; e.buffer = meshEntry.boneUB; e.offset = 0; e.size = sizeof(BoneUniforms);
         wgpu::BindGroupDescriptor bd{};
         bd.layout = mPipelines.BoneLayout(); bd.entryCount = 1; bd.entries = &e;
-        boneBG = mGpu.Device().CreateBindGroup(&bd);
+        meshEntry.boneBG = mGpu.Device().CreateBindGroup(&bd);
+        sMeshBGCreatesThisFrame++;
     }
+    mGpu.Queue().WriteBuffer(meshEntry.boneUB, 0, &bones, sizeof(bones));
+    wgpu::BindGroup boneBG = meshEntry.boneBG;
 
     // --- Material uniforms ---
     RndMat* mat = mesh->Mat();
@@ -3972,8 +4188,41 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
             mu.alphaThreshold = 0.0f;
         }
     }
-    uint32_t matOff = mMaterialRing.Write(mGpu.Queue(), &mu, sizeof(mu));
-    wgpu::BindGroup matBG = MakeMaterialBindGroup(matOff, mat);
+    // Per-mesh persistent material uniform buffer + cached bind group. The
+    // material uniforms (mu: animated colour/emissive/etc.) change per frame so
+    // we WriteBuffer them each draw into the SAME buffer. The bind group also
+    // binds the resolved diffuse/emissive texture VIEWS, which change only when a
+    // lazy texture upload completes or the material pointer is swapped — so we
+    // rebuild it only when those handles change, not every frame. (Was a per-draw
+    // ring-offset bind group → unbounded under web submit-queue backpressure.)
+    if (!meshEntry.matUB) {
+        wgpu::BufferDescriptor ubd{};
+        ubd.label = "MeshMatUB";
+        ubd.size = sizeof(MaterialUniforms);
+        ubd.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
+        meshEntry.matUB = mGpu.Device().CreateBuffer(&ubd);
+        sMeshBufCreatesThisFrame++;
+    }
+    mGpu.Queue().WriteBuffer(meshEntry.matUB, 0, &mu, sizeof(mu));
+    {
+        // Resolve the current diffuse/emissive views (cheap: a texture-cache hit
+        // after the first frame; lazily uploads on a late arrival) WITHOUT
+        // building a bind group, then rebuild the cached bind group only when the
+        // material pointer or a resolved view handle actually changed. At steady
+        // state this creates ZERO bind groups per frame.
+        wgpu::TextureView diffuse, emissive;
+        ResolveMaterialViews(mat, diffuse, emissive);
+        if (!meshEntry.matBG || meshEntry.matKey != (const void*)mat ||
+            meshEntry.matDiffuseView != diffuse.Get() ||
+            meshEntry.matEmissiveView != emissive.Get()) {
+            meshEntry.matBG = MakeMaterialBindGroupCached(meshEntry.matUB, diffuse, emissive);
+            sMeshBGCreatesThisFrame++;
+            meshEntry.matKey = (const void*)mat;
+            meshEntry.matDiffuseView = diffuse.Get();
+            meshEntry.matEmissiveView = emissive.Get();
+        }
+    }
+    wgpu::BindGroup matBG = meshEntry.matBG;
 
     // --- Pipeline state from material (V4: honor material blend/zmode) ---
     // RndMat::Blend enum constants (kBlendDest..kPreMultAlpha = 0..7) match
@@ -4049,8 +4298,12 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     if (HighwayBloomEnabled() && RndCam::sCurrent && RndCam::sCurrent->Name() &&
         std::strcmp(RndCam::sCurrent->Name(), "game.cam") == 0 && IsHaloSourceMat(mat)) {
         if (mHaloDraws.capacity() == 0) mHaloDraws.reserve(16);
+        // Capture the cached per-mesh obj/bone/mat bind groups + buffers. Each
+        // halo-source mesh is drawn at most once per frame (distinct gem-core /
+        // now-bar RndMesh objects), so its per-mesh uniform buffers are not
+        // overwritten before EndFrame's replay — the captured handles are valid.
         mHaloDraws.push_back({pipe, mSceneBindGroup, matBG, objBG, boneBG,
-                              vbuf, ibuf, (uint32_t)indices.size()});
+                              vbuf, ibuf, cachedIndexCount});
     }
 
     mPass.SetPipeline(pipe);
@@ -4060,7 +4313,7 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     mPass.SetBindGroup(3, boneBG, 0, nullptr);
     mPass.SetVertexBuffer(0, vbuf, 0, WGPU_WHOLE_SIZE);
     mPass.SetIndexBuffer(ibuf, wgpu::IndexFormat::Uint16, 0, WGPU_WHOLE_SIZE);
-    mPass.DrawIndexed((uint32_t)indices.size(), 1, 0, 0, 0);
+    mPass.DrawIndexed(cachedIndexCount, 1, 0, 0, 0);
 
     mDrawnMeshes++;
     mDrawnTris += nf;
@@ -4076,8 +4329,15 @@ void RndMesh::DrawShowing() {
 }
 
 void RndMesh::OnSync(int) {
-    // Geometry changed; nothing GPU-cached to invalidate in this simple backend
-    // (we re-upload every draw). No-op.
+    // Geometry changed — mark this mesh's cached GPU vertex/index buffers dirty so
+    // the next DrawMesh re-uploads them. This is the dirty signal dynamic meshes
+    // (RndText sub-meshes, ribbons, procedural geometry) fire via RndMesh::Sync
+    // when their verts mutate; without it the per-mesh GPU cache (sMeshGpu) would
+    // keep drawing stale geometry. Clearing `uploaded` keeps the existing
+    // wgpu::Buffers (re-`WriteBuffer`'d in place on re-upload if sizes match, or
+    // recreated if vert/face counts changed) — no leak.
+    auto it = sMeshGpu.find(this);
+    if (it != sMeshGpu.end()) it->second.uploaded = false;
 }
 
 // RndTex render-target entry points.

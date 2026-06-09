@@ -182,6 +182,17 @@ private:
     void CreateDefaultTextures();
     wgpu::BindGroup MakeMaterialBindGroup(uint32_t off, RndMat* mat);
     wgpu::BindGroup MakeMaterialBindGroupRaw(wgpu::Buffer buf, uint32_t off);
+    // Per-mesh-cache material path. ResolveMaterialViews resolves (and lazily
+    // uploads) a material's diffuse/emissive views WITHOUT building a bind group,
+    // so DrawMesh can cheaply probe for a late texture arrival each frame.
+    // MakeMaterialBindGroupCached then builds against the mesh's own persistent
+    // matUB at offset 0 with the resolved views, rebuilt only when they (or the
+    // material pointer) change. See sMeshGpu in Rnd_Wgpu_RB3.cpp.
+    void ResolveMaterialViews(RndMat* mat, wgpu::TextureView& diffuse,
+                              wgpu::TextureView& emissive);
+    wgpu::BindGroup MakeMaterialBindGroupCached(wgpu::Buffer buf,
+                                                wgpu::TextureView diffuse,
+                                                wgpu::TextureView emissive);
 
     // --- Shared 2D quad pipeline infra (§3 of the RTT engine plan) ---
     // Compile-once shader module with vs_rect/fs_rect/fs_rect_notex entries
