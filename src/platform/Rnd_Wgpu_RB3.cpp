@@ -663,15 +663,7 @@ void BandRnd::InitGpuResources() {
     mPipelines.Init(&mGpu);
 
     const int W = mGpu.WindowWidth(), H = mGpu.WindowHeight();
-    {
-        wgpu::TextureDescriptor dd{};
-        dd.label = "BandDepth"; dd.size = {(uint32_t)W, (uint32_t)H, 1};
-        dd.format = wgpu::TextureFormat::Depth24PlusStencil8;
-        dd.usage = wgpu::TextureUsage::RenderAttachment;
-        dd.mipLevelCount = 1;
-        mDepthTex = mGpu.Device().CreateTexture(&dd);
-        mDepthView = mDepthTex.CreateView();
-    }
+    EnsureDepth(W, H);
 
     // 64KB = ~85 scene-uniform slots (768B aligned each). The per-environ
     // re-write (venue lighting) makes a busy world.cam frame do ~24 scene writes
@@ -1059,6 +1051,26 @@ void BandRnd::BeginFrame(RndCam* cam) {
     mFrameView = mGpu.IsHeadless() ? mGpu.AcquireHeadlessFrame() : mGpu.AcquireNextFrame();
     if (!mFrameView) { fprintf(stderr, "BandRnd: frame acquire failed\n"); return; }
 
+    // Size the depth (and postproc intermediate / halo) attachments to the LIVE
+    // color target every frame. On web the browser auto-resizes the canvas
+    // backing store on a window/devtools resize, so the swapchain texture
+    // AcquireNextFrame() just returned can differ from the boot size, while
+    // WindowWidth/Height (only moved by an explicit ResizeSurface the web path
+    // never calls) go stale. Reading the actual color-texture size keeps every
+    // render pass' attachments the same size — otherwise BandMainPass aborts with
+    // "depth stencil attachment size does not match the other attachments".
+    // Headless has no swapchain texture, so fall back to WindowWidth/Height
+    // (fixed for headless captures, so depth stays at the init size).
+    int fbW = mGpu.WindowWidth(), fbH = mGpu.WindowHeight();
+    if (!mGpu.IsHeadless()) {
+        wgpu::Texture& surf = mGpu.SurfaceTexture();
+        if (surf) {
+            uint32_t sw = surf.GetWidth(), sh = surf.GetHeight();
+            if (sw > 0 && sh > 0) { fbW = (int)sw; fbH = (int)sh; }
+        }
+    }
+    EnsureDepth(fbW, fbH);
+
     WriteSceneUniforms(cam);
 
     mEncoder = mGpu.Device().CreateCommandEncoder();
@@ -1072,8 +1084,7 @@ void BandRnd::BeginFrame(RndCam* cam) {
     mRenderedToIntermediate = false;
     wgpu::TextureView mainTarget = mFrameView;
     if (hasPP) {
-        int W = mGpu.WindowWidth(), H = mGpu.WindowHeight();
-        EnsureIntermediate(W, H);
+        EnsureIntermediate(fbW, fbH);
         if (mIntermediateView) { mainTarget = mIntermediateView; mRenderedToIntermediate = true; }
     }
 
@@ -1678,7 +1689,11 @@ void BandRnd::CompositeHaloBloom() {
         return;
     }
 
-    int W = mGpu.WindowWidth(), H = mGpu.WindowHeight();
+    // Match mDepthView's live size: the replay pass below pairs mHaloView with
+    // mDepthView, so the halo target must be the same size as the depth buffer
+    // (WindowWidth/Height can be stale after a web canvas resize — see BeginFrame).
+    int W = mDepthWidth, H = mDepthHeight;
+    if (W <= 0 || H <= 0) { W = mGpu.WindowWidth(); H = mGpu.WindowHeight(); }
     EnsureHaloTarget(W, H);
     EnsureHaloBlitPipeline();
     if (!mHaloView || !mHaloAddPipeline || !mHaloBlitBGL || !mDepthView) {
@@ -2085,6 +2100,32 @@ void BandRnd::EnsureIntermediate(int w, int h) {
     mIntermediateView = t.CreateView();
     mIntermediateWidth = w;
     mIntermediateHeight = h;
+}
+
+// (Re)create the "BandDepth" depth/stencil attachment at w x h. Recreated only on
+// a size change. BeginFrame sizes this to the ACTUAL acquired color texture each
+// frame: on web the browser auto-resizes the canvas backing store (and the
+// swapchain texture AcquireNextFrame returns) on a window/devtools resize, while
+// GpuDevice::WindowWidth/Height only moves on an explicit ResizeSurface the web
+// path never calls. Sizing depth off the live color texture keeps the two in
+// lockstep on every platform — without a stale mismatch aborting BandMainPass
+// ("depth stencil attachment size does not match the other attachments").
+void BandRnd::EnsureDepth(int w, int h) {
+    if (w <= 0 || h <= 0) return;
+    if (mDepthTex && mDepthView && mDepthWidth == w && mDepthHeight == h)
+        return;  // already sized correctly
+    wgpu::TextureDescriptor dd{};
+    dd.label = "BandDepth";
+    dd.size = {(uint32_t)w, (uint32_t)h, 1};
+    dd.format = wgpu::TextureFormat::Depth24PlusStencil8;
+    dd.usage = wgpu::TextureUsage::RenderAttachment;
+    dd.mipLevelCount = 1;
+    wgpu::Texture t = mGpu.Device().CreateTexture(&dd);
+    if (!t) return;
+    mDepthTex = t;
+    mDepthView = t.CreateView();
+    mDepthWidth = w;
+    mDepthHeight = h;
 }
 
 // Grade the intermediate onto `dst` (the framebuffer): a single fullscreen

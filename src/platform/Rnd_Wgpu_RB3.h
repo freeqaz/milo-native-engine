@@ -201,6 +201,10 @@ private:
     // at the requested size using mTargetFmt (NEVER hardcoded RGBA8).
     wgpu::TextureView MainColorTarget();
     void EnsureIntermediate(int w, int h);
+    // (Re)create the "BandDepth" depth/stencil attachment at w x h. Called from
+    // InitGpuResources and every BeginFrame; recreates only on a size change so a
+    // window/devtools resize keeps depth matching the live color attachment.
+    void EnsureDepth(int w, int h);
     void RunPostProcComposite(wgpu::TextureView dst);
 
     // Tier 2 mid-frame layering: close the main (intermediate) pass, grade the
@@ -246,6 +250,12 @@ public:
 
     wgpu::Texture mDepthTex;
     wgpu::TextureView mDepthView;
+    // Tracked size of mDepthTex. The depth attachment must match the live color
+    // attachment every frame; on web the browser auto-resizes the canvas (and so
+    // the swapchain color texture) on a window/devtools resize, so depth is
+    // recreated via EnsureDepth() whenever this differs from the acquired frame.
+    int mDepthWidth = 0;
+    int mDepthHeight = 0;
 
     // RTT: the texture currently being painted into (the redirected target),
     // or null when drawing into the main pass. While set, DrawMesh selects an
