@@ -3216,6 +3216,32 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
   // --- GPU upload (the leaky part): only on cache miss / dirty / fingerprint
   // change. The unpacked verts above are always available to the shard guard. ---
   if (needUpload) {
+    // Recompute a tight LOCAL bounding sphere from the just-unpacked positions
+    // (once per geometry generation, gated on needUpload). Xbox-compressed venue
+    // meshes carry no CPU verts, so RndMesh::UpdateSphere can't fix their stale /
+    // wrong-centered baked sphere — the only place real local positions exist is
+    // right here. Static meshes only: skinned meshes keep their zero sphere
+    // (RndMesh::UpdateSphere sets s.Zero() => never culled, which is correct).
+    // The LOCAL sphere is transformed by the mesh's WorldXfm at the cull test
+    // (RndDrawable::MakeWorldSphere), so animated static venue meshes still cull
+    // correctly. Used by the world.cam-scoped RB3VenueFrustumCull (Draw.cpp).
+    if (!skinned && nv > 0) {
+        float mn3[3] = { 1e30f, 1e30f, 1e30f }, mx3[3] = { -1e30f, -1e30f, -1e30f };
+        for (int i = 0; i < nv; i++)
+            for (int k = 0; k < 3; k++) {
+                float p = gpuVerts[i].pos[k];
+                if (p < mn3[k]) mn3[k] = p;
+                if (p > mx3[k]) mx3[k] = p;
+            }
+        Vector3 center((mn3[0] + mx3[0]) * 0.5f, (mn3[1] + mx3[1]) * 0.5f,
+                       (mn3[2] + mx3[2]) * 0.5f);
+        float dx = mx3[0] - mn3[0], dy = mx3[1] - mn3[1], dz = mx3[2] - mn3[2];
+        float radius = 0.5f * std::sqrt(dx * dx + dy * dy + dz * dz);
+        Sphere localSphere;
+        localSphere.Set(center, radius);
+        mesh->SetSphere(localSphere);
+    }
+
     std::vector<uint16_t> indices;
     indices.reserve(nf * 3);
     for (int i = 0; i < nf; i++) {
