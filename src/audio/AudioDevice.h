@@ -105,9 +105,17 @@ private:
     // 1.0884x fast ("chipmunks"). Persistent linear-resampler phase state below
     // keeps the resampling continuous across PumpAudio chunk boundaries.
     int mDeviceSampleRate = 0;     // 0 until Init reads it back; == mSampleRate when equal
-    double mResamplePos = 0.0;     // fractional read position into the mix-rate stream
-    float mResampleLastL = 0.0f;   // last mix-rate sample (L) carried across chunks
-    float mResampleLastR = 0.0f;   // last mix-rate sample (R)
-    bool mResampleHavePrev = false;
+    double mResamplePos = 0.0;     // fractional read offset from mResampleCarry[0]
+    // Carry-all resampler state. MixSources() is a DESTRUCTIVE pull (it advances the
+    // source stream by exactly the frames it mixes), so EVERY mix frame that was
+    // pulled but not yet fully consumed must be carried, stream-contiguous, into the
+    // next PumpAudio chunk. Carrying only ONE sample (the old mResampleLast*) silently
+    // dropped the unconsumed tail frame on the ~8% of jittered chunks where the read
+    // head didn't land on a frame boundary -> a 1-sample click/crackle on music
+    // (inaudible on a constant-cadence sine, which is all earlier tests exercised).
+    // 1-2 frames are carried in practice; 8 is ample headroom.
+    static const int kResampleCarryMax = 8;
+    float mResampleCarry[kResampleCarryMax * 2] = {0}; // interleaved stereo
+    int mResampleCarryN = 0;       // valid carried frames at the front of the next mix
 #endif
 };

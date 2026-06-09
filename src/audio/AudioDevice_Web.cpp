@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <emscripten.h>
 
@@ -86,7 +87,10 @@ static void FillDebugTone(float *mixStereo, int frames, int mixRate) {
 }
 
 // ---- Audio capture for debugging ----
-static const int CAPTURE_SECONDS = 3;
+// 30s so a headless harness can capture a full sustained-gameplay window and
+// compute a per-second RMS envelope + spectrogram-shape correlation vs the
+// ground-truth reference (3s was too short to prove a continuous run).
+static const int CAPTURE_SECONDS = 30;
 static const int CAPTURE_RATE = 44100;
 static const int CAPTURE_FRAMES = CAPTURE_RATE * CAPTURE_SECONDS;
 static float *sCaptureBuffer = nullptr; // stereo interleaved float
@@ -123,9 +127,18 @@ EM_JS(int, js_audio_init,
             started: false
         };
 
-        var ctx = new AudioContext({ sampleRate: sampleRate });
+        // Create the context at the HARDWARE's native rate -- do NOT request the
+        // mix rate (sampleRate). If we ask for 44100 the browser honors it, then the
+        // OS/driver (PipeWire/ALSA/CoreAudio) must resample 44100 -> the real device
+        // rate (commonly 48000) at the output. On some stacks (notably Linux) that
+        // final SRC is bypassed/broken, so 44100 PCM is clocked out at 48000 =
+        // 1.0884x fast (chipmunk). Letting the context default to the device rate
+        // means the OS never resamples OUR stream; instead PumpAudio's resampler
+        // converts the 44100 mix -> ctx.sampleRate (this is what the native build
+        // does via miniaudio). `sampleRate` is still passed in as the MIX rate.
+        var ctx = new AudioContext();
         window[key].ctx = ctx;
-        // The browser may have clamped/ignored the requested rate.
+        // The real device rate the worklet + our resampler must target.
         var actualRate = ctx.sampleRate;
 
         ctx.audioWorklet.addModule('audio-worklet.js').then(function() {
@@ -141,6 +154,20 @@ EM_JS(int, js_audio_init,
                 sab: sab,
                 bufFrames: bufFrames
             });
+
+            // Receive periodic underrun summaries from the worklet (additive,
+            // backward-compatible). Stash the latest on the state object so a
+            // headless harness can poll window[key].underruns and compute
+            // underruns-per-second during sustained gameplay.
+            window[key].underruns = {
+                underrunEvents: 0, underrunFrames: 0,
+                totalQuanta: 0, totalFrames: 0
+            };
+            node.port.onmessage = function(ev) {
+                if (ev.data && ev.data.type === 'underrun-stats') {
+                    window[key].underruns = ev.data;
+                }
+            };
 
             window[key].worklet = node;
             window[key].started = true;
@@ -201,6 +228,22 @@ EM_JS(int, js_audio_ring_free_frames, (const char *stateKey), {
     var used = writePos - readPos;
     if (used < 0) used += bufFrames;
     return bufFrames - used - 1;
+});
+
+// Read the latest worklet underrun summary into a caller-provided int[4]
+// (events, paddedFrames, totalQuanta, totalFrames). Returns 1 if stats are
+// present, 0 otherwise. Lets the C side print them in rb3AudioStats().
+EM_JS(int, js_audio_underrun_stats, (int *out4, const char *stateKey), {
+    var key = UTF8ToString(stateKey);
+    var audio = window[key];
+    if (!audio || !audio.underruns) return 0;
+    var u = audio.underruns;
+    var idx = out4 >> 2;
+    HEAP32[idx + 0] = u.underrunEvents | 0;
+    HEAP32[idx + 1] = u.underrunFrames | 0;
+    HEAP32[idx + 2] = u.totalQuanta | 0;
+    HEAP32[idx + 3] = u.totalFrames | 0;
+    return 1;
 });
 
 EM_JS(void, js_audio_ring_write, (float *srcPtr, int frames, const char *stateKey), {
@@ -360,8 +403,7 @@ bool AudioDevice::Init(int sampleRate) {
     mDeviceSampleRate = (actualRate > 0) ? actualRate : mSampleRate;
     // Reset the linear-resampler phase (mix-rate mSampleRate -> mDeviceSampleRate).
     mResamplePos = 0.0;
-    mResampleLastL = mResampleLastR = 0.0f;
-    mResampleHavePrev = false;
+    mResampleCarryN = 0;
 
     // Set up console commands for audio debugging
     EM_ASM({
@@ -376,7 +418,7 @@ bool AudioDevice::Init(int sampleRate) {
         var st  = ns + 'AudioStats';
         window[cap] = function() {
             Module.ccall(fnStart, null, [], []);
-            console.log('Audio capture started (3 seconds)...');
+            console.log('Audio capture started...');
         };
         window[dl] = function() {
             Module.ccall(fnDl, null, [], []);
@@ -512,6 +554,33 @@ void AudioDevice::PumpAudio() {
     if (freeFrames <= 0)
         return;
 
+    // --- Output-latency cap (wave-09 probe D) --------------------------------
+    // Without this, the while(freeFrames>0) loop below greedily fills the ENTIRE
+    // ring every pump (~RING_FRAMES-1 = 32767 frames ≈ 673 ms @48000), so any source
+    // appended at writePos — especially a one-shot SFX — waits behind that whole
+    // queue before the worklet reaches it (keydown→audio measured ~685 ms). Underruns
+    // measured 0 over 30 s, so only a SMALL queue ahead of the read cursor is needed.
+    // Cap the queued depth to a target latency (env RB3_AUDIO_LATENCY_MS, default
+    // 100 ms). RING_FRAMES (allocation) is unchanged, so a transient frame stall up to
+    // the target is still absorbed; raise the env if real-hardware dropouts appear.
+    static int sTargetLatencyMs = -1;
+    if (sTargetLatencyMs < 0) {
+        const char *env = getenv("RB3_AUDIO_LATENCY_MS");
+        sTargetLatencyMs = env ? atoi(env) : 100;
+        if (sTargetLatencyMs < 10) sTargetLatencyMs = 10;   // sane floor
+    }
+    {
+        int rate = (mDeviceSampleRate > 0) ? mDeviceSampleRate : mSampleRate;
+        int targetFrames = (int)((long long)rate * sTargetLatencyMs / 1000);
+        if (targetFrames > RING_FRAMES - 1) targetFrames = RING_FRAMES - 1;
+        int queued = (RING_FRAMES - 1) - freeFrames;   // frames already ahead of read cursor
+        int writable = targetFrames - queued;
+        if (writable <= 0)
+            return;                                    // already at/above target this pump
+        if (freeFrames > writable)
+            freeFrames = writable;                     // top up only to the target depth
+    }
+
     sPumpCount++;
 
     const bool resample = (mDeviceSampleRate != mSampleRate && mDeviceSampleRate > 0 && mSampleRate > 0);
@@ -545,40 +614,42 @@ void AudioDevice::PumpAudio() {
         }
 
         // Resampling path (mix rate -> device/ctx rate), continuous linear
-        // interpolation. To stay click-free across PumpAudio chunk boundaries we
-        // prepend the previous chunk's LAST mix-rate sample at index 0 of the mix
-        // buffer (so a fractional read position in [0,1) interpolates from that
-        // carried sample into the new block). mResamplePos in [0,1) is the leftover
-        // sub-sample phase from the previous chunk.
+        // interpolation. MixSources() is a DESTRUCTIVE pull: it advances the source
+        // stream by exactly the frames it mixes. So we must carry EVERY mix frame that
+        // was pulled but not yet fully consumed into the next chunk, stream-contiguous
+        // -- carrying only one sample (the old code) silently dropped the unconsumed
+        // tail frame on the ~8% of jittered chunks where the read head didn't land on
+        // a frame boundary, producing a 1-sample click/crackle on music (inaudible on
+        // a constant-cadence sine, which is all earlier tests exercised).
         //
-        // Layout: sMixBuffer[0] = carried prev sample (mResampleLast*), then
-        // MixSources fills [1 .. newMix]. Read position s walks from mResamplePos.
-        // The last output frame reads at s_max = mResamplePos + (outChunk-1)*step
-        // and needs index floor(s_max)+1, so newMix = floor(s_max)+1 fresh frames.
+        // Layout: sMixBuffer[0 .. carryN-1] = frames carried from the previous chunk
+        // (stream-contiguous, already filled); MixSources fills the fresh frames after
+        // them. mResamplePos in [0,1) is the read offset from index 0.
+        int carryN = mResampleCarryN;
+        for (int k = 0; k < carryN; k++) {
+            sMixBuffer[k * 2 + 0] = mResampleCarry[k * 2 + 0];
+            sMixBuffer[k * 2 + 1] = mResampleCarry[k * 2 + 1];
+        }
         double sStart = mResamplePos;
         double sEnd = sStart + (double)(outChunk - 1) * step;
-        int newMix = (int)sEnd + 1;            // fresh mix-rate frames needed (>= 1)
-        if (newMix < 1) newMix = 1;
-        if (1 + newMix > MIX_BUF_FRAMES) {
-            // Cap: shrink the output chunk to fit the mix buffer (incl. the prepended
-            // carry sample at index 0). Recompute newMix for the reduced outChunk.
-            newMix = MIX_BUF_FRAMES - 1;
-            outChunk = (int)(((double)newMix - sStart) / step) + 1;
+        // Frames needed = indices 0 .. floor(sEnd)+1 (the last output reads i0 and
+        // i0+1), i.e. needTotal = floor(sEnd)+2 filled frames total.
+        int needTotal = (int)sEnd + 2;
+        if (needTotal > MIX_BUF_FRAMES) {
+            // Cap: shrink the output chunk so the needed frames (incl. the carry) fit
+            // the mix buffer. Recompute sEnd for the reduced outChunk.
+            needTotal = MIX_BUF_FRAMES;
+            outChunk = (int)(((double)(needTotal - 2) - sStart) / step) + 1;
             if (outChunk <= 0) break;
+            sEnd = sStart + (double)(outChunk - 1) * step;
         }
-
-        if (mResampleHavePrev) {
-            sMixBuffer[0] = mResampleLastL;
-            sMixBuffer[1] = mResampleLastR;
-        } else {
-            sMixBuffer[0] = 0.0f;
-            sMixBuffer[1] = 0.0f;
-        }
-        MixSources(sMixBuffer + 2, newMix); // fill frames [1 .. newMix] (stereo offset 2)
+        int newMix = needTotal - carryN;       // additional fresh frames to mix
+        if (newMix < 1) { newMix = 1; needTotal = carryN + 1; }
+        MixSources(sMixBuffer + carryN * 2, newMix); // fill [carryN .. needTotal-1]
         if (sDebugToneHz > 0.0) {
-            // Overwrite fresh block with the tone; index 0 keeps the carried sample
-            // so the resampler's first interp tap stays continuous.
-            FillDebugTone(sMixBuffer + 2, newMix, mSampleRate);
+            // Overwrite only the fresh block; the carried frames keep the tone phase
+            // continuous across the seam.
+            FillDebugTone(sMixBuffer + carryN * 2, newMix, mSampleRate);
         }
 
         double s = sStart;
@@ -593,16 +664,20 @@ void AudioDevice::PumpAudio() {
             sOutBuffer[o * 2 + 1] = (float)(r0 + (r1 - r0) * t);
             s += step;
         }
-        // Carry phase: after the loop s = sStart + outChunk*step. floor(s) whole mix
-        // frames were fully consumed; the carry sample for the next chunk is mix
-        // frame `consumed` (always in [1..newMix], a valid filled index), and the
-        // leftover sub-sample fraction seeds the next chunk's read position.
-        int consumed = (int)s;              // floor(s), in [1 .. newMix]
-        if (consumed > newMix) consumed = newMix;  // numerical guard
+        // Carry ALL unconsumed frames [consumed .. needTotal-1] into the next chunk,
+        // stream-contiguous. consumed = floor(s) integer frames are behind the read
+        // head; the rest the next chunk still needs. leftover is 1 or 2 in practice.
+        int consumed = (int)s;
+        if (consumed > needTotal - 1) consumed = needTotal - 1;  // numerical guard (>=1 carry)
+        if (consumed < 0) consumed = 0;
+        int leftover = needTotal - consumed;
+        if (leftover > kResampleCarryMax) leftover = kResampleCarryMax;
+        for (int k = 0; k < leftover; k++) {
+            mResampleCarry[k * 2 + 0] = sMixBuffer[(consumed + k) * 2 + 0];
+            mResampleCarry[k * 2 + 1] = sMixBuffer[(consumed + k) * 2 + 1];
+        }
+        mResampleCarryN = leftover;
         mResamplePos = s - consumed;        // in [0,1)
-        mResampleLastL = sMixBuffer[consumed * 2 + 0];
-        mResampleLastR = sMixBuffer[consumed * 2 + 1];
-        mResampleHavePrev = true;
 
         if (sCapturing && sCaptureBuffer && sCapturePos < CAPTURE_FRAMES) {
             int framesToCapture = std::min(outChunk, CAPTURE_FRAMES - sCapturePos);
@@ -684,6 +759,16 @@ EMSCRIPTEN_KEEPALIVE void MILO_WEB_AUDIO_FN(audio_stats)() {
            dev.IsInitialized(), dev.GetSampleRate(), sPumpCount);
     printf("  capture: active=%d, ready=%d, pos=%d/%d\n",
            sCapturing, sCaptureReady, sCapturePos, CAPTURE_FRAMES);
+    {
+        static const char *kStateKey = "_" MILO_WEB_AUDIO_NS_STR "Audio";
+        int u[4] = {0, 0, 0, 0};
+        if (js_audio_underrun_stats(u, kStateKey)) {
+            printf("  worklet: underrunEvents=%d paddedFrames=%d totalQuanta=%d totalFrames=%d\n",
+                   u[0], u[1], u[2], u[3]);
+        } else {
+            printf("  worklet: underrun stats not available yet\n");
+        }
+    }
 #ifdef HX_WEB
     dev.DebugDumpSources();
 #endif

@@ -43,6 +43,11 @@ static int sDumpFramesWritten = 0;   // frames captured so far
 static float sPreGain = 1.0f;
 static const float kLimThreshold = 0.90f;   // begin gain reduction when |peak| > this
 static const float kLimReleaseMs = 80.0f;   // slow one-pole release (no pumping)
+// DIAGNOSTIC A/B knobs (wave-09 HF-static probe). Default = current behavior.
+//   RB3_LIM_BYPASS=1     -> skip the limiter entirely (raw additive sum, no gain mod)
+//   RB3_LIM_ATTACK_MS=N  -> finite attack time instead of instant (0 / unset = instant)
+static bool  sLimBypass   = false;
+static float sLimAttackMs = 0.0f;    // 0 = instant attack (the committed behavior)
 
 // Soft-knee saturator: transparent below kSoftKnee, smoothly compresses the region
 // above it toward (but never reaching) full scale. Replaces the hard clamp as the
@@ -276,6 +281,10 @@ bool AudioDevice::Init(int sampleRate) {
     // Optional pre-limiter trim from environment (default unity).
     const char *gainEnv = getenv("DC3_AUDIO_GAIN");
     if (gainEnv) sPreGain = (float)atof(gainEnv);
+    // DIAGNOSTIC limiter A/B knobs (wave-09 HF-static probe).
+    sLimBypass = (getenv("RB3_LIM_BYPASS") != nullptr && getenv("RB3_LIM_BYPASS")[0] == '1');
+    const char *atkEnv = getenv("RB3_LIM_ATTACK_MS");
+    if (atkEnv) sLimAttackMs = (float)atof(atkEnv);
     printf("AudioDevice: initialized — %d Hz, %d channels, period %d frames, pregain %.2f (backend=%s)\n",
            mSampleRate, 2, 512, sPreGain,
            mContextInited ? ma_get_backend_name(mContext->backend) : "default");
@@ -400,10 +409,21 @@ void AudioDevice::MixSources(float *output, int frameCount) {
             // then the hard clamp as a sub-ms transient backstop. Stereo-linked
             // (one envelope driven by max(|L|,|R|)) keeps the stereo image stable.
             const float aRel = expf(-1.0f / (mSampleRate * (kLimReleaseMs / 1000.0f)));
+            // DIAGNOSTIC: finite attack coefficient when RB3_LIM_ATTACK_MS>0 (else instant).
+            const float aAtk = (sLimAttackMs > 0.0f)
+                ? expf(-1.0f / (mSampleRate * (sLimAttackMs / 1000.0f))) : 0.0f;
             float env = mLimiterEnv;
             for (int f = 0; f < frameCount; f++) {
                 float l = output[f * 2 + 0] * sPreGain;
                 float r = output[f * 2 + 1] * sPreGain;
+                if (sLimBypass) {
+                    // DIAGNOSTIC bypass: raw additive sum, NO per-sample gain modulation.
+                    // Pair with a low DC3_AUDIO_GAIN so SoftClip/clamp don't engage, to
+                    // isolate the limiter's gain-modulation HF contribution.
+                    output[f * 2 + 0] = SoftClip(l);
+                    output[f * 2 + 1] = SoftClip(r);
+                    continue;
+                }
                 float la = l < 0.0f ? -l : l;
                 float ra = r < 0.0f ? -r : r;
                 float level = la > ra ? la : ra;
@@ -415,7 +435,7 @@ void AudioDevice::MixSources(float *output, int frameCount) {
                 // of a fast bass transient (a 1/4-cycle of 200 Hz is 1.25 ms) overshoot
                 // into the rail (the old 3 ms attack square-wave-clipped loud sections).
                 // One-pole release recovers smoothly with no pumping.
-                if (desired < env) env = desired;
+                if (desired < env) env = (aAtk > 0.0f) ? (aAtk * env + (1.0f - aAtk) * desired) : desired;
                 else env = aRel * env + (1.0f - aRel) * desired;
                 output[f * 2 + 0] = SoftClip(l * env);
                 output[f * 2 + 1] = SoftClip(r * env);

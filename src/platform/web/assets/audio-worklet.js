@@ -20,6 +20,20 @@ class MiloAudioProcessor extends AudioWorkletProcessor {
         this.data = null;
         this.bufFrames = 0;
 
+        // Underrun instrumentation (additive, backward-compatible). Counts
+        // render quanta that could NOT be fully served from the ring (the
+        // for-loop below pads them with silence == the audible "static"), the
+        // total silence-padded frames, and the total quanta processed. We
+        // postMessage a running summary to the main thread roughly every ~0.5s
+        // of audio so a headless harness can poll window[...].underruns and
+        // compute underruns-per-second during sustained gameplay. ~0 == the
+        // ring is keeping up (dropout fixed); many == still starving.
+        this.underrunEvents = 0;   // quanta with a silence pad
+        this.underrunFrames = 0;   // total silence-padded frames
+        this.totalQuanta = 0;      // total process() calls served
+        this.totalFrames = 0;      // total frames requested
+        this._reportAccum = 0;
+
         this.port.onmessage = (e) => {
             if (e.data.type === 'init') {
                 this.sab = e.data.sab;
@@ -65,6 +79,28 @@ class MiloAudioProcessor extends AudioWorkletProcessor {
         }
 
         Atomics.store(this.cursors, 1, rp % bufFrames);
+
+        // ---- underrun instrumentation (additive) ----
+        this.totalQuanta++;
+        this.totalFrames += frames;
+        const padded = frames - toRead;
+        if (padded > 0) {
+            this.underrunEvents++;
+            this.underrunFrames += padded;
+        }
+        // Report ~ every 0.5s of audio (sampleRate is the worklet-global ctx
+        // rate). DC3 and any other consumer simply ignore these extra messages.
+        this._reportAccum += frames;
+        if (this._reportAccum >= (sampleRate >> 1)) {
+            this._reportAccum = 0;
+            this.port.postMessage({
+                type: 'underrun-stats',
+                underrunEvents: this.underrunEvents,
+                underrunFrames: this.underrunFrames,
+                totalQuanta: this.totalQuanta,
+                totalFrames: this.totalFrames
+            });
+        }
 
         return true;
     }
