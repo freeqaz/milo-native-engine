@@ -373,30 +373,48 @@ struct RB3MeshEntry {
     int          fpFaces = -1;
     bool         fpSkinned = false;
 
-    // --- Per-mesh persistent uniform buffers + bind groups ---
+    // --- Per-DRAW (per-instance) uniform buffers + bind groups ---
     // Before this cache, DrawMesh allocated the object/bone/material uniforms out
     // of a shared per-frame RING and built a FRESH bind group against the ring
     // offset every draw. On browser WebGPU, submit-queue backpressure pins each
     // frame's bind groups (and the ring) across all in-flight command buffers, so
     // the per-frame bind-group creates accumulate unbounded alongside the VB/IB.
-    // Instead we give each mesh its OWN tiny uniform buffer (object/bone/material)
-    // and ONE bind group bound to it at offset 0, created ONCE. Per frame we only
-    // WriteBuffer the updated uniforms into the existing buffer and reuse the
-    // bind group — zero per-frame buffer/bind-group creation at steady state. This
-    // needs no bind-group-LAYOUT change, so the shared dc3 backend is untouched.
-    wgpu::Buffer    objUB;       // sizeof(ObjectUniforms) = 128B
-    wgpu::BindGroup objBG;
-    wgpu::Buffer    boneUB;      // sizeof(BoneUniforms) = 2560B (skinned only)
-    wgpu::BindGroup boneBG;
-    wgpu::Buffer    matUB;       // sizeof(MaterialUniforms) = 192B
-    wgpu::BindGroup matBG;
-    // Material bind-group cache invalidation: the material bind group also binds
-    // the resolved diffuse/emissive texture VIEWS, which can change when a lazy
-    // texture upload completes or the material pointer is swapped. Rebuild matBG
-    // only when any of these change.
-    const void*     matKey = nullptr;      // last RndMat*
-    void*           matDiffuseView = nullptr;  // last wgpu diffuse view handle
-    void*           matEmissiveView = nullptr; // last wgpu emissive view handle
+    //
+    // We cannot collapse this to ONE persistent uniform buffer per mesh: the SAME
+    // RndMesh is drawn MULTIPLE times per frame (song_select list rows, repeated
+    // panel widgets) with DIFFERENT object/material/bone state, and every WebGPU
+    // queue.WriteBuffer for a frame executes BEFORE that frame's single submit —
+    // so a shared per-mesh buffer would render every instance with the LAST
+    // instance's uniforms (the darkened-rows regression). Instead we keep a small
+    // per-mesh VECTOR of uniform "slots", indexed by a per-frame occurrence
+    // counter (reset to 0 the first time the mesh is drawn each frame). Slot N
+    // holds the Nth-this-frame instance's uniforms. Slots are created on demand
+    // (so the count is bounded by this mesh's MAX instances in any one frame) and
+    // RECYCLED across frames (the index resets, the wgpu handles persist) — a
+    // free-list, no per-frame buffer/bind-group creation at steady state. No
+    // bind-group-LAYOUT change, so the shared dc3 backend is untouched.
+    struct UniformSlot {
+        wgpu::Buffer    objUB;       // sizeof(ObjectUniforms) = 128B
+        wgpu::BindGroup objBG;
+        wgpu::Buffer    boneUB;      // sizeof(BoneUniforms) = 2560B (skinned only)
+        wgpu::BindGroup boneBG;
+        wgpu::Buffer    matUB;       // sizeof(MaterialUniforms) = 192B
+        wgpu::BindGroup matBG;
+        // Material bind-group cache invalidation: the material bind group also
+        // binds the resolved diffuse/emissive texture VIEWS, which can change when
+        // a lazy texture upload completes or the material pointer is swapped.
+        // Rebuild matBG only when any of these change.
+        const void*     matKey = nullptr;          // last RndMat*
+        void*           matDiffuseView = nullptr;  // last wgpu diffuse view handle
+        void*           matEmissiveView = nullptr; // last wgpu emissive view handle
+    };
+    std::vector<UniformSlot> slots;
+    // The frame-sequence value this mesh's slot index was last reset against, and
+    // the next slot to hand out THIS frame. When DrawMesh sees a mesh whose
+    // frameSeen != the global frame sequence, it resets nextSlot to 0 (lazy
+    // per-frame reset — no map-wide sweep at BeginFrame) before handing out a slot.
+    uint64_t frameSeen = (uint64_t)-1;
+    uint32_t nextSlot  = 0;
 };
 static std::unordered_map<RndMesh*, RB3MeshEntry> sMeshGpu;
 
@@ -406,6 +424,14 @@ static std::unordered_map<RndMesh*, RB3MeshEntry> sMeshGpu;
 // state (no new geometry entering the scene) this drops to ~0.
 static int sMeshBufCreatesThisFrame = 0;
 static int sMeshBGCreatesThisFrame = 0;
+
+// Monotonic frame sequence. Bumped once per BeginFrame; each mesh entry compares
+// its `frameSeen` against this to lazily reset its per-frame uniform-slot index
+// (RB3MeshEntry::nextSlot) the first time it is drawn each frame — no map-wide
+// sweep needed. (Distinct from BandRnd::mFrameCount, which only advances on
+// EndDrawing and is also used by screenshot scheduling; a dedicated global keeps
+// the slot logic independent of that.)
+static uint64_t sFrameSeq = 0;
 
 // Drop a mesh's cached GPU buffers. Strong def displaces the weak no-op
 // link-stub (native: rndobj_synth_link_stubs.s; web: missing_stubs.js). Called
@@ -1120,6 +1146,9 @@ void BandRnd::BeginFrame(RndCam* cam) {
     // At steady state (no new geometry entering the scene) these drop to ~0.
     sMeshBufCreatesThisFrame = 0;
     sMeshBGCreatesThisFrame = 0;
+    // Advance the frame sequence so each mesh lazily resets its per-frame uniform
+    // slot index (RB3MeshEntry::nextSlot) the first time it draws this frame.
+    sFrameSeq++;
     mSceneRing.Reset();
     mMaterialRing.Reset();
     mObjectRing.Reset();
@@ -3233,6 +3262,46 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     uint32_t cachedIndexCount = meshEntry.indexCount;
     if (!vbuf || !ibuf) return;  // upload failed / no geometry
 
+    // --- Claim this draw's per-INSTANCE uniform slot ---
+    // The SAME RndMesh draws multiple times per frame with different obj/mat/bone
+    // state (song_select rows, repeated panel widgets). Each instance needs its
+    // OWN uniform buffer + bind group, because every queue.WriteBuffer for the
+    // frame runs before the single submit — a per-mesh shared buffer would render
+    // every instance with the LAST instance's uniforms (the darkened-rows
+    // regression). Lazily reset the per-frame slot index on this mesh's first draw
+    // this frame, then hand out the next slot (growing the per-mesh vector only
+    // when this frame's instance count exceeds any prior frame's — bounded by the
+    // mesh's max instances/frame, recycled across frames).
+    //
+    // RB3_NO_MESH_CACHE=1 fully restores legacy per-draw behavior: a fresh
+    // FUNCTION-LOCAL slot whose wgpu handles release when DrawMesh returns (RAII),
+    // exactly like the original code's transient per-draw buffers + bind groups
+    // (and reproducing the legacy leak under web submit backpressure — that is the
+    // opt-out's explicit A/B tradeoff). Correctness holds in BOTH modes: a slot is
+    // never shared between two draws.
+    RB3MeshEntry::UniformSlot localSlot;
+    RB3MeshEntry::UniformSlot* slotPtr;
+    if (sMeshCacheOff) {
+        slotPtr = &localSlot;
+    } else {
+        if (meshEntry.frameSeen != sFrameSeq) {
+            meshEntry.frameSeen = sFrameSeq;
+            meshEntry.nextSlot = 0;
+        }
+        uint32_t slotIdx = meshEntry.nextSlot++;
+        if (slotIdx >= meshEntry.slots.size()) meshEntry.slots.resize(slotIdx + 1);
+        slotPtr = &meshEntry.slots[slotIdx];
+        // SLOT_PROBE: surface meshes drawn MORE THAN ONCE per frame (slotIdx>0) —
+        // the multi-instance case the per-instance slots exist to keep correct.
+        // Throttled per mesh-name occurrence-count so it doesn't spam.
+        if (slotIdx > 0 && getenv("SLOT_PROBE")) {
+            const char* mn = mesh->Name() ? mesh->Name() : "<noname>";
+            fprintf(stderr, "[SLOT_PROBE] f=%llu mesh='%s' slotIdx=%u (drawn %u+ times this frame)\n",
+                    (unsigned long long)sFrameSeq, mn, slotIdx, slotIdx + 1);
+        }
+    }
+    RB3MeshEntry::UniformSlot& slot = *slotPtr;
+
     // --- Object uniforms: world transform of the mesh ---
     // For a SKINNED mesh the bone palette (below) already composes the bone's
     // world transform, so the blended vertex is in world space; the object
@@ -3247,27 +3316,29 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     // worldInvTranspose: for unscaled rigid xfm, the rotation part suffices.
     // Use the world rotation as-is (good enough for normals on rigid meshes).
     std::memcpy(obj.worldInvTranspose, obj.world, sizeof(obj.world));
-    // Per-mesh persistent object uniform buffer + bind group (created once,
-    // reused every frame). The world transform changes per frame (animation /
-    // panel pose) so we WriteBuffer it each draw — but into the SAME buffer, so
-    // no new GPU resource is created. Replaces the old per-draw ring-offset
-    // bind group that accumulated unbounded under web submit-queue backpressure.
-    if (!meshEntry.objUB) {
+    // Per-(mesh,instance) persistent object uniform buffer + bind group (created
+    // once per slot, reused across frames). The world transform changes per frame
+    // (animation / panel pose) AND per instance (each list row poses the shared
+    // mesh differently), so we WriteBuffer it each draw — but into THIS instance's
+    // OWN buffer, so no new GPU resource is created at steady state. Replaces the
+    // old per-draw ring-offset bind group that accumulated unbounded under web
+    // submit-queue backpressure.
+    if (!slot.objUB) {
         wgpu::BufferDescriptor ubd{};
         ubd.label = "MeshObjUB";
         ubd.size = sizeof(ObjectUniforms);
         ubd.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
-        meshEntry.objUB = mGpu.Device().CreateBuffer(&ubd);
+        slot.objUB = mGpu.Device().CreateBuffer(&ubd);
         sMeshBufCreatesThisFrame++;
         wgpu::BindGroupEntry e{};
-        e.binding = 0; e.buffer = meshEntry.objUB; e.offset = 0; e.size = sizeof(ObjectUniforms);
+        e.binding = 0; e.buffer = slot.objUB; e.offset = 0; e.size = sizeof(ObjectUniforms);
         wgpu::BindGroupDescriptor bd{};
         bd.layout = mPipelines.ObjectLayout(); bd.entryCount = 1; bd.entries = &e;
-        meshEntry.objBG = mGpu.Device().CreateBindGroup(&bd);
+        slot.objBG = mGpu.Device().CreateBindGroup(&bd);
         sMeshBGCreatesThisFrame++;
     }
-    mGpu.Queue().WriteBuffer(meshEntry.objUB, 0, &obj, sizeof(obj));
-    wgpu::BindGroup objBG = meshEntry.objBG;
+    mGpu.Queue().WriteBuffer(slot.objUB, 0, &obj, sizeof(obj));
+    wgpu::BindGroup objBG = slot.objBG;
 
     // --- Bone uniforms ---
     // Static: identity palette (vs_main ignores it; bound only to satisfy the
@@ -3866,28 +3937,29 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
         }
     }
 
-    // Per-mesh persistent bone uniform buffer + bind group (created once, reused).
-    // The bone palette is this mesh's per-frame ANIMATION data — it changes every
-    // frame for skinned meshes (static meshes get a constant identity palette) —
-    // so we WriteBuffer it each draw, but into the SAME buffer. The bind group is
-    // built once. (Was a per-draw ring-offset bind group → unbounded under web
-    // submit-queue backpressure.)
-    if (!meshEntry.boneUB) {
+    // Per-(mesh,instance) persistent bone uniform buffer + bind group (created
+    // once per slot, reused across frames). The bone palette is this mesh's
+    // per-frame ANIMATION data — it changes every frame for skinned meshes (static
+    // meshes get a constant identity palette) — so we WriteBuffer it each draw, but
+    // into THIS instance's OWN buffer. The bind group is built once per slot. (Was
+    // a per-draw ring-offset bind group → unbounded under web submit-queue
+    // backpressure.)
+    if (!slot.boneUB) {
         wgpu::BufferDescriptor ubd{};
         ubd.label = "MeshBoneUB";
         ubd.size = sizeof(BoneUniforms);
         ubd.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
-        meshEntry.boneUB = mGpu.Device().CreateBuffer(&ubd);
+        slot.boneUB = mGpu.Device().CreateBuffer(&ubd);
         sMeshBufCreatesThisFrame++;
         wgpu::BindGroupEntry e{};
-        e.binding = 0; e.buffer = meshEntry.boneUB; e.offset = 0; e.size = sizeof(BoneUniforms);
+        e.binding = 0; e.buffer = slot.boneUB; e.offset = 0; e.size = sizeof(BoneUniforms);
         wgpu::BindGroupDescriptor bd{};
         bd.layout = mPipelines.BoneLayout(); bd.entryCount = 1; bd.entries = &e;
-        meshEntry.boneBG = mGpu.Device().CreateBindGroup(&bd);
+        slot.boneBG = mGpu.Device().CreateBindGroup(&bd);
         sMeshBGCreatesThisFrame++;
     }
-    mGpu.Queue().WriteBuffer(meshEntry.boneUB, 0, &bones, sizeof(bones));
-    wgpu::BindGroup boneBG = meshEntry.boneBG;
+    mGpu.Queue().WriteBuffer(slot.boneUB, 0, &bones, sizeof(bones));
+    wgpu::BindGroup boneBG = slot.boneBG;
 
     // --- Material uniforms ---
     RndMat* mat = mesh->Mat();
@@ -4188,22 +4260,24 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
             mu.alphaThreshold = 0.0f;
         }
     }
-    // Per-mesh persistent material uniform buffer + cached bind group. The
-    // material uniforms (mu: animated colour/emissive/etc.) change per frame so
-    // we WriteBuffer them each draw into the SAME buffer. The bind group also
-    // binds the resolved diffuse/emissive texture VIEWS, which change only when a
-    // lazy texture upload completes or the material pointer is swapped — so we
-    // rebuild it only when those handles change, not every frame. (Was a per-draw
-    // ring-offset bind group → unbounded under web submit-queue backpressure.)
-    if (!meshEntry.matUB) {
+    // Per-(mesh,instance) persistent material uniform buffer + cached bind group.
+    // The material uniforms (mu: animated colour/emissive/etc.) change per frame
+    // AND per instance (the same shared mesh tints differently per list row) so we
+    // WriteBuffer them each draw into THIS instance's OWN buffer. The bind group
+    // also binds the resolved diffuse/emissive texture VIEWS, which change only
+    // when a lazy texture upload completes or the material pointer is swapped — so
+    // we rebuild it only when those handles change, not every frame. (Was a
+    // per-draw ring-offset bind group → unbounded under web submit-queue
+    // backpressure.)
+    if (!slot.matUB) {
         wgpu::BufferDescriptor ubd{};
         ubd.label = "MeshMatUB";
         ubd.size = sizeof(MaterialUniforms);
         ubd.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
-        meshEntry.matUB = mGpu.Device().CreateBuffer(&ubd);
+        slot.matUB = mGpu.Device().CreateBuffer(&ubd);
         sMeshBufCreatesThisFrame++;
     }
-    mGpu.Queue().WriteBuffer(meshEntry.matUB, 0, &mu, sizeof(mu));
+    mGpu.Queue().WriteBuffer(slot.matUB, 0, &mu, sizeof(mu));
     {
         // Resolve the current diffuse/emissive views (cheap: a texture-cache hit
         // after the first frame; lazily uploads on a late arrival) WITHOUT
@@ -4212,17 +4286,17 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
         // state this creates ZERO bind groups per frame.
         wgpu::TextureView diffuse, emissive;
         ResolveMaterialViews(mat, diffuse, emissive);
-        if (!meshEntry.matBG || meshEntry.matKey != (const void*)mat ||
-            meshEntry.matDiffuseView != diffuse.Get() ||
-            meshEntry.matEmissiveView != emissive.Get()) {
-            meshEntry.matBG = MakeMaterialBindGroupCached(meshEntry.matUB, diffuse, emissive);
+        if (!slot.matBG || slot.matKey != (const void*)mat ||
+            slot.matDiffuseView != diffuse.Get() ||
+            slot.matEmissiveView != emissive.Get()) {
+            slot.matBG = MakeMaterialBindGroupCached(slot.matUB, diffuse, emissive);
             sMeshBGCreatesThisFrame++;
-            meshEntry.matKey = (const void*)mat;
-            meshEntry.matDiffuseView = diffuse.Get();
-            meshEntry.matEmissiveView = emissive.Get();
+            slot.matKey = (const void*)mat;
+            slot.matDiffuseView = diffuse.Get();
+            slot.matEmissiveView = emissive.Get();
         }
     }
-    wgpu::BindGroup matBG = meshEntry.matBG;
+    wgpu::BindGroup matBG = slot.matBG;
 
     // --- Pipeline state from material (V4: honor material blend/zmode) ---
     // RndMat::Blend enum constants (kBlendDest..kPreMultAlpha = 0..7) match
@@ -4298,10 +4372,11 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     if (HighwayBloomEnabled() && RndCam::sCurrent && RndCam::sCurrent->Name() &&
         std::strcmp(RndCam::sCurrent->Name(), "game.cam") == 0 && IsHaloSourceMat(mat)) {
         if (mHaloDraws.capacity() == 0) mHaloDraws.reserve(16);
-        // Capture the cached per-mesh obj/bone/mat bind groups + buffers. Each
-        // halo-source mesh is drawn at most once per frame (distinct gem-core /
-        // now-bar RndMesh objects), so its per-mesh uniform buffers are not
-        // overwritten before EndFrame's replay — the captured handles are valid.
+        // Capture this instance's obj/bone/mat bind groups + buffers. Each draw
+        // claims its OWN per-(mesh,instance) uniform slot, so even a mesh drawn
+        // multiple times per frame never overwrites a captured slot before
+        // EndFrame's replay — the captured handles are valid (slots are only
+        // recycled at the NEXT BeginFrame, which also clears mHaloDraws).
         mHaloDraws.push_back({pipe, mSceneBindGroup, matBG, objBG, boneBG,
                               vbuf, ibuf, cachedIndexCount});
     }
