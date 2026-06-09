@@ -161,7 +161,8 @@ EM_JS(int, js_audio_init,
             // underruns-per-second during sustained gameplay.
             window[key].underruns = {
                 underrunEvents: 0, underrunFrames: 0,
-                totalQuanta: 0, totalFrames: 0
+                totalQuanta: 0, totalFrames: 0,
+                minRingDepthFrames: 0
             };
             node.port.onmessage = function(ev) {
                 if (ev.data && ev.data.type === 'underrun-stats') {
@@ -243,6 +244,23 @@ EM_JS(int, js_audio_underrun_stats, (int *out4, const char *stateKey), {
     HEAP32[idx + 1] = u.underrunFrames | 0;
     HEAP32[idx + 2] = u.totalQuanta | 0;
     HEAP32[idx + 3] = u.totalFrames | 0;
+    return 1;
+});
+
+// Read the worklet's per-window ring low-water mark (smallest `available` ring
+// depth, in device frames, seen during the last ~0.5s window). Separate from the
+// fixed 4-int js_audio_underrun_stats contract so existing int[4] callers are
+// untouched. Writes 0 and returns 0 if the field isn't available yet (pre-first
+// worklet message, where the init literal seeds minRingDepthFrames: 0).
+EM_JS(int, js_audio_min_ring_depth, (int *outFrames, const char *stateKey), {
+    var key = UTF8ToString(stateKey);
+    var audio = window[key];
+    if (!audio || !audio.underruns ||
+        typeof audio.underruns.minRingDepthFrames === 'undefined') {
+        if (outFrames) HEAP32[outFrames >> 2] = 0;
+        return 0;
+    }
+    HEAP32[outFrames >> 2] = audio.underruns.minRingDepthFrames | 0;
     return 1;
 });
 
@@ -628,6 +646,26 @@ void AudioDevice::PumpAudio() {
     } else {
         int u[4];
         if (js_audio_underrun_stats(u, kStateKey)) {
+            // SOFT-PRESSURE input: the worklet's per-window ring low-water mark. A
+            // dip to well below the target (but still >=128 frames, so the hard
+            // underrun counter stays 0) is a near-miss the old law was blind to.
+            // We only let it build pressure once the boot backlog has been
+            // baselined (sLastUnderrun >= 0, set below), so the init literal's
+            // minRingDepthFrames:0 can't false-grow at startup, and we skip it when
+            // no audio is playing (sources empty -> the ring legitimately drains on
+            // pause/seek, not a stall).
+            int minDepth = 0;
+            js_audio_min_ring_depth(&minDepth, kStateKey);
+            bool sourcesActive;
+            {
+                std::lock_guard<std::mutex> lock(mSourceMutex);
+                sourcesActive = !mSources.empty();
+            }
+            // Half the target: the "comfortably ahead" line. Dipping under it means
+            // the pump was late enough this window that one more stall would underrun.
+            const bool softNearMiss = (sLastUnderrun >= 0) && sourcesActive &&
+                                      (minDepth > 0) && (minDepth < sTargetFrames / 2);
+
             if (sLastUnderrun < 0) {
                 sLastUnderrun = u[0];                 // baseline past the boot backlog (don't grow for it)
             } else if (u[0] > sLastUnderrun) {
@@ -641,6 +679,20 @@ void AudioDevice::PumpAudio() {
                     if (sTargetFrames > sMaxFrames) sTargetFrames = sMaxFrames;
                     printf("AudioDevice: latency GROW -> %d ms (sustained underrun, pressure %d/256)\n",
                            (int)((long long)sTargetFrames * 1000 / arate), sPressure);
+                }
+            } else if (softNearMiss) {
+                // Near-miss this window: build pressure at HALF rate (a single transient
+                // dip adds 128 < kPressureGrow=512 and decays away on the next clean
+                // window; ~4 sustained near-miss windows -> >=512 -> GROW within ~2s).
+                // Do NOT decay/shrink on a near-miss window — this is a "dirty" window.
+                sPressure += kPressureOne / 2;
+                if (sPressure > kPressureMax) sPressure = kPressureMax;
+                if (sPressure >= kPressureGrow && sTargetFrames < sMaxFrames) {
+                    sTargetFrames += sGrowFrames;
+                    if (sTargetFrames > sMaxFrames) sTargetFrames = sMaxFrames;
+                    printf("AudioDevice: latency GROW -> %d ms (sustained near-miss, minDepth %d frames, "
+                           "pressure %d/256)\n",
+                           (int)((long long)sTargetFrames * 1000 / arate), minDepth, sPressure);
                 }
             } else {
                 // Clean window: decay pressure, multiplicatively shrink toward the floor.

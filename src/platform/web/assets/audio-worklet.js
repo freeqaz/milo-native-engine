@@ -32,12 +32,22 @@ class MiloAudioProcessor extends AudioWorkletProcessor {
         this.underrunFrames = 0;   // total silence-padded frames
         this.totalQuanta = 0;      // total process() calls served
         this.totalFrames = 0;      // total frames requested
+        // Per-window low-water mark: the SMALLEST ring depth (`available` frames
+        // ahead of the read cursor) observed across the quanta in the current
+        // ~0.5s report window. A dip from a deep buffer to a near-miss (ring < the
+        // adaptive target but still >= 128 frames) registers ZERO underrunEvents,
+        // so this is the early-warning signal the pump's adaptive law gates on.
+        // Reset to bufFrames each window after posting (so it can only fall).
+        this.minRingDepthThisWindow = this.bufFrames;
         this._reportAccum = 0;
 
         this.port.onmessage = (e) => {
             if (e.data.type === 'init') {
                 this.sab = e.data.sab;
                 this.bufFrames = e.data.bufFrames;
+                // Seed the low-water mark now that bufFrames is known (the ctor
+                // ran before 'init', so it was 0 there).
+                this.minRingDepthThisWindow = this.bufFrames;
                 this.cursors = new Int32Array(this.sab, 0, 2);
                 // PCM data starts after 8-byte header (2 x Int32)
                 this.data = new Float32Array(this.sab, 8);
@@ -61,6 +71,9 @@ class MiloAudioProcessor extends AudioWorkletProcessor {
 
         let available = writePos - readPos;
         if (available < 0) available += bufFrames;
+
+        // Per-window ring low-water mark (the dip the underrun counter misses).
+        if (available < this.minRingDepthThisWindow) this.minRingDepthThisWindow = available;
 
         const toRead = Math.min(frames, available);
 
@@ -98,8 +111,14 @@ class MiloAudioProcessor extends AudioWorkletProcessor {
                 underrunEvents: this.underrunEvents,
                 underrunFrames: this.underrunFrames,
                 totalQuanta: this.totalQuanta,
-                totalFrames: this.totalFrames
+                totalFrames: this.totalFrames,
+                // Additive: smallest ring depth seen this window (frames). Ignored
+                // by consumers that read named fields; the pump's adaptive law uses
+                // it to grow on near-misses before they become audible underruns.
+                minRingDepthFrames: this.minRingDepthThisWindow
             });
+            // Re-arm the low-water mark for the next window (alongside _reportAccum).
+            this.minRingDepthThisWindow = this.bufFrames;
         }
 
         return true;
