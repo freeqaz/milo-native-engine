@@ -153,6 +153,50 @@ bool WebAssetsFetchDone(int fetchId) {
 // Bundle download — single HTTP request for ALL assets
 // ---------------------------------------------------------------------------
 
+// W4b IDB write-back (R3). The synchronous on-demand fetch path
+// (native_file.cpp cachePutAfterFetch → window.__rb3CachePut) writes each
+// fetched asset through to the IndexedDB warm cache, so a 2nd boot serves it
+// from IDB with zero network. The bundle path historically wrote straight to
+// MEMFS and bypassed IDB — so once R3 routes the boot .milo_xbox set through
+// the bundle, warm/repeat boots would re-download the whole bundle, regressing
+// the W4b warm-cache win. Fix: as each bundle file is unpacked, ALSO persist it
+// to IDB using the SAME cache key the sync path derives
+// (cacheRelFromMemfsPath: strip "/data/", "/../", or a leading "/" off the
+// resolved memfs path). The bytes are already in hand from the bundle buffer,
+// so we hand them straight to __rb3CachePut (no FS.readFile).
+//
+// This is RB3-specific (DC3 may not define window.__rb3CachePut), so it is a
+// no-op guarded on the hook's presence — safe in the shared engine for any
+// caller of WebAssetsFetchBundle().
+static void bundleCacheWriteThrough(const char *memfsPath, const void *bytes,
+                                    size_t numBytes) {
+    // Mirror native_file.cpp cacheRelFromMemfsPath() EXACTLY — the key must match
+    // what cacheTryHit() looks up on a warm boot, or the bundle populates a cache
+    // it never reads.
+    const char *key = memfsPath;
+    if (strncmp(key, "/data/", 6) == 0)
+        key += 6;
+    else if (strncmp(key, "/../", 4) == 0)
+        key += 4;
+    else if (key[0] == '/')
+        key += 1;
+
+    EM_ASM(
+        {
+            try {
+                if (!window.__rb3CachePut) return;  // DC3 / no IDB shim → no-op
+                var key = UTF8ToString($0);
+                // Wrap the WASM heap slice WITHOUT copying; __rb3CachePut takes
+                // its own copy before the heap can move (see rb3_pre.js).
+                var bytes = HEAPU8.subarray($1, $1 + $2);
+                window.__rb3CachePut(key, bytes);
+            } catch (e) {
+                console.log('[rb3-idb] bundle cache-put failed: ' + e);
+            }
+        },
+        key, bytes, (int)numBytes);
+}
+
 static void onBundleSuccess(emscripten_fetch_t *fetch) {
     printf("WebAssets: bundle received (%llu bytes), unpacking...\n",
            (unsigned long long)fetch->numBytes);
@@ -226,6 +270,10 @@ static void onBundleSuccess(emscripten_fetch_t *fetch) {
             fwrite(data, 1, dataLen, f);
             fclose(f);
             unpacked++;
+            // W4b (R3): write this file through to the IndexedDB warm cache so
+            // repeat boots serve it from IDB instead of re-downloading the
+            // bundle. No-op where window.__rb3CachePut is absent (DC3).
+            bundleCacheWriteThrough(memfsPath.c_str(), data, dataLen);
         }
     }
 
@@ -242,7 +290,7 @@ static void onBundleError(emscripten_fetch_t *fetch) {
     emscripten_fetch_close(fetch);
 }
 
-void WebAssetsFetchBundle() {
+void WebAssetsFetchBundle(const char *url) {
     emscripten_fetch_attr_t attr;
     emscripten_fetch_attr_init(&attr);
     strcpy(attr.requestMethod, "GET");
@@ -250,7 +298,7 @@ void WebAssetsFetchBundle() {
     attr.onsuccess = onBundleSuccess;
     attr.onerror = onBundleError;
 
-    emscripten_fetch(&attr, "/api/bundle");
+    emscripten_fetch(&attr, url ? url : "/api/bundle");
     sPending++;
 }
 

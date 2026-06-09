@@ -21,10 +21,15 @@ bool WebAssetsFetchDone(int fetchId);
 // Check if ALL pending fetches have completed.
 bool WebAssetsAllDone();
 
-// Download ALL assets as a single bundle from /api/bundle.
-// Much faster than individual fetches for bulk loading.
-// Unpacks into /data/ in MEMFS.
-void WebAssetsFetchBundle();
+// Download a bundle of assets as a single HTTP request and unpack it into
+// /data/ in MEMFS. Much faster than individual fetches for bulk loading.
+//
+// `url` selects the server bundle route; it defaults to "/api/bundle" (the
+// .dta/.dtb config bundle) so every existing caller is unchanged. RB3's web
+// boot also fires "/api/bundle/boot" (the boot-critical .milo_xbox set, R3) via
+// the same async + unpack path; both bump the shared pending counter, so the
+// boot gate (WebAssetsAllDone) waits for all in-flight bundles.
+void WebAssetsFetchBundle(const char *url = "/api/bundle");
 
 // Synchronously fetch a single file from the server into MEMFS.
 // memfsPath is the full MEMFS path (e.g. "/data/ui/gen/helpbar.milo_xbox").
