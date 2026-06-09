@@ -554,28 +554,52 @@ void AudioDevice::PumpAudio() {
     if (freeFrames <= 0)
         return;
 
-    // --- Adaptive output-latency cap (wave-09 probe D + adaptive follow-up) ---
+    // --- Adaptive output-latency cap (wave-09 probe D + pressure/decay rework) ---
     // The while(freeFrames>0) loop below would otherwise fill the ENTIRE ring every
     // pump (~RING_FRAMES-1 = 32767 frames ≈ 673 ms), so every newly-added source —
     // especially a one-shot SFX — waits behind that whole queue (keydown→audio
     // ~685 ms). We cap the QUEUED depth to a target latency and ADAPT that target to
     // the worklet's underrun feedback: keep it as LOW as possible for snappy SFX, but
-    // GROW it fast the moment the worklet pads silence (a main-thread stall starved
-    // the ring), then ease it back toward the floor while playback stays clean. This
-    // self-tunes to each machine — no per-device knob needed. RING_FRAMES (the
-    // allocation) is unchanged. Env overrides: RB3_AUDIO_LATENCY_MS pins a FIXED
-    // target (disables adaptation, for testing); RB3_AUDIO_LAT_MIN_MS / _MAX_MS set
-    // the adaptive bounds.
+    // GROW it when the worklet pads silence (a main-thread stall starved the ring),
+    // then ease it back toward the floor while playback stays clean. RING_FRAMES (the
+    // allocation) is unchanged.
+    //
+    // CONTROL LAW (per ~0.5s worklet report-window; host-simulated in latency_sim.py):
+    //   * TRANSIENT REJECTION — a "pressure" accumulator (fixed-point /256) rises by
+    //     1.0 on any window WITH new underruns and decays ×0.5 on a clean window. We
+    //     only GROW once pressure reaches 2.0 (≈2 consecutive underrun windows), so a
+    //     lone load-phase stutter (pressure 1.0, decays away) NEVER grows the target.
+    //   * SUSTAINED GROWTH — while pressure stays ≥2.0, each underrun window adds
+    //     kGrowMs (40 ms), so a real sustained burst climbs decisively to the ceiling.
+    //   * RESPONSIVE SHRINK — each clean window moves kShrinkPct (25%) of the distance
+    //     (target−floor) toward the floor, but at least kShrinkMinMs (10 ms). Large
+    //     values fall fast (geometric); it eases gently near the floor (no oscillation).
+    //   * HEADROOM CAP — the effective max is clamped to ≤80% of RING_FRAMES (always
+    //     keep ≥20% ring slack), in addition to any env max; a throttled log fires once
+    //     when the target crosses into the top band near that ceiling.
+    // This self-tunes to each machine — no per-device knob needed. Env overrides:
+    // RB3_AUDIO_LATENCY_MS pins a FIXED target (disables adaptation, for testing);
+    // RB3_AUDIO_LAT_MIN_MS / _MAX_MS set the adaptive bounds.
     const int arate = (mDeviceSampleRate > 0) ? mDeviceSampleRate
                     : (mSampleRate > 0 ? mSampleRate : 48000);
+    static const int kStartMs       = 120; // initial target (above floor; no first-song stutter)
+    static const int kGrowMs        = 40;  // added per underrun window once pressure is sustained
+    static const int kShrinkPctNum  = 25;  // clean-window multiplicative shrink: 25% of (target-floor)
+    static const int kShrinkPctDen  = 100;
+    static const int kShrinkMinMs   = 10;  // ...but at least this many ms (eases near the floor)
+    static const int kPressureOne   = 256; // 1.0 in fixed-point
+    static const int kPressureGrow  = 2 * kPressureOne; // grow only at >=2.0 (sustained pressure)
+    static const int kPressureMax   = 4 * kPressureOne; // saturate so a long burst can't run away
     static int sFixedFrames  = -2;   // -2 uninit; -1 adaptive; >=0 env-fixed
     static int sMinFrames    = 0;
-    static int sMaxFrames    = 0;
+    static int sMaxFrames    = 0;    // EFFECTIVE max (already <=80% ring)
+    static int sHighBand     = 0;    // top-band threshold for the throttled "near ceiling" flag
     static int sGrowFrames   = 0;
-    static int sShrinkFrames = 0;
+    static int sShrinkMinF   = 0;
     static int sTargetFrames = 0;    // current adaptive target (device frames ahead of read)
-    static int sCleanPumps   = 0;
+    static int sPressure     = 0;    // fixed-point /256 underrun pressure accumulator
     static int sLastUnderrun = -1;   // -1 until baselined past the boot backlog
+    static bool sHighFlagged = false;// has the "near ceiling" log already fired in this excursion?
     if (sFixedFrames == -2) {
         const char *fenv = getenv("RB3_AUDIO_LATENCY_MS");
         int fixedMs = fenv ? atoi(fenv) : 0;
@@ -585,10 +609,15 @@ void AudioDevice::PumpAudio() {
         if (minMs < 5) minMs = 5;
         sMinFrames    = (int)((long long)arate * minMs / 1000);
         sMaxFrames    = (int)((long long)arate * maxMs / 1000);
+        // HEADROOM CAP: never target more than 80% of the ring -> always keep >=20%
+        // slack so the worklet has room to drain even at the highest adaptive depth.
+        const int ring80 = (int)((long long)RING_FRAMES * 80 / 100);
+        if (sMaxFrames > ring80)          sMaxFrames = ring80;
         if (sMaxFrames > RING_FRAMES - 1) sMaxFrames = RING_FRAMES - 1;
-        sGrowFrames   = (int)((long long)arate * 30 / 1000);   // +30 ms per stall-report (catch up fast)
-        sShrinkFrames = (int)((long long)arate * 10 / 1000);   // -10 ms per clean window (recover, not ratchet)
-        sTargetFrames = (int)((long long)arate * 120 / 1000);  // start moderate (no first-song stutter)
+        sHighBand     = (int)((long long)sMaxFrames * 90 / 100); // top 10% of the effective range
+        sGrowFrames   = (int)((long long)arate * kGrowMs / 1000);
+        sShrinkMinF   = (int)((long long)arate * kShrinkMinMs / 1000);
+        sTargetFrames = (int)((long long)arate * kStartMs / 1000);
         if (sTargetFrames < sMinFrames) sTargetFrames = sMinFrames;
         if (sTargetFrames > sMaxFrames) sTargetFrames = sMaxFrames;
     }
@@ -602,23 +631,38 @@ void AudioDevice::PumpAudio() {
             if (sLastUnderrun < 0) {
                 sLastUnderrun = u[0];                 // baseline past the boot backlog (don't grow for it)
             } else if (u[0] > sLastUnderrun) {
-                sLastUnderrun = u[0];                 // the ring starved -> grow fast
-                sCleanPumps = 0;
-                if (sTargetFrames < sMaxFrames) {
+                // New underruns this window: build pressure. Only GROW once pressure is
+                // SUSTAINED (>=2 consecutive underrun windows) — a lone spike is ignored.
+                sLastUnderrun = u[0];
+                sPressure += kPressureOne;
+                if (sPressure > kPressureMax) sPressure = kPressureMax;
+                if (sPressure >= kPressureGrow && sTargetFrames < sMaxFrames) {
                     sTargetFrames += sGrowFrames;
                     if (sTargetFrames > sMaxFrames) sTargetFrames = sMaxFrames;
-                    printf("AudioDevice: latency GROW -> %d ms (underrun)\n",
-                           (int)((long long)sTargetFrames * 1000 / arate));
+                    printf("AudioDevice: latency GROW -> %d ms (sustained underrun, pressure %d/256)\n",
+                           (int)((long long)sTargetFrames * 1000 / arate), sPressure);
                 }
-            } else if (++sCleanPumps >= 180) {        // sustained clean -> ease latency down
-                sCleanPumps = 0;
+            } else {
+                // Clean window: decay pressure, multiplicatively shrink toward the floor.
+                sPressure >>= 1;
                 if (sTargetFrames > sMinFrames) {
-                    sTargetFrames -= sShrinkFrames;
+                    int step = (int)((long long)(sTargetFrames - sMinFrames) * kShrinkPctNum / kShrinkPctDen);
+                    if (step < sShrinkMinF) step = sShrinkMinF;
+                    sTargetFrames -= step;
                     if (sTargetFrames < sMinFrames) sTargetFrames = sMinFrames;
-                    printf("AudioDevice: latency shrink -> %d ms (clean)\n",
-                           (int)((long long)sTargetFrames * 1000 / arate));
                 }
             }
+        }
+        // THROTTLED "near ceiling" flag: fire once when we cross into the top band,
+        // re-arm when we drop back below it (so it doesn't spam every pump).
+        if (sTargetFrames >= sHighBand) {
+            if (!sHighFlagged) {
+                sHighFlagged = true;
+                printf("AudioDevice: latency HIGH ~%d ms (near ceiling) — holding ring headroom\n",
+                       (int)((long long)sTargetFrames * 1000 / arate));
+            }
+        } else {
+            sHighFlagged = false;
         }
         targetFrames = sTargetFrames;
     }
