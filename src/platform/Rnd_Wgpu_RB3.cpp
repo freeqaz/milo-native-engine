@@ -441,6 +441,16 @@ void CleanupGpuMesh(RndMesh* mesh) {
     sMeshGpu.erase(mesh);
 }
 
+// Drop a texture's cached GPU resources (twin of CleanupGpuMesh for sTexGpu).
+// wgpu::Texture/TextureView are refcounted, so erasing the map entry releases
+// them — no explicit .destroy() needed. Strong def displaces the weak no-op
+// link-stub (native: rndobj_synth_link_stubs.s). Called from RndTex's HX_NATIVE
+// destructor so freed textures release their GPU memory and don't leave a stale
+// sTexGpu slot that a recycled RndTex* could later resurrect.
+void CleanupGpuTex(RndTex* tex) {
+    sTexGpu.erase(tex);
+}
+
 static uint32_t TexFingerprint(const uint8_t* p, int sz) {
     if (!p || sz < 16) return 0;
     uint32_t h = 0; int step = sz / 8; if (step < 1) step = 1;
