@@ -697,6 +697,15 @@ struct RangeRequest {
     int id;
     bool done;
     bool success;
+    // True once the consumer has dropped this request while its fetch was still
+    // in flight. The request is detached from sRangeRequests (so findRange never
+    // returns it again) but NOT deleted synchronously — the pending fetch's
+    // userData still points at it. The success/error callback owns the delete and
+    // must skip every consumer-facing write (data.assign / done) on an abandoned
+    // request. Prevents the use-after-free where WebAssetsRangeDrop frees a
+    // RangeRequest whose emscripten_fetch is still running (preview-cancel /
+    // chunk-supersede), then the callback writes into freed heap.
+    bool abandoned;
     std::vector<uint8_t> data;  // bytes received (success only)
 };
 
@@ -712,6 +721,12 @@ static RangeRequest *findRange(int id) {
 
 static void onRangeSuccess(emscripten_fetch_t *fetch) {
     RangeRequest *req = static_cast<RangeRequest *>(fetch->userData);
+    if (req->abandoned) {
+        // Consumer is gone; do not touch its state — just reclaim.
+        emscripten_fetch_close(fetch);
+        delete req;
+        return;
+    }
     req->data.assign((const uint8_t *)fetch->data,
                      (const uint8_t *)fetch->data + fetch->numBytes);
     req->success = true;
@@ -721,6 +736,11 @@ static void onRangeSuccess(emscripten_fetch_t *fetch) {
 
 static void onRangeError(emscripten_fetch_t *fetch) {
     RangeRequest *req = static_cast<RangeRequest *>(fetch->userData);
+    if (req->abandoned) {
+        emscripten_fetch_close(fetch);
+        delete req;
+        return;
+    }
     printf("WebAssets: range fetch FAILED %s (HTTP %d)\n", fetch->url, fetch->status);
     req->success = false;
     req->done = true;
@@ -736,6 +756,7 @@ int WebAssetsRangeFetch(const char *serverRelPath, long offset, int length) {
     req->id = sNextRangeId++;
     req->done = false;
     req->success = false;
+    req->abandoned = false;
     sRangeRequests.push_back(req);
 
     char url[512];
@@ -795,8 +816,25 @@ int WebAssetsRangeTake(int reqId, void *dst, int dstCap) {
 void WebAssetsRangeDrop(int reqId) {
     for (auto it = sRangeRequests.begin(); it != sRangeRequests.end(); ++it) {
         if ((*it)->id == reqId) {
-            delete *it;
+            RangeRequest *req = *it;
+            // Detach from the registry either way so a later WebAssetsRangeFetch
+            // can never collide and so findRange() stops returning it.
             sRangeRequests.erase(it);
+            if (req->done) {
+                // Callback already fired: the fetch handle is closed and userData
+                // is inert. Safe to reclaim now.
+                delete req;
+            } else {
+                // Fetch still in flight: its onsuccess/onerror callback still holds
+                // this pointer in fetch->userData. Hand ownership to that callback
+                // (it deletes an abandoned req and skips all consumer writes) rather
+                // than freeing under the running fetch. NOTE: we intentionally do
+                // NOT emscripten_fetch_close() here — per fetch.h the close-while-
+                // executing path invokes onerror() synchronously, which would race
+                // this very teardown; letting the fetch complete naturally and
+                // self-reclaim through the abandoned branch is simpler and safe.
+                req->abandoned = true;
+            }
             return;
         }
     }
