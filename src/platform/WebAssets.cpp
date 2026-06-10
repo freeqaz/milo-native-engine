@@ -10,7 +10,9 @@
 
 #include <emscripten/fetch.h>
 #include <emscripten/em_asm.h>
+#include <emscripten/em_js.h>  // EM_ASYNC_JS (Q5 JSPI-suspending fetch)
 #include <cstdio>
+#include <cstdlib>             // getenv (RB3_SYNC_XHR_LEGACY)
 #include <cstring>
 #include <cerrno>
 #include <sys/stat.h>
@@ -304,43 +306,82 @@ void WebAssetsFetchBundle(const char *url) {
 }
 
 // ---------------------------------------------------------------------------
-// Synchronous single-file fetch (blocks main thread via XHR)
+// Blocking single-file fetch — preserves a SYNCHRONOUS C contract (bytes are
+// resident at memfsPath on return) for the matched-fork's File ctor, which
+// expects to fopen() the file immediately afterward.
+//
+// Two backends, both writing to the SAME MEMFS path with the SAME keys:
+//   1. (default) webAssetsAsyncFetchToMemfs — a JSPI-suspending `await fetch()`
+//      + arrayBuffer() copy. The wasm stack suspends across the network round
+//      trip and the browser keeps compositing/handling input, so the canvas no
+//      longer freezes for the whole fetch. Decoding of any Content-Encoding
+//      (br/gz the server adds, server.py:221) is transparent — fetch() decodes
+//      it before arrayBuffer(), exactly as the old XHR.responseText did, so the
+//      bytes written to MEMFS are identical to the legacy path's.
+//   2. (RB3_SYNC_XHR_LEGACY=1) webAssetsLegacyXhrToMemfs — the original
+//      synchronous XHR + per-byte charCodeAt string→Uint8Array convert loop.
+//      Kept compiled for one release as a fallback in case a caller turns out
+//      to reach this from a non-JSPI-suspendable frame (none known — see the
+//      caller audit below).
+//
+// Caller audit (all callers run under the JSPI-suspendable `_rb3MainLoopTick`
+// export, which already JSPI-suspends today via Loader.cpp's emscripten_sleep):
+//   - native_file.cpp NativeStdioFile ctor   → NewFile under RunOneFrame/loaders
+//   - rb3_xma_sidecar.h TryLoad              → SampleInst start, main-thread
+//                                              synth poll under RunOneFrame
+//   - AsyncFile_Native.cpp _OpenAsync        → NOT compiled for rb3 (excluded in
+//                                              MILO_ENGINE_DECOMP_PLATFORM_EXCLUDE);
+//                                              DC3-only, also JSPI-driven.
+// None run during static init / before runtime init (every caller's prelude
+// runs JS via EM_ASM, which requires the runtime up) or inside the audio
+// worklet (sample START is on the main thread; the worklet only pulls already-
+// decoded PCM). A JSPI suspend is therefore legal at every call site, and even
+// where it weren't, the suspend is strictly no worse than the blocking XHR it
+// replaces.
 // ---------------------------------------------------------------------------
 
-bool WebAssetsFetchSync(const char *memfsPath) {
-    // Normalize the MEMFS path to a server-relative path.
-    // Paths come in several forms:
-    //   /data/ui/gen/foo.milo_xbox          -> ui/gen/foo.milo_xbox
-    //   /system/run/ham/gen/skeleton.milo   -> system/run/ham/gen/skeleton.milo
-    //   /../system/run/config/gen/meta.milo -> system/run/config/gen/meta.milo
-    const char *rel = memfsPath;
-    if (strncmp(rel, "/data/", 6) == 0) {
-        rel += 6;
-    } else if (strncmp(rel, "/../", 4) == 0) {
-        rel += 4;  // strip "/../" -> "system/run/..."
-    } else if (rel[0] == '/') {
-        rel += 1;  // strip leading "/" -> "system/run/..."
+// JSPI-suspending async fetch. Returns bytes written to MEMFS, or -1 on error.
+// `Asyncify.handleAsync` (em_js.h) resolves to the JSPI suspend path under
+// -sJSPI (libasync.js:462), so the wasm caller suspends across the await.
+EM_ASYNC_JS(int, webAssetsAsyncFetchToMemfs, (const char *urlC, const char *memfsPathC), {
+    try {
+        var url = UTF8ToString(urlC);
+        var memfsPath = UTF8ToString(memfsPathC);
+        var res = await fetch(url);
+        if (!res.ok) {
+            console.log("WebAssets: fetch failed " + url + " status=" + res.status);
+            return -1;
+        }
+        // fetch() transparently decodes any Content-Encoding (br/gz) before
+        // arrayBuffer(), so `data` is the raw asset bytes — same as the old
+        // XHR.responseText path produced.
+        var buf = await res.arrayBuffer();
+        var data = new Uint8Array(buf);
+
+        // Create parent directories (identical to the legacy path).
+        var parts = memfsPath.split("/");
+        var dir = "";
+        for (var i = 0; i < parts.length - 1; i++) {
+            if (parts[i] === "") continue;
+            dir += "/" + parts[i];
+            try { FS.mkdir(dir); } catch (e) {}
+        }
+
+        FS.writeFile(memfsPath, data);
+        return data.length;
+    } catch (e) {
+        console.log("WebAssets: fetch exception: " + e);
+        return -1;
     }
+});
 
-    // Build server URL
-    char url[512];
-    snprintf(url, sizeof(url), "/api/file/%s", rel);
-
-#ifdef DEBUG_LOGS
-    printf("WebAssets: on-demand fetch %s -> %s\n", url, memfsPath);
-#endif
-
-    // Frame-trace: this blocking XHR is the I/O baseline every other counter is
-    // judged against — the single biggest canvas-freeze suspect on web. Time the
-    // whole convert+write, count the call, and accumulate the byte count
-    // (returned by the EM_ASM on success; -1 on failure).
-    double ftStart = gFrameTraceActive ? FrameTraceNowMs() : 0.0;
-
+// Legacy synchronous XHR + per-byte string convert. Kept behind
+// RB3_SYNC_XHR_LEGACY for one release. Returns bytes written, or -1 on error.
+static int webAssetsLegacyXhrToMemfs(const char *url, const char *memfsPath) {
     // Use synchronous XHR to fetch the file, then write to MEMFS via FS API.
     // Note: synchronous XHR cannot set responseType="arraybuffer" in browsers,
     // so we use overrideMimeType to force binary and manually convert the response.
-    // Returns the number of bytes written on success, or -1 on failure.
-    int bytesWritten = EM_ASM_INT({
+    return EM_ASM_INT({
         try {
             var url = UTF8ToString($0);
             var memfsPath = UTF8ToString($1);
@@ -377,6 +418,53 @@ bool WebAssetsFetchSync(const char *memfsPath) {
             return -1;
         }
     }, url, memfsPath);
+}
+
+// One-time read of the legacy opt-out (RB3_SYNC_XHR_LEGACY=1 forces the old
+// blocking string-XHR). Pattern: static init + getenv (Loader.cpp:217-226).
+static bool webAssetsUseLegacyXhr() {
+    static int sLegacy = -1;
+    if (sLegacy < 0) {
+        const char *e = getenv("RB3_SYNC_XHR_LEGACY");
+        sLegacy = (e && e[0] && e[0] != '0') ? 1 : 0;
+    }
+    return sLegacy != 0;
+}
+
+bool WebAssetsFetchSync(const char *memfsPath) {
+    // Normalize the MEMFS path to a server-relative path.
+    // Paths come in several forms:
+    //   /data/ui/gen/foo.milo_xbox          -> ui/gen/foo.milo_xbox
+    //   /system/run/ham/gen/skeleton.milo   -> system/run/ham/gen/skeleton.milo
+    //   /../system/run/config/gen/meta.milo -> system/run/config/gen/meta.milo
+    const char *rel = memfsPath;
+    if (strncmp(rel, "/data/", 6) == 0) {
+        rel += 6;
+    } else if (strncmp(rel, "/../", 4) == 0) {
+        rel += 4;  // strip "/../" -> "system/run/..."
+    } else if (rel[0] == '/') {
+        rel += 1;  // strip leading "/" -> "system/run/..."
+    }
+
+    // Build server URL
+    char url[512];
+    snprintf(url, sizeof(url), "/api/file/%s", rel);
+
+#ifdef DEBUG_LOGS
+    printf("WebAssets: on-demand fetch %s -> %s\n", url, memfsPath);
+#endif
+
+    // Frame-trace: this blocking fetch is the I/O baseline every other counter
+    // is judged against — the single biggest canvas-freeze suspect on web. Time
+    // the whole fetch+write, count the call, and accumulate the byte count
+    // (returned on success; -1 on failure). With the async path the wall-clock
+    // here includes the JSPI-suspended network wait (during which the event loop
+    // ran), but it remains the right thing to attribute to this open.
+    double ftStart = gFrameTraceActive ? FrameTraceNowMs() : 0.0;
+
+    int bytesWritten = webAssetsUseLegacyXhr()
+                           ? webAssetsLegacyXhrToMemfs(url, memfsPath)
+                           : webAssetsAsyncFetchToMemfs(url, memfsPath);
 
     bool result = (bytesWritten >= 0);
     if (gFrameTraceActive) {
