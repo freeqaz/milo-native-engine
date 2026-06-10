@@ -18,6 +18,7 @@
 #include <sys/stat.h>
 #include <vector>
 #include <string>
+#include <unordered_map>
 
 // ---------------------------------------------------------------------------
 // Internal state
@@ -116,6 +117,10 @@ void WebAssetsInit() {
     mkdir("/data/gen", 0755);
     mkdir("/data/videos", 0755);
     printf("WebAssets: MEMFS initialized\n");
+    // A1 (T6): load the manifest size/existence oracle up front so the first
+    // on-demand open already has it. Idempotent; cheap (a JS-map copy if
+    // rb3_pre.js pre-warmed it, else one sync /api/manifest fetch).
+    WebAssetsManifestLoad();
 }
 
 int WebAssetsFetch(const char *serverPath) {
@@ -483,5 +488,318 @@ bool WebAssetsAllDone() { return sPending == 0; }
 int WebAssetsPendingCount() { return sPending; }
 int WebAssetsCompletedCount() { return sCompleted; }
 int WebAssetsFailedCount() { return sFailed; }
+
+// ===========================================================================
+// A1 (PLAN.md T6) — manifest oracle + async ensure-resident
+// ===========================================================================
+
+// Synchronously (JSPI-suspending) fetch /api/manifest and serialize it into a
+// malloc'd "path\tsize\n..." blob the C side parses. Returns the pointer (caller
+// frees) or 0 on failure. Used only as the fallback when rb3_pre.js's pre-warmed
+// window.__rb3ManifestSizes map isn't ready yet.
+EM_ASYNC_JS(char *, webAssetsFetchManifestBlob, (), {
+    try {
+        var res = await fetch("/api/manifest");
+        if (!res.ok) return 0;
+        var j = await res.json();
+        if (!j || !j.files) return 0;
+        var parts = [];
+        for (var i = 0; i < j.files.length; i++) {
+            parts.push(j.files[i].path + "\t" + j.files[i].size);
+        }
+        var s = parts.join("\n");
+        var len = lengthBytesUTF8(s) + 1;
+        var ptr = _malloc(len);
+        stringToUTF8(s, ptr, len);
+        return ptr;
+    } catch (e) {
+        console.log("WebAssets: manifest fetch failed: " + e);
+        return 0;
+    }
+});
+
+// path -> size, keyed on the SERVER-RELATIVE path the engine actually asks for
+// (the /api/file/<rel> form, e.g. "ui/gen/foo.milo_xbox", "songs/x/x.mogg",
+// "system/run/.../bar.milo"). The raw manifest from the server keys *system*
+// files under a "(..)/(..)/system/..." mangle (the extracted tree encodes the
+// "../../" escape as a "(..)" dir); we de-mangle on load so lookups use the same
+// key the matched-fork passes to NewFile.
+static std::unordered_map<std::string, long> sManifestSizes;
+static bool sManifestLoaded = false;
+
+// Normalize a manifest key as emitted by the server (os.path.relpath of the
+// extracted tree) to the engine's server-relative request key. The only mangle
+// is the leading "(..)/(..)/" that encodes "../../" for system/run files; strip
+// it so "(..)/(..)/system/run/x" -> "system/run/x". Other keys pass through.
+static std::string demangleManifestKey(const std::string &k) {
+    // Strip any run of leading "(..)/" components.
+    size_t i = 0;
+    while (k.compare(i, 5, "(..)/") == 0)
+        i += 5;
+    return i ? k.substr(i) : k;
+}
+
+// Map a server-relative REQUEST key to the manifest-stored form. Direct hit
+// first; for system/* the server resolves it from the "(..)/(..)/system/*"
+// location, so also probe that. (We store de-mangled keys, so a direct lookup
+// already covers both — this helper exists for symmetry / future server forms.)
+int WebAssetsManifestLoad() {
+    if (sManifestLoaded)
+        return (int)sManifestSizes.size();
+    sManifestLoaded = true;
+
+    // The manifest JSON is pre-warmed by rb3_pre.js into window.__rb3ManifestSizes
+    // (a Map<string,number>) racing the wasm download. If present, copy it across
+    // the JS boundary in one EM_ASM (serialized as a flat "path\tsize\n" blob to
+    // avoid per-entry boundary crossings). Else fetch /api/manifest synchronously
+    // (JSPI-suspending), which is always safe here (runtime is up at WebAssetsInit
+    // and every later on-demand open).
+    //
+    // Returns a malloc'd C string "path\tsize\npath\tsize\n..." (caller frees), or
+    // 0 if no manifest is available.
+    char *blob = (char *)EM_ASM_PTR({
+        try {
+            var m = window.__rb3ManifestSizes;
+            if (!m || !m.size) return 0;
+            var parts = [];
+            m.forEach(function(sz, path) { parts.push(path + "\t" + sz); });
+            var s = parts.join("\n");
+            var len = lengthBytesUTF8(s) + 1;
+            var ptr = _malloc(len);
+            stringToUTF8(s, ptr, len);
+            return ptr;
+        } catch (e) {
+            return 0;
+        }
+    });
+
+    if (!blob) {
+        // JS map not ready — fetch the manifest synchronously into a JS blob and
+        // retry the copy. EM_ASYNC_JS suspends across the await; the runtime is up.
+        blob = (char *)webAssetsFetchManifestBlob();
+    }
+
+    if (!blob || !blob[0]) {
+        if (blob) free(blob);
+        printf("WebAssets: manifest unavailable (oracle disabled — sync fallback)\n");
+        return 0;
+    }
+
+    // Parse "path\tsize\n" lines.
+    const char *p = blob;
+    while (*p) {
+        const char *tab = strchr(p, '\t');
+        if (!tab) break;
+        std::string path(p, tab - p);
+        const char *nl = strchr(tab + 1, '\n');
+        long sz = atol(tab + 1);
+        sManifestSizes[demangleManifestKey(path)] = sz;
+        if (!nl) break;
+        p = nl + 1;
+    }
+    free(blob);
+
+    printf("WebAssets: manifest loaded (%zu entries)\n", sManifestSizes.size());
+    return (int)sManifestSizes.size();
+}
+
+long WebAssetsManifestSize(const char *serverRelPath) {
+    if (!serverRelPath || !serverRelPath[0])
+        return -1;
+    if (!sManifestLoaded)
+        WebAssetsManifestLoad();
+    // Normalize the request key the same way WebAssetsFetchSync does: strip a
+    // leading "/data/", "/../", or "/".
+    const char *rel = serverRelPath;
+    if (strncmp(rel, "/data/", 6) == 0)
+        rel += 6;
+    else if (strncmp(rel, "/../", 4) == 0)
+        rel += 4;
+    else if (rel[0] == '/')
+        rel += 1;
+    auto it = sManifestSizes.find(std::string(rel));
+    if (it != sManifestSizes.end())
+        return it->second;
+    return -1;
+}
+
+// In-flight async ensure-resident dedupe: server-rel path -> fetch id. Lets a
+// WebPendingFile (and queued non-front loaders) kick a fetch idempotently. The
+// id stays in the map after completion so WebAssetsEnsureStatus can report a
+// definitive resident/failed verdict (a WebPendingFile must not poll forever on
+// a fetch that errored).
+static std::unordered_map<std::string, int> sEnsureInFlight;
+
+static const char *normRel(const char *serverRelPath) {
+    const char *rel = serverRelPath;
+    if (strncmp(rel, "/data/", 6) == 0)
+        rel += 6;
+    else if (strncmp(rel, "/../", 4) == 0)
+        rel += 4;
+    else if (rel[0] == '/')
+        rel += 1;
+    return rel;
+}
+
+bool WebAssetsIsResident(const char *serverRelPath) {
+    if (!serverRelPath || !serverRelPath[0])
+        return false;
+    std::string memfs = std::string("/data/") + normRel(serverRelPath);
+    struct stat st;
+    return stat(memfs.c_str(), &st) == 0;
+}
+
+void WebAssetsEnsureResidentAsync(const char *serverRelPath) {
+    if (!serverRelPath || !serverRelPath[0])
+        return;
+    std::string rel = normRel(serverRelPath);
+    if (WebAssetsIsResident(rel.c_str()))
+        return;
+    auto it = sEnsureInFlight.find(rel);
+    if (it != sEnsureInFlight.end()) {
+        // A fetch was already issued for this path. If it is still pending, or
+        // finished and the file is now resident, dedupe (no re-kick). Only
+        // re-kick if the prior fetch FINISHED but the file is NOT resident
+        // (a transient error) — give it one more chance rather than wedging.
+        if (!WebAssetsFetchDone(it->second))
+            return;  // still in flight
+        if (WebAssetsIsResident(rel.c_str()))
+            return;  // landed
+        // finished but not resident → re-kick (fall through)
+    }
+    sEnsureInFlight[rel] = WebAssetsFetch(rel.c_str());
+}
+
+// Status for a WebPendingFile's open: 0 = pending (fetch in flight), 1 =
+// resident (bytes landed), 2 = failed (fetch finished without residency, and the
+// path was never ensured — or a re-kicked fetch also failed). A WebPendingFile
+// polls this; on 2 it reports Fail() so the loader cleans up instead of spinning.
+int WebAssetsEnsureStatus(const char *serverRelPath) {
+    if (!serverRelPath || !serverRelPath[0])
+        return 2;
+    std::string rel = normRel(serverRelPath);
+    if (WebAssetsIsResident(rel.c_str()))
+        return 1;
+    auto it = sEnsureInFlight.find(rel);
+    if (it == sEnsureInFlight.end())
+        return 0;  // not ensured yet (caller should kick) — treat as pending
+    if (!WebAssetsFetchDone(it->second))
+        return 0;  // in flight
+    // Fetch finished and the file is not resident: a genuine error.
+    return 2;
+}
+
+// ===========================================================================
+// Q3 (PLAN.md T7) — Range fetch machinery
+// ===========================================================================
+
+struct RangeRequest {
+    int id;
+    bool done;
+    bool success;
+    std::vector<uint8_t> data;  // bytes received (success only)
+};
+
+static int sNextRangeId = 1;
+static std::vector<RangeRequest *> sRangeRequests;
+
+static RangeRequest *findRange(int id) {
+    for (auto *r : sRangeRequests)
+        if (r->id == id)
+            return r;
+    return nullptr;
+}
+
+static void onRangeSuccess(emscripten_fetch_t *fetch) {
+    RangeRequest *req = static_cast<RangeRequest *>(fetch->userData);
+    req->data.assign((const uint8_t *)fetch->data,
+                     (const uint8_t *)fetch->data + fetch->numBytes);
+    req->success = true;
+    req->done = true;
+    emscripten_fetch_close(fetch);
+}
+
+static void onRangeError(emscripten_fetch_t *fetch) {
+    RangeRequest *req = static_cast<RangeRequest *>(fetch->userData);
+    printf("WebAssets: range fetch FAILED %s (HTTP %d)\n", fetch->url, fetch->status);
+    req->success = false;
+    req->done = true;
+    emscripten_fetch_close(fetch);
+}
+
+int WebAssetsRangeFetch(const char *serverRelPath, long offset, int length) {
+    if (!serverRelPath || !serverRelPath[0] || length <= 0)
+        return 0;
+    const char *rel = normRel(serverRelPath);
+
+    RangeRequest *req = new RangeRequest();
+    req->id = sNextRangeId++;
+    req->done = false;
+    req->success = false;
+    sRangeRequests.push_back(req);
+
+    char url[512];
+    snprintf(url, sizeof(url), "/api/file/%s", rel);
+
+    char rangeHdr[64];
+    snprintf(rangeHdr, sizeof(rangeHdr), "bytes=%ld-%ld", offset,
+             offset + (long)length - 1);
+    // emscripten_fetch headers: a NULL-terminated array of key,value pairs.
+    static thread_local char sRangeHdrBuf[64];
+    strncpy(sRangeHdrBuf, rangeHdr, sizeof(sRangeHdrBuf) - 1);
+    sRangeHdrBuf[sizeof(sRangeHdrBuf) - 1] = '\0';
+    const char *headers[] = {"Range", sRangeHdrBuf, nullptr};
+
+    emscripten_fetch_attr_t attr;
+    emscripten_fetch_attr_init(&attr);
+    strcpy(attr.requestMethod, "GET");
+    attr.attributes = EMSCRIPTEN_FETCH_LOAD_TO_MEMORY;
+    attr.onsuccess = onRangeSuccess;
+    attr.onerror = onRangeError;
+    attr.userData = req;
+    attr.requestHeaders = headers;
+
+    emscripten_fetch(&attr, url);
+    return req->id;
+}
+
+bool WebAssetsRangeDone(int reqId, int *outBytes, bool *outOk) {
+    RangeRequest *req = findRange(reqId);
+    if (!req) {
+        if (outBytes) *outBytes = 0;
+        if (outOk) *outOk = false;
+        return true;  // unknown id == done (defensive)
+    }
+    if (!req->done)
+        return false;
+    if (outBytes) *outBytes = (int)req->data.size();
+    if (outOk) *outOk = req->success;
+    return true;
+}
+
+int WebAssetsRangeTake(int reqId, void *dst, int dstCap) {
+    RangeRequest *req = findRange(reqId);
+    if (!req)
+        return 0;
+    int n = 0;
+    if (req->done && req->success && dst && dstCap > 0) {
+        n = (int)req->data.size();
+        if (n > dstCap)
+            n = dstCap;
+        memcpy(dst, req->data.data(), n);
+    }
+    WebAssetsRangeDrop(reqId);
+    return n;
+}
+
+void WebAssetsRangeDrop(int reqId) {
+    for (auto it = sRangeRequests.begin(); it != sRangeRequests.end(); ++it) {
+        if ((*it)->id == reqId) {
+            delete *it;
+            sRangeRequests.erase(it);
+            return;
+        }
+    }
+}
 
 #endif // __EMSCRIPTEN__
