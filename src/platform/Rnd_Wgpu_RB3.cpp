@@ -591,13 +591,85 @@ static wgpu::TextureView UploadRndTexIfNeeded(GpuDevice& gpu, RndTex* tex) {
     // here, so this charges only real upload work to gTexUploadMsThisFrame.
     double ftStart = gFrameTraceActive ? FrameTraceNowMs() : 0.0;
 
+    unsigned int order = bmp.Order();
+    unsigned int dxt = order & 0x38;
+
+    // Q4 — BC-native texture upload. When the device supports BC (texture-
+    // compression-bc, requested at device creation on both native + web), upload
+    // the DXT blocks directly instead of CPU-decompressing every DXT->RGBA8 at
+    // first draw (the ~600 ms boot-profile burst + 4-8x more upload bytes).
+    // BC1/BC2/BC3 IS the source data, so this is lossless (no quality change).
+    // DXN/BC5 deliberately stays on the RGBA8 CPU path below: BC5RGUnorm returns
+    // (R,G,0,1) which the DXT5nm/RGB normal-decode shader heuristic reads as a
+    // flipped Z; the CPU decompress sets B=255 for correct Z=+1 (matches
+    // TextureConvert::MapBitmapFormat's documented DXN carve-out).
+    // Opt-out: RB3_BC_TEX_OFF=1 restores the full CPU-decompress path.
+    static int sBcTexEnabled = -1;
+    if (sBcTexEnabled < 0) {
+        const char* e = getenv("RB3_BC_TEX_OFF");
+        sBcTexEnabled = (e && e[0] && e[0] != '0') ? 0 : 1;
+    }
+    bool isBlockDxt = (dxt == 0x08 || dxt == 0x10 || dxt == 0x18); // DXT1/3/5
+    if (sBcTexEnabled && isBlockDxt && gpu.HasBCCompression()) {
+        // Block geometry: 8 bytes/block for DXT1(BC1), 16 for DXT3/5(BC2/BC3).
+        int blockBytes = (dxt == 0x08) ? 8 : 16;
+        int blockW = (w + 3) / 4;            // blocks per row (covers padded width)
+        int blockH = (h + 3) / 4;            // block rows (covers padded height)
+        uint32_t bytesPerRow = (uint32_t)(blockW * blockBytes);
+        size_t uploadSize = (size_t)bytesPerRow * blockH;
+
+        // Copy + endian-swap the BC blocks (Xbox stores them as BE 16-bit words).
+        // Mirror the RGBA8 path's source size (PixelBytes()); clamp the upload to
+        // whichever is smaller so a short source can't over-read the GPU copy.
+        std::vector<uint8_t> work(pixels, pixels + pixBytes);
+        ByteSwapDXT16(work.data(), work.size());
+        if (uploadSize > (size_t)pixBytes) uploadSize = (size_t)pixBytes;
+
+        wgpu::TextureFormat bcFmt =
+            (dxt == 0x08) ? wgpu::TextureFormat::BC1RGBAUnorm :
+            (dxt == 0x10) ? wgpu::TextureFormat::BC2RGBAUnorm :
+                            wgpu::TextureFormat::BC3RGBAUnorm;
+
+        wgpu::TextureDescriptor td{};
+        td.label = "RB3TexBC";
+        td.size = {(uint32_t)w, (uint32_t)h, 1};
+        td.format = bcFmt;
+        td.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
+        td.mipLevelCount = 1; // RB3 native bitmaps are single-level (numMips==0)
+        wgpu::Texture t = gpu.Device().CreateTexture(&td);
+        if (t) {
+            // mipLevel 0: copy width/height == the physical mip size, so they
+            // satisfy the BC block-multiple constraint even when w/h aren't /4.
+            // bytesPerRow is a multiple of blockBytes (NOT rounded to 256 — that
+            // 256 alignment is a COPY_BYTES_PER_ROW_ALIGNMENT rule for buffer->
+            // texture command-encoder copies; Queue().WriteTexture relaxes it).
+            wgpu::TexelCopyTextureInfo dstInfo{}; dstInfo.texture = t;
+            wgpu::TexelCopyBufferLayout layout{};
+            layout.bytesPerRow = bytesPerRow;
+            layout.rowsPerImage = (uint32_t)blockH;
+            wgpu::Extent3D ext = {(uint32_t)w, (uint32_t)h, 1};
+            gpu.Queue().WriteTexture(&dstInfo, work.data(), uploadSize, &layout, &ext);
+
+            e.tex = t;
+            e.view = t.CreateView();
+            e.lastPixels = pixels;
+            e.fingerprint = fp;
+            e.uploaded = true;
+            if (gFrameTraceActive) {
+                gTexUploadMsThisFrame += (float)(FrameTraceNowMs() - ftStart);
+                gTexUploadCountThisFrame++;
+            }
+            return e.view;
+        }
+        // Texture creation failed — fall through to the RGBA8 CPU path.
+    }
+
     // Choose format: always RGBA8Unorm (CPU-decompress DXT). Simple, portable,
-    // works on the null backend used in headless CI.
+    // works on the null backend used in headless CI, and the BC-unsupported /
+    // DXN / RB3_BC_TEX_OFF fallback.
     wgpu::TextureFormat fmt = wgpu::TextureFormat::RGBA8Unorm;
     std::vector<uint8_t> rgba((size_t)w * h * 4, 0xFF);
     uint8_t* dst = rgba.data();
-    unsigned int order = bmp.Order();
-    unsigned int dxt = order & 0x38;
 
     if (dxt) {
         // Copy + endian-swap before decompress.
