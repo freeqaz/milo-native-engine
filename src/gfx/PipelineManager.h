@@ -80,6 +80,16 @@ public:
     // Get or create pipeline for the given state combination
     wgpu::RenderPipeline GetPipeline(const PipelineKey& key);
 
+    // Pre-warm: synchronously create (and cache) the small enumerable set of
+    // pipeline variants the RB3 draw path (Rnd_Wgpu_RB3.cpp DrawMesh) can ask
+    // for, so the first real splash-venue draw frame finds them all cache-hit
+    // instead of compiling ~13 pipelines on the transition frame (87 ms native /
+    // ~120 ms web async, the A5 spike). The two formats are the live main-pass
+    // (mainFmt + depth) and RT-pass (rtFmt, no depth) targets — passed by the
+    // backend so the warmed keys are byte-identical to the ones GetPipeline()
+    // later looks up. Returns the number of pipelines actually created (misses).
+    int PreWarm(wgpu::TextureFormat mainFmt, wgpu::TextureFormat rtFmt);
+
     // Bind group layouts (shared across all pipelines)
     wgpu::BindGroupLayout& SceneLayout() { return mLayouts[0]; }    // Group 0
     wgpu::BindGroupLayout& MaterialLayout() { return mLayouts[1]; } // Group 1

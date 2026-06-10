@@ -400,6 +400,7 @@ public:
 
     bool mGpuReady = false;
     bool mPreInited = false;
+    bool mPipelinesPrewarmed = false;  // A5 one-shot pipeline pre-warm guard
     int mDrawnMeshes = 0;
     int mDrawnTris = 0;
 

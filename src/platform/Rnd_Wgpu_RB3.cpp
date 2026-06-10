@@ -45,6 +45,7 @@ void RB3RegisterLegacyRndAliases();
 // path inactive (frame renders straight to the framebuffer, no composite) — used
 // to prove a postproc-active screen is pixel-identical with the grade skipped.
 static bool RB3PostProcDisabled();
+static bool RB3PipelinePrewarmDisabled();
 
 // ---------------------------------------------------------------------------
 // VertexFormats::StaticLayout()/SkinnedLayout() — the engine's PipelineManager
@@ -1232,6 +1233,31 @@ void BandRnd::WriteSceneUniforms(RndCam* cam) {
 
 void BandRnd::BeginFrame(RndCam* cam) {
     if (!mGpuReady) return;
+
+    // A5 pipeline pre-warm: one-shot, on the first rendered frame after the GPU
+    // is ready (well before the splash->hub venue-build frame). mTargetFmt was
+    // latched in InitGpuResources and mRtFmt is a fixed member, so both keys
+    // match what DrawMesh will later request. Runs OUTSIDE the render pass (it
+    // only touches the pipeline cache / device, never the encoder), so it is
+    // safe here at the top of BeginFrame. Charges its compile cost to this idle
+    // frame's pipeMs counter instead of the transition spike. Inert when
+    // RB3_PIPELINE_PREWARM_OFF=1.
+    if (!mPipelinesPrewarmed && !RB3PipelinePrewarmDisabled()) {
+        mPipelinesPrewarmed = true;
+        static bool sPrewarmDbg = getenv("RB3_PREWARM_DBG") != nullptr;
+        double wall0 = (sPrewarmDbg || gFrameTraceActive) ? FrameTraceNowMs() : 0.0;
+        int created = mPipelines.PreWarm(mTargetFmt, mRtFmt);
+        if (gFrameTraceActive) {
+            gPipelineCreateMsThisFrame += (float)(FrameTraceNowMs() - wall0);
+            gPipelineCreateCountThisFrame += created;
+        }
+        if (sPrewarmDbg)
+            fprintf(stderr, "[A5] pipeline pre-warm: created %d pipelines in "
+                    "%.1f ms (mainFmt=%d rtFmt=%d)\n",
+                    created, FrameTraceNowMs() - wall0,
+                    (int)mTargetFmt, (int)mRtFmt);
+    }
+
     mDrawnMeshes = 0;
     mDrawnTris = 0;
     // Per-frame GPU-resource CREATE counters — proves the mesh leak is fixed.
@@ -2392,6 +2418,21 @@ void BandRnd::EnsureDepth(int w, int h) {
 static bool RB3PostProcDisabled() {
     static int s = -1;
     if (s < 0) { const char* e = getenv("RB3_PP_OFF"); s = (e && e[0] && e[0] != '0') ? 1 : 0; }
+    return s != 0;
+}
+
+// A5 pipeline pre-warm (default ON, opt-out RB3_PIPELINE_PREWARM_OFF). When ON,
+// the first few rendered frames eagerly create the enumerable RB3 draw-time
+// pipeline set so the splash->main_hub venue-build frame (native f≈13: pipeMs
+// 87 ms / pipeN 13; web: ~120 ms async pipeline-compile residue) finds them all
+// cache-hit. Visual no-op: pre-creating a cache entry the real draw would have
+// created anyway cannot change pixels — only WHEN the compile is paid.
+static bool RB3PipelinePrewarmDisabled() {
+    static int s = -1;
+    if (s < 0) {
+        const char* e = getenv("RB3_PIPELINE_PREWARM_OFF");
+        s = (e && e[0] && e[0] != '0') ? 1 : 0;
+    }
     return s != 0;
 }
 

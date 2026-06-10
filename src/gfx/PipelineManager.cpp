@@ -502,6 +502,88 @@ wgpu::RenderPipeline PipelineManager::CreatePipeline(const PipelineKey& key) {
     return mDevice->Device().CreateRenderPipeline(&pipeDesc);
 }
 
+int PipelineManager::PreWarm(wgpu::TextureFormat mainFmt, wgpu::TextureFormat rtFmt) {
+    // Enumerate the exact draw-time key space the RB3 backend's DrawMesh can
+    // request (Rnd_Wgpu_RB3.cpp:4435-4486). Every field that varies at draw
+    // time is swept here; every field that is *constant* at draw time is set to
+    // the same constant, so each warmed key is bit-for-bit identical to a key
+    // GetPipeline() will later look up (cache-key match is the whole point —
+    // a mismatched warm entry would still leave the real draw paying the
+    // compile). Constant draw-time fields: shaderType=0, cull=None,
+    // stencil=Ignore, sampleCount=1, alphaToCoverage=false, depthBias=0.
+    //
+    // Varying draw-time fields swept here:
+    //   blend     : material GetBlend() clamped to 0..7 (default Src(1),
+    //               gemForce→Src(1)).
+    //   zMode     : material GetZMode() clamped 0..4 (default Normal(1),
+    //               text/gem→Disable(0)).
+    //   layout    : Static / Skinned (skinned-vertex meshes).
+    //   alphaCut  : material mAlphaCut bool.
+    //   pass      : main pass (mainFmt, hasDepth=true, alphaWrite=false) OR
+    //               RT pass (rtFmt, hasDepth=false, alphaWrite=true, sky-dome).
+    //
+    // Main pass: 8(blend) x 5(zMode) x 2(layout) x 2(alphaCut) = 160 keys —
+    // a complete superset of every main-pass key the nav was ever observed to
+    // request (boot->hub->song_select->gameplay: 22 distinct main-pass keys,
+    // spanning blend 0..7 / zMode 0..4 / both layouts / both alphaCut). Swept
+    // fully (not the observed 22) so a venue/material this profiling run did not
+    // exercise still finds its pipeline warm.
+    //
+    // RT pass (sky-dome render-target: rtFmt, no depth, alphaWrite): swept
+    // STATIC-layout only (40 keys). The RT target is backdrop-only static
+    // geometry — skinned meshes (characters) never render into it, confirmed by
+    // the key census (the lone observed RT key is blend=3/zMode=2/layout=Static,
+    // and it lands inside the splash venue-build burst, so it MUST be pre-warmed
+    // too). Skipping the 40 skinned-RT combos trims dead compiles with no risk.
+    //
+    // 160 main + 40 RT = 200 distinct keys when mainFmt != rtFmt (web: BGRA8
+    // surface vs RGBA8 RT); when mainFmt == rtFmt (native headless readback) the
+    // RT-pass keys still differ from main only by hasDepth/alphaWrite, so all
+    // three passes stay distinct (240 entries). Either way every key is a
+    // superset of the real draw set. All share one shader module
+    // (GetOrCreateShader caches it). The compile cost is paid HERE, during the
+    // idle boot/intro/splash dwell (async-I/O-bound, with slack), instead of
+    // synchronously on the splash->main_hub venue-build frame. On native this is
+    // a ~0.7 s synchronous burst absorbed by boot (no recorded frame spikes); on
+    // web CreateRenderPipeline is async so it is a ~4 ms dispatch that warms the
+    // pipelines off-thread before the venue frame draws.
+    int created = 0;
+    struct PassVariant { wgpu::TextureFormat fmt; bool hasDepth; bool alphaWrite; bool skinned; };
+    const PassVariant passes[3] = {
+        { mainFmt, true,  false, false },  // main pass, static
+        { mainFmt, true,  false, true  },  // main pass, skinned (characters)
+        { rtFmt,   false, true,  false },  // RT pass, static only (sky-dome)
+    };
+    for (const auto& pass : passes) {
+        for (int blend = 0; blend <= 7; ++blend) {
+            for (int zMode = 0; zMode <= 4; ++zMode) {
+                for (int alphaCutI = 0; alphaCutI <= 1; ++alphaCutI) {
+                    PipelineKey key{};
+                    key.shaderType = 0;
+                    key.blend = (WgpuBlend)blend;
+                    key.zMode = (WgpuZMode)zMode;
+                    key.cull = WgpuCull::None;
+                    key.stencil = WgpuStencil::Ignore;
+                    key.layout = pass.skinned ? VertexLayoutType::Skinned
+                                              : VertexLayoutType::Static;
+                    key.targetFormat = pass.fmt;
+                    key.sampleCount = 1;
+                    key.hasDepth = pass.hasDepth;
+                    key.alphaCut = (alphaCutI != 0);
+                    key.alphaWrite = pass.alphaWrite;
+                    key.alphaToCoverage = false;
+                    key.depthBias = 0;
+                    if (mPipelineCache.find(key) == mPipelineCache.end()) {
+                        mPipelineCache[key] = CreatePipeline(key);
+                        ++created;
+                    }
+                }
+            }
+        }
+    }
+    return created;
+}
+
 wgpu::RenderPipeline PipelineManager::GetPipeline(const PipelineKey& key) {
     auto it = mPipelineCache.find(key);
     if (it != mPipelineCache.end()) return it->second;
