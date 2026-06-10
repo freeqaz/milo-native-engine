@@ -6,6 +6,7 @@
 #ifdef __EMSCRIPTEN__
 
 #include "platform/WebAssets.h"
+#include "platform/FrameTraceCounters.h"
 
 #include <emscripten/fetch.h>
 #include <emscripten/em_asm.h>
@@ -329,10 +330,17 @@ bool WebAssetsFetchSync(const char *memfsPath) {
     printf("WebAssets: on-demand fetch %s -> %s\n", url, memfsPath);
 #endif
 
+    // Frame-trace: this blocking XHR is the I/O baseline every other counter is
+    // judged against — the single biggest canvas-freeze suspect on web. Time the
+    // whole convert+write, count the call, and accumulate the byte count
+    // (returned by the EM_ASM on success; -1 on failure).
+    double ftStart = gFrameTraceActive ? FrameTraceNowMs() : 0.0;
+
     // Use synchronous XHR to fetch the file, then write to MEMFS via FS API.
     // Note: synchronous XHR cannot set responseType="arraybuffer" in browsers,
     // so we use overrideMimeType to force binary and manually convert the response.
-    int result = EM_ASM_INT({
+    // Returns the number of bytes written on success, or -1 on failure.
+    int bytesWritten = EM_ASM_INT({
         try {
             var url = UTF8ToString($0);
             var memfsPath = UTF8ToString($1);
@@ -342,7 +350,7 @@ bool WebAssetsFetchSync(const char *memfsPath) {
             xhr.send();
             if (xhr.status !== 200) {
                 console.log("WebAssets: XHR failed " + url + " status=" + xhr.status);
-                return 0;
+                return -1;
             }
 
             // Convert binary string to Uint8Array
@@ -363,17 +371,24 @@ bool WebAssetsFetchSync(const char *memfsPath) {
 
             // Write file to MEMFS
             FS.writeFile(memfsPath, data);
-            return 1;
+            return text.length;
         } catch(e) {
             console.log("WebAssets: XHR exception: " + e);
-            return 0;
+            return -1;
         }
     }, url, memfsPath);
+
+    bool result = (bytesWritten >= 0);
+    if (gFrameTraceActive) {
+        gFetchSyncMsThisFrame += (float)(FrameTraceNowMs() - ftStart);
+        gFetchSyncCountThisFrame++;
+        if (result) gFetchSyncBytesThisFrame += (double)bytesWritten;
+    }
 
     if (!result) {
         fprintf(stderr, "WebAssets: FAILED on-demand fetch %s\n", rel);
     }
-    return result != 0;
+    return result;
 }
 
 bool WebAssetsAllDone() { return sPending == 0; }

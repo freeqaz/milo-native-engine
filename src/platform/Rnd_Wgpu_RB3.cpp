@@ -21,6 +21,7 @@
 #include "math/Vec.h"
 #include "os/Debug.h"
 #include "platform/NativeSettings.h"
+#include "platform/FrameTraceCounters.h"
 
 #include <algorithm>
 #include <cmath>
@@ -585,6 +586,11 @@ static wgpu::TextureView UploadRndTexIfNeeded(GpuDevice& gpu, RndTex* tex) {
         return e.view;
     }
 
+    // Frame-trace: a cache MISS pays the DXT->RGBA8 CPU decode + GPU WriteTexture
+    // burst (the first-draw stall class). Hits returned above and never reach
+    // here, so this charges only real upload work to gTexUploadMsThisFrame.
+    double ftStart = gFrameTraceActive ? FrameTraceNowMs() : 0.0;
+
     // Choose format: always RGBA8Unorm (CPU-decompress DXT). Simple, portable,
     // works on the null backend used in headless CI.
     wgpu::TextureFormat fmt = wgpu::TextureFormat::RGBA8Unorm;
@@ -657,6 +663,10 @@ static wgpu::TextureView UploadRndTexIfNeeded(GpuDevice& gpu, RndTex* tex) {
     e.lastPixels = pixels;
     e.fingerprint = fp;
     e.uploaded = true;
+    if (gFrameTraceActive) {
+        gTexUploadMsThisFrame += (float)(FrameTraceNowMs() - ftStart);
+        gTexUploadCountThisFrame++;
+    }
     return e.view;
 }
 
@@ -3215,6 +3225,9 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     }
   // --- GPU upload (the leaky part): only on cache miss / dirty / fingerprint
   // change. The unpacked verts above are always available to the shard guard. ---
+  // Frame-trace: the VB/IB CreateBuffer+WriteBuffer burst (first-draw mesh upload
+  // stall) charges to gMeshUploadMsThisFrame; cached reuse below is free.
+  double ftMeshStart = gFrameTraceActive ? FrameTraceNowMs() : 0.0;
   if (needUpload) {
     // Recompute a tight LOCAL bounding sphere from the just-unpacked positions
     // (once per geometry generation, gated on needUpload). Xbox-compressed venue
@@ -3290,6 +3303,10 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     meshEntry.fpFaces    = nf;
     meshEntry.fpSkinned  = skinned;
     meshEntry.uploaded   = true;
+    if (gFrameTraceActive) {
+        gMeshUploadMsThisFrame += (float)(FrameTraceNowMs() - ftMeshStart);
+        gMeshUploadCountThisFrame++;
+    }
   } // if (needUpload)
 
     // Cached buffers reused this frame (no GPU work when !needUpload).

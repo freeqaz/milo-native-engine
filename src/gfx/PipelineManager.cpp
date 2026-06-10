@@ -1,10 +1,36 @@
 #include "gfx/PipelineManager.h"
 #include "gfx/GpuDevice.h"
 #include "gfx/VertexFormats.h"
+#include "platform/FrameTraceCounters.h"  // pulls <chrono> + the g*MsThisFrame decls
 
 #include <cstdlib>
 #include <cstdio>
 #include <string>
+
+// ---------------------------------------------------------------------------
+// Frame-trace counters (FrameTraceCounters.h). WEAK fallback storage so the
+// engine links standalone (milo-engine-tests); the strong rb3 defs in
+// src/system/utl/Loader.cpp override these at the final rb3-native/rb3-web link.
+// Clang (native) and Emscripten/Clang both honor __attribute__((weak)).
+// ---------------------------------------------------------------------------
+#define FT_WEAK __attribute__((weak))
+FT_WEAK bool   gFrameTraceActive = false;
+FT_WEAK float  gFetchSyncMsThisFrame = 0.0f;
+FT_WEAK int    gFetchSyncCountThisFrame = 0;
+FT_WEAK double gFetchSyncBytesThisFrame = 0.0;
+FT_WEAK float  gDtaParseMsThisFrame = 0.0f;
+FT_WEAK float  gObjLoadMsThisFrame = 0.0f;
+FT_WEAK float  gObjLoadWorstMs = 0.0f;
+FT_WEAK char   gObjLoadWorstName[64] = {0};
+FT_WEAK float  gAudioPrimeMsThisFrame = 0.0f;
+FT_WEAK float  gTexUploadMsThisFrame = 0.0f;
+FT_WEAK int    gTexUploadCountThisFrame = 0;
+FT_WEAK float  gMeshUploadMsThisFrame = 0.0f;
+FT_WEAK int    gMeshUploadCountThisFrame = 0;
+FT_WEAK float  gPipelineCreateMsThisFrame = 0.0f;
+FT_WEAK int    gPipelineCreateCountThisFrame = 0;
+FT_WEAK float  gStreamReadMsThisFrame = 0.0f;
+#undef FT_WEAK
 
 // Embedded shader source — standard.wgsl is compiled into the binary
 static const char* kBuiltinShaderSource =
@@ -480,7 +506,14 @@ wgpu::RenderPipeline PipelineManager::GetPipeline(const PipelineKey& key) {
     auto it = mPipelineCache.find(key);
     if (it != mPipelineCache.end()) return it->second;
 
+    // Frame-trace: only the cache MISS pays the (expensive) shader/pipeline
+    // compile; the hit path above is free and stays uninstrumented.
+    double ftStart = gFrameTraceActive ? FrameTraceNowMs() : 0.0;
     wgpu::RenderPipeline pipeline = CreatePipeline(key);
+    if (gFrameTraceActive) {
+        gPipelineCreateMsThisFrame += (float)(FrameTraceNowMs() - ftStart);
+        gPipelineCreateCountThisFrame++;
+    }
     mPipelineCache[key] = pipeline;
 
     if (mPipelineCache.size() == 512) {
