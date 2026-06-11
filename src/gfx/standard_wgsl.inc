@@ -108,7 +108,7 @@ struct MaterialUniforms {
     hasNormDetailMap: f32,   // 1.0 when detail map bound
     useAlphaAsRGB: f32,      // 1.0 to use texture alpha as grayscale RGB (font textures)
     hasSpecularMap: f32,     // 1.0 when specular map is bound
-    _padMat1: f32,
+    unlit: f32,              // 1.0 = Wii mUseEnviron==0 && !mPreLit: register color only (no ambient/lights/vertex tint)
     _padMat2: f32,
     _padMat3: f32,
 };
@@ -788,7 +788,11 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
 
     let ambientLight = scene.ambientColor.rgb;
     var finalColor: vec3f;
-    if (isEnabled(material.prelit)) {
+    // prelit OR unlit ⇒ register color only (no ambient/lights). For unlit, the
+    // CPU side forces a white vertexTint (non-prelit static mesh), so baseColor.rgb
+    // is material.color × texture — the Wii GX_SRC_REG / mUseEnviron==0 look.
+    // Emissive/rim/reflection adds still apply below (night-city glow stays).
+    if (isEnabled(material.prelit) || isEnabled(material.unlit)) {
         finalColor = baseColor.rgb;
     } else {
         finalColor =

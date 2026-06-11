@@ -80,7 +80,8 @@ struct MaterialUniforms {
     float hasNormDetailMap;     // f32 — 1.0 when detail map bound
     float useAlphaAsRGB;        // f32 — 1.0 to use texture alpha as grayscale RGB (font textures)
     float hasSpecularMap;       // f32 — 1.0 when specular map bound
-    float _padMat[3];           // pad to 16-byte boundary
+    float unlit;                // f32 — 1.0 if material ignores environ (Wii RndMat::mUseEnviron==0 && !mPreLit): register color only, no ambient/lights/vertex tint
+    float _padMat[2];           // pad to 16-byte boundary
 };
 static_assert(sizeof(MaterialUniforms) == 192, "MaterialUniforms must match WGSL layout");
 

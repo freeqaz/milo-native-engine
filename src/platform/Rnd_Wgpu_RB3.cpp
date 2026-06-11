@@ -4420,6 +4420,28 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
         // W5 Phase 1: force-prelit text so font glyph quads pick up the
         // material colour directly without lighting attenuation.
         mu.prelit = (mat->mPreLit || isTextMeshHeur) ? 1.0f : 0.0f;
+        // Menu-lighting fix 1: honor RndMat::mUseEnviron. On Wii (WiiMat::Select),
+        // a material with use_environ=0 && pre_lit=0 outputs its register colour
+        // directly (GX_SRC_REG): NO ambient, NO lights, NO vertex colour — i.e.
+        // full-bright authored colour × texture. This is how the menu venue's
+        // neon / signs / posters / fog are authored (mostly ue=0,pl=0). The
+        // shader treats unlit like prelit but keeps the white vertexTint already
+        // forced for non-prelit static meshes (so no per-vertex AO tint leaks in).
+        // Text/UI keep going through the prelit path above (isTextMeshHeur), so
+        // they are unaffected by this flag.
+        mu.unlit = (!mat->mUseEnviron && !mat->mPreLit) ? 1.0f : 0.0f;
+        // Menu-lighting fix 2: material EMISSIVE on ALL cameras (was previously
+        // only enabled inside the game.cam track-light block, so the menu venue's
+        // self-lit windows / marquees / neon signage rendered with emissive=0).
+        // The emissive map view is already resolved + bound (binding 5,
+        // MakeMaterialBindGroup) for every draw; only the multiplier was zeroed.
+        // Gated on map presence (many mats have mult>0 but a null map). The
+        // game.cam-only boosts (gem_smasher_glow ×2, peakstate) still apply in
+        // the sTrackLight block below — this just sets the baseline everywhere.
+        {
+            RndTex* emTexGeneral = (RndTex*)mat->mEmissiveMap;
+            mu.emissiveMultiplier = emTexGeneral ? mat->mEmissiveMultiplier : 0.0f;
+        }
         // W5 Phase 1: route font atlas glyph alpha into RGB. Mirrors the
         // shader's text branch (standard_wgsl.inc, useAlphaAsRGB == 1.0):
         //   baseColor.rgb *= diffuseSample.a;
@@ -4582,8 +4604,9 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
                 // the hue shifts toward retail and the gems stay the focal point.
                 mu.color[0] *= 0.53f; mu.color[1] *= 0.64f; mu.color[2] *= 0.92f;
             }
-            RndTex* emTex = (RndTex*)mat->mEmissiveMap;
-            mu.emissiveMultiplier = emTex ? mat->mEmissiveMultiplier : 0.0f;
+            // mu.emissiveMultiplier is now set unconditionally in the general
+            // material setup above (menu-lighting fix 2); the game.cam-only
+            // boosts below multiply that baseline.
             // Brighter "now bar": the additive strike-line glow (gem_smasher_glow,
             // square_smasher_bright_*.tex, ships emissive mul 0.90) is dimmer/narrower
             // than retail's luminous now bar — boost its emissive contribution.
