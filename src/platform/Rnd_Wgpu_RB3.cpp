@@ -24,6 +24,7 @@
 #include "platform/FrameTraceCounters.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -3339,6 +3340,16 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     // DIAG: skip-skinned / skip-static draw bisection.
     if (skinned && getenv("RB3_SKIP_SKINNED")) return;
     if (!skinned && getenv("RB3_SKIP_STATIC")) return;
+    // DIAG: RB3_ISOLATE_MESH=<substr> — draw ONLY meshes whose name contains
+    // <substr>, so every pixel in a capture is attributable to that mesh
+    // (slab/artifact attribution that survives camera-loop misalignment).
+    {
+        static const char* sIso = getenv("RB3_ISOLATE_MESH");
+        if (sIso && sIso[0]) {
+            const char* nm = mesh->Name() ? mesh->Name() : "";
+            if (!std::strstr(nm, sIso)) return;
+        }
+    }
 
     // --- Per-mesh GPU cache: decide whether VB/IB need (re)uploading ---
     // Reuse the cached vertex/index buffers unless the geometry actually changed.
@@ -3482,6 +3493,145 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     // skipped unpack still feeds the guard identical data.
     const std::vector<GpuVertexSkinned>& skinnedView =
         skipUnpack ? meshEntry.cachedSkinnedVerts : gpuVertsSkinned;
+
+    // MESH_DUMP=<substr>: one-shot decoded-geometry diagnostic for any mesh whose
+    // name contains <substr>. Dumps vert/face counts, index range + OOB/degenerate
+    // face counts, position bounds + NaN/Inf census, and the top triangles by
+    // local-space area (with their indices + decoded positions). Built to diagnose
+    // the neon_arcade "green slab" class of decode bug; reads the freshly-unpacked
+    // verts, so only fires on a cache miss (the first draw always is).
+    static std::unordered_map<std::string, std::array<float,6>> sMdBounds; // name -> local bbox
+    static const char* sMeshDumpEnv = getenv("MESH_DUMP");
+    {
+        const char* md = sMeshDumpEnv;
+        const char* mdn = mesh->Name() ? mesh->Name() : "?";
+        if (md && md[0] && std::strstr(mdn, md)) {
+            // Throttled screen-footprint line (every draw is too chatty): project
+            // the cached local bbox corners through WorldXfm + the current cam,
+            // print the NDC rectangle the mesh covers. Catches "mesh fills the
+            // frame in shot N" with the exact camera pose.
+            auto bit = sMdBounds.find(mdn);
+            if (bit != sMdBounds.end() && RndCam::sCurrent) {
+                static std::unordered_map<std::string, int> sMdTick;
+                if ((sMdTick[mdn]++ % 7) == 0) {
+                    RndCam* cur = RndCam::sCurrent;
+                    const Transform& cw = cur->WorldXfm();
+                    const Transform& mw = mesh->WorldXfm();
+                    const std::array<float,6>& bb = bit->second;
+                    float yfov = cur->YFov() > 0.0001f ? cur->YFov() : 0.9f;
+                    float aspect = (float)mGpu.WindowWidth() / (float)mGpu.WindowHeight();
+                    float th = tanf(yfov * 0.5f);
+                    float nxMin = 1e9f, nxMax = -1e9f, nyMin = 1e9f, nyMax = -1e9f;
+                    float dMin = 1e9f, dMax = -1e9f; int behind = 0;
+                    for (int ci = 0; ci < 8; ci++) {
+                        float lx = (ci & 1) ? bb[3] : bb[0];
+                        float ly = (ci & 2) ? bb[4] : bb[1];
+                        float lz = (ci & 4) ? bb[5] : bb[2];
+                        // world = M * local + v
+                        float wxp = mw.m.x.x*lx + mw.m.y.x*ly + mw.m.z.x*lz + mw.v.x;
+                        float wyp = mw.m.x.y*lx + mw.m.y.y*ly + mw.m.z.y*lz + mw.v.y;
+                        float wzp = mw.m.x.z*lx + mw.m.y.z*ly + mw.m.z.z*lz + mw.v.z;
+                        float dx = wxp - cw.v.x, dy = wyp - cw.v.y, dz = wzp - cw.v.z;
+                        float rx = cw.m.x.x*dx + cw.m.x.y*dy + cw.m.x.z*dz;
+                        float fy = cw.m.y.x*dx + cw.m.y.y*dy + cw.m.y.z*dz;
+                        float uz = cw.m.z.x*dx + cw.m.z.y*dy + cw.m.z.z*dz;
+                        if (fy < dMin) dMin = fy; if (fy > dMax) dMax = fy;
+                        if (fy <= 0.001f) { behind++; continue; }
+                        float nx = (rx/(th*aspect))/fy, ny = (uz/th)/fy;
+                        if (nx < nxMin) nxMin = nx; if (nx > nxMax) nxMax = nx;
+                        if (ny < nyMin) nyMin = ny; if (ny > nyMax) nyMax = ny;
+                    }
+                    fprintf(stderr,
+                        "[MESH_FOOT] f=%d mesh='%s'@%p owner=%p cam='%s' camPos(%.1f,%.1f,%.1f) depth[%.1f,%.1f] "
+                        "behind=%d ndcX[%.2f,%.2f] ndcY[%.2f,%.2f] rtt='%s' lastSceneCam='%s' sceneOff=%u\n",
+                        mFrameCount, mdn, (void*)mesh, (void*)owner, cur->Name() ? cur->Name() : "?",
+                        cw.v.x, cw.v.y, cw.v.z, dMin, dMax, behind,
+                        nxMin, nxMax, nyMin, nyMax,
+                        mRtActiveTex ? (mRtActiveTex->Name() ? mRtActiveTex->Name() : "?") : "none",
+                        (mLastSceneCam && mLastSceneCam->Name()) ? mLastSceneCam->Name() : "?",
+                        mSceneOffset);
+                }
+            }
+        }
+    }
+    if (!skipUnpack) {
+        const char* md = sMeshDumpEnv;
+        const char* mdn = mesh->Name() ? mesh->Name() : "?";
+        if (md && md[0] && std::strstr(mdn, md)) {
+            static std::unordered_map<std::string, int> sMdSeen;
+            if (sMdSeen[mdn]++ == 0) {
+                const float* posOf;
+                auto posAt = [&](int i) -> const float* {
+                    return skinned ? skinnedView[i].pos : gpuVerts[i].pos;
+                };
+                (void)posOf;
+                int nanCt = 0, infCt = 0;
+                float mn3[3] = {1e30f,1e30f,1e30f}, mx3[3] = {-1e30f,-1e30f,-1e30f};
+                for (int i = 0; i < nv; i++) {
+                    const float* p = posAt(i);
+                    for (int k = 0; k < 3; k++) {
+                        if (std::isnan(p[k])) nanCt++;
+                        else if (std::isinf(p[k])) infCt++;
+                        else { if (p[k] < mn3[k]) mn3[k] = p[k]; if (p[k] > mx3[k]) mx3[k] = p[k]; }
+                    }
+                }
+                int oobFaces = 0, degenFaces = 0; unsigned maxIdx = 0, minIdx = 0xFFFFFFFFu;
+                for (int i = 0; i < nf; i++) {
+                    unsigned a = faces[i].v1, b = faces[i].v2, c = faces[i].v3;
+                    if (a > maxIdx) maxIdx = a; if (b > maxIdx) maxIdx = b; if (c > maxIdx) maxIdx = c;
+                    if (a < minIdx) minIdx = a; if (b < minIdx) minIdx = b; if (c < minIdx) minIdx = c;
+                    if (a >= (unsigned)nv || b >= (unsigned)nv || c >= (unsigned)nv) oobFaces++;
+                    if (a == b || b == c || a == c) degenFaces++;
+                }
+                // top-8 triangles by local-space area
+                struct TriA { float area; int f; };
+                TriA top[8]; int topN = 0; double totalArea = 0;
+                for (int i = 0; i < nf; i++) {
+                    unsigned a = faces[i].v1, b = faces[i].v2, c = faces[i].v3;
+                    if (a >= (unsigned)nv || b >= (unsigned)nv || c >= (unsigned)nv) continue;
+                    const float *pa = posAt((int)a), *pb = posAt((int)b), *pc = posAt((int)c);
+                    float u[3] = {pb[0]-pa[0], pb[1]-pa[1], pb[2]-pa[2]};
+                    float w[3] = {pc[0]-pa[0], pc[1]-pa[1], pc[2]-pa[2]};
+                    float cx = u[1]*w[2]-u[2]*w[1], cy = u[2]*w[0]-u[0]*w[2], cz = u[0]*w[1]-u[1]*w[0];
+                    float area = 0.5f * std::sqrt(cx*cx + cy*cy + cz*cz);
+                    if (std::isnan(area) || std::isinf(area)) continue;
+                    totalArea += area;
+                    if (topN < 8) { top[topN].area = area; top[topN].f = i; topN++; }
+                    else {
+                        int mi = 0;
+                        for (int k = 1; k < 8; k++) if (top[k].area < top[mi].area) mi = k;
+                        if (area > top[mi].area) { top[mi].area = area; top[mi].f = i; }
+                    }
+                }
+                fprintf(stderr,
+                    "[MESH_DUMP] mesh='%s' owner='%s' skinned=%d nv=%d nf=%d src=%s\n"
+                    "[MESH_DUMP]   idx min=%u max=%u oobFaces=%d degenFaces=%d nan=%d inf=%d\n"
+                    "[MESH_DUMP]   posBounds min(%.2f,%.2f,%.2f) max(%.2f,%.2f,%.2f) totalArea=%.1f\n",
+                    mdn, owner->Name() ? owner->Name() : "?", (int)skinned, nv, nf,
+                    (owner->mVerts.size() > 0) ? "mVerts" : "compressed",
+                    minIdx, maxIdx, oobFaces, degenFaces, nanCt, infCt,
+                    mn3[0],mn3[1],mn3[2], mx3[0],mx3[1],mx3[2], totalArea);
+                for (int k = 0; k < topN; k++) {
+                    // selection-sort print order: largest first
+                    int bi = k;
+                    for (int j = k+1; j < topN; j++) if (top[j].area > top[bi].area) bi = j;
+                    TriA t = top[bi]; top[bi] = top[k]; top[k] = t;
+                    unsigned a = faces[top[k].f].v1, b = faces[top[k].f].v2, c = faces[top[k].f].v3;
+                    const float *pa = posAt((int)a), *pb = posAt((int)b), *pc = posAt((int)c);
+                    fprintf(stderr,
+                        "[MESH_DUMP]   tri f=%d area=%.1f idx(%u,%u,%u) A(%.2f,%.2f,%.2f) B(%.2f,%.2f,%.2f) C(%.2f,%.2f,%.2f)\n",
+                        top[k].f, top[k].area, a, b, c,
+                        pa[0],pa[1],pa[2], pb[0],pb[1],pb[2], pc[0],pc[1],pc[2]);
+                }
+                const Transform& mdwx = mesh->WorldXfm();
+                fprintf(stderr,
+                    "[MESH_DUMP]   worldXfm x(%.2f,%.2f,%.2f) y(%.2f,%.2f,%.2f) z(%.2f,%.2f,%.2f) v(%.1f,%.1f,%.1f)\n",
+                    mdwx.m.x.x,mdwx.m.x.y,mdwx.m.x.z, mdwx.m.y.x,mdwx.m.y.y,mdwx.m.y.z,
+                    mdwx.m.z.x,mdwx.m.z.y,mdwx.m.z.z, mdwx.v.x,mdwx.v.y,mdwx.v.z);
+                sMdBounds[mdn] = {mn3[0],mn3[1],mn3[2],mx3[0],mx3[1],mx3[2]};
+            }
+        }
+    }
 
     // GEM_VTX: one-shot dump of the gem prism's unpacked local-space verts +
     // bounds + world-projected extent, to confirm the geometry is non-degenerate
@@ -5197,6 +5347,40 @@ void BandRnd::DrawParticles(RndParticleSys* sys) {
 
     int numParticles = (int)sVerts.size() / 4;
     if (numParticles == 0) return;
+
+    // PART_PROBE: per-system diagnostic (throttled). Dumps the system + material
+    // identity, blend, particle count, and the first few particles' color/size/
+    // world pos — for attributing full-screen billboard washes (green-slab class)
+    // to their emitting system.
+    static const bool sPartProbe = getenv("PART_PROBE") != nullptr;
+    if (sPartProbe) {
+        static std::unordered_map<std::string, int> sPP;
+        const char* sn = sys->Name() ? sys->Name() : "?";
+        if ((sPP[sn]++ % 120) == 0) {
+            RndTex* dt = mat->GetDiffuseTex();
+            const Hmx::Color& mc = mat->GetColor();
+            fprintf(stderr,
+                "[PART_PROBE] f=%d sys='%s' mat='%s' tex='%s' matColor(%.2f,%.2f,%.2f,%.2f) "
+                "blend=%d n=%d cam='%s' calcFrame=%.1f frameDrive=%d\n",
+                mFrameCount, sn, mat->Name() ? mat->Name() : "?",
+                dt ? (dt->Name() ? dt->Name() : "?") : "none",
+                mc.red, mc.green, mc.blue, mc.alpha,
+                (int)mat->GetBlend(), numParticles,
+                (cam->Name() ? cam->Name() : "?"),
+                sys->CalcFrame(), -1);
+            int shown = 0;
+            for (RndParticle* p = head; p && shown < 3; p = p->Next(), shown++) {
+                Vector3 wp; Multiply(p->Pos3(), relXfm, wp);
+                fprintf(stderr,
+                    "[PART_PROBE]   p%d col(%.2f,%.2f,%.2f,%.2f) colVel(%.2f,%.2f,%.2f,%.2f) vel(%.2f,%.2f,%.2f) "
+                    "size=%.2f sizeVel=%.3f pos(%.1f,%.1f,%.1f) birth=%.1f death=%.1f\n",
+                    shown, p->col.red, p->col.green, p->col.blue, p->col.alpha,
+                    p->colVel.red, p->colVel.green, p->colVel.blue, p->colVel.alpha,
+                    p->vel.x, p->vel.y, p->vel.z,
+                    p->size, p->sizeVel, wp.x, wp.y, wp.z, p->birthFrame, p->deathFrame);
+            }
+        }
+    }
 
     EnsureParticlePipeline();
 
