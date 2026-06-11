@@ -1033,6 +1033,7 @@ void BandRnd::Shutdown() {
     mHaloBlitPL = nullptr;
     mHaloBlitBGL = nullptr;
     mHaloBlitShader = nullptr;
+    mHaloBlendBuf = nullptr;
     mHaloView = nullptr;
     mHaloTex = nullptr;
     mHaloWidth = 0;
@@ -1993,18 +1994,32 @@ void BandRnd::EnsureHaloTarget(int w, int h) {
     mHaloHeight = h;
 }
 
-// A minimal WGSL module: vs_fullscreen (fullscreen triangle, no vbuf) + fs_blit
-// (plain textureSample). Builds ONLY the ADDITIVE pipeline (color & alpha
-// One/One) — the premultiplied-OVER pipeline of the rejected Design A is dropped
-// (we additively lay ONLY the halo over the untouched framebuffer).
+// A minimal WGSL module: vs_fullscreen (fullscreen triangle, no vbuf) + fs_blit.
+// OUTER-HALO-ONLY composite: srcTex@0 is the BLOOMED halo (blurred, thresholded);
+// rawTex@2 is the pre-blur source footprint (mHaloView). fs_blit emits
+//   max(bloom - raw, 0) * blend
+// so inside the gem body (raw bright) the contribution cancels to ~0 and the gem
+// keeps its own saturated base-pass color, while the spread glow around it
+// (raw==0, bloom>0) survives and is ADDITIVELY laid over the untouched framebuffer.
+// Builds ONLY the ADDITIVE pipeline (color & alpha One/One) — the premultiplied-OVER
+// pipeline of the rejected Design A is dropped.
 static const char* kRB3HaloBlitShaderSource = R"WGSL(
 struct VOut {
     @builtin(position) pos: vec4f,
     @location(0) uv: vec2f,
 };
 
+struct BlendUB {
+    blend: f32,
+    pad0: f32,
+    pad1: f32,
+    pad2: f32,
+};
+
 @group(0) @binding(0) var srcTex: texture_2d<f32>;
 @group(0) @binding(1) var srcSampler: sampler;
+@group(0) @binding(2) var rawTex: texture_2d<f32>;
+@group(0) @binding(3) var<uniform> blendUB: BlendUB;
 
 @vertex fn vs_fullscreen(@builtin(vertex_index) idx: u32) -> VOut {
     var out: VOut;
@@ -2016,7 +2031,13 @@ struct VOut {
 }
 
 @fragment fn fs_blit(in: VOut) -> @location(0) vec4f {
-    return textureSample(srcTex, srcSampler, in.uv);
+    // srcTex = bloomed (blurred) halo; rawTex = un-blurred source footprint.
+    // Subtract the source's own footprint so only the OUTER halo is added; the
+    // gem body cancels to ~0 and keeps its saturated base-pass color.
+    let bloomCol = textureSample(srcTex, srcSampler, in.uv).rgb;
+    let rawCol = textureSample(rawTex, srcSampler, in.uv).rgb;
+    let halo = max(bloomCol - rawCol, vec3f(0.0, 0.0, 0.0)) * blendUB.blend;
+    return vec4f(halo, 1.0);
 }
 )WGSL";
 
@@ -2030,8 +2051,9 @@ void BandRnd::EnsureHaloBlitPipeline() {
     smDesc.nextInChain = &wgsl;
     mHaloBlitShader = dev.CreateShaderModule(&smDesc);
 
-    // group 0: srcTex@0 (Float, 2D), sampler@1 (Filtering)
-    wgpu::BindGroupLayoutEntry entries[2] = {};
+    // group 0: srcTex@0 (bloomed halo, Float 2D), sampler@1 (Filtering),
+    // rawTex@2 (pre-blur source footprint, Float 2D), blendUB@3 (uniform).
+    wgpu::BindGroupLayoutEntry entries[4] = {};
     entries[0].binding = 0;
     entries[0].visibility = wgpu::ShaderStage::Fragment;
     entries[0].texture.sampleType = wgpu::TextureSampleType::Float;
@@ -2039,11 +2061,26 @@ void BandRnd::EnsureHaloBlitPipeline() {
     entries[1].binding = 1;
     entries[1].visibility = wgpu::ShaderStage::Fragment;
     entries[1].sampler.type = wgpu::SamplerBindingType::Filtering;
+    entries[2].binding = 2;
+    entries[2].visibility = wgpu::ShaderStage::Fragment;
+    entries[2].texture.sampleType = wgpu::TextureSampleType::Float;
+    entries[2].texture.viewDimension = wgpu::TextureViewDimension::e2D;
+    entries[3].binding = 3;
+    entries[3].visibility = wgpu::ShaderStage::Fragment;
+    entries[3].buffer.type = wgpu::BufferBindingType::Uniform;
+    entries[3].buffer.minBindingSize = 16;  // BlendUB: blend + 3 pad floats
 
     wgpu::BindGroupLayoutDescriptor bglDesc{};
-    bglDesc.entryCount = 2;
+    bglDesc.entryCount = 4;
     bglDesc.entries = entries;
     mHaloBlitBGL = dev.CreateBindGroupLayout(&bglDesc);
+
+    // Blend uniform buffer (16B; blend float + 3 pad). Updated per composite via
+    // Queue.WriteBuffer so RB3_HIGHWAY_BLOOM_BLEND stays live-tunable.
+    wgpu::BufferDescriptor blendBufDesc{};
+    blendBufDesc.size = 16;
+    blendBufDesc.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
+    mHaloBlendBuf = dev.CreateBuffer(&blendBufDesc);
 
     wgpu::PipelineLayoutDescriptor plDesc{};
     plDesc.bindGroupLayoutCount = 1;
@@ -2172,11 +2209,17 @@ void BandRnd::CompositeHaloBloom() {
         if (mHaloBloom.HasOutput()) haloView = mHaloBloom.OutputView();
     }
 
-    // (d) ADDITIVE composite ONLY: one fullscreen pass on mFrameView
-    //     (LoadOp::Load → keep the base frame), no depth. Add ONLY the blurred
-    //     halo. NO over-draw, NO blit of mHaloView itself. With blend==0 the
-    //     bloom output is black → this is a no-op → visually identical to OFF.
+    // (d) OUTER-HALO-ONLY additive composite: one fullscreen pass on mFrameView
+    //     (LoadOp::Load → keep the base frame), no depth. The blit shader emits
+    //     max(bloom - raw, 0) * blend, sampling BOTH the bloomed halo (haloView)
+    //     and the un-blurred source footprint (mHaloView) — so the gem BODY
+    //     cancels to ~0 (keeps its saturated base-pass color) and only the OUTER
+    //     glow is added. With blend==0 we already returned above (no-op == OFF).
     {
+        // blend → blendUB@3 (live-tunable via RB3_HIGHWAY_BLOOM_BLEND).
+        float blendUB[4] = { blend, 0.0f, 0.0f, 0.0f };
+        mGpu.Queue().WriteBuffer(mHaloBlendBuf, 0, blendUB, sizeof(blendUB));
+
         wgpu::RenderPassColorAttachment colorAtt{};
         colorAtt.view = mFrameView;
         colorAtt.loadOp = wgpu::LoadOp::Load;
@@ -2189,11 +2232,13 @@ void BandRnd::CompositeHaloBloom() {
 
         wgpu::RenderPassEncoder pass = mEncoder.BeginRenderPass(&rp);
         if (haloView) {
-            wgpu::BindGroupEntry bge[2] = {};
-            bge[0].binding = 0; bge[0].textureView = haloView;
+            wgpu::BindGroupEntry bge[4] = {};
+            bge[0].binding = 0; bge[0].textureView = haloView;     // bloomed halo
             bge[1].binding = 1; bge[1].sampler = mSampler;
+            bge[2].binding = 2; bge[2].textureView = mHaloView;    // raw source footprint
+            bge[3].binding = 3; bge[3].buffer = mHaloBlendBuf; bge[3].size = 16;
             wgpu::BindGroupDescriptor bgd{};
-            bgd.layout = mHaloBlitBGL; bgd.entryCount = 2; bgd.entries = bge;
+            bgd.layout = mHaloBlitBGL; bgd.entryCount = 4; bgd.entries = bge;
             wgpu::BindGroup bg = mGpu.Device().CreateBindGroup(&bgd);
             pass.SetPipeline(mHaloAddPipeline);
             pass.SetBindGroup(0, bg, 0, nullptr);

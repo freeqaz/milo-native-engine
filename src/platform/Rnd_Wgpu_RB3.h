@@ -391,13 +391,19 @@ public:
     int mHaloHeight = 0;
     BloomPass mHaloBloom;
     // Additive fullscreen-blit infra (its own minimal WGSL module: vs_fullscreen +
-    // fs_blit textureSample). Group 0 = srcTex@0, sampler@1. ONLY the additive
-    // pipeline is built (color One/One) — the rejected Design A's premultiplied-OVER
-    // pipeline is intentionally dropped (additive halo only; base track untouched).
+    // fs_blit). OUTER-HALO-ONLY composite: group 0 = srcTex@0 (bloomed halo),
+    // sampler@1, rawTex@2 (mHaloView pre-blur source footprint), blendUB@3. The
+    // shader emits max(bloom - raw, 0) * blend so the gem BODY (where raw is
+    // bright) cancels to ~0 and keeps its own saturated base-pass color, while
+    // the outer glow (raw==0, bloom>0) is additively laid over the framebuffer.
+    // ONLY the additive pipeline is built (color One/One) — the rejected Design A's
+    // premultiplied-OVER pipeline is intentionally dropped (additive halo only;
+    // base track untouched).
     wgpu::ShaderModule mHaloBlitShader;
     wgpu::BindGroupLayout mHaloBlitBGL;
     wgpu::PipelineLayout mHaloBlitPL;
     wgpu::RenderPipeline mHaloAddPipeline;       // additive (One/One)
+    wgpu::Buffer mHaloBlendBuf;                  // blendUB@3 (blend float, 16B)
     bool mHaloBlitReady = false;
     // Per-frame replay list. CAPTURES the LIVE mSceneBindGroup HANDLE per draw (NOT
     // a uint32_t offset — a dynamicOffsetCount mismatch on replay would discard the
