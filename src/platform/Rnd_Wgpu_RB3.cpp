@@ -386,6 +386,12 @@ struct RB3MeshEntry {
     int          fpVerts = -1;
     int          fpFaces = -1;
     bool         fpSkinned = false;
+    // Owner geometry-generation last uploaded. The owner's Sync()/OnSync bumps a
+    // per-owner counter (sGeomSyncGen); when this stamp lags the owner's live gen
+    // the geometry changed without a count change (the geom-owner-proxy case, e.g.
+    // an approaching sustain Tail whose verts move but section count saturated), so
+    // the buffer must re-upload. 0 = never stamped (forces an upload on first sight).
+    uint32_t     fpOwnerGen = 0;
 
     // --- L1 vertex-unpack cache (RB3_UNPACK_CACHE) ---
     // The per-draw CPU vertex unpack (Be*/Half2Float on -O0 wasm) was the dominant
@@ -445,6 +451,33 @@ struct RB3MeshEntry {
 };
 static std::unordered_map<RndMesh*, RB3MeshEntry> sMeshGpu;
 
+// Owner geometry-generation counter — fixes the geom-owner-proxy invalidation gap.
+//
+// A drawn mesh's cache entry is keyed by the DRAWN mesh pointer (sMeshGpu[mesh]),
+// but its geometry comes from owner = mesh->GeomOwner() (SetGeomOwner). When the
+// owner's verts mutate, the owner fires RndMesh::Sync -> OnSync(owner), which sets
+// `uploaded=false` only on the OWNER's entry — but the owner is NEVER drawn (it has
+// no entry, or an unrelated one), so the DRAWN proxies never see the dirty signal.
+// The count-based fingerprint (fpVerts/fpFaces) only catches count changes, so a
+// proxy whose owner rewrites vert POSITIONS without changing counts keeps drawing a
+// stale GPU buffer. This is the sustain-tail bug: an approaching Tail's owner verts
+// move every frame but the section count saturates at 2, so the proxies freeze at
+// the first post-saturation upload (an invisible sliver); only a held tail (count
+// changes per section boundary) re-uploads.
+//
+// Fix: a per-owner generation counter, bumped in OnSync and stamped into the proxy
+// entry. A proxy whose stamped fpOwnerGen != the owner's live gen re-uploads, even
+// when counts are unchanged. O(1) — one hash lookup per draw, only for meshes whose
+// owner != self (self-owned meshes already invalidate correctly via their own
+// OnSync entry). A missing owner entry reads as gen 0; CleanupGpuMesh erases both
+// maps, and a recycled owner pointer always re-Syncs before its first draw (gen>=1
+// != stamped 0 -> forced re-upload), so pointer reuse after free is safe.
+static std::unordered_map<RndMesh*, uint32_t> sGeomSyncGen;
+static inline uint32_t LookupGeomSyncGen(RndMesh* owner) {
+    auto it = sGeomSyncGen.find(owner);
+    return (it != sGeomSyncGen.end()) ? it->second : 0u;
+}
+
 // Per-frame GPU-resource CREATE counter — proves the leak is fixed. Incremented
 // at every CreateBuffer in DrawMesh's upload path (and the per-mesh bind-group
 // builds), reset in BeginFrame, logged in EndFrame under RENDER_DBG. At steady
@@ -466,6 +499,10 @@ static uint64_t sFrameSeq = 0;
 // instead of leaking the cache slot for the lifetime of the process.
 void CleanupGpuMesh(RndMesh* mesh) {
     sMeshGpu.erase(mesh);
+    // A freed mesh may have been someone's geometry owner; drop its generation
+    // counter too so the map doesn't grow unbounded. A recycled pointer re-Syncs
+    // before its next draw (gen>=1 != any stamped 0), so this is safe.
+    sGeomSyncGen.erase(mesh);
 }
 
 // Drop a texture's cached GPU resources (twin of CleanupGpuMesh for sTexGpu).
@@ -3283,10 +3320,19 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     // re-upload every frame and the cache would be a no-op for most scene geom.
     int fpVertsKey = (nv > 0) ? nv : (int)owner->mNumCompressedVerts;
     RB3MeshEntry& meshEntry = sMeshGpu[mesh];
+    // Owner-generation re-upload: a geom-owner proxy (owner != mesh) shares geometry
+    // with a never-drawn owner. The owner fires OnSync(owner) when its verts mutate,
+    // which can't touch THIS proxy's `uploaded` flag, and the count fingerprint can't
+    // see same-count position changes (the saturated sustain-tail case). Compare the
+    // proxy's stamped owner-gen against the owner's live gen so those changes force a
+    // re-upload. Self-owned meshes (owner == mesh) already invalidate via their own
+    // OnSync entry, so we skip the lookup for them (no behavior change there).
+    bool ownerGenStale = (owner != mesh) &&
+                         (meshEntry.fpOwnerGen != LookupGeomSyncGen(owner));
     bool needUpload = sMeshCacheOff || !meshEntry.uploaded ||
                       meshEntry.ownerKey != (const void*)owner ||
                       meshEntry.fpVerts != fpVertsKey || meshEntry.fpFaces != nf ||
-                      meshEntry.fpSkinned != skinned;
+                      meshEntry.fpSkinned != skinned || ownerGenStale;
 
     // SKIN_PROBE: ground-truth diagnostic for character skinning. Logs, once per
     // unique mesh name, whether the INSTANCE vs the GEOM-OWNER carries the bones,
@@ -3510,6 +3556,7 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     meshEntry.fpVerts    = fpVertsKey;
     meshEntry.fpFaces    = nf;
     meshEntry.fpSkinned  = skinned;
+    meshEntry.fpOwnerGen = LookupGeomSyncGen(owner);
     meshEntry.uploaded   = true;
     if (gFrameTraceActive) {
         gMeshUploadMsThisFrame += (float)(FrameTraceNowMs() - ftMeshStart);
@@ -4681,10 +4728,16 @@ static bool RB3EnsureMeshGpu(BandRnd& rnd, RndMesh* mesh) {
     int fpVertsKey = (nvSrc > 0) ? nvSrc : (int)owner->mNumCompressedVerts;
 
     RB3MeshEntry& meshEntry = sMeshGpu[mesh];
+    // Mirror DrawMesh's owner-generation check so a warmed proxy whose owner verts
+    // changed (same count) is treated as a cache miss here too — and, critically, so
+    // the warm pass stamps fpOwnerGen identically, or the first real draw would see
+    // a stale stamp and re-upload once (harmless but defeats the warm win).
+    bool ownerGenStale = (owner != mesh) &&
+                         (meshEntry.fpOwnerGen != LookupGeomSyncGen(owner));
     bool needUpload = !meshEntry.uploaded ||
                       meshEntry.ownerKey != (const void*)owner ||
                       meshEntry.fpVerts != fpVertsKey || meshEntry.fpFaces != nf ||
-                      meshEntry.fpSkinned != skinned;
+                      meshEntry.fpSkinned != skinned || ownerGenStale;
     // Already resident with the warm L1 caches in place -> nothing to do. (For
     // skinned meshes, only consider it warm once the bind-vert cache is populated,
     // so the warmed first-draw shard guard has data.)
@@ -4761,6 +4814,7 @@ static bool RB3EnsureMeshGpu(BandRnd& rnd, RndMesh* mesh) {
     meshEntry.fpVerts    = fpVertsKey;
     meshEntry.fpFaces    = nf;
     meshEntry.fpSkinned  = skinned;
+    meshEntry.fpOwnerGen = LookupGeomSyncGen(owner);
     meshEntry.uploaded   = true;
     return true;
 }
@@ -4818,6 +4872,16 @@ void RndMesh::OnSync(int) {
     // recreated if vert/face counts changed) — no leak.
     auto it = sMeshGpu.find(this);
     if (it != sMeshGpu.end()) it->second.uploaded = false;
+    // Bump this mesh's geometry generation. When `this` is a GEOMETRY OWNER for one
+    // or more drawn proxies (SetGeomOwner), those proxies are keyed by their OWN
+    // pointer in sMeshGpu and never see the `uploaded=false` above. Their DrawMesh
+    // compares their stamped fpOwnerGen against this live gen and re-uploads when it
+    // lags — this is what makes an approaching sustain Tail's tube (owner verts move
+    // every frame, section count saturated -> count fingerprint unchanged) render
+    // before it is held. Self-owned meshes also bump it, harmlessly: their own entry
+    // already invalidated via `uploaded=false`, and DrawMesh skips the owner-gen
+    // check when owner == mesh, so the stamp simply tracks along.
+    ++sGeomSyncGen[this];
 }
 
 // RndTex render-target entry points.
