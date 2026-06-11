@@ -4419,6 +4419,189 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
                 }
             }
         }
+        // === C8 rotation-basis deep-dive probe (scout-c8, render-polish 2026-06-11) ===
+        // C8_PROBE=<substr|*> selects skinned meshes by name; samples every
+        // C8_EVERY frames (default 45) per mesh. Discriminator outputs:
+        //   [C8_MESH]  header: dir, geomOwner, src format, rebound flags.
+        //   [C8_SLOT]  per bone slot: name/ptr/dir, world.v, |dWorld| since last
+        //              sample (MOVING vs STATIC), skin.v, bindPos =
+        //              inverse(BoneOffsetAt(b)).v, skinDet, world rot row0.
+        //   [C8_VERT]  bone-locality audit: per sampled vert, dist(bind vert pos,
+        //              bindPos[dominant bone]). Authored data is bone-local
+        //              (small); large = vert indexes the WRONG bone.
+        //   [C8_SMEAR] worst blended-world outlier vert vs blended centroid, with
+        //              its 4 (idx,weight) pairs + each slot's skin.v.
+        {
+            static const char* sC8 = getenv("C8_PROBE");
+            static int sC8Every = -1;
+            if (sC8Every < 0) {
+                const char* e = getenv("C8_EVERY");
+                sC8Every = (e && atoi(e) > 0) ? atoi(e) : 45;
+            }
+            const char* c8mn = mesh->Name() ? mesh->Name() : "";
+            // C8_PROBE accepts a comma-separated substring list (or '*').
+            bool c8match = false;
+            if (sC8 && sC8[0]) {
+                if (sC8[0] == '*') c8match = true;
+                else {
+                    const char* p = sC8;
+                    while (*p && !c8match) {
+                        const char* q = strchr(p, ',');
+                        std::string tok(p, q ? (size_t)(q - p) : strlen(p));
+                        if (!tok.empty() && strstr(c8mn, tok.c_str())) c8match = true;
+                        p = q ? q + 1 : p + strlen(p);
+                    }
+                }
+            }
+            if (c8match && numBones >= 2 && !skinnedView.empty()) {
+                static std::unordered_map<const void*, int> sCnt;
+                static std::unordered_map<const void*, std::vector<float> > sLastW;
+                int tick = sCnt[(const void*)mesh]++;
+                if (tick % sC8Every == 0) {
+                    int sampleNo = tick / sC8Every;
+                    // bind world origin per slot = inverse(offset).v
+                    std::vector<float> bindP((size_t)numBones * 3, 0.f);
+                    for (int b = 0; b < numBones; b++) {
+                        Transform inv; Invert(owner->BoneOffsetAt(b), inv);
+                        bindP[b*3+0] = inv.v.x; bindP[b*3+1] = inv.v.y; bindP[b*3+2] = inv.v.z;
+                    }
+                    std::vector<float>& lastW = sLastW[(const void*)mesh];
+                    bool haveLast = (int)lastW.size() == numBones * 3;
+                    if (!haveLast) lastW.resize((size_t)numBones * 3, 0.f);
+                    RndMesh* go2 = mesh->GeomOwner();
+                    Hmx::Object* mdirObj = mesh->Dir();
+                    fprintf(stderr,
+                        "[C8_MESH] f=%d s=%d mesh='%s' dir='%s' owner='%s' nb=%d nv=%d "
+                        "src=%s rebound=%d/%d\n",
+                        mFrameCount, sampleNo, c8mn,
+                        (mdirObj && mdirObj->Name()) ? mdirObj->Name() : "-",
+                        (go2 && go2 != mesh && go2->Name()) ? go2->Name() : "self",
+                        numBones, (int)skinnedView.size(),
+                        (owner->mVerts.size() > 0) ? "verts" : "compressed",
+                        (int)mesh->mNativeBonesRebound,
+                        (int)(owner ? owner->mNativeBonesRebound : 0));
+                    int nMoving = 0, nStatic = 0, nNull = 0;
+                    bool slotTable = (sampleNo <= 2) || (sampleNo % 10 == 0);
+                    for (int b = 0; b < numBones; b++) {
+                        RndTransformable* bt = owner->BoneTransAt(b);
+                        if (!bt) { nNull++; continue; }
+                        const Transform& w = bt->WorldXfm();
+                        float dW = -1.f;
+                        if (haveLast) {
+                            float dx = w.v.x - lastW[b*3+0], dy = w.v.y - lastW[b*3+1],
+                                  dz = w.v.z - lastW[b*3+2];
+                            dW = sqrtf(dx*dx + dy*dy + dz*dz);
+                            if (dW > 0.01f) nMoving++; else nStatic++;
+                        }
+                        const float* cm = bones.bones[b]; // col-major skin
+                        if (slotTable) {
+                            ObjectDir* bdir = bt->Dir();
+                            Transform sk; Multiply(owner->BoneOffsetAt(b), w, sk);
+                            float sd = sk.m.x.x*(sk.m.y.y*sk.m.z.z - sk.m.y.z*sk.m.z.y)
+                                     - sk.m.x.y*(sk.m.y.x*sk.m.z.z - sk.m.y.z*sk.m.z.x)
+                                     + sk.m.x.z*(sk.m.y.x*sk.m.z.y - sk.m.y.y*sk.m.z.x);
+                            // instance attribution: walk TransParent to the root —
+                            // identifies WHICH character/rig instance owns the bone.
+                            RndTransformable* root = bt;
+                            int guard = 0;
+                            while (root->TransParent() && guard++ < 64)
+                                root = root->TransParent();
+                            fprintf(stderr,
+                                "[C8_SLOT] f=%d mesh='%s' b=%d '%s' ptr=%p bdir='%s' "
+                                "bfile='%s' root='%s'@%p "
+                                "w=(%.1f,%.1f,%.1f) dW=%.2f%s skin.v=(%.1f,%.1f,%.1f) "
+                                "bind=(%.1f,%.1f,%.1f) skinDet=%.3f wrow0=(%.2f,%.2f,%.2f)\n",
+                                mFrameCount, c8mn, b, bt->Name() ? bt->Name() : "?", (void*)bt,
+                                (bdir && bdir->Name()) ? bdir->Name() : "-",
+                                bdir ? bdir->mStoredFile.c_str() : "-",
+                                (root && root->Name()) ? root->Name() : "?", (void*)root,
+                                w.v.x, w.v.y, w.v.z, dW,
+                                (dW < 0.f ? "(first)" : (dW > 0.01f ? " MOVING" : " STATIC")),
+                                cm[12], cm[13], cm[14],
+                                bindP[b*3+0], bindP[b*3+1], bindP[b*3+2], sd,
+                                w.m.x.x, w.m.x.y, w.m.x.z);
+                        }
+                        lastW[b*3+0] = w.v.x; lastW[b*3+1] = w.v.y; lastW[b*3+2] = w.v.z;
+                    }
+                    // vert audits over sampled verts
+                    int n2 = (int)skinnedView.size();
+                    int step2 = n2 > 512 ? (n2 / 512) : 1;
+                    double sumLoc = 0; float maxLoc = 0; int cntLoc = 0, farLoc = 0;
+                    int maxLocVert = -1;
+                    double cx = 0, cy = 0, cz = 0; int cn = 0;
+                    std::vector<float> bl;
+                    std::vector<int> blIdx;
+                    bl.reserve(((size_t)(n2 / step2) + 2) * 3);
+                    blIdx.reserve((n2 / step2) + 2);
+                    for (int i = 0; i < n2; i += step2) {
+                        const GpuVertexSkinned& g = skinnedView[i];
+                        float lx = g.pos[0], ly = g.pos[1], lz = g.pos[2];
+                        float wsum = 0, ox = 0, oy = 0, oz = 0;
+                        int domB = -1; float domW = -1.f;
+                        for (int k = 0; k < 4; k++) {
+                            int bi = g.boneIndices[k]; if (bi < 0 || bi >= kMaxBones) bi = 0;
+                            float wgt = g.boneWeights[k]; wsum += wgt;
+                            if (wgt > domW) { domW = wgt; domB = bi; }
+                            const float* m = bones.bones[bi];
+                            ox += wgt*(m[0]*lx + m[4]*ly + m[8]*lz + m[12]);
+                            oy += wgt*(m[1]*lx + m[5]*ly + m[9]*lz + m[13]);
+                            oz += wgt*(m[2]*lx + m[6]*ly + m[10]*lz + m[14]);
+                        }
+                        if (wsum < 0.01f) continue;
+                        ox /= wsum; oy /= wsum; oz /= wsum;
+                        bl.push_back(ox); bl.push_back(oy); bl.push_back(oz);
+                        blIdx.push_back(i);
+                        cx += ox; cy += oy; cz += oz; cn++;
+                        if (domB >= 0 && domB < numBones && domW > 0.3f) {
+                            float dx = lx - bindP[domB*3+0], dy = ly - bindP[domB*3+1],
+                                  dz = lz - bindP[domB*3+2];
+                            float d = sqrtf(dx*dx + dy*dy + dz*dz);
+                            sumLoc += d; cntLoc++;
+                            if (d > maxLoc) { maxLoc = d; maxLocVert = i; }
+                            if (d > 30.f) farLoc++;
+                        }
+                    }
+                    if (cn > 0) { cx /= cn; cy /= cn; cz /= cn; }
+                    fprintf(stderr,
+                        "[C8_VERT] f=%d mesh='%s' locality: avg=%.1f max=%.1f far(>30u)=%d/%d "
+                        "maxVert=%d | slots: moving=%d static=%d null=%d\n",
+                        mFrameCount, c8mn, cntLoc ? (float)(sumLoc / cntLoc) : -1.f, maxLoc,
+                        farLoc, cntLoc, maxLocVert, nMoving, nStatic, nNull);
+                    float worstD = -1.f; int worstSl = -1;
+                    for (int sl = 0; sl < (int)blIdx.size(); sl++) {
+                        float dx = bl[sl*3+0]-(float)cx, dy = bl[sl*3+1]-(float)cy,
+                              dz = bl[sl*3+2]-(float)cz;
+                        float d = sqrtf(dx*dx + dy*dy + dz*dz);
+                        if (d > worstD) { worstD = d; worstSl = sl; }
+                    }
+                    if (worstSl >= 0) {
+                        int vi = blIdx[worstSl];
+                        const GpuVertexSkinned& g = skinnedView[vi];
+                        fprintf(stderr,
+                            "[C8_SMEAR] f=%d mesh='%s' centroid=(%.1f,%.1f,%.1f) worstVert=%d "
+                            "dev=%.1f bind=(%.1f,%.1f,%.1f) blended=(%.1f,%.1f,%.1f)\n",
+                            mFrameCount, c8mn, (float)cx, (float)cy, (float)cz, vi, worstD,
+                            g.pos[0], g.pos[1], g.pos[2],
+                            bl[worstSl*3+0], bl[worstSl*3+1], bl[worstSl*3+2]);
+                        for (int k = 0; k < 4; k++) {
+                            int bi = g.boneIndices[k]; if (bi < 0 || bi >= kMaxBones) bi = 0;
+                            if (g.boneWeights[k] < 0.01f) continue;
+                            const float* m = bones.bones[bi];
+                            RndTransformable* bt = (bi < numBones) ? owner->BoneTransAt(bi) : nullptr;
+                            fprintf(stderr,
+                                "[C8_SMEAR]   k=%d bi=%d w=%.2f bone='%s' skin.v=(%.1f,%.1f,%.1f) "
+                                "bind=(%.1f,%.1f,%.1f)\n",
+                                k, bi, g.boneWeights[k],
+                                (bt && bt->Name()) ? bt->Name() : "?",
+                                m[12], m[13], m[14],
+                                (bi < numBones) ? bindP[bi*3+0] : 0.f,
+                                (bi < numBones) ? bindP[bi*3+1] : 0.f,
+                                (bi < numBones) ? bindP[bi*3+2] : 0.f);
+                        }
+                    }
+                }
+            }
+        }
     } else {
         for (int b = 0; b < kMaxBones; b++)
             for (int i = 0; i < 16; i++) bones.bones[b][i] = (i % 5 == 0) ? 1.f : 0.f;
