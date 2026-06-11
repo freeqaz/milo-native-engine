@@ -801,7 +801,19 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
     }
 
     let emissiveSample = textureSample(emissiveMapTex, mapSampler, surfaceInput.uv);
-    finalColor += baseColor.rgb * material.emissiveMultiplier * emissiveSample.rgb;
+    // Emissive (self-illumination). The diffuse base color tints the emissive map
+    // for materials that intend it (white-base buildings/signs stay neutral;
+    // colour-base venue streaks/neons keep their hue). But a (near-)black base
+    // must NOT collapse self-illumination to zero: pure-additive glow materials
+    // (e.g. gem_smasher_glow.mat, color=0,0,0, blendAdd) author their colour in
+    // the emissive MAP and rely on a script-driven base the native port can't
+    // drive. For those, fall back to a white emissive tint so the map shows at
+    // authored intensity. Only materials whose base is essentially black are
+    // affected — they emit nothing today, so this introduces no regression for
+    // any material that's currently visible.
+    let emBaseLuma = max(max(baseColor.r, baseColor.g), baseColor.b);
+    let emissiveTint = mix(vec3f(1.0), baseColor.rgb, smoothstep(0.0, 0.04, emBaseLuma));
+    finalColor += emissiveTint * material.emissiveMultiplier * emissiveSample.rgb;
     finalColor += computeRimLighting(surfaceNormal, viewDir, surfaceInput.uv);
     finalColor += computeEnvironmentReflection(surfaceNormal, viewDir, specularSample);
 

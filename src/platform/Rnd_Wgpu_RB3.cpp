@@ -4610,8 +4610,19 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
             // Brighter "now bar": the additive strike-line glow (gem_smasher_glow,
             // square_smasher_bright_*.tex, ships emissive mul 0.90) is dimmer/narrower
             // than retail's luminous now bar — boost its emissive contribution.
+            // The glow mat has color=(0,0,0) (its per-slot colour lives in the
+            // emissive MAP, bound by particle_slot_colors.anim); the standard
+            // shader's emissive term now falls back to a white tint for near-black
+            // bases (see standard_wgsl.inc) so a held fret actually lights up.
+            // Opt-out RB3_FRET_GLOW_OFF=1 zeroes the multiplier → invisible (old
+            // behaviour) for clean A/B of the held-fret glow.
             if (std::strcmp(mname, "gem_smasher_glow.mat") == 0) {
-                mu.emissiveMultiplier *= 2.0f;
+                static int sFretGlowOff = -1;
+                if (sFretGlowOff < 0) {
+                    const char* e = getenv("RB3_FRET_GLOW_OFF");
+                    sFretGlowOff = (e && e[0] && e[0] != '0') ? 1 : 0;
+                }
+                mu.emissiveMultiplier = sFretGlowOff ? 0.0f : mu.emissiveMultiplier * 2.0f;
             }
             // SP "peak state" blue track overlay (peakstate_plane, spotlight_*_track.tex
             // filigree) fades in via PropAnim once the streak hits 4x, but draws faint
