@@ -47,6 +47,18 @@ void RB3RegisterLegacyRndAliases();
 static bool RB3PostProcDisabled();
 static bool RB3PipelinePrewarmDisabled();
 
+// L1 vertex-unpack cache (default ON; RB3_UNPACK_CACHE_OFF=1 opts out for A/B).
+// When OFF, DrawMesh unpacks every vertex on every draw (the legacy behavior) —
+// used to prove the cache is visual-no-op. getenv-once latch (house style).
+static bool RB3UnpackCacheOff() {
+    static int s = -1;
+    if (s < 0) {
+        const char* e = getenv("RB3_UNPACK_CACHE_OFF");
+        s = (e && e[0] && e[0] != '0') ? 1 : 0;
+    }
+    return s != 0;
+}
+
 // ---------------------------------------------------------------------------
 // VertexFormats::StaticLayout()/SkinnedLayout() — the engine's PipelineManager
 // (gfx/PipelineManager.cpp) calls these, but their definitions live in
@@ -374,6 +386,19 @@ struct RB3MeshEntry {
     int          fpVerts = -1;
     int          fpFaces = -1;
     bool         fpSkinned = false;
+
+    // --- L1 vertex-unpack cache (RB3_UNPACK_CACHE) ---
+    // The per-draw CPU vertex unpack (Be*/Half2Float on -O0 wasm) was the dominant
+    // uncounted residue on the game_screen reveal frame (research/09). Static-mesh
+    // verts have NO consumer past the upload, so when !needUpload we skip the unpack
+    // entirely. Skinned meshes are different: the V24 shard guard re-reads the
+    // bind-pose `gpuVertsSkinned` EVERY frame to ratio-test the live blended pose,
+    // so we keep the bind verts here and the guard reads the cache when the unpack
+    // is skipped. Invalidated by exactly the conditions that set `needUpload`
+    // (owner/fpVerts/fpFaces/fpSkinned + the OnSync `uploaded=false` dirty signal),
+    // so a stale cache can never outlive its geometry. Skinned-only ⇒ bounded
+    // memory (88 B/vert × character meshes ≈ a few MB).
+    std::vector<GpuVertexSkinned> cachedSkinnedVerts;
 
     // --- Per-DRAW (per-instance) uniform buffers + bind groups ---
     // Before this cache, DrawMesh allocated the object/bone/material uniforms out
@@ -1600,6 +1625,87 @@ static void BeUByte4(int packed, uint8_t out[4]) {
     unsigned v = __builtin_bswap32((unsigned)packed);
     out[0] = v & 0xFF; out[1] = (v >> 8) & 0xFF;
     out[2] = (v >> 16) & 0xFF; out[3] = (v >> 24) & 0xFF;
+}
+
+// ---------------------------------------------------------------------------
+// RB3UnpackMeshVerts — the per-vertex CPU unpack shared by DrawMesh and the L2
+// GPU warm sweep (BandRnd::WarmGpuForDir). Reads owner->mVerts (uncompressed RB3
+// Vert, Color32-packed) OR owner->mCompressedVerts (Xbox-compressed, Be*-decoded),
+// filling the static OR skinned engine layout per `skinned`. Returns the unpacked
+// vert count, or -1 if the mesh has no geometry. Factored out so the warm sweep's
+// pre-upload is byte-identical to the draw-time upload (same VB bytes -> the first
+// real draw is a guaranteed cache hit). This is the dominant -O0-wasm cost class
+// (research/09: Be*/Half2Float/GpuVertexSkinned family) — charge it at the caller.
+// ---------------------------------------------------------------------------
+static int RB3UnpackMeshVerts(RndMesh* owner, bool skinned,
+                              std::vector<GpuVertexRB3>& gpuVerts,
+                              std::vector<GpuVertexSkinned>& gpuVertsSkinned) {
+    RndMesh::VertVector& verts = owner->mVerts;
+    int nv = verts.size();
+    if (nv > 0) {
+        if (skinned) {
+            gpuVertsSkinned.resize(nv);
+            for (int i = 0; i < nv; i++) {
+                const RndMesh::Vert& v = verts[i];
+                GpuVertexSkinned& g = gpuVertsSkinned[i];
+                g.pos[0] = v.pos.x; g.pos[1] = v.pos.y; g.pos[2] = v.pos.z;
+                g.norm[0] = v.norm.x; g.norm[1] = v.norm.y; g.norm[2] = v.norm.z;
+                g.color[0] = v.color.fr(); g.color[1] = v.color.fg();
+                g.color[2] = v.color.fb(); g.color[3] = v.color.fa();
+                g.uv[0] = v.uv.x; g.uv[1] = v.uv.y;
+                g.boneWeights[0] = v.boneWeights.GetX(); g.boneWeights[1] = v.boneWeights.GetY();
+                g.boneWeights[2] = v.boneWeights.GetZ(); g.boneWeights[3] = v.boneWeights.GetW();
+                g.boneIndices[0] = (uint8_t)v.boneIndices[0]; g.boneIndices[1] = (uint8_t)v.boneIndices[1];
+                g.boneIndices[2] = (uint8_t)v.boneIndices[2]; g.boneIndices[3] = (uint8_t)v.boneIndices[3];
+                g.pad = 0.0f;
+                g.tangent[0] = 1.0f; g.tangent[1] = 0; g.tangent[2] = 0; g.tangent[3] = 1.0f;
+            }
+        } else {
+            gpuVerts.resize(nv);
+            for (int i = 0; i < nv; i++) {
+                const RndMesh::Vert& v = verts[i];
+                GpuVertexRB3& g = gpuVerts[i];
+                g.pos[0] = v.pos.x; g.pos[1] = v.pos.y; g.pos[2] = v.pos.z;
+                g.norm[0] = v.norm.x; g.norm[1] = v.norm.y; g.norm[2] = v.norm.z;
+                g.color[0] = v.color.fr(); g.color[1] = v.color.fg();
+                g.color[2] = v.color.fb(); g.color[3] = v.color.fa();
+                g.uv[0] = v.uv.x; g.uv[1] = v.uv.y;
+                g.tangent[0] = 1.0f; g.tangent[1] = 0; g.tangent[2] = 0; g.tangent[3] = 1.0f;
+            }
+        }
+    } else if (owner->mCompressedVerts && owner->mNumCompressedVerts > 0) {
+        nv = (int)owner->mNumCompressedVerts;
+        const XboxCVert* cv = (const XboxCVert*)owner->mCompressedVerts;
+        if (skinned) {
+            gpuVertsSkinned.resize(nv);
+            for (int i = 0; i < nv; i++) {
+                GpuVertexSkinned& g = gpuVertsSkinned[i];
+                g.pos[0] = BeFloat(cv[i].pos[0]); g.pos[1] = BeFloat(cv[i].pos[1]); g.pos[2] = BeFloat(cv[i].pos[2]);
+                BeColor(cv[i].color, g.color);
+                BeUV(cv[i].uv, g.uv);
+                BeDec4n(cv[i].norm, g.norm);
+                BeUDec4n(cv[i].b0, g.boneWeights);   // BLENDWEIGHT (UDEC4N)
+                BeUByte4(cv[i].b1, g.boneIndices);   // BLENDINDICES (UBYTE4)
+                g.pad = 0.0f;
+                float t3[3]; BeDec4n(cv[i].tan, t3);
+                g.tangent[0] = t3[0]; g.tangent[1] = t3[1]; g.tangent[2] = t3[2]; g.tangent[3] = 1.0f;
+            }
+        } else {
+            gpuVerts.resize(nv);
+            for (int i = 0; i < nv; i++) {
+                GpuVertexRB3& g = gpuVerts[i];
+                g.pos[0] = BeFloat(cv[i].pos[0]); g.pos[1] = BeFloat(cv[i].pos[1]); g.pos[2] = BeFloat(cv[i].pos[2]);
+                BeColor(cv[i].color, g.color);
+                BeUV(cv[i].uv, g.uv);
+                BeDec4n(cv[i].norm, g.norm);
+                float t3[3]; BeDec4n(cv[i].tan, t3);
+                g.tangent[0] = t3[0]; g.tangent[1] = t3[1]; g.tangent[2] = t3[2]; g.tangent[3] = 1.0f;
+            }
+        }
+    } else {
+        return -1; // no geometry
+    }
+    return skinned ? (int)gpuVertsSkinned.size() : (int)gpuVerts.size();
 }
 
 // ===========================================================================
@@ -3200,108 +3306,97 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
         }
     }
 
+    // --- L1 vertex-unpack cache: decide whether to (re)unpack this draw ---
+    // The per-draw CPU unpack below (Be*/Half2Float helpers) was the dominant
+    // UNCOUNTED residue on the game_screen reveal frame (research/09): on -O0 wasm
+    // it runs per-vertex through tiny helper calls for all 113 reveal-frame meshes,
+    // plus per skinned char mesh on every steady frame for the shard guard. We now
+    // skip it when the cache is valid:
+    //   * STATIC meshes — the unpacked verts have NO consumer past the GPU upload
+    //     (the local-sphere recompute + VB write both sit inside `if (needUpload)`),
+    //     so when !needUpload we skip the unpack entirely.
+    //   * SKINNED meshes — the V24 shard guard re-reads the bind-pose verts EVERY
+    //     frame, so we cache them in meshEntry.cachedSkinnedVerts and the guard
+    //     reads the cache (via skinnedView) when the unpack is skipped.
+    // Invalidation is exactly `needUpload` (owner/fpVerts/fpFaces/fpSkinned + the
+    // OnSync `uploaded=false` dirty signal RndText/dynamic meshes fire), so a stale
+    // cached vert can never outlive its geometry generation. Opt out via
+    // RB3_UNPACK_CACHE_OFF=1 (legacy unconditional per-draw unpack, for A/B).
+    bool cacheOn = !RB3UnpackCacheOff();
+    bool haveSkinnedCache = cacheOn && meshEntry.cachedSkinnedVerts.size() > 0;
+    // Skip when: cache active, geometry unchanged this frame, and (for skinned) we
+    // actually have a populated bind-vert cache to read from.
+    bool skipUnpack = cacheOn && !needUpload && (!skinned || haveSkinnedCache);
+
+    // Frame-trace: charge the CPU unpack cost (the reveal-frame residue) to its
+    // own counter so attribution is pinned by a number, not just the profile. When
+    // skipped this stays 0 — that's the L1 win, made visible.
+    double ftUnpackStart = gFrameTraceActive ? FrameTraceNowMs() : 0.0;
+
     // --- Unpack vertices into engine GpuVertexRB3 / GpuVertexSkinned layout ---
-    // NB: the unpack runs UNCONDITIONALLY (not gated on needUpload) because the
-    // skinned shard-guard below re-blends these bind-pose verts against the LIVE
-    // bone pose every frame. The GPU UPLOAD (the leaky part) is what's gated on
-    // needUpload — the CPU unpack is cheap and feeds both consumers. (Caching the
-    // unpacked verts CPU-side to skip this too is the tracked follow-up perf win.)
+    // Runs only on a cache miss (needUpload / cache off). The GPU UPLOAD (the leaky
+    // part) is gated on needUpload below; this CPU unpack is now gated on the same
+    // condition (plus the skinned shard-guard's cache read).
     std::vector<GpuVertexRB3> gpuVerts;
     std::vector<GpuVertexSkinned> gpuVertsSkinned;
-    if (nv > 0) {
-        // Uncompressed RB3 Vert (Color32 packed; bone data in Vert.boneWeights /
-        // Vert.boneIndices).
-        if (skinned) {
-            gpuVertsSkinned.resize(nv);
-            for (int i = 0; i < nv; i++) {
-                const RndMesh::Vert& v = verts[i];
-                GpuVertexSkinned& g = gpuVertsSkinned[i];
-                g.pos[0] = v.pos.x; g.pos[1] = v.pos.y; g.pos[2] = v.pos.z;
-                g.norm[0] = v.norm.x; g.norm[1] = v.norm.y; g.norm[2] = v.norm.z;
-                g.color[0] = v.color.fr(); g.color[1] = v.color.fg();
-                g.color[2] = v.color.fb(); g.color[3] = v.color.fa();
-                g.uv[0] = v.uv.x; g.uv[1] = v.uv.y;
-                g.boneWeights[0] = v.boneWeights.GetX(); g.boneWeights[1] = v.boneWeights.GetY();
-                g.boneWeights[2] = v.boneWeights.GetZ(); g.boneWeights[3] = v.boneWeights.GetW();
-                g.boneIndices[0] = (uint8_t)v.boneIndices[0]; g.boneIndices[1] = (uint8_t)v.boneIndices[1];
-                g.boneIndices[2] = (uint8_t)v.boneIndices[2]; g.boneIndices[3] = (uint8_t)v.boneIndices[3];
-                g.pad = 0.0f;
-                g.tangent[0] = 1.0f; g.tangent[1] = 0; g.tangent[2] = 0; g.tangent[3] = 1.0f;
-            }
-            // VERT_PROBE: dump uncompressed-skinned bind verts (pos bounds + a
-            // few samples w/ weights+indices) once per mesh, to ground-truth the
-            // band-character geometry that takes the uncompressed path.
-            if (getenv("VERT_PROBE") && mesh->Name()) {
-                static std::unordered_map<std::string,int> sVP;
-                const char* mn = mesh->Name();
-                if (sVP[mn]++ == 0) {
-                    float mn3[3]={1e30f,1e30f,1e30f}, mx3[3]={-1e30f,-1e30f,-1e30f};
-                    for (int i=0;i<nv;i++){ for(int k=0;k<3;k++){ float p=gpuVertsSkinned[i].pos[k];
-                        if(p<mn3[k])mn3[k]=p; if(p>mx3[k])mx3[k]=p; } }
-                    fprintf(stderr,"[VERT_PROBE] mesh='%s' nv=%d posBounds min(%.1f,%.1f,%.1f) max(%.1f,%.1f,%.1f) span(%.1f,%.1f,%.1f)\n",
-                        mn, nv, mn3[0],mn3[1],mn3[2], mx3[0],mx3[1],mx3[2],
-                        mx3[0]-mn3[0],mx3[1]-mn3[1],mx3[2]-mn3[2]);
-                    for (int i=0;i<nv && i<6;i++){ const GpuVertexSkinned& g=gpuVertsSkinned[i];
-                        fprintf(stderr,"   v%d pos(%.2f,%.2f,%.2f) w(%.3f,%.3f,%.3f,%.3f sum=%.3f) idx(%d,%d,%d,%d)\n",
-                            i, g.pos[0],g.pos[1],g.pos[2], g.boneWeights[0],g.boneWeights[1],g.boneWeights[2],g.boneWeights[3],
-                            g.boneWeights[0]+g.boneWeights[1]+g.boneWeights[2]+g.boneWeights[3],
-                            g.boneIndices[0],g.boneIndices[1],g.boneIndices[2],g.boneIndices[3]); }
-                }
-            }
-        } else {
-            gpuVerts.resize(nv);
-            for (int i = 0; i < nv; i++) {
-                const RndMesh::Vert& v = verts[i];
-                GpuVertexRB3& g = gpuVerts[i];
-                g.pos[0] = v.pos.x; g.pos[1] = v.pos.y; g.pos[2] = v.pos.z;
-                g.norm[0] = v.norm.x; g.norm[1] = v.norm.y; g.norm[2] = v.norm.z;
-                g.color[0] = v.color.fr(); g.color[1] = v.color.fg();
-                g.color[2] = v.color.fb(); g.color[3] = v.color.fa();
-                g.uv[0] = v.uv.x; g.uv[1] = v.uv.y;
-                g.tangent[0] = 1.0f; g.tangent[1] = 0; g.tangent[2] = 0; g.tangent[3] = 1.0f;
-            }
-        }
-    } else if (owner->mCompressedVerts && owner->mNumCompressedVerts > 0) {
-        // Xbox-compressed verts (read verbatim by our HX_NATIVE Mesh.cpp branch).
-        // Bone data, when present, lives at off 28 (b0 = BLENDWEIGHT, UDEC4N
-        // 10-10-10-2 unsigned) and off 32 (b1 = BLENDINDICES, UBYTE4) — the D3D
-        // field names are swapped vs intent (see engine VertexFormats.cpp).
-        nv = (int)owner->mNumCompressedVerts;
-        const XboxCVert* cv = (const XboxCVert*)owner->mCompressedVerts;
-        if (skinned) {
-            gpuVertsSkinned.resize(nv);
-            for (int i = 0; i < nv; i++) {
-                GpuVertexSkinned& g = gpuVertsSkinned[i];
-                g.pos[0] = BeFloat(cv[i].pos[0]); g.pos[1] = BeFloat(cv[i].pos[1]); g.pos[2] = BeFloat(cv[i].pos[2]);
-                BeColor(cv[i].color, g.color);
-                BeUV(cv[i].uv, g.uv);
-                BeDec4n(cv[i].norm, g.norm);
-                BeUDec4n(cv[i].b0, g.boneWeights);   // BLENDWEIGHT (UDEC4N)
-                BeUByte4(cv[i].b1, g.boneIndices);   // BLENDINDICES (UBYTE4)
-                g.pad = 0.0f;
-                float t3[3]; BeDec4n(cv[i].tan, t3);
-                g.tangent[0] = t3[0]; g.tangent[1] = t3[1]; g.tangent[2] = t3[2]; g.tangent[3] = 1.0f;
-            }
-        } else {
-            gpuVerts.resize(nv);
-            for (int i = 0; i < nv; i++) {
-                GpuVertexRB3& g = gpuVerts[i];
-                g.pos[0] = BeFloat(cv[i].pos[0]); g.pos[1] = BeFloat(cv[i].pos[1]); g.pos[2] = BeFloat(cv[i].pos[2]);
-                BeColor(cv[i].color, g.color);
-                BeUV(cv[i].uv, g.uv);
-                BeDec4n(cv[i].norm, g.norm);
-                float t3[3]; BeDec4n(cv[i].tan, t3);
-                g.tangent[0] = t3[0]; g.tangent[1] = t3[1]; g.tangent[2] = t3[2]; g.tangent[3] = 1.0f;
-            }
-        }
+    if (skipUnpack) {
+        // Cache hit: nothing to unpack. nv must still reflect the source vert count
+        // (used by the needUpload-gated VB size + debug dumps). Static reuse needs
+        // no vert data downstream; skinned reuse reads meshEntry.cachedSkinnedVerts.
+        nv = skinned ? (int)meshEntry.cachedSkinnedVerts.size() : fpVertsKey;
     } else {
-        return; // no geometry
+        // Cache miss / cache off — do the real per-vertex unpack (shared with the
+        // L2 warm sweep via RB3UnpackMeshVerts, so warm-then-draw is byte-identical).
+        nv = RB3UnpackMeshVerts(owner, skinned, gpuVerts, gpuVertsSkinned);
+        if (nv < 0) return; // no geometry
+
+        // VERT_PROBE: dump uncompressed-skinned bind verts (pos bounds + a few
+        // samples w/ weights+indices) once per mesh, to ground-truth the band-
+        // character geometry that takes the uncompressed path.
+        if (skinned && getenv("VERT_PROBE") && mesh->Name()) {
+            static std::unordered_map<std::string,int> sVP;
+            const char* mn = mesh->Name();
+            if (sVP[mn]++ == 0) {
+                float mn3[3]={1e30f,1e30f,1e30f}, mx3[3]={-1e30f,-1e30f,-1e30f};
+                for (int i=0;i<nv;i++){ for(int k=0;k<3;k++){ float p=gpuVertsSkinned[i].pos[k];
+                    if(p<mn3[k])mn3[k]=p; if(p>mx3[k])mx3[k]=p; } }
+                fprintf(stderr,"[VERT_PROBE] mesh='%s' nv=%d posBounds min(%.1f,%.1f,%.1f) max(%.1f,%.1f,%.1f) span(%.1f,%.1f,%.1f)\n",
+                    mn, nv, mn3[0],mn3[1],mn3[2], mx3[0],mx3[1],mx3[2],
+                    mx3[0]-mn3[0],mx3[1]-mn3[1],mx3[2]-mn3[2]);
+                for (int i=0;i<nv && i<6;i++){ const GpuVertexSkinned& g=gpuVertsSkinned[i];
+                    fprintf(stderr,"   v%d pos(%.2f,%.2f,%.2f) w(%.3f,%.3f,%.3f,%.3f sum=%.3f) idx(%d,%d,%d,%d)\n",
+                        i, g.pos[0],g.pos[1],g.pos[2], g.boneWeights[0],g.boneWeights[1],g.boneWeights[2],g.boneWeights[3],
+                        g.boneWeights[0]+g.boneWeights[1]+g.boneWeights[2]+g.boneWeights[3],
+                        g.boneIndices[0],g.boneIndices[1],g.boneIndices[2],g.boneIndices[3]); }
+            }
+        }
     }
-    nv = skinned ? (int)gpuVertsSkinned.size() : (int)gpuVerts.size();
+
+    // Charge the CPU unpack cost (0 on a cache hit — the L1 win, made visible).
+    if (gFrameTraceActive && !skipUnpack) {
+        gVertUnpackMsThisFrame += (float)(FrameTraceNowMs() - ftUnpackStart);
+        gVertUnpackCountThisFrame++;
+    }
+
+    // Populate / refresh the skinned bind-vert cache on a real unpack so subsequent
+    // frames' shard guard reads it instead of re-unpacking. Static meshes need no
+    // cache (no consumer past upload). A move avoids a copy; gpuVertsSkinned is not
+    // read again after this point on the unpack path (the shard guard reads
+    // skinnedView, which we bind to the cache below).
+    if (cacheOn && skinned && !skipUnpack)
+        meshEntry.cachedSkinnedVerts = gpuVertsSkinned;
+
+    // The shard guard + SMASH_DBG read bind-pose skinned verts EVERY frame. Point
+    // them at the freshly-unpacked locals on a miss, or at the cache on a hit, so a
+    // skipped unpack still feeds the guard identical data.
+    const std::vector<GpuVertexSkinned>& skinnedView =
+        skipUnpack ? meshEntry.cachedSkinnedVerts : gpuVertsSkinned;
+
     // GEM_VTX: one-shot dump of the gem prism's unpacked local-space verts +
     // bounds + world-projected extent, to confirm the geometry is non-degenerate
-    // and lands on screen.
-    if (getenv("GEM_VTX")) {
+    // and lands on screen. Reads the local gpuVerts, so only meaningful when the
+    // unpack actually ran this draw (one-shot per mesh — first draw is a miss).
+    if (getenv("GEM_VTX") && !skipUnpack && !skinned) {
         const char* mn = mesh->Name() ? mesh->Name() : "?";
         if (std::strstr(mn, "prism_gem")) {
             static std::unordered_map<std::string, int> sVtxSeen;
@@ -3999,8 +4094,8 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
                         bt0 && bt0->Name() ? bt0->Name() : "<null>",
                         bt0 ? bt0->WorldXfm().v.x : 0.f, bt0 ? bt0->WorldXfm().v.y : 0.f,
                         bt0 ? bt0->WorldXfm().v.z : 0.f, b0.v.x, b0.v.y, b0.v.z);
-                if (nv > 0) {
-                    const GpuVertexSkinned& gv = gpuVertsSkinned[0];
+                if (!skinnedView.empty()) {
+                    const GpuVertexSkinned& gv = skinnedView[0];
                     fprintf(stderr, "[SMASH_DBG]   v0 pos(%.2f,%.2f,%.2f) w(%.2f,%.2f,%.2f,%.2f) idx(%u,%u,%u,%u)\n",
                             gv.pos[0],gv.pos[1],gv.pos[2], gv.boneWeights[0],gv.boneWeights[1],
                             gv.boneWeights[2],gv.boneWeights[3], gv.boneIndices[0],gv.boneIndices[1],
@@ -4032,7 +4127,9 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     // disabled; the DROP itself still only fires when SHARD_GUARD_OFF is unset.
     if (skinned && (!getenv("SHARD_GUARD_OFF") || getenv("SHARD_RATIO_DBG"))) {
         bool guardActive = !getenv("SHARD_GUARD_OFF");
-        int n = (int)gpuVertsSkinned.size();
+        // Read bind verts through skinnedView so a cache-skipped unpack still
+        // ratio-tests the same bind-pose data (cache == this draw's would-be unpack).
+        int n = (int)skinnedView.size();
         if (n >= 3) {
             // Bind-pose (local) AABB and the blended (world) AABB, the latter via
             // the EXACT 4-bone blend the shader uses.
@@ -4040,7 +4137,7 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
             float wmn[3]={1e30f,1e30f,1e30f}, wmx[3]={-1e30f,-1e30f,-1e30f};
             int step = n > 256 ? (n / 256) : 1; // sample to bound cost
             for (int i = 0; i < n; i += step) {
-                const GpuVertexSkinned& g = gpuVertsSkinned[i];
+                const GpuVertexSkinned& g = skinnedView[i];
                 float lx=g.pos[0], ly=g.pos[1], lz=g.pos[2];
                 if(lx<lmn[0])lmn[0]=lx; if(lx>lmx[0])lmx[0]=lx;
                 if(ly<lmn[1])lmn[1]=ly; if(ly>lmx[1])lmx[1]=ly;
@@ -4558,6 +4655,148 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
 
     mDrawnMeshes++;
     mDrawnTris += nf;
+}
+
+// ---------------------------------------------------------------------------
+// RB3EnsureMeshGpu — idempotent mesh-upload helper extracted from DrawMesh's
+// needUpload block. Unpacks (shared RB3UnpackMeshVerts) + uploads VB/IB + stamps
+// the sMeshGpu fingerprint with the SAME keys DrawMesh uses, AND populates the L1
+// skinned bind-vert cache. So after a warm pass, the first real draw of this mesh
+// sees needUpload==false (geometry-buffer reuse), skipUnpack==true (no re-unpack),
+// and the skinned shard guard reads the warmed cache — zero reveal-frame work.
+// Returns true iff it actually uploaded (cache miss). No render-pass dependency:
+// it only creates+writes buffers (queue ops), so it is safe to call outside an
+// open pass during the loading dwell. Used by BandRnd::WarmGpuForDir.
+// ---------------------------------------------------------------------------
+static bool RB3EnsureMeshGpu(BandRnd& rnd, RndMesh* mesh) {
+    if (!mesh) return false;
+    RndMesh* owner = mesh->GeomOwner();
+    if (!owner) owner = mesh;
+    std::vector<RndMesh::Face>& faces = owner->mFaces;
+    int nf = (int)faces.size();
+    if (nf <= 0) return false;
+
+    bool skinned = owner->IsSkinned();
+    int nvSrc = owner->mVerts.size();
+    int fpVertsKey = (nvSrc > 0) ? nvSrc : (int)owner->mNumCompressedVerts;
+
+    RB3MeshEntry& meshEntry = sMeshGpu[mesh];
+    bool needUpload = !meshEntry.uploaded ||
+                      meshEntry.ownerKey != (const void*)owner ||
+                      meshEntry.fpVerts != fpVertsKey || meshEntry.fpFaces != nf ||
+                      meshEntry.fpSkinned != skinned;
+    // Already resident with the warm L1 caches in place -> nothing to do. (For
+    // skinned meshes, only consider it warm once the bind-vert cache is populated,
+    // so the warmed first-draw shard guard has data.)
+    if (!needUpload && (!skinned || !meshEntry.cachedSkinnedVerts.empty()))
+        return false;
+
+    std::vector<GpuVertexRB3> gpuVerts;
+    std::vector<GpuVertexSkinned> gpuVertsSkinned;
+    int nv = RB3UnpackMeshVerts(owner, skinned, gpuVerts, gpuVertsSkinned);
+    if (nv < 0) return false;
+
+    // L1: warm the skinned bind-vert cache (read every frame by the shard guard).
+    if (skinned)
+        meshEntry.cachedSkinnedVerts = gpuVertsSkinned;
+
+    // If the GPU buffers are already current (only the skinned cache was missing),
+    // refresh the cache above and stop — don't recreate identical buffers.
+    if (!needUpload)
+        return false;
+
+    // Local bounding sphere for static meshes (mirrors DrawMesh's needUpload arm —
+    // compressed venue meshes have no other place to recompute it).
+    if (!skinned && nv > 0) {
+        float mn3[3] = { 1e30f, 1e30f, 1e30f }, mx3[3] = { -1e30f, -1e30f, -1e30f };
+        for (int i = 0; i < nv; i++)
+            for (int k = 0; k < 3; k++) {
+                float p = gpuVerts[i].pos[k];
+                if (p < mn3[k]) mn3[k] = p;
+                if (p > mx3[k]) mx3[k] = p;
+            }
+        Vector3 center((mn3[0] + mx3[0]) * 0.5f, (mn3[1] + mx3[1]) * 0.5f,
+                       (mn3[2] + mx3[2]) * 0.5f);
+        float dx = mx3[0] - mn3[0], dy = mx3[1] - mn3[1], dz = mx3[2] - mn3[2];
+        float radius = 0.5f * std::sqrt(dx * dx + dy * dy + dz * dz);
+        Sphere localSphere;
+        localSphere.Set(center, radius);
+        mesh->SetSphere(localSphere);
+    }
+
+    std::vector<uint16_t> indices;
+    indices.reserve(nf * 3);
+    for (int i = 0; i < nf; i++) {
+        indices.push_back(faces[i].v1);
+        indices.push_back(faces[i].v2);
+        indices.push_back(faces[i].v3);
+    }
+    {
+        wgpu::BufferDescriptor bd{};
+        bd.label = "MeshVB";
+        bd.size = skinned ? ((uint64_t)nv * sizeof(GpuVertexSkinned))
+                          : ((uint64_t)nv * sizeof(GpuVertexRB3));
+        bd.usage = wgpu::BufferUsage::Vertex | wgpu::BufferUsage::CopyDst;
+        meshEntry.vbuf = rnd.mGpu.Device().CreateBuffer(&bd);
+        sMeshBufCreatesThisFrame++;
+        rnd.mGpu.Queue().WriteBuffer(meshEntry.vbuf, 0,
+                                     skinned ? (const void*)gpuVertsSkinned.data()
+                                             : (const void*)gpuVerts.data(),
+                                     bd.size);
+    }
+    {
+        uint64_t isz = indices.size() * sizeof(uint16_t);
+        uint64_t padded = (isz + 3) & ~3ull;
+        indices.resize(padded / sizeof(uint16_t), 0);
+        wgpu::BufferDescriptor bd{};
+        bd.label = "MeshIB"; bd.size = padded;
+        bd.usage = wgpu::BufferUsage::Index | wgpu::BufferUsage::CopyDst;
+        meshEntry.ibuf = rnd.mGpu.Device().CreateBuffer(&bd);
+        sMeshBufCreatesThisFrame++;
+        rnd.mGpu.Queue().WriteBuffer(meshEntry.ibuf, 0, indices.data(), padded);
+    }
+    meshEntry.indexCount = (uint32_t)(nf * 3);
+    meshEntry.skinned    = skinned;
+    meshEntry.ownerKey   = (const void*)owner;
+    meshEntry.fpVerts    = fpVertsKey;
+    meshEntry.fpFaces    = nf;
+    meshEntry.fpSkinned  = skinned;
+    meshEntry.uploaded   = true;
+    return true;
+}
+
+// L2 GPU warm sweep — see Rnd_Wgpu_RB3.h. Walks `root` (incl. subdirs) via
+// ObjDirItr, pushing each not-yet-resident RndTex through UploadRndTexIfNeeded and
+// each RndMesh through RB3EnsureMeshGpu (same cache keys DrawMesh uses), spending
+// at most budgetMs of wall time per call. Returns #uploaded; 0 == fully warm. The
+// ObjDirItr<RndLight> per-frame hang noted elsewhere does not apply: this runs at
+// most a few times during the (idle) loading dwell, not per draw.
+int BandRnd::WarmGpuForDir(ObjectDir* root, float budgetMs) {
+    if (!mGpuReady || !root) return 0;
+    int uploaded = 0;
+    double t0 = FrameTraceNowMs();
+    // Textures first (so a later mesh's material bind-time view lookup hits the
+    // same per-RndTex cache), then meshes. Count only REAL uploads (a tex not yet
+    // resident) so the return value is a true "remaining work" signal and reaches 0
+    // once `root` is fully warm — `uploaded==0` is the dwell driver's done test.
+    for (ObjDirItr<RndTex> it(root, true); it != nullptr; ++it) {
+        RndTex* tex = it;
+        auto cached = sTexGpu.find(tex);
+        bool wasResident = (cached != sTexGpu.end() && cached->second.uploaded);
+        UploadRndTexIfNeeded(mGpu, tex);
+        if (!wasResident) {
+            auto now = sTexGpu.find(tex);
+            if (now != sTexGpu.end() && now->second.uploaded) ++uploaded;
+        }
+        if (budgetMs > 0.f && (FrameTraceNowMs() - t0) >= budgetMs)
+            return uploaded;
+    }
+    for (ObjDirItr<RndMesh> it(root, true); it != nullptr; ++it) {
+        if (RB3EnsureMeshGpu(*this, it)) ++uploaded;
+        if (budgetMs > 0.f && (FrameTraceNowMs() - t0) >= budgetMs)
+            return uploaded;
+    }
+    return uploaded;
 }
 
 // ===========================================================================

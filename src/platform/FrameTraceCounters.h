@@ -46,6 +46,8 @@ extern float gTexUploadMsThisFrame;      // UploadRndTexIfNeeded decode+upload
 extern int   gTexUploadCountThisFrame;   // # of texture uploads this frame
 extern float gMeshUploadMsThisFrame;     // DrawMesh needUpload VB/IB write
 extern int   gMeshUploadCountThisFrame;  // # of mesh uploads this frame
+extern float gVertUnpackMsThisFrame;     // DrawMesh CPU vertex unpack (Be*/Half2Float)
+extern int   gVertUnpackCountThisFrame;  // # of meshes whose verts were unpacked this frame
 extern float gPipelineCreateMsThisFrame; // PipelineManager::GetPipeline miss
 extern int   gPipelineCreateCountThisFrame;
 extern float gStreamReadMsThisFrame;     // ChunkStream read/inflate byte-shovel

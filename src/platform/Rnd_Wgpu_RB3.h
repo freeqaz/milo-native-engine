@@ -44,6 +44,7 @@ class RndCam;
 class RndMesh;
 class RndMat;
 class RndParticleSys;
+class ObjectDir;
 
 // Simple bump-allocated uniform ring (mirrors Rnd_Wgpu.h UniformRingBuffer).
 class BandUniformRing {
@@ -103,6 +104,18 @@ public:
 
     // Draw one RndMesh (called from the engine RndMesh::DrawShowing body).
     void DrawMesh(RndMesh* mesh);
+
+    // L2 GPU warm sweep (incremental-load-perf Wave 5). Walks `root` (incl.
+    // subdirs) and pushes every not-yet-resident RndTex / RndMesh through the SAME
+    // upload paths DrawMesh uses (UploadRndTexIfNeeded + the shared mesh unpack +
+    // VB/IB upload, writing the same sMeshGpu cache entries with the same keys), so
+    // a later first-draw of `root` hits the cache instead of paying the upload +
+    // CPU-unpack stall on the reveal frame. Spends at most `budgetMs` of wall time
+    // per call (0 = unbounded) and returns the number of resources uploaded this
+    // call — 0 means `root` is fully warm. Inert unless called; the rb3 dwell
+    // driver (T2) calls it during the loading vignette. Safe to call only after
+    // the GPU is ready and outside an open render pass.
+    int WarmGpuForDir(ObjectDir* root, float budgetMs);
 
     // --- Render-to-texture (RTT) ---
     // The shared rndobj/Cam.cpp only ever fires RndTex::FinishDrawTarget (the
