@@ -4219,6 +4219,23 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     // disabled; the DROP itself still only fires when SHARD_GUARD_OFF is unset.
     if (skinned && (!getenv("SHARD_GUARD_OFF") || getenv("SHARD_RATIO_DBG"))) {
         bool guardActive = !getenv("SHARD_GUARD_OFF");
+        // render-polish 2026-06-11 (char-render): OPT-IN guard exemption for
+        // rebound meshes (RB3_GUARD_EXEMPT_REBOUND=1), default OFF. EXPERIMENT
+        // OUTCOME: pairing this with the decomp own==bound rest-rebake
+        // (RB3_BOUND_REBAKE=1) anchors translation (skin-to-bone deltas <=92u, no
+        // flings, no mixed anchors) but the native rotation-basis divergence
+        // remains — far-from-bone verts smear by R*sin(theta) to persistent
+        // 200-460u extents (gloves/fingernails/jackets vs ~70u character) and
+        // exempt meshes drew as full-screen slabs. The 2.0x ratio guard is
+        // CORRECT about those poses; keep dropping them by default until the
+        // pose-pipeline basis root-cause (C8) is fixed. Kept opt-in for the next
+        // iteration's A/B.
+        static int sExemptRebound = -1;
+        if (sExemptRebound < 0)
+            sExemptRebound = getenv("RB3_GUARD_EXEMPT_REBOUND") ? 1 : 0;
+        if (sExemptRebound && (mesh->mNativeBonesRebound ||
+                               (owner && owner->mNativeBonesRebound)))
+            guardActive = false;
         // Read bind verts through skinnedView so a cache-skipped unpack still
         // ratio-tests the same bind-pose data (cache == this draw's would-be unpack).
         int n = (int)skinnedView.size();
@@ -4282,9 +4299,21 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
             if (degenerate && guardActive) {
                 if (getenv("SHARD_DBG")) {
                     const char* mn = mesh->Name() ? mesh->Name() : "?";
+                    // render-polish 2026-06-11 (char-render): attribute the drop to
+                    // its owning dir + first-bone world position, so band-member
+                    // drops (player_*0 dirs at the stage) separate from venue
+                    // extras/crowd/preview chars sharing outfit mesh NAMES.
+                    Hmx::Object* dirObj = mesh->Dir();
+                    const char* dn = (dirObj && dirObj->Name()) ? dirObj->Name() : "-";
+                    RndTransformable* b0 =
+                        (owner && owner->NumBones() > 0) ? owner->BoneTransAt(0) : nullptr;
+                    float bx = b0 ? b0->WorldXfm().v.x : 0.f,
+                          by = b0 ? b0->WorldXfm().v.y : 0.f,
+                          bz = b0 ? b0->WorldXfm().v.z : 0.f;
                     fprintf(stderr, "[SHARD_GUARD] dropped degenerate skinned mesh='%s' "
-                        "bindExt=%.2f worldExt=%.2f ratio=%.1f f=%d\n",
-                        mn, lext, wext, wext/(lext+1e-6f), mFrameCount);
+                        "bindExt=%.2f worldExt=%.2f ratio=%.1f f=%d dir='%s' "
+                        "bone0=(%.1f,%.1f,%.1f)\n",
+                        mn, lext, wext, wext/(lext+1e-6f), mFrameCount, dn, bx, by, bz);
                 }
                 mDrawnMeshes++; // count it as handled; just don't emit the shard
                 return;
