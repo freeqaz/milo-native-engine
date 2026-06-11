@@ -172,27 +172,37 @@ int UnpackSkinnedVertices(const RndMesh& mesh, GpuVertexSkinned* out, int maxVer
 //   mBoneWeights = UBYTE4   BLENDINDICES   (bone indices)
 // ============================================================================
 
-static float UnpackFloat_BE(int bits) {
-    // Byte-swap int from big-endian to little-endian, then reinterpret as float
-    unsigned int val = __builtin_bswap32((unsigned int)bits);
+// Read a 32-bit field from the Xbox 360 (big-endian) compressed-vertex blob into
+// a HOST-endian word. Bytes are assembled MSB-first explicitly, so this is correct
+// on any host endianness — never x86/little-endian-special-cased. The compressed
+// data is the raw on-disc Xbox stream; every field is a big-endian 32-bit word.
+//
+// NOTE: the old code reinterpret-cast the byte blob as CompressedVertex_Xbox and
+// passed its members to these helpers. That silently truncated the FLOAT position
+// members to int (mPosX/Y/Z are `float`; the helpers take `int`), zeroing every
+// compressed position. Reading the raw bytes here avoids the type-pun entirely.
+static inline unsigned int LoadBE32(const unsigned char* p) {
+    return ((unsigned int)p[0] << 24) | ((unsigned int)p[1] << 16) |
+           ((unsigned int)p[2] << 8)  |  (unsigned int)p[3];
+}
+
+static float UnpackFloat_BE(unsigned int bits) {
+    // `bits` is already the host-endian IEEE-754 word (LoadBE32 reassembled it).
     float f;
-    memcpy(&f, &val, 4);
+    memcpy(&f, &bits, 4);
     return f;
 }
 
-static void UnpackColor_BE(int packed, float out[4]) {
-    // Byte-swap first
-    unsigned int val = __builtin_bswap32((unsigned int)packed);
-    // ABGR packed: R=low byte, A=high byte
+static void UnpackColor_BE(unsigned int val, float out[4]) {
+    // val is the host-endian D3DCOLOR word; ABGR packed: R=low byte, A=high byte
     out[0] = (float)((val >> 0) & 0xFF) / 255.0f;  // R
     out[1] = (float)((val >> 8) & 0xFF) / 255.0f;  // G
     out[2] = (float)((val >> 16) & 0xFF) / 255.0f; // B
     out[3] = (float)((val >> 24) & 0xFF) / 255.0f; // A
 }
 
-static void UnpackDEC4N_BE(int packed, float out[3]) {
-    // DEC4N: 10-10-10-2 signed normalized, big-endian
-    unsigned int val = __builtin_bswap32((unsigned int)packed);
+static void UnpackDEC4N_BE(unsigned int val, float out[3]) {
+    // DEC4N: 10-10-10-2 signed normalized (val is the host-endian word)
     // x=bits[0:9], y=bits[10:19], z=bits[20:29], w=bits[30:31]
     int ix = (int)(val << 22) >> 22;  // sign-extend 10 bits
     int iy = (int)(val << 12) >> 22;
@@ -235,10 +245,9 @@ static float HalfToFloat(unsigned short h) {
     return result;
 }
 
-static void UnpackFloat16x2_BE(int packed, float out[2]) {
-    // Byte-swap first, then extract two 16-bit half-floats
-    // Packing: (halfU << 16) | halfV (before endian swap)
-    unsigned int val = __builtin_bswap32((unsigned int)packed);
+static void UnpackFloat16x2_BE(unsigned int val, float out[2]) {
+    // Extract two 16-bit half-floats from the host-endian word.
+    // Packing (on Xbox, before the BE assembly): (halfU << 16) | halfV
     unsigned short halfU = (val >> 16) & 0xFFFF;  // tex.x in upper 16 bits
     unsigned short halfV = val & 0xFFFF;           // tex.y in lower 16 bits
     out[0] = HalfToFloat(halfU);
@@ -246,43 +255,57 @@ static void UnpackFloat16x2_BE(int packed, float out[2]) {
 }
 
 // Extract the 2-bit w from DEC4N as a bitangent sign (±1.0)
-static float UnpackDEC4N_Sign_BE(int packed) {
-    unsigned int val = __builtin_bswap32((unsigned int)packed);
+static float UnpackDEC4N_Sign_BE(unsigned int val) {
     int iw = (int)(val) >> 30;  // sign-extend 2-bit w
     return (iw >= 0) ? 1.0f : -1.0f;
 }
 
+// Byte offsets of each 32-bit field within a CompressedVertex_Xbox record on disc.
+// Mirror the struct layout in rndobj/MeshVertCompress.h (9 contiguous BE words).
+enum CompressedVertexOffset {
+    kCV_PosX       = 0,
+    kCV_PosY       = 4,
+    kCV_PosZ       = 8,
+    kCV_Color      = 12,
+    kCV_Normal     = 16,  // FLOAT16_2 TEXCOORD (UV)
+    kCV_Tangent    = 20,  // DEC4N NORMAL
+    kCV_Binormal   = 24,  // DEC4N TANGENT
+    kCV_BoneIdx    = 28,  // UDEC4N BLENDWEIGHT (names swapped — these are weights)
+    kCV_BoneWeight = 32,  // UBYTE4  BLENDINDICES (names swapped — these are indices)
+};
+static const int kCompressedVertexStride = (int)sizeof(CompressedVertex_Xbox); // 36
+
 int UnpackCompressedVertices(const unsigned char* compressedData, int numVerts,
                              GpuVertex* out, int maxVerts) {
     int count = std::min(numVerts, maxVerts);
-    const CompressedVertex_Xbox* cverts = (const CompressedVertex_Xbox*)compressedData;
 
     for (int i = 0; i < count; i++) {
-        const CompressedVertex_Xbox& cv = cverts[i];
+        const unsigned char* rec = compressedData + (size_t)i * kCompressedVertexStride;
         GpuVertex& gv = out[i];
 
-        // Position: float stored as int bits (big-endian)
-        gv.pos[0] = UnpackFloat_BE(cv.mPosX);
-        gv.pos[1] = UnpackFloat_BE(cv.mPosY);
-        gv.pos[2] = UnpackFloat_BE(cv.mPosZ);
+        // Position: IEEE-754 float stored as a big-endian word
+        gv.pos[0] = UnpackFloat_BE(LoadBE32(rec + kCV_PosX));
+        gv.pos[1] = UnpackFloat_BE(LoadBE32(rec + kCV_PosY));
+        gv.pos[2] = UnpackFloat_BE(LoadBE32(rec + kCV_PosZ));
 
         // Color: packed RGBA (D3DCOLOR at offset 12)
-        UnpackColor_BE(cv.mColor, gv.color);
+        UnpackColor_BE(LoadBE32(rec + kCV_Color), gv.color);
 
         // UV: FLOAT16_2 stored in mNormal field (D3D TEXCOORD at offset 16)
-        UnpackFloat16x2_BE(cv.mNormal, gv.uv);
+        UnpackFloat16x2_BE(LoadBE32(rec + kCV_Normal), gv.uv);
 
         // Normal: DEC4N stored in mTangent field (D3D NORMAL at offset 20)
-        UnpackDEC4N_BE(cv.mTangent, gv.norm);
+        UnpackDEC4N_BE(LoadBE32(rec + kCV_Tangent), gv.norm);
 
         // Tangent: DEC4N stored in mBinormal field (D3D TANGENT at offset 24)
         // The 2-bit w component encodes the bitangent sign (handedness)
+        unsigned int binormal = LoadBE32(rec + kCV_Binormal);
         float tangent3[3];
-        UnpackDEC4N_BE(cv.mBinormal, tangent3);
+        UnpackDEC4N_BE(binormal, tangent3);
         gv.tangent[0] = tangent3[0];
         gv.tangent[1] = tangent3[1];
         gv.tangent[2] = tangent3[2];
-        gv.tangent[3] = UnpackDEC4N_Sign_BE(cv.mBinormal);
+        gv.tangent[3] = UnpackDEC4N_Sign_BE(binormal);
     }
     return count;
 }
@@ -294,9 +317,8 @@ int UnpackCompressedVertices(const unsigned char* compressedData, int numVerts,
 //   mBoneWeights = UBYTE4  BLENDINDICES (bone indices as 4 bytes)
 // ============================================================================
 
-static void UnpackUDEC4N_BE(int packed, float out[4]) {
-    // UDEC4N: 10-10-10-2 unsigned normalized, big-endian
-    unsigned int val = __builtin_bswap32((unsigned int)packed);
+static void UnpackUDEC4N_BE(unsigned int val, float out[4]) {
+    // UDEC4N: 10-10-10-2 unsigned normalized (val is the host-endian word)
     unsigned int ix = val & 0x3FF;
     unsigned int iy = (val >> 10) & 0x3FF;
     unsigned int iz = (val >> 20) & 0x3FF;
@@ -307,16 +329,11 @@ static void UnpackUDEC4N_BE(int packed, float out[4]) {
     out[3] = iw / 3.0f;
 }
 
-static void UnpackUBYTE4_BE(int packed, uint8_t out[4]) {
-    // UBYTE4: 4 individual bytes packed into a 32-bit int.
-    // The int is stored big-endian in the file, so on a LE system the byte
-    // order within the native int is reversed. We must bswap to restore the
-    // original Xbox byte order before extracting individual indices.
+static void UnpackUBYTE4_BE(unsigned int val, uint8_t out[4]) {
+    // UBYTE4: 4 individual bytes packed into a 32-bit word.
     // Packing on Xbox: value = idx0 + idx1*256 + idx2*65536 + idx3*16M
-    // File bytes (BE): [idx3, idx2, idx1, idx0]
-    // LE native int:   idx3 + idx2*256 + idx1*65536 + idx0*16M (reversed)
-    // After bswap:     idx0 + idx1*256 + idx2*65536 + idx3*16M (correct)
-    unsigned int val = __builtin_bswap32((unsigned int)packed);
+    // File bytes (BE): [idx3, idx2, idx1, idx0]; LoadBE32 reassembled the word
+    // host-endian so `val` already equals the original Xbox-packed value.
     out[0] = (val) & 0xFF;
     out[1] = (val >> 8) & 0xFF;
     out[2] = (val >> 16) & 0xFF;
@@ -326,41 +343,41 @@ static void UnpackUBYTE4_BE(int packed, uint8_t out[4]) {
 int UnpackCompressedSkinnedVertices(const unsigned char* compressedData, int numVerts,
                                      GpuVertexSkinned* out, int maxVerts) {
     int count = std::min(numVerts, maxVerts);
-    const CompressedVertex_Xbox* cverts = (const CompressedVertex_Xbox*)compressedData;
 
     for (int i = 0; i < count; i++) {
-        const CompressedVertex_Xbox& cv = cverts[i];
+        const unsigned char* rec = compressedData + (size_t)i * kCompressedVertexStride;
         GpuVertexSkinned& gv = out[i];
 
         // Position
-        gv.pos[0] = UnpackFloat_BE(cv.mPosX);
-        gv.pos[1] = UnpackFloat_BE(cv.mPosY);
-        gv.pos[2] = UnpackFloat_BE(cv.mPosZ);
+        gv.pos[0] = UnpackFloat_BE(LoadBE32(rec + kCV_PosX));
+        gv.pos[1] = UnpackFloat_BE(LoadBE32(rec + kCV_PosY));
+        gv.pos[2] = UnpackFloat_BE(LoadBE32(rec + kCV_PosZ));
 
         // Color
-        UnpackColor_BE(cv.mColor, gv.color);
+        UnpackColor_BE(LoadBE32(rec + kCV_Color), gv.color);
 
         // UV: FLOAT16_2 stored in mNormal field
-        UnpackFloat16x2_BE(cv.mNormal, gv.uv);
+        UnpackFloat16x2_BE(LoadBE32(rec + kCV_Normal), gv.uv);
 
         // Normal: DEC4N stored in mTangent field
-        UnpackDEC4N_BE(cv.mTangent, gv.norm);
+        UnpackDEC4N_BE(LoadBE32(rec + kCV_Tangent), gv.norm);
 
         // Bone weights: UDEC4N stored in mBoneIndices field (names swapped!)
-        UnpackUDEC4N_BE(cv.mBoneIndices, gv.boneWeights);
+        UnpackUDEC4N_BE(LoadBE32(rec + kCV_BoneIdx), gv.boneWeights);
 
         // Bone indices: UBYTE4 stored in mBoneWeights field (names swapped!)
-        UnpackUBYTE4_BE(cv.mBoneWeights, gv.boneIndices);
+        UnpackUBYTE4_BE(LoadBE32(rec + kCV_BoneWeight), gv.boneIndices);
 
         gv.pad = 0.0f;
 
         // Tangent: DEC4N stored in mBinormal field (D3D TANGENT at offset 24)
+        unsigned int binormal = LoadBE32(rec + kCV_Binormal);
         float tangent3[3];
-        UnpackDEC4N_BE(cv.mBinormal, tangent3);
+        UnpackDEC4N_BE(binormal, tangent3);
         gv.tangent[0] = tangent3[0];
         gv.tangent[1] = tangent3[1];
         gv.tangent[2] = tangent3[2];
-        gv.tangent[3] = UnpackDEC4N_Sign_BE(cv.mBinormal);
+        gv.tangent[3] = UnpackDEC4N_Sign_BE(binormal);
     }
     return count;
 }
