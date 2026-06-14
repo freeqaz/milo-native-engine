@@ -20,6 +20,24 @@ const kTexGenXfmOrigin = 4.0;
 const kTexGenEnviron = 5.0;
 const kHighlightCompressionKnee = 0.9;
 const kAlphaFringeFadeStart = 0.1;
+// Soft-clip ("GX saturate") of the per-channel LIGHTING SUM (ambient + Σ light
+// diffuse) before it modulates the base/texture colour. On Wii the rasterised
+// channel colour is clamped to [0,1] *before* the TEV texture multiply, so
+// lighting can tint a surface but can never push the output above the texture's
+// own brightness — the venue's authored red/pink "hot" stage moments read as a
+// saturated room, never a white-out. Our native lighting sum is UNBOUNDED: a
+// close-up shot inside 4+4 point/dir light ranges (or the non-venue white-flood
+// fallback, ambient 0.45 + 1.0 dir = 1.45×) reaches >1, and the downstream
+// compressHighlights shoulder then maps any pale texture × that sum to ~1.0 → a
+// textureless white flood (the small_club "pink wash" blowout). We restore the
+// GX ceiling as a soft Reinhard rolloff rather than a hard min(.,1.0): IDENTITY
+// for the entire GX-legal range (sum ≤ kLightSumKnee = 1.0) so nothing
+// correctly-lit (incl. the whole diffuse N·L falloff up to N·L≈0.55) is dimmed,
+// then a smooth asymptotic rolloff toward kLightSumCeiling for the over-drive
+// pile-up (slope-1 at the knee → C1-continuous → no banding). Only the brightest
+// over-1 highlights lose a little headroom; the runaway white flood is tamed.
+const kLightSumKnee = 1.0;
+const kLightSumCeiling = 1.05;
 // Fraction of baked per-vertex chroma kept on non-prelit SKINNED (character)
 // meshes when their skin/cloth textures are absent. 0 = fully desaturated (grey
 // shading, no colour cast), 1 = raw vertex colour (re-casts the crowd purple).
@@ -572,6 +590,18 @@ fn computeEnvironmentReflection(surfaceNormal: vec3f, viewDir: vec3f, specularSa
     return environmentColor * fresnelFactor * reflectionMask;
 }
 
+// Per-channel soft saturate of the lighting sum (see kLightSumKnee comment).
+// Identity below the knee; smooth Reinhard rolloff toward the ceiling above it.
+// over/(over+span) has slope 1 at over=0 (C1-continuous at the knee) and
+// asymptotes to 1 as over→∞, so the output asymptotes to `ceiling`.
+fn softClipLighting(lightSum: vec3f) -> vec3f {
+    let knee = vec3f(kLightSumKnee);
+    let span = vec3f(kLightSumCeiling - kLightSumKnee);
+    let over = max(lightSum - knee, vec3f(0.0));
+    let rolled = knee + span * (over / (over + span));
+    return select(lightSum, rolled, lightSum > knee);
+}
+
 fn compressHighlights(color: vec3f) -> vec3f {
     let knee = vec3f(kHighlightCompressionKnee);
     return select(
@@ -795,8 +825,14 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
     if (isEnabled(material.prelit) || isEnabled(material.unlit)) {
         finalColor = baseColor.rgb;
     } else {
+        // GX-faithful: soft-saturate the (ambient + diffuse) lighting sum before
+        // it modulates the texture so a hot multi-light venue moment tints the
+        // surface without blowing it past the texture's own brightness to white.
+        // Specular is an additive glint term and is left unclamped (compress-
+        // Highlights handles its tail) so legitimate highlights survive.
+        let litTerm = softClipLighting(ambientLight + totalLighting.diffuse * shadowFactor);
         finalColor =
-            baseColor.rgb * (ambientLight + totalLighting.diffuse * shadowFactor) +
+            baseColor.rgb * litTerm +
             totalLighting.specular * shadowFactor;
     }
 
