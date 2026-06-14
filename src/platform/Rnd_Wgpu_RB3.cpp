@@ -3938,8 +3938,14 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
                          (strstr(mesh->Name(), "plaidshirt") ||
                          strstr(mesh->Name(), "trackjacket") || strstr(mesh->Name(), "shirt") ||
                          strstr(mesh->Name(), "jacket") || strstr(mesh->Name(), "vestdenim")));
+        // IK diagnosis (render-polish wave-4): allow delaying the one-shot to a min
+        // frame so we capture the leg chain AFTER animation flings it (frame ~121+).
+        static int sBoneProbeMinFrame = -2;
+        if (sBoneProbeMinFrame == -2) { const char* e = getenv("BONE_PROBE_MINFRAME");
+            sBoneProbeMinFrame = e ? atoi(e) : -1; }
         bool doBoneProbe = getenv("BONE_PROBE") && !sBoneProbeDone &&
-                           nameMatch && owner->NumBones() >= 8 && mesh->Name();
+                           nameMatch && owner->NumBones() >= 8 && mesh->Name() &&
+                           (sBoneProbeMinFrame < 0 || (int)mFrameCount >= sBoneProbeMinFrame);
         auto det3 = [](const Hmx::Matrix3& m) {
             return m.x.x*(m.y.y*m.z.z - m.y.z*m.z.y)
                  - m.x.y*(m.y.x*m.z.z - m.y.z*m.z.x)
@@ -4677,6 +4683,64 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
             }
             float lext = sqrtf((lmx[0]-lmn[0])*(lmx[0]-lmn[0])+(lmx[1]-lmn[1])*(lmx[1]-lmn[1])+(lmx[2]-lmn[2])*(lmx[2]-lmn[2]));
             float wext = sqrtf((wmx[0]-wmn[0])*(wmx[0]-wmn[0])+(wmx[1]-wmn[1])*(wmx[1]-wmn[1])+(wmx[2]-wmn[2])*(wmx[2]-wmn[2]));
+            // IK_SHARD_VERT (render-polish wave-4 IK diagnosis): localize the single
+            // worst-flung vertex of a candidate-shard mesh and attribute it to its
+            // dominant bone, then report that bone's composed-skin rotation row vs the
+            // bone's WORLD rotation row. The earlier per-bone-ORIGIN measures
+            // (REBIND_DRAW_SKINPOS, C8_SLOT skin.v) only test translation; a vertex at
+            // radius R from the bone with a rotation-basis error theta flings by
+            // R*sin(theta), invisible to an origin-only metric. This finds the bone
+            // whose basis flings the far verts. Gated; render-inert.
+            if (getenv("IK_SHARD_VERT") && wext > 60.f) {
+                static const char* sSel = getenv("IK_SHARD_VERT");
+                const char* mn0 = mesh->Name() ? mesh->Name() : "?";
+                bool match = (sSel[0]=='*' && sSel[1]==0);
+                if (!match && mn0) { char buf[256]; std::strncpy(buf,sSel,255); buf[255]=0;
+                    for(char*tok=std::strtok(buf,",");tok;tok=std::strtok(nullptr,","))
+                        if(std::strstr(mn0,tok)){match=true;break;} }
+                if (match) {
+                    float wcx=0.5f*(wmn[0]+wmx[0]),wcy=0.5f*(wmn[1]+wmx[1]),wcz=0.5f*(wmn[2]+wmx[2]);
+                    int worstI=-1, worstBone=-1; float worstD=0.f, worstW=0.f;
+                    float wlx=0,wly=0,wlz=0;
+                    for (int i=0;i<n;i+=step){
+                        const GpuVertexSkinned& g = skinnedView[i];
+                        float lx=g.pos[0],ly=g.pos[1],lz=g.pos[2];
+                        float ox=0,oy=0,oz=0,wsum=0; int dom=-1; float domW=0;
+                        for(int k=0;k<4;k++){int bi=g.boneIndices[k];if(bi<0||bi>=kMaxBones)bi=0;
+                            float w=g.boneWeights[k];wsum+=w;if(w>domW){domW=w;dom=bi;}
+                            const float* m=bones.bones[bi];
+                            ox+=w*(m[0]*lx+m[4]*ly+m[8]*lz+m[12]);
+                            oy+=w*(m[1]*lx+m[5]*ly+m[9]*lz+m[13]);
+                            oz+=w*(m[2]*lx+m[6]*ly+m[10]*lz+m[14]);}
+                        float dx=ox-wcx,dy=oy-wcy,dz=oz-wcz;float d=sqrtf(dx*dx+dy*dy+dz*dz);
+                        if(d>worstD){worstD=d;worstI=i;worstBone=dom;worstW=domW;
+                            wlx=lx;wly=ly;wlz=lz;}
+                    }
+                    if (worstBone>=0 && owner) {
+                        RndTransformable* wb = (worstBone<owner->NumBones())?owner->BoneTransAt(worstBone):nullptr;
+                        const Transform& off = owner->BoneOffsetAt(worstBone);
+                        const Transform& wt = wb?wb->WorldXfm():off;
+                        // radius of the bind vert from this bone's bind origin (model space)
+                        // = |off^-1 applied... | -> use |vert - (-off.v)| approximated by |vert|
+                        // The composed skin row0 vs bone world row0 tells if the basis rotated.
+                        Transform sk; Multiply(off, wt, sk);
+                        float rdx=wlx-(-off.v.x),rdy=wly-(-off.v.y),rdz=wlz-(-off.v.z);
+                        float R=sqrtf(rdx*rdx+rdy*rdy+rdz*rdz);
+                        static std::unordered_map<std::string,int> sV;
+                        std::string key=mn0;
+                        if (sV[key]++ % 30 == 0)
+                            fprintf(stderr,
+                                "[IK_SHARD_VERT] mesh='%s' wext=%.0f worstVtx=%d domBone[%d]='%s' w=%.2f "
+                                "vertR=%.1f vertDevFromCentroid=%.0f bindVert=(%.1f,%.1f,%.1f)\n"
+                                "    boneWorld.v=(%.1f,%.1f,%.1f) boneWorldRow0=(%.2f,%.2f,%.2f) "
+                                "skinRow0=(%.2f,%.2f,%.2f) off.v=(%.1f,%.1f,%.1f)\n",
+                                mn0, wext, worstI, worstBone, (wb&&wb->Name())?wb->Name():"?", worstW,
+                                R, worstD, wlx,wly,wlz,
+                                wt.v.x,wt.v.y,wt.v.z, wt.m.x.x,wt.m.x.y,wt.m.x.z,
+                                sk.m.x.x,sk.m.x.y,sk.m.x.z, off.v.x,off.v.y,off.v.z);
+                    }
+                }
+            }
             // RATIO test (blended-extent / bind-extent). Measuring every skinned
             // mesh over the song shows a roughly bimodal split: correctly-posed
             // meshes (crowd bodies, extras bodies, hair, mic stand, animated
