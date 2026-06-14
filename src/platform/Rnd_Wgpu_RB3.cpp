@@ -5317,8 +5317,57 @@ void BandRnd::DrawParticles(RndParticleSys* sys) {
     const Transform& camXfm = cam->WorldXfm();
     float rx = camXfm.m.x.x, ry = camXfm.m.x.y, rz = camXfm.m.x.z;  // right
     float ux = camXfm.m.z.x, uy = camXfm.m.z.y, uz = camXfm.m.z.z;  // up
+    float fx = camXfm.m.y.x, fy = camXfm.m.y.y, fz = camXfm.m.y.z;  // forward
+    float cpx = camXfm.v.x, cpy = camXfm.v.y, cpz = camXfm.v.z;     // cam pos
 
     const Transform& relXfm = sys->RelativeXfm();
+
+    // Material register color modulates the rasterized particle (Milo material
+    // model: the per-particle ramp color is the RASTER color; the material's
+    // RGBA register then multiplies it — same as a mesh's mat->color × texture).
+    // The fog/cloud systems in the menu shell carry authored alpha dampeners
+    // (fog_thin.mat=0.10, fog.mat=0.50, cloud_a01.mat=0.48) that scale their
+    // density down to a thin atmospheric haze. The original DC3-derived billboard
+    // path dropped this term (c = tex × p->col only), so RB3's menu street-fog —
+    // resurrected by the Wii-matched InitParticle sim fix — rendered at up to 10×
+    // its intended opacity (a green-grey full-frame wash). Folding matColor in
+    // restores the authored thinness; for the typical mat (color 1,1,1,1) it is a
+    // no-op, so gameplay venue FX / A1 hit-flames are unchanged. Opt-out:
+    // RB3_PART_MATCOLOR_OFF=1 for A/B.
+    float mcr = 1.0f, mcg = 1.0f, mcb = 1.0f, mca = 1.0f;
+    static const bool sPartMatColorOff = getenv("RB3_PART_MATCOLOR_OFF") != nullptr;
+    if (!sPartMatColorOff) {
+        const Hmx::Color& mc = mat->GetColor();
+        mcr = mc.red; mcg = mc.green; mcb = mc.blue; mca = mc.alpha;
+    }
+    // Atmospheric-haze thinning. The shell street-fog (fog.mat a=0.50,
+    // fog_thin.mat a=0.10) is authored heavier on the Wii data path than the
+    // retail (360/PS3) reference's thin haze — a full-frame green-grey wash once
+    // the Wii-matched sim revived these systems. We pull the dampened-alpha
+    // (mca < 1) systems toward the retail look with an additional alpha scale,
+    // scoped so the common mca==1 venue FX / A1 hit-flames are untouched.
+    // Tunable (RB3_PART_HAZE_SCALE, default 0.35); opt-out RB3_PART_HAZE_OFF=1.
+    static const bool sHazeOff = getenv("RB3_PART_HAZE_OFF") != nullptr;
+    static const float sHazeScale = []{
+        const char* e = getenv("RB3_PART_HAZE_SCALE");
+        return e ? (float)atof(e) : 0.35f;
+    }();
+    bool isHaze = (!sHazeOff && !sPartMatColorOff && mca < 0.999f);
+    if (isHaze) {
+        mca *= sHazeScale;
+    }
+    // Near-camera fade for haze systems. A large soft fog sprite (size up to
+    // ~130 u here) whose centre is close to / behind the camera fills the whole
+    // frame as the menu camera shots dolly THROUGH the street-fog volume — the
+    // single worst-case wash (one camera-shot still smothered the frame at 60%+
+    // even after the alpha thinning above). Retail's same walking-band shot keeps
+    // the band readable against deep blacks, so the on-screen fog must fade as the
+    // camera enters it. We fade each haze particle by how far its centre sits in
+    // front of the camera relative to its own half-size: full alpha once it is
+    // >= kFar half-sizes ahead, fading to 0 at/behind the camera. Only touches
+    // dampened-alpha haze systems (gameplay FX / A1 flames have mca==1 → skipped).
+    // Opt-out RB3_PART_NEARFADE_OFF=1.
+    static const bool sNearFadeOff = getenv("RB3_PART_NEARFADE_OFF") != nullptr;
 
     // Build the vertex stream (4 verts/particle: TL, BL, TR, BR).
     static std::vector<RB3ParticleVertex> sVerts;   // reused across calls
@@ -5349,7 +5398,21 @@ void BandRnd::DrawParticles(RndParticleSys* sys) {
         }
 
         float cx = worldPos.x, cy = worldPos.y, cz = worldPos.z;
-        float cr = p->col.red, cg = p->col.green, cb = p->col.blue, ca = p->col.alpha;
+        float cr = p->col.red * mcr, cg = p->col.green * mcg,
+              cb = p->col.blue * mcb, ca = p->col.alpha * mca;
+
+        // Near-camera fade (haze systems only): forward distance from camera to
+        // this particle's centre, measured in units of its half-size. Fade to 0
+        // by the time the centre is at/behind the camera, full strength once it
+        // is kFar half-sizes ahead. Cheap dot product against the cam forward.
+        if (isHaze && !sNearFadeOff) {
+            float dForward = (cx - cpx) * fx + (cy - cpy) * fy + (cz - cpz) * fz;
+            float hs = halfSize > 1.0f ? halfSize : 1.0f;
+            const float kFar = 2.0f;   // full alpha once >= 2 half-sizes ahead
+            float t = dForward / (hs * kFar);
+            if (t < 0.0f) t = 0.0f; else if (t > 1.0f) t = 1.0f;
+            ca *= t;
+        }
 
         RB3ParticleVertex v;
         v.color[0] = cr; v.color[1] = cg; v.color[2] = cb; v.color[3] = ca;
