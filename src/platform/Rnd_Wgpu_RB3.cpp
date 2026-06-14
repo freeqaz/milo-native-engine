@@ -1955,12 +1955,20 @@ bool BandRnd::HighwayBloomEnabled() {
 }
 
 // Halo-source classifier. The halo must be CONFINED to the small, bright emissive
-// meshes — the gem cores (prism_mat, emisMap=prism_gem_emissive, mult 1.0) and the
-// now-bar/strike (gem_smasher_glow, emisMap + mult 0.90). Two exclusions keep it
-// from washing the scene (the first attempt did both):
+// gem cores (prism_mat, emisMap=prism_gem_emissive, mult 1.0). Exclusions keep it
+// from washing the scene:
 //   - surface.mat (the highway watermark) is also emissive but is a FULL QUAD;
 //     blooming a full quad washes the whole track + lifts the black point. Exclude
 //     it by name — it's the one full-plane emissive on the highway.
+//   - gem_smasher_glow.mat (the held-fret / now-bar strike glow): originally a halo
+//     source, but it is a now-bar-sized plate textured with a SOFT radial glow, not
+//     a small gem core. Blooming it (then compounded by the wave-2 ×2 now-bar boost)
+//     produced a GIANT WHITE SPHERE hovering above the now-bar that occluded gems in
+//     bloom-heavy venues (wave-2 regression, repro: 20th Century Boy ~49.5s). The
+//     glow already draws additively at authored intensity in the main pass — the
+//     bloom only over-amplified it into the sphere. Exclude it so the held-fret glow
+//     stays its small per-slot colour without the halo blowout. (Opt back in via
+//     RB3_SMASHER_HALO=1 for A/B; default-off.)
 //   - The additive-blend test (kBlendAdd/kBlendSrcAlphaAdd) was dropped: its only
 //     unique catches were the HUD overdrive/streak meter-glass lenses, which bloom
 //     into the HUD. The now-bar is already selected by its emissive map, so the
@@ -1971,6 +1979,14 @@ bool BandRnd::IsHaloSourceMat(RndMat* mat) {
     if ((RndTex*)mat->mEmissiveMap == nullptr || mat->mEmissiveMultiplier <= 0.0f) return false;
     const char* mn = mat->Name();
     if (mn && std::strstr(mn, "surface")) return false;   // full-quad track plane — would wash
+    if (mn && std::strstr(mn, "gem_smasher_glow")) {       // now-bar plate — blooms to a white sphere
+        static int sSmasherHalo = -1;
+        if (sSmasherHalo < 0) {
+            const char* e = getenv("RB3_SMASHER_HALO");
+            sSmasherHalo = (e && e[0] && e[0] != '0') ? 1 : 0;
+        }
+        if (!sSmasherHalo) return false;
+    }
     return true;
 }
 
@@ -4793,6 +4809,13 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
             // emissive MAP, bound by particle_slot_colors.anim); the standard
             // shader's emissive term now falls back to a white tint for near-black
             // bases (see standard_wgsl.inc) so a held fret actually lights up.
+            //
+            // wave-4: the original ×2.0 boost OVER-brightened the colored emissive
+            // sample so its bright core clamped to white, washing the per-slot hue
+            // (green/red/yellow/blue/orange) to near-white. (This combined with the
+            // halo bloom — now excluded in IsHaloSourceMat — to make the giant white
+            // sphere.) Reduced to ×1.25 so the now-bar stays clearly brighter than
+            // authored while keeping the per-slot colour from saturating to white.
             // Opt-out RB3_FRET_GLOW_OFF=1 zeroes the multiplier → invisible (old
             // behaviour) for clean A/B of the held-fret glow.
             if (std::strcmp(mname, "gem_smasher_glow.mat") == 0) {
@@ -4801,7 +4824,7 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
                     const char* e = getenv("RB3_FRET_GLOW_OFF");
                     sFretGlowOff = (e && e[0] && e[0] != '0') ? 1 : 0;
                 }
-                mu.emissiveMultiplier = sFretGlowOff ? 0.0f : mu.emissiveMultiplier * 2.0f;
+                mu.emissiveMultiplier = sFretGlowOff ? 0.0f : mu.emissiveMultiplier * 1.25f;
             }
             // SP "peak state" blue track overlay (peakstate_plane, spotlight_*_track.tex
             // filigree) fades in via PropAnim once the streak hits 4x, but draws faint
