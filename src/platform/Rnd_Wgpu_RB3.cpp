@@ -31,6 +31,7 @@
 #include <cstring>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // The single global renderer. TheRnd (declared extern in rndobj/Rnd.h) is a
@@ -4100,6 +4101,59 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
         // BISECT: force identity palette to test mesh/weights/indices vs posing.
         static int sBonesIdentity = -1;
         if (sBonesIdentity < 0) sBonesIdentity = getenv("RB3_BONES_IDENTITY") ? 1 : 0;
+        // render-polish wave-5 (pose-fling) — STALE-WORLDXFM-CACHE FIX.
+        //
+        // ROOT CAUSE (rb3 docs/native/render-polish-2026-06-11/task-pose-fling-impl.md):
+        // a band member's per-member skeleton LEAF bones (ankle/toe/finger) carry a
+        // STALE mWorldXfm cache. The bone LOCAL transforms are correct (orthonormal,
+        // sane bone-offset lengths) and the parent (knee/thigh/pelvis) worlds are
+        // correct, but the leaf's cached world was composed against an EARLIER flung
+        // intermediate pose and never re-read after the parent was corrected by a later
+        // pose pass — so RndTransformable::WorldXfm() returns the stale value (dirty bit
+        // already cleared). A leaf ankle then reads world Z=-33 (below floor) off a knee
+        // that is itself at Z=+25, an impossible >2x AABB jump that the V24 shard guard
+        // (below) correctly refuses to draw -> legwear/footwear/fingernails/gloves
+        // guard-dropped (the "pose fling"). PROVEN: a forced top-down WorldXfm_Force of
+        // the leg chain snaps the ankle from Z=-33 to the correct Z=+4 (CHAIN_FORCE
+        // probe). This is NATIVE-specific: it does not reproduce on Wii (single 32-bit
+        // pose pass per frame); on native the band skeleton is re-posed across the
+        // reload-re-entrant + IK passes and a WorldXfm() read between them caches a
+        // pre-final intermediate.
+        //
+        // FIX: before reading the bone palette, force a fresh top-down WorldXfm recompute
+        // of every bone this mesh references, by walking each bone's TransParent chain to
+        // the root and forcing root->leaf (WorldXfm_Force composes against the parent's
+        // already-forced world). Idempotent + cheap (short shared chains; visited-set
+        // dedups across bones of the same mesh). Skinned-meshes only, so crowd/extras
+        // skeletons get the same correctness pass — but they were already coherent (their
+        // single pose pass leaves no stale leaf), so it is a no-op for them. Opt-out
+        // RB3_NO_SKEL_WORLDFIX=1.
+        {
+            static int sWorldFixOff = -1;
+            if (sWorldFixOff < 0) sWorldFixOff = getenv("RB3_NO_SKEL_WORLDFIX") ? 1 : 0;
+            if (!sWorldFixOff) {
+                static std::unordered_set<RndTransformable*> sForced;
+                sForced.clear();
+                RndTransformable* chain[64];
+                for (int b = 0; b < numBones; b++) {
+                    RndTransformable* bt = owner->BoneTransAt(b);
+                    if (!bt) continue;
+                    // collect leaf->root, stop at an already-forced node (its ancestors
+                    // are forced too)
+                    int nc = 0;
+                    for (RndTransformable* n = bt; n && nc < 64; n = n->TransParent()) {
+                        if (sForced.count(n)) break;
+                        chain[nc++] = n;
+                    }
+                    // force root->leaf so each composes against a fresh parent world
+                    for (int s = nc - 1; s >= 0; s--) {
+                        chain[s]->DirtyLocalXfm();   // mark dirty (re-arm the cache)
+                        chain[s]->WorldXfm_Force();  // recompute against fresh parent
+                        sForced.insert(chain[s]);
+                    }
+                }
+            }
+        }
         for (int b = 0; b < numBones; b++) {
             RndTransformable* bt = owner->BoneTransAt(b);
             // Identity fallback for a null/garbage bone.
@@ -4526,6 +4580,107 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
                                 cm[12], cm[13], cm[14],
                                 bindP[b*3+0], bindP[b*3+1], bindP[b*3+2], sd,
                                 w.m.x.x, w.m.x.y, w.m.x.z);
+                            // CHAIN_PROBE (render-polish wave-5 pose-fling diagnosis):
+                            // when set to a bone-name substring, walk THIS bone's
+                            // TransParent chain from leaf -> root and dump each link's
+                            // LOCAL transform translation magnitude + rotation det +
+                            // world translation. A faithful skeleton has small, ~constant
+                            // bone-LOCAL .v (bind offsets, e.g. femur ~17u). The fling
+                            // ancestor is the link whose LOCAL .v (or .v.y in particular)
+                            // is huge or whose det != 1 / row lengths != 1. Render-inert.
+                            const char* chainSel = getenv("CHAIN_PROBE");
+                            if (chainSel && chainSel[0] && bt->Name() &&
+                                strstr(bt->Name(), chainSel)) {
+                                // CHAIN_FORCE: dirty + recompute the whole chain top-down
+                                // before sampling. If the flung world snaps to the correct
+                                // (manualW) value, the bug is a STALE WorldXfm cache (dirty
+                                // bit not set / not propagated), NOT a bad local pose.
+                                if (getenv("CHAIN_FORCE")) {
+                                    // collect chain leaf->root
+                                    RndTransformable* stack[40]; int ns=0;
+                                    for (RndTransformable* n=bt; n && ns<40; n=n->TransParent())
+                                        stack[ns++]=n;
+                                    // force-recompute root->leaf
+                                    for (int s=ns-1; s>=0; s--) {
+                                        stack[s]->DirtyLocalXfm(); // mark dirty
+                                        stack[s]->WorldXfm_Force();
+                                    }
+                                }
+                                // CHAIN_PROPTEST: dirty the PARENT (knee) and check whether
+                                // the child (ankle) becomes dirty. If the ankle stays clean,
+                                // the parent->child dirty-cache linkage is SEVERED (the bug).
+                                if (getenv("CHAIN_PROPTEST")) {
+                                    RndTransformable* leaf = bt;            // ankle
+                                    RndTransformable* par = leaf->TransParent(); // knee
+                                    if (par) {
+                                        bool leafBefore = leaf->Dirty();
+                                        par->DirtyLocalXfm();   // dirty the knee (propagates)
+                                        bool leafAfter = leaf->Dirty();
+                                        fprintf(stderr,
+                                            "[CHAIN_PROPTEST] leaf='%s' par='%s' leafDirtyBefore=%d "
+                                            "leafDirtyAfterParentDirty=%d %s\n",
+                                            leaf->Name()?leaf->Name():"?",
+                                            par->Name()?par->Name():"?",
+                                            (int)leafBefore, (int)leafAfter,
+                                            leafAfter ? "(propagation OK)" : "*** LINKAGE SEVERED ***");
+                                    }
+                                }
+                                RndTransformable* node = bt;
+                                int g2 = 0;
+                                while (node && g2++ < 40) {
+                                    // capture dirty BEFORE any WorldXfm() (which clears it)
+                                    bool wasDirty = node->Dirty();
+                                    const Transform& L = node->LocalXfm();
+                                    const Transform& W = node->WorldXfm();
+                                    float ldet = L.m.x.x*(L.m.y.y*L.m.z.z - L.m.y.z*L.m.z.y)
+                                               - L.m.x.y*(L.m.y.x*L.m.z.z - L.m.y.z*L.m.z.x)
+                                               + L.m.x.z*(L.m.y.x*L.m.z.y - L.m.y.y*L.m.z.x);
+                                    float rx = sqrtf(L.m.x.x*L.m.x.x+L.m.x.y*L.m.x.y+L.m.x.z*L.m.x.z);
+                                    float ry = sqrtf(L.m.y.x*L.m.y.x+L.m.y.y*L.m.y.y+L.m.y.z*L.m.y.z);
+                                    float rz = sqrtf(L.m.z.x*L.m.z.x+L.m.z.y*L.m.z.y+L.m.z.z*L.m.z.z);
+                                    float lvmag = sqrtf(L.v.x*L.v.x+L.v.y*L.v.y+L.v.z*L.v.z);
+                                    fprintf(stderr,
+                                        "[CHAIN] f=%d g=%d '%s' Lv=(%.2f,%.2f,%.2f)|%.1f| "
+                                        "Ldet=%.3f Lrow=(%.2f,%.2f,%.2f) Wv=(%.1f,%.1f,%.1f)\n",
+                                        mFrameCount, g2, node->Name()?node->Name():"?",
+                                        L.v.x, L.v.y, L.v.z, lvmag, ldet, rx, ry, rz,
+                                        W.v.x, W.v.y, W.v.z);
+                                    if (getenv("CHAIN_MTX"))
+                                        fprintf(stderr,
+                                            "[CHAIN_MTX]   Lm.x=(%.3f,%.3f,%.3f) Lm.y=(%.3f,%.3f,%.3f) "
+                                            "Lm.z=(%.3f,%.3f,%.3f)\n",
+                                            L.m.x.x, L.m.x.y, L.m.x.z, L.m.y.x, L.m.y.y, L.m.y.z,
+                                            L.m.z.x, L.m.z.y, L.m.z.z);
+                                    // CHAIN_COMPOSE: manually compose parent.world o this.local
+                                    // and compare to this.WorldXfm(). A mismatch proves a stale
+                                    // cache / wrong-parent / unexpected-constraint bug. Also dump
+                                    // TransConstraint(). Render-inert.
+                                    if (getenv("CHAIN_COMPOSE")) {
+                                        RndTransformable* par = node->TransParent();
+                                        int con = (int)node->TransConstraint();
+                                        fprintf(stderr, "[CHAIN_DIRTY]   '%s' wasDirtyPreRead=%d\n",
+                                                node->Name()?node->Name():"?", (int)wasDirty);
+                                        if (par) {
+                                            Transform comp;
+                                            Multiply(L, par->WorldXfm(), comp);
+                                            float dvx = comp.v.x - W.v.x, dvy = comp.v.y - W.v.y,
+                                                  dvz = comp.v.z - W.v.z;
+                                            float dvmag = sqrtf(dvx*dvx+dvy*dvy+dvz*dvz);
+                                            fprintf(stderr,
+                                                "[CHAIN_COMPOSE]   con=%d parW=(%.1f,%.1f,%.1f) "
+                                                "manualW=(%.1f,%.1f,%.1f) cacheW=(%.1f,%.1f,%.1f) "
+                                                "dMag=%.2f%s\n",
+                                                con, par->WorldXfm().v.x, par->WorldXfm().v.y,
+                                                par->WorldXfm().v.z, comp.v.x, comp.v.y, comp.v.z,
+                                                W.v.x, W.v.y, W.v.z, dvmag,
+                                                dvmag > 1.0f ? " *** CACHE MISMATCH ***" : "");
+                                        } else {
+                                            fprintf(stderr, "[CHAIN_COMPOSE]   con=%d (root)\n", con);
+                                        }
+                                    }
+                                    node = node->TransParent();
+                                }
+                            }
                         }
                         lastW[b*3+0] = w.v.x; lastW[b*3+1] = w.v.y; lastW[b*3+2] = w.v.z;
                     }
