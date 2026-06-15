@@ -2571,6 +2571,32 @@ struct VOut {
         color = color + bloomContrib * pp.bloomColor.a;
     }
 
+    // Gameplay-entry "first-frame flash" guard. The postproc composite (render the
+    // venue into the offscreen intermediate, then grade-blit it to the framebuffer)
+    // structurally over-brightens the venue during its song-START lighting REVEAL
+    // (the stage lights flash up as gameplay begins; the native lit-path runs that
+    // peak hotter than the Wii's GX backdrop), washing the WHOLE venue to a flat
+    // pink/white field for the first ~1-2s. Measured: with the composite the venue
+    // first-frame clipW (pixels pinned white in all channels) hits 9/16 boots
+    // >5% (max ~83%); rendering DIRECT (no composite) it is 0/16. The composite
+    // grade params are neutral here — the wash survives identity levels + bloom-off
+    // + noise-off — so it is the intermediate→composite STRUCTURE, not a grade term.
+    //
+    // Guard: soft-clip the composite OUTPUT with a Reinhard rolloff to a ceiling
+    // BELOW pure white, so a hot venue moment compresses to a bright-but-readable
+    // result instead of clipping to a flat white wash. Identity below the knee
+    // (correctly-exposed venue/menu/song-select frames are untouched — they never
+    // reach the knee), C1-continuous above. The composite grades ONLY the venue
+    // backdrop (the gameplay highway / gems / HUD draw UNGRADED on the framebuffer
+    // after the mid-frame flush — FlushPostProcMidFrame), so this never dims the
+    // HUD, gem cores, or bright UI.
+    let ppCeil = 0.97;
+    let ppKnee = 0.82;
+    let ppSpan = ppCeil - ppKnee;
+    let ppOver = max(color - vec3f(ppKnee), vec3f(0.0));
+    let ppRolled = vec3f(ppKnee) + vec3f(ppSpan) * (ppOver / (ppOver + vec3f(ppSpan)));
+    color = select(color, ppRolled, color > vec3f(ppKnee));
+
     return vec4f(clamp(color, vec3f(0.0), vec3f(1.0)), 1.0);
 }
 )WGSL";
