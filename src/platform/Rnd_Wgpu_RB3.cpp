@@ -1088,6 +1088,30 @@ static bool sVenueLightEnabled() {
     return v != 0;
 }
 
+// render-polish 2026-06-11 (menu-contrast, wave-5 "Fix 3"): the venue-light
+// heuristic's floor lighting (the ambient floor, the near-white-ambient clamp,
+// and the no-light grey key) was tuned conservatively-bright so nothing crushed
+// to black — but on the menu hub it lifts the *unlit-by-design* (ue=1) brick /
+// sidewalk / band-outfit geometry to a flat grey, killing the contrast vs retail
+// (loop-wide 3x3 contrast ~2.6:1 vs retail ~10:1; dark cells 0.16 vs 0.035).
+// Pulling these floors DOWN lets the rich authored point lights (lamppole/road/
+// theater spots, colors 1-3.0 with quadratic range falloff) carry the
+// illumination while the far-from-light zones go dark — exactly retail's dark
+// backdrop + bright-neon-hotspot look. The point/neon emissive (mUseEnviron==0
+// unlit mats + emissive maps) is UNAFFECTED — it bypasses this lighting path
+// entirely (register colour / self-illum), so the signs/marquee still pop.
+// Tunable for A/B; defaults are the tuned values. Applies to the venue path
+// (world.cam, RB3_VENUE_LIGHT on) only, so game.cam (highway) is byte-identical.
+static float sVenueEnvFloat(const char* env, float def) {
+    const char* e = getenv(env);
+    if (!e || !e[0]) return def;
+    float v = (float)atof(e);
+    return (v >= 0.f) ? v : def;
+}
+static float sVenueAmbientFloor() { static float v = sVenueEnvFloat("RB3_VENUE_AMBIENT_FLOOR", 0.008f); return v; }
+static float sVenueAmbientClamp() { static float v = sVenueEnvFloat("RB3_VENUE_AMBIENT_CLAMP", 0.09f);  return v; }
+static float sVenueGreyKey()      { static float v = sVenueEnvFloat("RB3_VENUE_GREY_KEY",      0.22f);  return v; }
+
 void BandRnd::WriteSceneUniforms(RndCam* cam) {
     SceneUniforms s{};
 
@@ -1199,10 +1223,17 @@ void BandRnd::WriteSceneUniforms(RndCam* cam) {
         // nothing crushes to pure black.
         const Hmx::Color& amb = venv->AmbientColor();
         float ar = amb.red, ag = amb.green, ab = amb.blue;
-        if (std::max(ar, std::max(ag, ab)) > 0.85f) { ar *= 0.25f; ag *= 0.25f; ab *= 0.25f; }
-        s.ambientColor[0] = std::max(ar, 0.07f);
-        s.ambientColor[1] = std::max(ag, 0.07f);
-        s.ambientColor[2] = std::max(ab, 0.07f);
+        // Near-white ambient is the engine's degenerate default (e.g. env='' that
+        // scopes the band outfits at ambRaw=1,1,1), not an authored flood — clamp
+        // it down hard so it doesn't grey-wash the walking band / props.
+        const float clamp = sVenueAmbientClamp();
+        if (std::max(ar, std::max(ag, ab)) > 0.85f) { ar *= clamp; ag *= clamp; ab *= clamp; }
+        // Floor so nothing crushes to pure black, but low enough that the
+        // far-from-light venue geometry reaches retail's deep blacks.
+        const float floor = sVenueAmbientFloor();
+        s.ambientColor[0] = std::max(ar, floor);
+        s.ambientColor[1] = std::max(ag, floor);
+        s.ambientColor[2] = std::max(ab, floor);
         s.ambientColor[3] = 1.0f;
         // RB3_VENUE_PROBE: dump what each DISTINCT venue RndEnviron contains (once
         // per env name), so tuning is grounded in real light data not static
@@ -1259,7 +1290,8 @@ void BandRnd::WriteSceneUniforms(RndCam* cam) {
             // lights (e.g. theater.env's coloured stage spots), else a grey key
             // would wash the authored colour out.
             s.lightDirs[0][0] = -0.4f; s.lightDirs[0][1] = -0.5f; s.lightDirs[0][2] = -0.75f; s.lightDirs[0][3] = 0;
-            s.lightColors[0][0] = 0.6f; s.lightColors[0][1] = 0.6f; s.lightColors[0][2] = 0.6f; s.lightColors[0][3] = 1.0f;
+            const float grey = sVenueGreyKey();
+            s.lightColors[0][0] = grey; s.lightColors[0][1] = grey; s.lightColors[0][2] = grey; s.lightColors[0][3] = 1.0f;
             dl = 1;
         }
         s.numLights = dl;
