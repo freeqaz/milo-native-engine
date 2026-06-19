@@ -4938,15 +4938,74 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
             // SHARD_GUARD_OFF. Residual: a few small held-prop slivers (lighter/
             // clap, ratio <2.0) can still flicker for a frame — see VENUE_RENDER
             // V24 (a full fix needs the CharServo skeleton-math root-cause).
-            bool degenerate = (wext > 15.f) && (lext > 0.001f) && (wext > 2.0f * lext);
+            // render-polish wrap-up (pose-footwear-shard): the wave-5 WorldXfm
+            // recompose (L4104-4156) repaired the BAND pose — its garment bones now
+            // read SANE world coords (C8_PROBE: dropped footwear bones at-floor,
+            // skinDet=1.0). The residual band-garment drops are a FALSE POSITIVE in
+            // the fixed 2.0x ratio: a SMALL-bind garment (boot/glove/legwear, bind
+            // ~12-25u; fingernails ~36u) legitimately spans 2.0-3.5x its tiny bind
+            // AABB when the limb it skins curls hard, WITHOUT the world extent ever
+            // becoming geometrically impossible (measured 25-85u across ALL band
+            // footwear/gloves/legwear). A genuine band tear produces a far larger
+            // world span (the wave-5 BEFORE leg fling reached hundreds of u, below
+            // floor). The clean discriminator is the bone's owning skeleton, NOT the
+            // ratio or the world extent: band garments resolve to the static shared
+            // band skeleton (char/char/main/skeleton_unshared.milo, root=playerN),
+            // while crowd/extras true shards bind char/extras|crowd/*.milo with a
+            // ~200u skin-vs-bind smear, and instruments/UI bind prop/UI dirs. Same
+            // detector as the wave-6 rebake (L4042). So: for BAND-member garments
+            // ONLY, relax to a wider ratio cap (4.0x; deep curl tops out ~3.5x,
+            // true tears jump >4.4x) PLUS an absolute world-extent cap (110u; > any
+            // measured band garment of 85u, far below any real fling) as a backstop
+            // so the relaxation can never pass a truly exploded band mesh. Crowd /
+            // extras / instrument / UI keep the proven, crowd-safe 2.0x EXACTLY.
+            // Native-only file -> Wii byte-identical + DC3-inert by construction.
+            bool bandMember = false;
+            int nb = owner ? owner->NumBones() : 0;
+            for (int bm = 0; bm < nb && !bandMember; bm++) {
+                RndTransformable* bbt = owner->BoneTransAt(bm);
+                ObjectDir* bbd = bbt ? bbt->Dir() : 0;
+                if (bbd && !bbd->mStoredFile.empty() &&
+                    strstr(bbd->mStoredFile.c_str(), "skeleton_unshared.milo") != 0)
+                    bandMember = true;
+            }
+            bool degenerate;
+            if (bandMember) {
+                // Three caps, all env-tunable for A/B (no rebuild); defaults from the
+                // measured envelope. (1) ratio cap 4.0x: deep limb curl on a normal
+                // garment tops out ~3.5x, true tears jump >4.4x. (2) absolute world
+                // cap 110u: every legit band garment measured <=85u world, while a
+                // real band tear spans 85-400u (the wave-5 BEFORE/RB3_NO_SKEL_WORLDFIX
+                // control: min real tear 44.9u, typical 120-400u) -> 110u is a clean
+                // backstop. (3) world FLOOR 40u below which the ratio test is SKIPPED:
+                // a tiny-bind SUBMESH (a glove fingertip submesh binds ~3.8u; a finger
+                // curl moves it to ~19u world = ratio 5x but geometrically sane) would
+                // false-trip the 4x ratio. The control proves NO real band tear is
+                // <44.9u world, so a 40u floor lets micro-bind submeshes through on a
+                // normal curl while every genuine tear (>=44.9u) still hits the ratio
+                // and/or world cap. Equivalent to the item's "verts within N units of
+                // bind" sanity check, expressed on the already-computed world extent.
+                static const char* sBWC = getenv("RB3_BAND_SHARD_WORLDCAP");
+                static const char* sBRC = getenv("RB3_BAND_SHARD_RATIOCAP");
+                static const char* sBWF = getenv("RB3_BAND_SHARD_WORLDFLOOR");
+                static const float kBandWorldCap = sBWC ? (float)atof(sBWC) : 110.f;
+                static const float kBandRatioCap = sBRC ? (float)atof(sBRC) : 4.0f;
+                static const float kBandWorldFloor = sBWF ? (float)atof(sBWF) : 40.f;
+                bool ratioBad = (wext > kBandWorldFloor) && (wext > kBandRatioCap * lext);
+                degenerate = (wext > 15.f) && (lext > 0.001f) &&
+                             (ratioBad || wext > kBandWorldCap);
+            } else {
+                degenerate = (wext > 15.f) && (lext > 0.001f) && (wext > 2.0f * lext);
+            }
             // SHARD_RATIO_DBG: log EVERY skinned mesh's bind/world extent + ratio,
             // throttled per pointer, to see which slivers slip the threshold.
             if (getenv("SHARD_RATIO_DBG") && wext > 8.f) {
                 const char* mn = mesh->Name() ? mesh->Name() : "?";
                 static std::unordered_map<const void*,int> sR;
                 if (sR[(const void*)mesh]++ % 60 == 0)
-                    fprintf(stderr, "[SHARD_RATIO] mesh='%s' bindExt=%.2f worldExt=%.2f ratio=%.2f%s\n",
-                        mn, lext, wext, wext/(lext+1e-6f), degenerate?" DROP":"");
+                    fprintf(stderr, "[SHARD_RATIO] mesh='%s' bindExt=%.2f worldExt=%.2f ratio=%.2f %s%s\n",
+                        mn, lext, wext, wext/(lext+1e-6f),
+                        bandMember?"band":"other", degenerate?" DROP":"");
             }
             if (degenerate && guardActive) {
                 if (getenv("SHARD_DBG")) {
