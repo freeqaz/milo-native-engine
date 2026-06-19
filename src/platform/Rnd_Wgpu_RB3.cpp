@@ -1113,6 +1113,27 @@ static float sVenueAmbientFloor() { static float v = sVenueEnvFloat("RB3_VENUE_A
 static float sVenueAmbientClamp() { static float v = sVenueEnvFloat("RB3_VENUE_AMBIENT_CLAMP", 0.09f);  return v; }
 static float sVenueGreyKey()      { static float v = sVenueEnvFloat("RB3_VENUE_GREY_KEY",      0.22f);  return v; }
 
+// render-polish 2026-06-19 (lighting-polish wrap-up, sub-item 2 "venue song-start
+// exposure"): the native lit sum (ambient + Sum point/dir diffuse) runs HOTTER than
+// the Wii GX backdrop on disco-lit venues (small_club), so the song-start lighting
+// reveal reads as a flat over-bright PINK field (RB3_PP_OFF=1 raw lit-path: mlum
+// 0.667, dark-cell 0.42 — nothing dark) that the wave-4 softClipLighting + wave-5
+// fs_postproc clip only BOUND, not cure. On GX the rasterised channel color is
+// clamped to [0,1] BEFORE the TEV texture multiply, so stage lights can only TINT
+// a surface; our native path sums up to 4 point + 4 dir authored lights (raw color
+// components reach 3.0, e.g. lamppole.lit (3.0,0.14,0)) into the lit term unbounded.
+// Scale the LIGHT contribution (point + dir colors + the no-light grey key) down
+// toward the GX-clamped look so the soft-clip/postproc BACKSTOP instead of doing the
+// work. Ambient is NOT scaled (already floored low); this only tames the bright
+// stage-light pile-up. The scale is applied BEFORE the existing per-channel clamp so
+// a raw-3.0 light still clamps but a moderate light scales proportionally. The same
+// lever darkens the menu-hub point-light mid-bleed (raises contrast — the floor
+// lever is exhausted, the residual was bright-side) and softens the endgame disco
+// peak (green and pink alike) for free. world.cam venue path ONLY → game.cam highway
+// byte-identical. 1.0 = old behavior (clean full revert, no rebuild).
+static float sVenuePointExposure() { static float v = sVenueEnvFloat("RB3_VENUE_POINT_EXPOSURE", 0.70f); return v; }
+static float sVenueDirExposure()   { static float v = sVenueEnvFloat("RB3_VENUE_DIR_EXPOSURE",   0.80f); return v; }
+
 void BandRnd::WriteSceneUniforms(RndCam* cam) {
     SceneUniforms s{};
 
@@ -1269,17 +1290,19 @@ void BandRnd::WriteSceneUniforms(RndCam* cam) {
             if (ty == 1 && dl < 4) {
                 const Vector3& d = L->WorldXfm().m.y;
                 s.lightDirs[dl][0] = d.x; s.lightDirs[dl][1] = d.y; s.lightDirs[dl][2] = d.z; s.lightDirs[dl][3] = 0;
-                s.lightColors[dl][0] = std::min(lc.red, 1.5f);
-                s.lightColors[dl][1] = std::min(lc.green, 1.5f);
-                s.lightColors[dl][2] = std::min(lc.blue, 1.5f);
+                const float de = sVenueDirExposure();
+                s.lightColors[dl][0] = std::min(lc.red * de, 1.5f);
+                s.lightColors[dl][1] = std::min(lc.green * de, 1.5f);
+                s.lightColors[dl][2] = std::min(lc.blue * de, 1.5f);
                 s.lightColors[dl][3] = 1.0f;
                 dl++;
             } else if (ty == 0 && pl < 4) {
                 const Vector3& p = L->WorldXfm().v;                // point light WORLD POSITION
                 s.pointLightPos[pl][0] = p.x; s.pointLightPos[pl][1] = p.y; s.pointLightPos[pl][2] = p.z; s.pointLightPos[pl][3] = 0;
-                s.pointLightColors[pl][0] = std::min(lc.red, 1.8f);
-                s.pointLightColors[pl][1] = std::min(lc.green, 1.8f);
-                s.pointLightColors[pl][2] = std::min(lc.blue, 1.8f);
+                const float pe = sVenuePointExposure();
+                s.pointLightColors[pl][0] = std::min(lc.red * pe, 1.8f);
+                s.pointLightColors[pl][1] = std::min(lc.green * pe, 1.8f);
+                s.pointLightColors[pl][2] = std::min(lc.blue * pe, 1.8f);
                 s.pointLightColors[pl][3] = 1.0f;
                 s.pointLightRanges[pl] = L->Range() > 0.f ? L->Range() : 100.f;
                 pl++;
@@ -1291,7 +1314,10 @@ void BandRnd::WriteSceneUniforms(RndCam* cam) {
             // lights (e.g. theater.env's coloured stage spots), else a grey key
             // would wash the authored colour out.
             s.lightDirs[0][0] = -0.4f; s.lightDirs[0][1] = -0.5f; s.lightDirs[0][2] = -0.75f; s.lightDirs[0][3] = 0;
-            const float grey = sVenueGreyKey();
+            // Dim the ambient-only-env grey key in lockstep with the dir exposure so
+            // the no-light fallback (sky/back_left/road) is darkened too — helps the
+            // menu-hub contrast (sub-item 1) for free.
+            const float grey = sVenueGreyKey() * sVenueDirExposure();
             s.lightColors[0][0] = grey; s.lightColors[0][1] = grey; s.lightColors[0][2] = grey; s.lightColors[0][3] = 1.0f;
             dl = 1;
         }
