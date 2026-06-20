@@ -634,13 +634,16 @@ void AudioDevice::PumpAudio() {
         const char *fenv = getenv("RB3_AUDIO_LATENCY_MS");
         int fixedMs = fenv ? atoi(fenv) : 0;
         sFixedFrames = fenv ? (int)((long long)arate * (fixedMs < 5 ? 5 : fixedMs) / 1000) : -1;
-        // Floor raised 50 -> 180 ms: the measured main-thread stalls are p99=83 ms
-        // and max=200 ms, so a 50 ms floor sat BELOW the stalls it had to ride out
-        // and under-ran on every one. 180 ms keeps the steady-state buffer above
-        // the p99 stall (and the max with the deeper adaptive target on top), at
-        // the cost of ~130 ms more A/V latency — acceptable for music playback and
-        // well within the 743 ms ring. Override with RB3_AUDIO_LAT_MIN_MS.
-        int minMs = getenv("RB3_AUDIO_LAT_MIN_MS") ? atoi(getenv("RB3_AUDIO_LAT_MIN_MS")) : 180;
+        // Floor 50 -> 140 ms: the measured main-thread stalls are p99=83 ms, so the
+        // floor must clear the p99 (50 ms sat below it and under-ran on every stall)
+        // while the deeper adaptive target on top absorbs the rarer max~200 ms. 140 ms
+        // covers p99 with margin at roughly HALF the SFX latency of a blanket 180 ms —
+        // this is a rhythm game, so a flat 180 ms floor is too costly for one-shot
+        // SFX (menu/hit) that queue behind the buffered music. The real fix is to feed
+        // the buffer off the main thread (so stalls don't starve it at all) — see
+        // docs/native/audio-thread-2026-06-20/; this floor is the interim default.
+        // Override with RB3_AUDIO_LAT_MIN_MS.
+        int minMs = getenv("RB3_AUDIO_LAT_MIN_MS") ? atoi(getenv("RB3_AUDIO_LAT_MIN_MS")) : 140;
         int maxMs = getenv("RB3_AUDIO_LAT_MAX_MS") ? atoi(getenv("RB3_AUDIO_LAT_MAX_MS")) : 500;
         if (minMs < 5) minMs = 5;
         sMinFrames    = (int)((long long)arate * minMs / 1000);
