@@ -1176,7 +1176,31 @@ void BandRnd::WriteSceneUniforms(RndCam* cam) {
         if (yfov <= 0.0001f) yfov = 0.9f;
         float n = cam->NearPlane() > 0 ? cam->NearPlane() : 0.1f;
         float f = cam->FarPlane()  > n ? cam->FarPlane()  : (n + 1000.0f);
-        float aspect = (float)mGpu.WindowWidth() / (float)mGpu.WindowHeight();
+        // Aspect + far plane: a cam rendering into an off-screen render target
+        // (clouds RTT, the 2D bowl-imposter crowd) is authored to the TARGET's
+        // aspect, not the window's. Using the window aspect (~1.78 16:9) for a
+        // square (1.0) RT cam throws the projected geometry outside the RT's NDC →
+        // empty target. Derive the aspect from the cam's TargetTex when present
+        // (= RndCam::SetFrustum's kAspect for the imposter cam, Crowd.cpp), else
+        // the window aspect for the normal on-screen scene cam. This also corrects
+        // the clouds RTT projection.
+        float aspect;
+        RndTex* rtAspectTex = cam->TargetTex();
+        if (rtAspectTex && rtAspectTex->Width() > 0 && rtAspectTex->Height() > 0) {
+            aspect = (float)rtAspectTex->Width() / (float)rtAspectTex->Height();
+            // The 2D bowl-imposter crowd re-poses each archetype char to the WORLD
+            // ORIGIN and views it from ~dist away (Crowd.cpp), but SetFrustum
+            // inherits the venue world.cam FAR plane (~224). The char sits at
+            // camera-local depth ~600-1600 ≫ far → every triangle lands behind the
+            // z=1 far clip plane and is clip-volume-culled (a BLACK RT, even with
+            // no depth attachment) — the same failure documented for scrolled
+            // highway gems below. Widen the RT cam's far plane so the standoff char
+            // is inside the clip volume. RT-cam-scoped → main pass + clouds RT (its
+            // own far already encompasses the sky dome) are unchanged.
+            if (f < 8000.0f) f = 8000.0f;
+        } else {
+            aspect = (float)mGpu.WindowWidth() / (float)mGpu.WindowHeight();
+        }
 
         // NativeSettings::fovScale — runtime knob to scale the effective FOV.
         // fovScale > 1.0 narrows the FOV (zoom in, things get bigger);
@@ -1878,6 +1902,15 @@ void BandRnd::BeginDrawTarget(RndTex* tex) {
     mInPass = true;
     mPass.SetBindGroup(0, mSceneBindGroup, 0, nullptr);
     mRtActiveTex = tex;
+    // Force the next DrawMesh to RE-RESOLVE and re-write the scene uniforms for the
+    // camera that draws into this RT. Without this, the DrawMesh camChanged check
+    // (pointer + pose) can MISS the RT cam when it equals mLastSceneCam (e.g. the
+    // 2D bowl-imposter crowd re-Selects the SAME gImpostorCamera object for every
+    // archetype, and its re-posed v/forward can coincide with mLastSceneCamPose) —
+    // so the geometry would project against a STALE (main scene cam) view/proj and
+    // land outside the RT (an empty target). Mirrors EndDrawTarget's reset for the
+    // reverse direction; harmless for the clouds RTT (whose cam already differs).
+    mLastSceneCam = nullptr;
 }
 
 void BandRnd::EndDrawTarget() {
