@@ -3471,6 +3471,22 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     // and select VertexLayoutType::Skinned so vs_skinned blends the verts.
     bool skinned = owner->IsSkinned();
 
+    // HUB_BAR_PROBE: one-shot diagnostic for the focused-menu highlight bar
+    // (Defect 2) — confirms it is a skinned mesh and reports its (correct) mesh
+    // WorldXfm vs the (origin) bone palette. Render-inert, env-gated.
+    if (getenv("HUB_BAR_PROBE") && mesh->Name() &&
+        (strstr(mesh->Name(), "highlight_main") ||
+         strstr(mesh->Name(), "highlight_pattern"))) {
+        static std::unordered_map<std::string,int> sHBd;
+        std::string key = mesh->Name();
+        if (sHBd[key]++ % 240 == 0)
+            fprintf(stderr, "[HUB_BAR_DRAW] mesh='%s' skinned=%d numBones(owner)=%d "
+                "meshWorld.v=(%.2f,%.2f,%.2f) showing=%d\n",
+                mesh->Name(), (int)skinned, owner?owner->NumBones():-1,
+                mesh->WorldXfm().v.x, mesh->WorldXfm().v.y, mesh->WorldXfm().v.z,
+                (int)mesh->Showing());
+    }
+
     // DIAG: skip-skinned / skip-static draw bisection.
     if (skinned && getenv("RB3_SKIP_SKINNED")) return;
     if (!skinned && getenv("RB3_SKIP_STATIC")) return;
@@ -3945,7 +3961,45 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     // world matrix must be IDENTITY to avoid double-transforming. (Mirrors
     // DC3's Mesh_Wgpu.cpp skinned path.) Static meshes use the mesh WorldXfm.
     ObjectUniforms obj{};
-    if (skinned) {
+    // HUB MENU HIGHLIGHT BAR placement fix (Defect 2 of the hub-highlight pair; see
+    // docs/native/render-polish-2026-06-11/task-hub-bar-placement-impl.md).
+    //
+    // The focused-menu-item yellow bar (`highlight_main.mesh` / `highlight_pattern
+    // .mesh`) is a SKINNED UI mesh whose 4 corner bones carry the bar quad as their
+    // LOCAL transforms (UILabel::UpdateAndDrawHighlightMesh -> botleft/topright->
+    // SetLocalPos(...)), with the per-focus world PLACEMENT set on the mesh via
+    // mLabelDir->SetWorldXfm(WorldXfm()) at UILabel.cpp:334. On native, those corner
+    // bones' transform PARENT (`pentatonic_display`) stays at the ORIGIN — the
+    // SetWorldXfm lands on the mesh/labelDir but NOT on the bones' parent chain — so
+    // the skinned bone palette (BoneOffsetAt * boneWorld) places the bar at the
+    // ORIGIN. The skinned path normally forces obj.world=identity (correct for
+    // CHARACTER skeletons whose bones already hold WORLD coords), so the bar renders
+    // at screen-CENTRE instead of behind the focused item.
+    //
+    // The palette already orients + sizes the bar correctly (isolated, the bar is a
+    // clean full-height rounded rect — only its POSITION is wrong). The missing
+    // piece is purely the label TRANSLATION. So for these named UI bar meshes,
+    // inject the mesh WorldXfm's TRANSLATION into obj.world (rotation kept identity:
+    // the FULL meshWorld would double-apply the model->world rotation the palette
+    // already encoded and SKEW the bar). Matches retail: the bar sits behind the
+    // focused hub item and tracks DUP/DDOWN. Same SPECIFIC mesh-name scope as the
+    // Defect-1 colour fix, so the overshell choose-difficulty highlight
+    // (`highlight.mesh`) and gameplay/HUD meshes are untouched.
+    // Opt-out: RB3_NO_HUB_BAR_PLACEMENT_FIX.
+    bool hubBarPlacement = false;
+    if (skinned && mesh->Name() &&
+        (strncmp(mesh->Name(), "highlight_main", 14) == 0 ||
+         strncmp(mesh->Name(), "highlight_pattern", 17) == 0)) {
+        static int hubBarOff = -1;
+        if (hubBarOff < 0) hubBarOff = getenv("RB3_NO_HUB_BAR_PLACEMENT_FIX") ? 1 : 0;
+        hubBarPlacement = !hubBarOff;
+    }
+    if (skinned && hubBarPlacement) {
+        // identity rotation + label translation (column-major; translation in [12..14])
+        for (int i = 0; i < 16; i++) obj.world[i] = (i % 5 == 0) ? 1.f : 0.f;
+        const Vector3& mwv = mesh->WorldXfm().v;
+        obj.world[12] = mwv.x; obj.world[13] = mwv.y; obj.world[14] = mwv.z;
+    } else if (skinned) {
         for (int i = 0; i < 16; i++) obj.world[i] = (i % 5 == 0) ? 1.f : 0.f;
     } else {
         MiloXfmToColMajor(mesh->WorldXfm(), obj.world);
@@ -4266,6 +4320,29 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
             }
             Transform skin;
             Multiply(owner->BoneOffsetAt(b), wt, skin);
+            // HUB_BAR_PROBE (per-bone): the hub highlight bar's corner bones carry
+            // the bar quad as their LOCAL xfm but their TransParent (pentatonic_
+            // display) stays at the ORIGIN — so boneWorld + composed skin land near
+            // origin, not at the focused label (whose world is only on the mesh
+            // WorldXfm). This is why the placement fix injects the mesh translation
+            // into obj.world. Render-inert, env-gated.
+            if (getenv("HUB_BAR_PROBE") && mesh->Name() &&
+                (strstr(mesh->Name(), "highlight_main") ||
+                 strstr(mesh->Name(), "highlight_pattern"))) {
+                static std::unordered_map<std::string,int> sHB;
+                std::string key = std::string(mesh->Name()) + "@b" + std::to_string(b);
+                if (sHB[key]++ % 240 == 0) {
+                    RndTransformable* par = bt->TransParent();
+                    fprintf(stderr,
+                        "[HUB_BAR] mesh='%s' b=%d bone='%s' parent='%s'(w=%.1f,%.1f,%.1f) "
+                        "boneWorld.v=(%.1f,%.1f,%.1f) skin.v=(%.1f,%.1f,%.1f)\n",
+                        mesh->Name(), b, bt->Name()?bt->Name():"?",
+                        par&&par->Name()?par->Name():"-",
+                        par?par->WorldXfm().v.x:0, par?par->WorldXfm().v.y:0,
+                        par?par->WorldXfm().v.z:0,
+                        wt.v.x, wt.v.y, wt.v.z, skin.v.x, skin.v.y, skin.v.z);
+                }
+            }
             // V24: validate the COMPOSED skin matrix, not just the bone's world
             // translation. A bone whose WorldXfm has a non-finite / runaway
             // ROTATION or SCALE (.m) passes the translation-only guard above, but
