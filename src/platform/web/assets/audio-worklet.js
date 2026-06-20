@@ -70,6 +70,40 @@ class MiloAudioProcessor extends AudioWorkletProcessor {
         this.primed = false;
         this.primeFrames = Math.round(sampleRate * 0.12); // ~120 ms cushion before first audio
 
+        // ---- Off-main mix mode (RB3_WEB_OFFMAIN_MIX, set by 'init-offmain') ----
+        // When ON the worklet MIXES N per-stem int16 rings on the audio thread
+        // (int16->float + vol/pan + additive sum + limiter + 44100->ctx resampler
+        // with carry), plus the SFX output ring additively. State below is the
+        // audio-thread-owned port of MixSources/limiter/resampler from
+        // AudioDevice_Web.cpp. See docs/native/audio-thread-2026-06-20/.
+        this.offmain = false;
+        this.stemHdr = null;   // [Int32Array(sab,0,4)] per stem (writePos,readPos,ringFrames,gen)
+        this.stemPcm = null;   // [Int16Array(sab,header)] per stem (mono ring)
+        this.ctrlI = null;     // Int32Array control (activeMask,target,mixRate,ctxRate, per-slot...)
+        this.ctrlF = null;     // Float32Array control (gain,pan per slot)
+        this.maxStems = 0;
+        this.stemRingFrames = 0;
+        this.mixRate = 44100;
+        this.ctxRate = sampleRate;
+        this.step = 1.0;       // mixRate/ctxRate (mix frames per ctx out frame)
+        // resampler carry state — audio-thread-owned (was mResamplePos/mResampleCarry*)
+        this.resamplePos = 0.0;
+        this.kResampleCarryMax = 8;
+        // mix-rate stereo bus scratch: carry frames + this-quantum frames.
+        // 128-frame quantum * worst step (<=2) + carry + slop. 512 frames is ample.
+        this.busBuf = new Float32Array(512 * 2);
+        this.resampleCarry = new Float32Array(this.kResampleCarryMax * 2);
+        this.resampleCarryN = 0;
+        // limiter env — audio-thread-owned (was mLimiterEnv). 1.0 = no reduction.
+        this.limiterEnv = 1.0;
+        // per-stem read cursors are kept in the SAB header (slot index 1) so the
+        // pump can mirror them back; we cache the read base locally too.
+        this.stemPrimedFrames = 0; // prime cushion (mix-rate frames), set in init
+        // SFX output ring (the existing pre-mixed ring) — additively combined.
+        this.sfxData = null;       // Float32Array(sfxSab, 8) stereo interleaved
+        this.sfxCursors = null;    // Int32Array(sfxSab,0,2)
+        this.sfxBufFrames = 0;
+
         this.port.onmessage = (e) => {
             if (e.data.type === 'init') {
                 this.sab = e.data.sab;
@@ -83,11 +117,360 @@ class MiloAudioProcessor extends AudioWorkletProcessor {
                 // Clamp the prime cushion to the ring so it can always be reached.
                 if (this.primeFrames > this.bufFrames - 1)
                     this.primeFrames = (this.bufFrames - 1) | 0;
+                // The existing output ring doubles as the SFX bus in off-main mode.
+                this.sfxData = this.data;
+                this.sfxCursors = this.cursors;
+                this.sfxBufFrames = this.bufFrames;
+            } else if (e.data.type === 'init-offmain') {
+                this.offmain = true;
+                this.maxStems = e.data.maxStems | 0;
+                this.stemRingFrames = e.data.ringFrames | 0;
+                this.mixRate = e.data.mixRate | 0;
+                this.ctxRate = e.data.ctxRate | 0;
+                this.step = this.mixRate / this.ctxRate;
+                const hb = e.data.stemHeaderBytes | 0;
+                // header is hb/4 int32 words (writePos,readPos,ringFrames,gen,readTotal,...)
+                this.stemHdr = e.data.stemSabs.map((sab) => new Int32Array(sab, 0, hb >> 2));
+                this.stemPcm = e.data.stemSabs.map((sab) => new Int16Array(sab, hb));
+                this.ctrlI = new Int32Array(e.data.ctrlSab);
+                this.ctrlF = new Float32Array(e.data.ctrlSab);
+                // prime cushion: e.data.primeFrames is in MIX-rate frames.
+                this.stemPrimedFrames = e.data.primeFrames | 0;
+                if (this.stemPrimedFrames > this.stemRingFrames - 1)
+                    this.stemPrimedFrames = (this.stemRingFrames - 1) | 0;
+                // re-arm prime gate for the stem-ring model.
+                this.primed = false;
+                this.minRingDepthThisWindow = this.stemRingFrames;
             }
         };
     }
 
+    // ---- ported DSP helpers (match AudioDevice_Web.cpp exactly) ----
+    _softClip(x) {
+        const kSoftKnee = 0.95;
+        const a = x < 0 ? -x : x;
+        if (a <= kSoftKnee) return x;
+        const shaped = kSoftKnee + (1.0 - kSoftKnee) *
+            Math.tanh((a - kSoftKnee) / (1.0 - kSoftKnee));
+        return x < 0 ? -shaped : shaped;
+    }
+
+    _reportOffMain(minAvailCtxFrames) {
+        if (minAvailCtxFrames < this.minRingDepthThisWindow)
+            this.minRingDepthThisWindow = minAvailCtxFrames;
+        this._reportAccum += 128;
+        if (this._reportAccum >= (sampleRate >> 1)) {
+            this._reportAccum = 0;
+            this.port.postMessage({
+                type: 'underrun-stats',
+                underrunEvents: this.underrunEvents,
+                underrunFrames: this.underrunFrames,
+                totalQuanta: this.totalQuanta,
+                totalFrames: this.totalFrames,
+                minRingDepthFrames: this.minRingDepthThisWindow,
+            });
+            this.minRingDepthThisWindow = this.stemRingFrames;
+        }
+    }
+
+    // Off-main mix: read N per-stem int16 rings (mix rate) + the SFX output ring,
+    // mix on the AUDIO THREAD, resample mix->ctx with carry, limit, output. This
+    // is the audio-thread port of AudioDevice_Web.cpp MixSources+limiter+resampler.
+    _processOffMain(outputs) {
+        const output = outputs[0];
+        if (!output || output.length < 2 || !this.ctrlI) return true;
+        const left = output[0], right = output[1];
+        const frames = left.length;                // 128 ctx-rate frames
+        const ringFrames = this.stemRingFrames;
+        const mask = Atomics.load(this.ctrlI, 0);
+        const step = this.step;
+        const ctrlF = this.ctrlF, ctrlI = this.ctrlI;
+        const stemHdr = this.stemHdr, stemPcm = this.stemPcm;
+
+        // Build the list of active slots + their availability (mix-rate frames).
+        // available_s = (writePos_s - readPos_s) mod ringFrames. The hungriest
+        // active stem gates the prime gate + under-run; a momentarily-short stem
+        // contributes silence for its missing tail WITHOUT zeroing the others.
+        let anyActive = false;
+        let minAvail = 0x7fffffff;                 // mix-rate frames (min across stems)
+        const active = [];                         // {slot, rp, avail, rf, gain, pan}
+        for (let s = 0; s < this.maxStems; s++) {
+            if ((mask & (1 << s)) === 0) continue;
+            const hdr = stemHdr[s];
+            const wp = Atomics.load(hdr, 0);
+            const rp = Atomics.load(hdr, 1);
+            // PER-STEM ring length: stems can have different mNumBuffers -> different
+            // ring sizes. Use the SAB header's ringFrames (index 2), NOT the global.
+            const rfS = Atomics.load(hdr, 2) || this.stemRingFrames;
+            let avail = wp - rp; if (avail < 0) avail += rfS;
+            const flags = Atomics.load(ctrlI, 4 + s * 4 + 2);
+            const paused = (flags & 1) !== 0;
+            anyActive = true;
+            if (avail < minAvail) minAvail = avail;
+            active.push({
+                slot: s, rp: rp, avail: avail, rf: rfS, paused: paused,
+                gain: ctrlF[4 + s * 4 + 0], pan: ctrlF[4 + s * 4 + 1],
+            });
+        }
+        if (!anyActive) minAvail = 0;
+
+        // --- SFX output ring (additive; benign if empty: just no SFX) ---
+        let sfxRp = 0, sfxAvail = 0;
+        const sfxData = this.sfxData, sfxBuf = this.sfxBufFrames;
+        if (sfxData && this.sfxCursors) {
+            const swp = Atomics.load(this.sfxCursors, 0);
+            sfxRp = Atomics.load(this.sfxCursors, 1);
+            sfxAvail = swp - sfxRp; if (sfxAvail < 0) sfxAvail += sfxBuf;
+        }
+
+        if (!anyActive) {
+            // No music stems. Still drain the SFX ring so menu SFX play. The SFX
+            // ring is ALREADY at ctx rate (pump resampled it), so 1:1.
+            this._drainSfxOnly(left, right, frames, sfxData, sfxBuf, sfxRp, sfxAvail);
+            this.totalQuanta++; this.totalFrames += frames;
+            this._reportOffMain(this.stemRingFrames);
+            return true;
+        }
+
+        // --- start-up prime gate (keyed on hungriest stem, mix-rate frames) ---
+        if (!this.primed) {
+            if (minAvail < this.stemPrimedFrames) {
+                for (let i = 0; i < frames; i++) { left[i] = 0; right[i] = 0; }
+                // still play SFX during the music prime cushion.
+                this._addSfx(left, right, frames, sfxData, sfxBuf, sfxRp, sfxAvail);
+                this.totalQuanta++; this.totalFrames += frames;
+                this._reportOffMain(this.stemRingFrames);
+                return true;
+            }
+            this.primed = true;
+        }
+
+        // ====================================================================
+        // EQUAL-RATE FAST PATH (ctx == mix, the common case — browser honored
+        // 44100). No carry, no resample: mix 1:1 to output, limiter at ctx rate.
+        // This is the exact path the resampling code reduces to at step==1, but
+        // written without the carry bookkeeping (which is only meaningful when
+        // ctx != mix). Matches the C++ `!resample` fast path.
+        // ====================================================================
+        if (this.step === 1.0) {
+            const invScale = 1.0 / 32768.0;
+            const aRel = Math.exp(-1.0 / (this.ctxRate * (80.0 / 1000.0)));
+            const kLimThreshold = 0.90;
+            let env = this.limiterEnv;
+            // hungriest stem gates how many real frames we can emit; the rest is
+            // a true under-run (all stems sample-locked, so this is the stall case).
+            const real = Math.min(frames, minAvail);
+            let sfxIdx = sfxRp;
+            for (let o = 0; o < frames; o++) {
+                let L = 0.0, R = 0.0;
+                if (o < real) {
+                    for (let a = 0; a < active.length; a++) {
+                        const st = active[a];
+                        if (st.paused) continue;
+                        if (o >= st.avail) continue;       // per-stem short -> 0
+                        const idx = (st.rp + o) % st.rf;
+                        const sample = stemPcm[st.slot][idx] * invScale;
+                        let pan = st.pan; if (pan < -1) pan = -1; else if (pan > 1) pan = 1;
+                        const vl = st.gain * (pan <= 0 ? 1.0 : 1.0 - pan);
+                        const vr = st.gain * (pan >= 0 ? 1.0 : 1.0 + pan);
+                        L += sample * vl; R += sample * vr;
+                    }
+                }
+                // SFX additive (already ctx rate; benign if empty).
+                if (o < sfxAvail && sfxData) {
+                    const si = (sfxIdx % sfxBuf) * 2;
+                    L += sfxData[si]; R += sfxData[si + 1];
+                    sfxIdx++;
+                }
+                // master limiter (ctx rate) — exact port of MixSources.
+                const la = L < 0 ? -L : L, ra = R < 0 ? -R : R;
+                const level = la > ra ? la : ra;
+                const desired = (level > kLimThreshold) ? (kLimThreshold / level) : 1.0;
+                if (desired < env) env = desired;
+                else env = aRel * env + (1.0 - aRel) * desired;
+                left[o] = this._softClip(L * env);
+                right[o] = this._softClip(R * env);
+            }
+            this.limiterEnv = env;
+            // advance every active stem by the real frames emitted (lockstep),
+            // and bump the MONOTONIC readTotal (hdr[4]) so the pump can advance
+            // the producer back-pressure without wrap ambiguity.
+            for (let a = 0; a < active.length; a++) {
+                const st = active[a];
+                const hdr = stemHdr[st.slot];
+                Atomics.store(hdr, 1, (st.rp + real) % st.rf);
+                Atomics.store(hdr, 4, (Atomics.load(hdr, 4) + real) | 0);
+            }
+            if (sfxData && this.sfxCursors) {
+                const sfxUsed = Math.min(frames, sfxAvail);
+                Atomics.store(this.sfxCursors, 1, (sfxRp + sfxUsed) % sfxBuf);
+            }
+            this.totalQuanta++; this.totalFrames += frames;
+            const padded = frames - real;
+            if (padded > 0) { this.underrunEvents++; this.underrunFrames += padded; }
+            this._reportOffMain(minAvail);          // mix==ctx so frames are 1:1
+            return true;
+        }
+
+        // --- how many mix-rate bus frames does this ctx quantum need? ---
+        // resamplePos in [0,1) read offset from busBuf[0]; the last output reads
+        // i0 and i0+1, so needTotal = floor(resamplePos + (frames-1)*step) + 2.
+        const carryN = this.resampleCarryN;
+        const sStart = this.resamplePos;
+        const sEnd = sStart + (frames - 1) * step;
+        let needTotal = (sEnd | 0) + 2;            // total mix-rate bus frames needed
+        const busCap = (this.busBuf.length >> 1);
+        if (needTotal > busCap) needTotal = busCap;
+        const newMix = needTotal - carryN;          // fresh mix-rate frames to build
+
+        const bus = this.busBuf;
+        // carry frames from the previous quantum (stream-contiguous at bus[0..carryN-1]).
+        for (let k = 0; k < carryN; k++) {
+            bus[k * 2 + 0] = this.resampleCarry[k * 2 + 0];
+            bus[k * 2 + 1] = this.resampleCarry[k * 2 + 1];
+        }
+
+        // --- additive per-stem mix into the mix-rate stereo bus ---
+        // INVARIANT: at quantum start, stem rp == the stem index of bus[0]. The
+        // carried frames bus[0..carryN-1] are stem [rp, rp+carryN); fresh frame f
+        // goes to bus[carryN+f] == stem(rp + carryN + f). After the quantum the
+        // stem advances by `consumed` (the bus frames the resampler used from
+        // bus[0]), so next bus[0] == stem(rp + consumed) — see the advance below.
+        // A stem short for a frame contributes 0 (its own dropout), never starving
+        // the others.
+        const invScale = 1.0 / 32768.0;
+        for (let f = 0; f < newMix; f++) {
+            let accL = 0.0, accR = 0.0;
+            const busOff = carryN + f;              // bus slot for this fresh frame
+            for (let a = 0; a < active.length; a++) {
+                const st = active[a];
+                if (st.paused) continue;
+                if (busOff >= st.avail) continue;   // this stem is short here -> 0
+                const idx = (st.rp + busOff) % st.rf;
+                const sample = stemPcm[st.slot][idx] * invScale;
+                // ComputePanGains (matches rb3_stream_receiver_native.cpp)
+                let pan = st.pan; if (pan < -1) pan = -1; else if (pan > 1) pan = 1;
+                const vl = st.gain * (pan <= 0 ? 1.0 : 1.0 - pan);
+                const vr = st.gain * (pan >= 0 ? 1.0 : 1.0 + pan);
+                accL += sample * vl;
+                accR += sample * vr;
+            }
+            bus[busOff * 2 + 0] = accL;
+            bus[busOff * 2 + 1] = accR;
+        }
+
+        // --- resample mix-rate bus -> ctx rate (linear, carry-all) ---
+        const aRel = Math.exp(-1.0 / (this.ctxRate * (80.0 / 1000.0))); // ctx-rate release
+        const kLimThreshold = 0.90;
+        let env = this.limiterEnv;
+        let s = sStart;
+        // Per-stem under-run: how many bus frames were actually fillable (== minAvail
+        // measured from rp). Frames past minAvail were 0 for the hungriest stem.
+        // We still emit them (held by the per-stem 0), so true under-run = the
+        // quantum needed bus frames beyond what the hungriest stem had.
+        let underBusFrames = needTotal - carryN - Math.max(0, Math.min(newMix, minAvail));
+        // SFX additive read pointer (ctx-rate, 1:1).
+        let sfxIdx = sfxRp;
+        for (let o = 0; o < frames; o++) {
+            const i0 = s | 0;
+            const t = s - i0;
+            let l0 = bus[i0 * 2 + 0], r0 = bus[i0 * 2 + 1];
+            let l1 = bus[(i0 + 1) * 2 + 0], r1 = bus[(i0 + 1) * 2 + 1];
+            let L = l0 + (l1 - l0) * t;
+            let R = r0 + (r1 - r0) * t;
+            // additively combine the SFX ring (already ctx rate).
+            if (o < sfxAvail && sfxData) {
+                const si = (sfxIdx % sfxBuf) * 2;
+                L += sfxData[si]; R += sfxData[si + 1];
+                sfxIdx++;
+            }
+            // master limiter (post-resample, ctx rate) — port of MixSources.
+            const la = L < 0 ? -L : L, ra = R < 0 ? -R : R;
+            const level = la > ra ? la : ra;
+            const desired = (level > kLimThreshold) ? (kLimThreshold / level) : 1.0;
+            if (desired < env) env = desired;             // INSTANT attack
+            else env = aRel * env + (1.0 - aRel) * desired; // one-pole release
+            left[o] = this._softClip(L * env);
+            right[o] = this._softClip(R * env);
+            s += step;
+        }
+        this.limiterEnv = env;
+
+        // --- carry ALL unconsumed bus frames into the next quantum ---
+        let consumed = s | 0;
+        if (consumed > needTotal - 1) consumed = needTotal - 1;
+        if (consumed < 0) consumed = 0;
+        let leftover = needTotal - consumed;
+        if (leftover > this.kResampleCarryMax) leftover = this.kResampleCarryMax;
+        for (let k = 0; k < leftover; k++) {
+            this.resampleCarry[k * 2 + 0] = bus[(consumed + k) * 2 + 0];
+            this.resampleCarry[k * 2 + 1] = bus[(consumed + k) * 2 + 1];
+        }
+        this.resampleCarryN = leftover;
+        this.resamplePos = s - consumed;            // [0,1)
+
+        // --- advance each stem's readPos by the bus frames consumed ---
+        // next bus[0] == current bus[consumed] == stem(rp + consumed), so every
+        // active stem advances by `consumed` to keep rp == bus[0]'s stem index
+        // (the invariant the mix relies on). CLAMP to minAvail so a stall (all
+        // stems frozen together) never advances rp past the producer writePos —
+        // the carry/resamplePos guard already absorbs the sub-frame remainder.
+        const stemAdv = Math.min(consumed, minAvail);
+        for (let a = 0; a < active.length; a++) {
+            const st = active[a];
+            const hdr = stemHdr[st.slot];
+            Atomics.store(hdr, 1, (st.rp + stemAdv) % st.rf);
+            Atomics.store(hdr, 4, (Atomics.load(hdr, 4) + stemAdv) | 0);
+        }
+        // advance the SFX ring readPos by the ctx frames it actually supplied.
+        if (sfxData && this.sfxCursors) {
+            const sfxUsed = Math.min(frames, sfxAvail);
+            Atomics.store(this.sfxCursors, 1, (sfxRp + sfxUsed) % sfxBuf);
+        }
+
+        // --- instrumentation ---
+        this.totalQuanta++; this.totalFrames += frames;
+        if (underBusFrames > 0) {
+            // hungriest stem couldn't fill the whole quantum's bus need.
+            this.underrunEvents++;
+            // express padded frames in ctx frames (bus frames / step).
+            this.underrunFrames += Math.round(underBusFrames / step);
+        }
+        // report min available in ctx-equivalent frames (bench converts via ctxRate).
+        const minAvailCtx = Math.round(minAvail / step);
+        this._reportOffMain(minAvailCtx);
+        return true;
+    }
+
+    // SFX-only drain when no music stems are active (1:1, ctx rate). The SFX ring
+    // is the existing pre-mixed output ring (already resampled by the pump).
+    _drainSfxOnly(left, right, frames, sfxData, sfxBuf, sfxRp, sfxAvail) {
+        const n = Math.min(frames, sfxAvail);
+        for (let i = 0; i < n; i++) {
+            const si = ((sfxRp + i) % sfxBuf) * 2;
+            left[i] = sfxData ? sfxData[si] : 0;
+            right[i] = sfxData ? sfxData[si + 1] : 0;
+        }
+        for (let i = n; i < frames; i++) { left[i] = 0; right[i] = 0; }
+        if (sfxData && this.sfxCursors)
+            Atomics.store(this.sfxCursors, 1, (sfxRp + n) % sfxBuf);
+    }
+
+    // Additively layer the SFX ring onto an already-filled (music) output, during
+    // the music prime cushion (music is silent but SFX should still fire).
+    _addSfx(left, right, frames, sfxData, sfxBuf, sfxRp, sfxAvail) {
+        if (!sfxData || !this.sfxCursors) return;
+        const n = Math.min(frames, sfxAvail);
+        for (let i = 0; i < n; i++) {
+            const si = ((sfxRp + i) % sfxBuf) * 2;
+            left[i] += sfxData[si];
+            right[i] += sfxData[si + 1];
+        }
+        Atomics.store(this.sfxCursors, 1, (sfxRp + n) % sfxBuf);
+    }
+
     process(inputs, outputs, parameters) {
+        if (this.offmain) return this._processOffMain(outputs);
         if (!this.data) return true;
 
         const output = outputs[0];

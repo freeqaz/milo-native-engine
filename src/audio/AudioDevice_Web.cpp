@@ -43,6 +43,35 @@ static const int RING_FRAMES = 32768;
 static const int RING_SAMPLES = RING_FRAMES * 2; // stereo interleaved
 static const int HEADER_BYTES = 8; // 2 x Int32 (writePos, readPos)
 
+// ---- Off-main mix (RB3_WEB_OFFMAIN_MIX, MVP-1) ----------------------------
+// The flag, read once in Init() (env getenv). When ON, music stems publish their
+// decoded int16 rings into per-stem SABs and the AudioWorklet mixes on the audio
+// thread; PumpAudio() becomes a decode/top-up pump. Default OFF (shipping path
+// untouched). See docs/native/audio-thread-2026-06-20/05-BUILD-SPEC-offmain-mvp1.md.
+static bool sOffMainMix = false;
+// Fixed pool of stem slots (a song has ~6-15 stems; 16 covers worst case).
+static const int kMaxStems = 16;
+// Per-stem SAB ring length in frames = mBuffer/2 for the full 16-chunk ring
+// (0xC0000 bytes = 393216 int16 frames ~= 8.9 s). Mirrors StreamReceiver.mBuffer.
+static const int kStemRingFrames = 0xC0000 / 2;
+// Per-stem SAB header: 8 x Int32, then `ringFrames` x Int16 PCM.
+//   [0] writePos   (frames, producer/pump)   [1] readPos    (frames, worklet)
+//   [2] ringFrames (const)                   [3] generation (producer)
+//   [4] readTotalLo (MONOTONIC frames consumed since seed, worklet-owned; the
+//       pump diffs it to advance producer back-pressure with NO wrap ambiguity)
+//   [5..7] reserved
+static const int kStemHeaderBytes = 32;
+static const int kStemHdrReadTotal = 4; // int32 index of the monotonic counter
+// Control SAB header (Int32): activeMask, targetDepthFrames, mixRate, ctxRate.
+// Then per slot s: gain(f32), pan(f32), flags(i32), generation(i32) at
+// word index 4 + s*4.
+static const int kCtrlHeaderInts = 4;
+// Fixed output latency floor for off-main (ctx frames computed at Init). The
+// stem rings (~9 s) carry the stall budget; the output floor is just the prime
+// cushion + a small target depth. 70 ms initial (tune 60-80 from low-water).
+static int sOffMainFloorMs = 70;
+static int sOffMainTargetFrames = 0; // ctx frames, published to control SAB
+
 // Local mix buffer (WASM heap) -- MixSources writes here (at the MIX/engine rate).
 static float *sMixBuffer = nullptr;
 static const int MIX_BUF_FRAMES = 8192; // mix in chunks
@@ -167,11 +196,19 @@ EM_JS(int, js_audio_init,
             node.port.onmessage = function(ev) {
                 if (ev.data && ev.data.type === 'underrun-stats') {
                     window[key].underruns = ev.data;
+                } else if (ev.data && ev.data.type === 'offmain-dbg') {
+                    console.log('OFFMAIN-DBG ' + JSON.stringify(ev.data));
                 }
             };
 
             window[key].worklet = node;
             window[key].started = true;
+            // Off-main: if a stem/control SAB config was allocated before the
+            // worklet connected (js_offmain_alloc set offmainPending), post it now.
+            if (window[key].offmainPending) {
+                node.port.postMessage(window[key].offmainPending);
+                window[key].offmainPending = null;
+            }
             console.log('AudioDevice: AudioWorklet connected (ctx ' + actualRate + ' Hz' +
                         (actualRate !== sampleRate ? ' [requested ' + sampleRate + ', resampling]' : '') +
                         ', ring ' + bufFrames + ' frames)');
@@ -291,6 +328,201 @@ EM_JS(void, js_audio_ring_write, (float *srcPtr, int frames, const char *stateKe
 
     var newWritePos = (writePos + frames) % bufFrames;
     Atomics.store(cursors, 0, newWritePos);
+});
+
+// ============================================================================
+// Off-main mix (RB3_WEB_OFFMAIN_MIX) — per-stem SAB allocation + publish
+// ============================================================================
+
+// Allocate the fixed stem-SAB pool + the control SAB, stash them on the state
+// object, and post 'init-offmain' to the worklet. Called once from Init() when
+// the flag is ON (the worklet is already being created by js_audio_init; this
+// re-posts the off-main init once the node connects — see the onmessage hookup
+// in js_audio_init, which forwards a pending off-main config). Returns 1 on
+// success, 0 on failure (caller falls back to the OFF path).
+EM_JS(int, js_offmain_alloc,
+      (int maxStems, int stemHeaderBytes, int ringFrames, int ctrlHeaderInts,
+       int mixRate, int ctxRate, int primeFrames, int dbg, const char *stateKey),
+{
+    var key = UTF8ToString(stateKey);
+    var audio = window[key];
+    if (!audio) return 0;
+    try {
+        var stemBytes = stemHeaderBytes + ringFrames * 2; // int16 ring
+        var stemSabs = [];
+        var hdrInts = stemHeaderBytes >> 2; // 8
+        for (var s = 0; s < maxStems; s++) {
+            var sab = new SharedArrayBuffer(stemBytes);
+            // header: writePos, readPos, ringFrames, generation, readTotal, ...
+            var hdr = new Int32Array(sab, 0, hdrInts);
+            hdr.fill(0);
+            hdr[2] = ringFrames;
+            stemSabs.push(sab);
+        }
+        // control SAB: header ints + maxStems*4 words (gain,pan,flags,gen).
+        var ctrlBytes = (ctrlHeaderInts + maxStems * 4) * 4;
+        var ctrlSab = new SharedArrayBuffer(ctrlBytes);
+        var ci = new Int32Array(ctrlSab);
+        ci.fill(0);
+        ci[2] = mixRate; ci[3] = ctxRate;
+
+        audio.offmain = {
+            stemSabs: stemSabs,
+            ctrlSab: ctrlSab,
+            ringFrames: ringFrames,
+            stemHeaderBytes: stemHeaderBytes,
+            // typed views cached for the per-tick publish (avoid re-wrapping).
+            stemHdr: stemSabs.map(function(sab){ return new Int32Array(sab, 0, stemHeaderBytes >> 2); }),
+            stemPcm: stemSabs.map(function(sab){ return new Int16Array(sab, stemHeaderBytes); }),
+            stemPcmU8: stemSabs.map(function(sab){ return new Uint8Array(sab, stemHeaderBytes); }),
+            ctrlI: ci,
+            ctrlF: new Float32Array(ctrlSab),
+        };
+
+        // Post init-offmain to the worklet now if it's connected; otherwise the
+        // js_audio_init onmessage 'started' path will post it (see the pending
+        // flag below). We set a pending payload either way.
+        var payload = {
+            type: 'init-offmain',
+            stemSabs: stemSabs,
+            ctrlSab: ctrlSab,
+            ringFrames: ringFrames,
+            stemHeaderBytes: stemHeaderBytes,
+            mixRate: mixRate,
+            ctxRate: ctxRate,
+            primeFrames: primeFrames,
+            maxStems: maxStems,
+            dbg: dbg !== 0,
+        };
+        audio.offmainPending = payload;
+        if (audio.worklet) {
+            audio.worklet.port.postMessage(payload);
+            audio.offmainPending = null;
+        }
+        return 1;
+    } catch (e) {
+        console.error('AudioDevice: offmain alloc failed: ' + e);
+        return 0;
+    }
+});
+
+// Publish a stem this tick: copy the newly-decoded PCM delta from the WASM-heap
+// source ring (srcPtr = int16 mono ring, ringFrames long) into the stem SAB
+// ring, set the SAB availability writePos, and write gain/pan/flags into the
+// control SAB.
+//   slot         : stem slot index
+//   srcPtr       : byte ptr into HEAP for the producer int16 ring (mBuffer)
+//   lastWrite    : the DATA frontier we last published (start of the new delta)
+//   newWrite     : the producer's current DATA frontier (frames, mRingWritePos/2)
+//   availWrite   : the AVAILABILITY frontier (readFrame+availFrames) mod ringFrames,
+//                  what the worklet's (writePos-readPos) reads as depth
+//   gain, pan    : per-stem params
+//   flags        : bit0=paused, bit1=finished
+//   generation   : mirrored into both SABs
+EM_JS(void, js_offmain_publish_stem,
+      (int slot, int srcPtr, int lastWrite, int newWrite, int availWrite,
+       double gain, double pan, int flags, int generation, const char *stateKey),
+{
+    var key = UTF8ToString(stateKey);
+    var audio = window[key];
+    if (!audio || !audio.offmain) return;
+    var om = audio.offmain;
+    if (slot < 0 || slot >= om.stemPcm.length) return;
+    var ringFrames = om.ringFrames;
+    var hdr = om.stemHdr[slot];
+    // BYTE-ACCURATE copy: mBuffer (srcPtr) is often at an ODD wasm-heap address
+    // (the StreamReceiver object isn't 2-byte aligned), so an Int16Array view of
+    // it would be misaligned -> byte-shifted garbage. Copy via HEAPU8 (byte
+    // granularity) into the SAB's byte view. 1 int16 frame = 2 bytes.
+    var dstU8 = om.stemPcmU8[slot];                  // Uint8Array(sab, headerBytes)
+    var srcU8 = HEAPU8;                               // byte view of the wasm heap
+    var srcBase = srcPtr;                            // byte offset of mBuffer
+
+    // Copy the new DATA delta [lastWrite, newWrite) mod ringFrames into the SAB.
+    var lw = lastWrite, nw = newWrite;
+    var count = nw - lw;                              // frames
+    if (count < 0) count += ringFrames;
+    if (count > ringFrames) count = ringFrames;
+    if (count > 0) {
+        var startSrc = ((lw % ringFrames) + ringFrames) % ringFrames; // frame index
+        var firstLen = ringFrames - startSrc;        // frames until ring end
+        var n1 = (count <= firstLen) ? count : firstLen;
+        // part 1: [startSrc, startSrc+n1) frames -> bytes [startSrc*2 .. )
+        dstU8.set(srcU8.subarray(srcBase + startSrc * 2, srcBase + (startSrc + n1) * 2),
+                  startSrc * 2);
+        if (count > firstLen) {
+            var n2 = count - firstLen;               // wraps to ring start
+            dstU8.set(srcU8.subarray(srcBase, srcBase + n2 * 2), 0);
+        }
+    }
+    // Publish the AVAILABILITY writePos with a release store (worklet acquire-loads).
+    Atomics.store(hdr, 0, ((availWrite % ringFrames) + ringFrames) % ringFrames);
+    hdr[3] = generation;
+
+    // Control SAB per-slot params.
+    var ci = om.ctrlI, cf = om.ctrlF;
+    var base = 4 + slot * 4;
+    cf[base + 0] = gain;
+    cf[base + 1] = pan;
+    Atomics.store(ci, base + 2, flags);
+    Atomics.store(ci, base + 3, generation);
+});
+
+// Seed a stem's worklet readPos to a start frame (called once when a stem is
+// assigned a slot, so the worklet starts at the song start). Sets activeMask bit.
+EM_JS(void, js_offmain_seed_stem,
+      (int slot, int startFrame, int ringFrames, int generation, const char *stateKey),
+{
+    var key = UTF8ToString(stateKey);
+    var audio = window[key];
+    if (!audio || !audio.offmain) return;
+    var om = audio.offmain;
+    if (slot < 0 || slot >= om.stemHdr.length) return;
+    var hdr = om.stemHdr[slot];
+    var rp = ((startFrame % ringFrames) + ringFrames) % ringFrames;
+    // writePos == readPos initially (empty); the first publish fills it.
+    Atomics.store(hdr, 1, rp);
+    Atomics.store(hdr, 0, rp);
+    hdr[2] = ringFrames;
+    hdr[3] = generation;
+    Atomics.store(hdr, 4, 0); // reset monotonic readTotal (frames consumed)
+    var ci = om.ctrlI;
+    var mask = Atomics.load(ci, 0);
+    Atomics.store(ci, 0, mask | (1 << slot));
+    Atomics.store(ci, 4 + slot * 4 + 3, generation);
+});
+
+// Free a stem slot: clear its activeMask bit so the worklet stops mixing it.
+EM_JS(void, js_offmain_free_stem, (int slot, const char *stateKey), {
+    var key = UTF8ToString(stateKey);
+    var audio = window[key];
+    if (!audio || !audio.offmain) return;
+    var ci = audio.offmain.ctrlI;
+    var mask = Atomics.load(ci, 0);
+    Atomics.store(ci, 0, mask & ~(1 << slot));
+    // mark finished flag for the slot too (advisory).
+    Atomics.store(ci, 4 + slot * 4 + 2, 2);
+});
+
+// Read back the worklet's MONOTONIC readTotal (frames consumed since seed) for a
+// stem slot. The pump diffs it against its last-seen value to advance the
+// producer back-pressure with NO wrap ambiguity (a wrapped readPos can't tell
+// "1 behind" from "1 ahead"; a monotonic counter can). Returns -1 if unavailable.
+EM_JS(int, js_offmain_read_total, (int slot, const char *stateKey), {
+    var key = UTF8ToString(stateKey);
+    var audio = window[key];
+    if (!audio || !audio.offmain) return -1;
+    var om = audio.offmain;
+    if (slot < 0 || slot >= om.stemHdr.length) return -1;
+    return Atomics.load(om.stemHdr[slot], 4);
+});
+
+// Publish the fixed output target depth (ctx frames) to the control SAB.
+EM_JS(void, js_offmain_set_target, (int targetFrames, const char *stateKey), {
+    var key = UTF8ToString(stateKey);
+    var audio = window[key];
+    if (!audio || !audio.offmain) return;
+    Atomics.store(audio.offmain.ctrlI, 1, targetFrames);
 });
 
 // Download captured audio as WAV from the browser
@@ -423,6 +655,46 @@ bool AudioDevice::Init(int sampleRate) {
     mResamplePos = 0.0;
     mResampleCarryN = 0;
 
+    // ---- Off-main mix (RB3_WEB_OFFMAIN_MIX) ----
+    // Read the flag ONCE. When ON, allocate the per-stem + control SABs and post
+    // 'init-offmain' to the worklet; music stems will publish to these SABs and
+    // the worklet mixes on the audio thread. Default OFF = shipping path.
+    {
+        const char *omEnv = getenv("RB3_WEB_OFFMAIN_MIX");
+        sOffMainMix = (omEnv && omEnv[0] && omEnv[0] != '0');
+        const char *floorEnv = getenv("RB3_WEB_OFFMAIN_FLOOR_MS");
+        if (floorEnv && floorEnv[0]) {
+            int v = atoi(floorEnv);
+            if (v >= 20 && v <= 200) sOffMainFloorMs = v;
+        }
+    }
+    if (sOffMainMix) {
+        const int arate = (mDeviceSampleRate > 0) ? mDeviceSampleRate : mSampleRate;
+        // Prime cushion ~120 ms (independent of the output floor; absorbs the
+        // song-start burst). Worklet keys it on the min-across-stems availability.
+        int primeFrames = (int)((long long)mSampleRate * 120 / 1000); // mix-rate frames
+        // Fixed output target depth in ctx frames (the floor).
+        sOffMainTargetFrames = (int)((long long)arate * sOffMainFloorMs / 1000);
+        const char *dbgEnv = getenv("RB3_WEB_OFFMAIN_DBG");
+        int dbg = (dbgEnv && dbgEnv[0] && dbgEnv[0] != '0') ? 1 : 0;
+        int ok = js_offmain_alloc(kMaxStems, kStemHeaderBytes, kStemRingFrames,
+                                  kCtrlHeaderInts, mSampleRate, arate,
+                                  primeFrames, dbg, kStateKey);
+        if (!ok) {
+            sOffMainMix = false;
+            printf("AudioDevice: OFF-MAIN alloc FAILED — falling back to main-thread mix\n");
+        } else {
+            mMusicStems.assign(kMaxStems, nullptr);
+            mStemLastWrite.assign(kMaxStems, 0);
+            mStemSeeded.assign(kMaxStems, false);
+            mStemLastReadTotal.assign(kMaxStems, 0);
+            js_offmain_set_target(sOffMainTargetFrames, kStateKey);
+            printf("AudioDevice: OFF-MAIN mix ENABLED — %d stem SABs (%d frames each ~9s), "
+                   "output floor %d ms (%d ctx frames), prime %d mix frames\n",
+                   kMaxStems, kStemRingFrames, sOffMainFloorMs, sOffMainTargetFrames, primeFrames);
+        }
+    }
+
     // Set up console commands for audio debugging
     EM_ASM({
         var ns = UTF8ToString($0);
@@ -496,6 +768,43 @@ void AudioDevice::RemoveSource(AudioSource *source) {
     );
 }
 
+bool AudioDevice::OffMainMixEnabled() { return sOffMainMix; }
+
+void AudioDevice::RegisterMusicStem(WebMusicStem *stem) {
+    if (!sOffMainMix) return;
+    std::lock_guard<std::mutex> lock(mMusicStemMutex);
+    // Already registered? (idempotent — PlayImpl may be called more than once)
+    for (size_t i = 0; i < mMusicStems.size(); i++)
+        if (mMusicStems[i] == stem) return;
+    // Claim the first free slot.
+    for (size_t i = 0; i < mMusicStems.size(); i++) {
+        if (mMusicStems[i] == nullptr) {
+            mMusicStems[i] = stem;
+            mStemSeeded[i] = false;
+            mStemLastWrite[i] = 0;
+            mStemLastReadTotal[i] = 0;
+            return;
+        }
+    }
+    // No free slot (more than kMaxStems live stems) — fall back to NOT off-main
+    // for this one. It simply won't be heard; log once. (16 covers real songs.)
+    printf("AudioDevice: OFF-MAIN stem pool full (%d slots) — stem dropped\n", kMaxStems);
+}
+
+void AudioDevice::UnregisterMusicStem(WebMusicStem *stem) {
+    if (!sOffMainMix) return;
+    static const char *kStateKey = "_" MILO_WEB_AUDIO_NS_STR "Audio";
+    std::lock_guard<std::mutex> lock(mMusicStemMutex);
+    for (size_t i = 0; i < mMusicStems.size(); i++) {
+        if (mMusicStems[i] == stem) {
+            mMusicStems[i] = nullptr;
+            mStemSeeded[i] = false;
+            js_offmain_free_stem((int)i, kStateKey);
+            return;
+        }
+    }
+}
+
 void AudioDevice::MixSources(float *output, int frameCount) {
     int totalSamples = frameCount * 2;
     memset(output, 0, totalSamples * sizeof(float));
@@ -557,6 +866,76 @@ void AudioDevice::MixSources(float *output, int frameCount) {
 
 static int sPumpCount = 0;
 
+// ---- Off-main pump: decode/top-up only (RB3_WEB_OFFMAIN_MIX) ----------------
+// Publishes each live music stem's freshly-decoded PCM into its per-stem SAB and
+// mirrors the worklet's readPos back into the producer for back-pressure. NO mix,
+// NO resample, NO output-ring write for music. SFX (a second pass, flag-OFF
+// style) is handled by the caller after this returns true.
+void AudioDevice::PumpAudioOffMainStems() {
+    static const char *kStateKey = "_" MILO_WEB_AUDIO_NS_STR "Audio";
+    std::lock_guard<std::mutex> lock(mMusicStemMutex);
+
+    int activeCount = 0;
+    for (size_t i = 0; i < mMusicStems.size(); i++) {
+        WebMusicStem *stem = mMusicStems[i];
+        if (!stem) continue;
+        if (!stem->OffMainActive()) continue;
+        if (!stem->OffMainArmed()) continue;   // not yet playing (kInit prime)
+        activeCount++;
+
+        // 1) Mirror the worklet's consumed readPos back into the producer BEFORE
+        //    we re-read its snapshot, so SendDoneImpl/GetPlayCursor advance and
+        //    the decode pipeline keeps refilling. Skip until the slot is seeded
+        //    (the worklet's readPos is meaningless before we seed song start).
+        if (mStemSeeded[i]) {
+            int rt = js_offmain_read_total((int)i, kStateKey);
+            if (rt >= 0) {
+                int delta = rt - mStemLastReadTotal[i];
+                // Guard a 32-bit wrap of the monotonic counter (~13h of audio).
+                if (delta < 0) delta = 0;
+                if (delta > 0) stem->OffMainAdvanceConsumed(delta);
+                mStemLastReadTotal[i] = rt;
+            }
+        }
+
+        // 2) Snapshot the producer ring state.
+        OffMainStemState st;
+        stem->OffMainSnapshot(&st);
+
+        // The AVAILABILITY frontier (WRAPPED to [0,ringFrames)): the worklet may
+        // read frames up to here. The SAB PCM must be valid over [readFrame,
+        // availEnd). We copy the NEW slice [lastAvailEnd, availEnd) each tick
+        // (forward mod ringFrames; the per-tick advance is << ringFrames).
+        int rf = st.ringFrames;
+        int availEnd = st.readFrame + st.availFrames;       // unwrapped
+        availEnd %= rf; if (availEnd < 0) availEnd += rf;    // wrapped
+
+        // 3) Seed the worklet readPos at the song start on the first publish.
+        if (!mStemSeeded[i]) {
+            int start = st.startFrame;
+            if (start < 0) continue;            // not armed yet
+            js_offmain_seed_stem((int)i, start, rf, /*generation*/1, kStateKey);
+            mStemSeeded[i] = true;
+            mStemLastWrite[i] = st.readFrame % rf; // copy from the play start
+            mStemLastReadTotal[i] = 0;             // matches the worklet's reset
+        }
+
+        // 4) Publish the newly-playable PCM slice [lastAvailEnd, availEnd) and the
+        //    AVAILABILITY writePos (= availEnd), plus params.
+        int flags = (st.paused ? 1 : 0) | (st.finished ? 2 : 0);
+        js_offmain_publish_stem((int)i,
+                                (int)(intptr_t)st.ringPcm, // byte ptr into HEAP16
+                                mStemLastWrite[i], availEnd, availEnd,
+                                (double)st.gain, (double)st.pan,
+                                flags, /*generation*/1, kStateKey);
+        mStemLastWrite[i] = availEnd;
+    }
+
+    // 5) Publish the fixed output target depth (no adaptive law).
+    (void)activeCount;
+    js_offmain_set_target(sOffMainTargetFrames, kStateKey);
+}
+
 void AudioDevice::PumpAudio() {
     if (!mInitialized || !sWorkletReady || !sMixBuffer)
         return;
@@ -566,6 +945,22 @@ void AudioDevice::PumpAudio() {
     // Check if AudioWorklet is ready (async setup)
     if (!js_audio_worklet_started(kStateKey))
         return;
+
+    // ---- Off-main mix (RB3_WEB_OFFMAIN_MIX) ----
+    // Music stems publish to per-stem SABs (worklet mixes on the audio thread);
+    // we then fall through to the SFX-only second pass below (mSources now holds
+    // only SFX — music stems skip AddSource, see rb3_stream_receiver_native.cpp).
+    if (sOffMainMix) {
+        PumpAudioOffMainStems();
+        // Continue into the normal pump for SFX ONLY: mSources contains just the
+        // RB3SampleInstNative one-shots when off-main. They mix into the same
+        // output ring the worklet additively combines with the music mix. If
+        // there are no SFX sources, the pump just writes silence frames (cheap)
+        // — the worklet adds 0 and plays music. We keep the existing adaptive
+        // path for the SHALLOW SFX ring so one-shots fire promptly (the SFX
+        // top-up clamp is preserved). The output SAB stays the SFX bus.
+        // Fall through.
+    }
 
     // Query free space in the SAB ring buffer
     int freeFrames = js_audio_ring_free_frames(kStateKey);
