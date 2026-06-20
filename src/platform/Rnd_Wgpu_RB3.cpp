@@ -5158,6 +5158,39 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
             isLikelyUiText = true;
         }
     }
+    // Menu-highlight-bar fix — the focused-menu-item yellow highlight bar.
+    // UILabel::UpdateAndDrawHighlightMesh (src/system/ui/UILabel.cpp:316) and
+    // LabelShrinkWrapper::UpdateAndDrawWrapper (LabelShrinkWrapper.cpp:49) draw
+    // the highlight bar behind the focused BandButton — the meshes
+    // `highlight_main.mesh` / `highlight_pattern.mesh` (in the button's
+    // font/label resource milo, e.g. pentatonic_display.milo / the
+    // label_shrink_wrapper_*.milo), with materials `highlight_main.mat` /
+    // `highlight_main_spec.mat`. `highlight_main.mat` has mPreLit=0,
+    // mUseEnviron=1 and a YELLOW register colour (0.82,0.82,0.17),
+    // blend=kBlendSrcAlpha. With pre_lit=0 the `unlit` predicate below is
+    // (!use_environ && !pre_lit) = false, so this material takes the LIT shader
+    // branch and gets multiplied by the menu pass's near-zero lighting term ->
+    // the yellow bar collapses to BLACK (the misplaced black box over the
+    // focused hub item; the focused-item text, correctly drawn DARK on the
+    // intended bright bar, then reads as faint). On Wii the bar reads its
+    // authored colour directly; here it must skip lighting attenuation.
+    //
+    // Match the SPECIFIC highlight-bar mesh names (not a broad `highlight_*`
+    // prefix) so gameplay/HUD meshes that merely contain "highlight" are never
+    // affected. These are screen-space UI overlay meshes drawn only via the
+    // UILabel / LabelShrinkWrapper highlight path; route them through the
+    // register-colour (prelit) path exactly like text.
+    // Opt-out: RB3_NO_HUB_HIGHLIGHT_FIX.
+    bool isUiHighlightOverlay = false;
+    {
+        static int hubFixOff = -1;
+        if (hubFixOff < 0) hubFixOff = getenv("RB3_NO_HUB_HIGHLIGHT_FIX") ? 1 : 0;
+        if (!hubFixOff && meshName &&
+            (std::strncmp(meshName, "highlight_main", 14) == 0 ||
+             std::strncmp(meshName, "highlight_pattern", 17) == 0)) {
+            isUiHighlightOverlay = true;
+        }
+    }
     if (mat) {
         const Hmx::Color& c = mat->GetColor();
         mu.color[0] = c.red; mu.color[1] = c.green; mu.color[2] = c.blue; mu.color[3] = c.alpha;
@@ -5192,7 +5225,10 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
         mu.intensify = mat->mIntensify ? 2.0f : 1.0f;
         // W5 Phase 1: force-prelit text so font glyph quads pick up the
         // material colour directly without lighting attenuation.
-        mu.prelit = (mat->mPreLit || isTextMeshHeur) ? 1.0f : 0.0f;
+        // Menu-highlight-bar fix: the focused-item highlight overlay
+        // (`highlight_*` meshes/mats) is also drawn at its authored register
+        // colour, never lit — without this it collapses to black (see above).
+        mu.prelit = (mat->mPreLit || isTextMeshHeur || isUiHighlightOverlay) ? 1.0f : 0.0f;
         // Menu-lighting fix 1: honor RndMat::mUseEnviron. On Wii (WiiMat::Select),
         // a material with use_environ=0 && pre_lit=0 outputs its register colour
         // directly (GX_SRC_REG): NO ambient, NO lights, NO vertex colour — i.e.
