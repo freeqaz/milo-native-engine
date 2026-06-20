@@ -600,11 +600,21 @@ void AudioDevice::PumpAudio() {
     // RB3_AUDIO_LAT_MIN_MS / _MAX_MS set the adaptive bounds.
     const int arate = (mDeviceSampleRate > 0) ? mDeviceSampleRate
                     : (mSampleRate > 0 ? mSampleRate : 48000);
-    static const int kStartMs       = 120; // initial target (above floor; no first-song stutter)
-    static const int kGrowMs        = 40;  // added per underrun window once pressure is sustained
-    static const int kShrinkPctNum  = 25;  // clean-window multiplicative shrink: 25% of (target-floor)
-    static const int kShrinkPctDen  = 100;
-    static const int kShrinkMinMs   = 10;  // ...but at least this many ms (eases near the floor)
+    static const int kStartMs       = 200; // initial target — primed deep so the song-start burst
+                                           // (~85% of all under-run frames; the worklet starts
+                                           // draining before the ring is primed) can't starve the ring.
+    static const int kGrowMs        = 60;  // added per underrun window once pressure is sustained
+                                           // (was 40; grow decisively so one window of stalls is enough)
+    static const int kShrinkPctNum  = 12;  // clean-window multiplicative shrink: only 12% of (target-floor)
+    static const int kShrinkPctDen  = 100; // (was 25%) — shrink slowly so the buffer doesn't dive back to
+                                           // the floor between sporadic stalls and get re-caught (the
+                                           // grow<->shrink oscillation the diagnosis logged).
+    static const int kShrinkMinMs   = 5;   // ...but at least this many ms (eases near the floor)
+    // HYSTERESIS: only begin shrinking after this many CONSECUTIVE clean windows
+    // (~0.5s each). A lone clean window after a stall no longer immediately drains
+    // the headroom — we hold the deeper buffer for a few seconds first so a
+    // closely-spaced second stall is still absorbed.
+    static const int kShrinkHoldWindows = 8;
     static const int kPressureOne   = 256; // 1.0 in fixed-point
     static const int kPressureGrow  = 2 * kPressureOne; // grow only at >=2.0 (sustained pressure)
     static const int kPressureMax   = 4 * kPressureOne; // saturate so a long burst can't run away
@@ -619,11 +629,18 @@ void AudioDevice::PumpAudio() {
     static int sLastUnderrun = -1;   // -1 until baselined past the boot backlog
     static int sLastQuanta   = -1;   // worklet totalQuanta at last law step (edge-trigger guard)
     static bool sHighFlagged = false;// has the "near ceiling" log already fired in this excursion?
+    static int sCleanRun     = 0;    // consecutive clean windows (shrink-hysteresis counter)
     if (sFixedFrames == -2) {
         const char *fenv = getenv("RB3_AUDIO_LATENCY_MS");
         int fixedMs = fenv ? atoi(fenv) : 0;
         sFixedFrames = fenv ? (int)((long long)arate * (fixedMs < 5 ? 5 : fixedMs) / 1000) : -1;
-        int minMs = getenv("RB3_AUDIO_LAT_MIN_MS") ? atoi(getenv("RB3_AUDIO_LAT_MIN_MS")) : 50;
+        // Floor raised 50 -> 180 ms: the measured main-thread stalls are p99=83 ms
+        // and max=200 ms, so a 50 ms floor sat BELOW the stalls it had to ride out
+        // and under-ran on every one. 180 ms keeps the steady-state buffer above
+        // the p99 stall (and the max with the deeper adaptive target on top), at
+        // the cost of ~130 ms more A/V latency — acceptable for music playback and
+        // well within the 743 ms ring. Override with RB3_AUDIO_LAT_MIN_MS.
+        int minMs = getenv("RB3_AUDIO_LAT_MIN_MS") ? atoi(getenv("RB3_AUDIO_LAT_MIN_MS")) : 180;
         int maxMs = getenv("RB3_AUDIO_LAT_MAX_MS") ? atoi(getenv("RB3_AUDIO_LAT_MAX_MS")) : 500;
         if (minMs < 5) minMs = 5;
         sMinFrames    = (int)((long long)arate * minMs / 1000);
@@ -688,6 +705,7 @@ void AudioDevice::PumpAudio() {
             } else if (u[0] > sLastUnderrun) {
                 // New underruns this window: build pressure. Only GROW once pressure is
                 // SUSTAINED (>=2 consecutive underrun windows) — a lone spike is ignored.
+                sCleanRun = 0;                        // dirty window: reset shrink hysteresis
                 sLastUnderrun = u[0];
                 sPressure += kPressureOne;
                 if (sPressure > kPressureMax) sPressure = kPressureMax;
@@ -702,6 +720,7 @@ void AudioDevice::PumpAudio() {
                 // dip adds 128 < kPressureGrow=512 and decays away on the next clean
                 // window; ~4 sustained near-miss windows -> >=512 -> GROW within ~2s).
                 // Do NOT decay/shrink on a near-miss window — this is a "dirty" window.
+                sCleanRun = 0;                        // dirty window: reset shrink hysteresis
                 sPressure += kPressureOne / 2;
                 if (sPressure > kPressureMax) sPressure = kPressureMax;
                 if (sPressure >= kPressureGrow && sTargetFrames < sMaxFrames) {
@@ -712,9 +731,16 @@ void AudioDevice::PumpAudio() {
                            (int)((long long)sTargetFrames * 1000 / arate), minDepth, sPressure);
                 }
             } else {
-                // Clean window: decay pressure, multiplicatively shrink toward the floor.
+                // Clean window: decay pressure. Only shrink toward the floor AFTER
+                // kShrinkHoldWindows consecutive clean windows (hysteresis), and then
+                // only slowly (12% of the distance) — so the buffer holds its depth
+                // for a few seconds after a stall instead of diving back to the floor
+                // and getting re-caught by the next sporadic stall. This kills the
+                // grow<->shrink oscillation the diagnosis logged.
                 sPressure >>= 1;
-                if (sTargetFrames > sMinFrames) {
+                if (sCleanRun < kShrinkHoldWindows) {
+                    sCleanRun++;
+                } else if (sTargetFrames > sMinFrames) {
                     int step = (int)((long long)(sTargetFrames - sMinFrames) * kShrinkPctNum / kShrinkPctDen);
                     if (step < sShrinkMinF) step = sShrinkMinF;
                     sTargetFrames -= step;
