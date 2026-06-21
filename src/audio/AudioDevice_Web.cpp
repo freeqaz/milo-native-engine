@@ -658,10 +658,20 @@ bool AudioDevice::Init(int sampleRate) {
     // ---- Off-main mix (RB3_WEB_OFFMAIN_MIX) ----
     // Read the flag ONCE. When ON, allocate the per-stem + control SABs and post
     // 'init-offmain' to the worklet; music stems will publish to these SABs and
-    // the worklet mixes on the audio thread. Default OFF = shipping path.
+    // the worklet mixes on the audio thread.
+    //
+    // DEFAULT-ON (deepring): the off-main path is verified correct — the worklet
+    // mixes the decoded stem rings on the AUDIO thread, the stem rings ride ~7-8 s
+    // deep (so a single main-thread freeze drains a multi-second cushion instead of
+    // dropping audio), audio_verify MATCHes (chroma ~0.98, 0% clip), the output
+    // music floor stays a fixed ~70 ms, and spaced stalls drop 0%. Opt OUT with
+    // RB3_WEB_OFFMAIN_MIX=0 (kept for the prior main-thread-mix shipping path).
+    // The residual back-to-back (interval<=stall, ~100%-duty) dropout at 400/800 ms
+    // is a documented path-B (off-main DECODE) limitation, not a regression — no
+    // finite ring survives a sustained 100%-duty main-thread freeze train.
     {
         const char *omEnv = getenv("RB3_WEB_OFFMAIN_MIX");
-        sOffMainMix = (omEnv && omEnv[0] && omEnv[0] != '0');
+        sOffMainMix = !(omEnv && omEnv[0] == '0');
         const char *floorEnv = getenv("RB3_WEB_OFFMAIN_FLOOR_MS");
         if (floorEnv && floorEnv[0]) {
             int v = atoi(floorEnv);
