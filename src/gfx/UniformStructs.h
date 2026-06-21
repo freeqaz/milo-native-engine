@@ -35,7 +35,10 @@ struct SceneUniforms {
     float pointLightColors[4][4]; // array<vec4f, 4> — color per light
     float pointLightRanges[4];    // vec4f — falloff range per light
     float numPointLights;         // f32
-    float _padPL[3];
+    float pointFalloffMode;       // f32 — 0 (default/DC3) = legacy saturate(1-d/r)^2
+                                  //       hard cutoff; 1 = GX 1/(1+d/r) inverse-linear
+                                  //       (set ONLY by RB3's venue-light upload)
+    float _padPL[2];
     // Shadow mapping
     float lightViewProj[16];      // mat4x4f — light's VP for shadow lookup
     float shadowEnabled;           // f32 — 1.0 when shadow map valid

@@ -71,7 +71,13 @@ struct SceneUniforms {
     pointLightColors: array<vec4f, 4>,
     pointLightRanges: vec4f,
     numPointLights: f32,
-    _padPL1: f32,
+    // Point-light distance-falloff law selector. 0 (default) = the legacy
+    // saturate(1 - d/range)^2 hard cutoff (extinct at d>=range) — what DC3 and
+    // every non-venue path use, kept byte-identical. 1 = the GX-faithful
+    // inverse-linear law 1/(1 + d/range) (half-bright at d==range, long tail),
+    // matching Wii GXInitLightAttn(k0=1,k1=1/range,k2=0) — set ONLY by RB3's
+    // venue-light upload so arena range-55 spots reach the band 70-100u away.
+    pointFalloffMode: f32,
     _padPL2: f32,
     _padPL3: f32,
     // Shadow mapping
@@ -520,8 +526,18 @@ fn computePointLight(
     let lightDir = toLight / max(lightDistance, 0.001);
 
     let lightRange = pointLightRangeAt(lightIndex);
-    let rangeAttenuation = saturate(1.0 - lightDistance / max(lightRange, 0.001));
-    let falloff = rangeAttenuation * rangeAttenuation;
+    var falloff: f32;
+    if (scene.pointFalloffMode >= 0.5) {
+        // GX-faithful inverse-linear falloff: GXInitLightAttn(.., k0=1, k1=1/range,
+        // k2=0) => 1/(1 + d/range). Half-bright at d==range, long tail (matches Wii
+        // Lit.cpp:36-44) — not a hard cutoff. Set only by the RB3 venue-light path.
+        falloff = 1.0 / (1.0 + lightDistance / max(lightRange, 0.001));
+    } else {
+        // Legacy default (DC3 + every non-venue path): squared-saturate hard
+        // cutoff, exactly 0 for d >= range. Byte-identical to pre-change behaviour.
+        let rangeAttenuation = saturate(1.0 - lightDistance / max(lightRange, 0.001));
+        falloff = rangeAttenuation * rangeAttenuation;
+    }
     let lightColor = scene.pointLightColors[lightIndex].rgb * falloff;
 
     let lambert = max(dot(surfaceNormal, lightDir), 0.0);

@@ -1136,6 +1136,27 @@ static float sVenueGreyKey()      { static float v = sVenueEnvFloat("RB3_VENUE_G
 static float sVenuePointExposure() { static float v = sVenueEnvFloat("RB3_VENUE_POINT_EXPOSURE", 0.70f); return v; }
 static float sVenueDirExposure()   { static float v = sVenueEnvFloat("RB3_VENUE_DIR_EXPOSURE",   0.80f); return v; }
 
+// converge-2026-06-20 lighting STEP 1 (GAP 2, arena_02 band near-black): the
+// shader's legacy point-light falloff is saturate(1 - d/range)^2 — a HARD cutoff
+// that is exactly 0 at d>=range. arena_02 authors per-station white key spots
+// (*_silhouette.lit, type=0 point, range=55) that sit 70-103u from the band roots
+// → the squared curve extinguishes the ONLY key and the band falls to near-black.
+// The Wii GX ground truth (rndwii/Lit.cpp:36-44, GXInitLightAttn k0=1,k1=1/range,
+// k2=0) is the inverse-linear law 1/(1 + d/range): 0.5 at d==range, long tail, so
+// the same spots deliver a real white key 70-100u away → spotlit-dim band, not
+// black. Selected per-draw via SceneUniforms.pointFalloffMode (default 0 = the
+// exact legacy curve; 1 = the GX law). We set mode 1 ONLY on the world.cam venue
+// path here, so DC3 + game.cam (highway) + menu cams + every non-venue draw stay
+// byte-identical (mode 0). DEFAULT-ON for RB3's venue path; full clean revert via
+// RB3_VENUE_POINT_FALLOFF_LEGACY=1 (no rebuild). Directionals + large-range points
+// are essentially unchanged near d<<range, so directional-lit venues (festival,
+// clubs) don't move; the change restores only the tight-spot band key (arena).
+static bool sVenuePointFalloffGx() {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("RB3_VENUE_POINT_FALLOFF_LEGACY"); v = (e && e[0] && e[0] != '0') ? 0 : 1; }
+    return v != 0;
+}
+
 void BandRnd::WriteSceneUniforms(RndCam* cam) {
     SceneUniforms s{};
 
@@ -1265,6 +1286,10 @@ void BandRnd::WriteSceneUniforms(RndCam* cam) {
     const char* camNm = cam ? cam->Name() : nullptr;
     RndEnviron* venv = RndEnviron::sCurrent;
     if (sVenueLightEnabled() && camNm && std::strcmp(camNm, "world.cam") == 0 && venv && venv->mAmbientFogOwner) {
+        // STEP 1 (GAP 2): use the GX-faithful inverse-linear point falloff for the
+        // venue path so tight range-55 silhouette spots reach the band (default 0 =
+        // legacy squared-cutoff everywhere else; DC3 + game.cam never set this).
+        s.pointFalloffMode = sVenuePointFalloffGx() ? 1.0f : 0.0f;
         // Ambient: a near-white ambient is the engine's degenerate default (not an
         // authored flood), so pull it down — the point/dir lights provide the real
         // illumination and a low ambient keeps the dark-venue contrast. Floor so
