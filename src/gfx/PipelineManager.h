@@ -2,6 +2,7 @@
 
 #include <webgpu/webgpu_cpp.h>
 #include <unordered_map>
+#include <vector>
 #include <cstdint>
 
 class GpuDevice;
@@ -90,6 +91,27 @@ public:
     // later looks up. Returns the number of pipelines actually created (misses).
     int PreWarm(wgpu::TextureFormat mainFmt, wgpu::TextureFormat rtFmt);
 
+    // Chunked pre-warm: spreads the ~240-pipeline PreWarm() compile burst across
+    // many frames so no single frame blocks (~590 ms web / ~700 ms native in one
+    // shot — a guaranteed audio under-run, the Track-C song-start GPUTask).
+    //
+    // CRITICAL on web: wgpu::Device::CreateRenderPipeline is ASYNC over the Dawn
+    // wire — the client call only writes a wire command (~0 ms) and the real
+    // GPU-process SPIR-V/pipeline compile happens when the command buffer is
+    // FLUSHED (once per rAF, at end-of-frame ProcessEvents). So a wall-time budget
+    // on the client cannot see the compile cost; chunking must be COUNT-based so
+    // each frame's flush carries only `maxThisCall` pipelines and the GPU compiles
+    // them in a small per-frame batch instead of one 240-pipeline flush.
+    //
+    // The first call enumerates the full key space into mPreWarmKeys (same superset
+    // as PreWarm); each call then creates up to `maxThisCall` keys (also stopping if
+    // the optional `budgetMs` wall budget trips — a native-side safety, near-inert
+    // on web), advancing mPreWarmCursor. Returns keys REMAINING (0 == done); the
+    // caller stops once it returns 0. Always makes ≥1 key of forward progress.
+    int PreWarmStep(wgpu::TextureFormat mainFmt, wgpu::TextureFormat rtFmt,
+                    int maxThisCall, float budgetMs = 0.f);
+    bool PreWarmDone() const { return mPreWarmStarted && mPreWarmCursor >= (int)mPreWarmKeys.size(); }
+
     // Bind group layouts (shared across all pipelines)
     wgpu::BindGroupLayout& SceneLayout() { return mLayouts[0]; }    // Group 0
     wgpu::BindGroupLayout& MaterialLayout() { return mLayouts[1]; } // Group 1
@@ -127,4 +149,11 @@ private:
     wgpu::PipelineLayout mPipelineLayout;
     std::unordered_map<uint32_t, wgpu::ShaderModule> mShaderCache;
     std::unordered_map<PipelineKey, wgpu::RenderPipeline, PipelineKeyHash> mPipelineCache;
+
+    // Chunked pre-warm state (PreWarmStep). The full enumerated key space is built
+    // once on the first step; the cursor walks it across frames.
+    std::vector<PipelineKey> mPreWarmKeys;
+    int mPreWarmCursor = 0;
+    bool mPreWarmStarted = false;
+    void BuildPreWarmKeys(wgpu::TextureFormat mainFmt, wgpu::TextureFormat rtFmt);
 };

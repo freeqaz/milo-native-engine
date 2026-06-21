@@ -48,6 +48,8 @@ void RB3RegisterLegacyRndAliases();
 // to prove a postproc-active screen is pixel-identical with the grade skipped.
 static bool RB3PostProcDisabled();
 static bool RB3PipelinePrewarmDisabled();
+static bool RB3PipelinePrewarmNoChunk();
+static int RB3PipelinePrewarmPerFrame();
 
 // L1 vertex-unpack cache (default ON; RB3_UNPACK_CACHE_OFF=1 opts out for A/B).
 // When OFF, DrawMesh unpacks every vertex on every draw (the legacy behavior) —
@@ -1390,19 +1392,45 @@ void BandRnd::BeginFrame(RndCam* cam) {
     // frame's pipeMs counter instead of the transition spike. Inert when
     // RB3_PIPELINE_PREWARM_OFF=1.
     if (!mPipelinesPrewarmed && !RB3PipelinePrewarmDisabled()) {
-        mPipelinesPrewarmed = true;
         static bool sPrewarmDbg = getenv("RB3_PREWARM_DBG") != nullptr;
         double wall0 = (sPrewarmDbg || gFrameTraceActive) ? FrameTraceNowMs() : 0.0;
-        int created = mPipelines.PreWarm(mTargetFmt, mRtFmt);
-        if (gFrameTraceActive) {
-            gPipelineCreateMsThisFrame += (float)(FrameTraceNowMs() - wall0);
-            gPipelineCreateCountThisFrame += created;
+        if (RB3PipelinePrewarmNoChunk()) {
+            // Legacy one-shot: all ~240 compiles in this frame (the Track-C spike).
+            mPipelinesPrewarmed = true;
+            int created = mPipelines.PreWarm(mTargetFmt, mRtFmt);
+            if (gFrameTraceActive) {
+                gPipelineCreateMsThisFrame += (float)(FrameTraceNowMs() - wall0);
+                gPipelineCreateCountThisFrame += created;
+            }
+            if (sPrewarmDbg)
+                fprintf(stderr, "[A5] pipeline pre-warm (one-shot): created %d in "
+                        "%.1f ms (mainFmt=%d rtFmt=%d)\n",
+                        created, FrameTraceNowMs() - wall0,
+                        (int)mTargetFmt, (int)mRtFmt);
+        } else {
+            // Track-C: create a small per-frame COUNT of pipelines, spread across
+            // frames so each end-of-frame Dawn flush compiles only this chunk.
+            int before = mPipelines.CachedPipelineCount();
+            int remaining = mPipelines.PreWarmStep(
+                mTargetFmt, mRtFmt, RB3PipelinePrewarmPerFrame());
+            int created = mPipelines.CachedPipelineCount() - before;
+            if (gFrameTraceActive) {
+                gPipelineCreateMsThisFrame += (float)(FrameTraceNowMs() - wall0);
+                gPipelineCreateCountThisFrame += created;
+            }
+            if (remaining <= 0) {
+                mPipelinesPrewarmed = true;  // fully warm — stop stepping
+                if (sPrewarmDbg)
+                    fprintf(stderr, "[A5] pipeline pre-warm (chunked): complete, "
+                            "%d cached (mainFmt=%d rtFmt=%d)\n",
+                            mPipelines.CachedPipelineCount(),
+                            (int)mTargetFmt, (int)mRtFmt);
+            } else if (sPrewarmDbg && created > 0) {
+                fprintf(stderr, "[A5] pipeline pre-warm (chunked): +%d this frame "
+                        "in %.1f ms, %d remaining\n",
+                        created, FrameTraceNowMs() - wall0, remaining);
+            }
         }
-        if (sPrewarmDbg)
-            fprintf(stderr, "[A5] pipeline pre-warm: created %d pipelines in "
-                    "%.1f ms (mainFmt=%d rtFmt=%d)\n",
-                    created, FrameTraceNowMs() - wall0,
-                    (int)mTargetFmt, (int)mRtFmt);
     }
 
     mDrawnMeshes = 0;
@@ -2757,6 +2785,34 @@ static bool RB3PipelinePrewarmDisabled() {
         s = (e && e[0] && e[0] != '0') ? 1 : 0;
     }
     return s != 0;
+}
+
+// Track-C fix: spread the pre-warm pipeline-compile burst across frames instead of
+// one ~590 ms (web) / ~700 ms (native) blocking frame that guarantees an audio
+// under-run. Default ON (chunked); RB3_PIPELINE_PREWARM_NOCHUNK=1 restores the
+// legacy one-shot for A/B. RB3_PIPELINE_PREWARM_PER_FRAME sets how many pipelines
+// are created per frame (default 12 → the 240-key set warms over ~20 frames /
+// ~0.33 s of the idle splash dwell, each frame's Dawn flush carrying only ~12
+// compiles instead of all 240). COUNT not time: CreateRenderPipeline is async
+// over the Dawn wire, so the real GPU-process compile happens at the per-rAF
+// flush, not in the wasm call — a wall-time budget can't see it, but bounding the
+// per-flush pipeline COUNT bounds the resulting GPUTask.
+static bool RB3PipelinePrewarmNoChunk() {
+    static int s = -1;
+    if (s < 0) {
+        const char* e = getenv("RB3_PIPELINE_PREWARM_NOCHUNK");
+        s = (e && e[0] && e[0] != '0') ? 1 : 0;
+    }
+    return s != 0;
+}
+static int RB3PipelinePrewarmPerFrame() {
+    static int v = -1;
+    if (v < 0) {
+        const char* e = getenv("RB3_PIPELINE_PREWARM_PER_FRAME");
+        v = (e && e[0]) ? atoi(e) : 12;
+        if (v < 1) v = 1;
+    }
+    return v;
 }
 
 void BandRnd::RunPostProcComposite(wgpu::TextureView dst) {

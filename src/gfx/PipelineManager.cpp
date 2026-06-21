@@ -549,13 +549,32 @@ int PipelineManager::PreWarm(wgpu::TextureFormat mainFmt, wgpu::TextureFormat rt
     // a ~0.7 s synchronous burst absorbed by boot (no recorded frame spikes); on
     // web CreateRenderPipeline is async so it is a ~4 ms dispatch that warms the
     // pipelines off-thread before the venue frame draws.
+    BuildPreWarmKeys(mainFmt, rtFmt);
     int created = 0;
+    for (const PipelineKey& key : mPreWarmKeys) {
+        if (mPipelineCache.find(key) == mPipelineCache.end()) {
+            mPipelineCache[key] = CreatePipeline(key);
+            ++created;
+        }
+    }
+    mPreWarmCursor = (int)mPreWarmKeys.size();  // PreWarm == fully warmed
+    return created;
+}
+
+// Enumerate the full pre-warm key space (the exact superset documented above) into
+// mPreWarmKeys, once. Shared by PreWarm (synchronous) and PreWarmStep (chunked) so
+// both warm the identical key set.
+void PipelineManager::BuildPreWarmKeys(wgpu::TextureFormat mainFmt,
+                                       wgpu::TextureFormat rtFmt) {
+    if (mPreWarmStarted) return;
+    mPreWarmStarted = true;
     struct PassVariant { wgpu::TextureFormat fmt; bool hasDepth; bool alphaWrite; bool skinned; };
     const PassVariant passes[3] = {
         { mainFmt, true,  false, false },  // main pass, static
         { mainFmt, true,  false, true  },  // main pass, skinned (characters)
         { rtFmt,   false, true,  false },  // RT pass, static only (sky-dome)
     };
+    mPreWarmKeys.reserve(3 * 8 * 5 * 2);
     for (const auto& pass : passes) {
         for (int blend = 0; blend <= 7; ++blend) {
             for (int zMode = 0; zMode <= 4; ++zMode) {
@@ -575,15 +594,39 @@ int PipelineManager::PreWarm(wgpu::TextureFormat mainFmt, wgpu::TextureFormat rt
                     key.alphaWrite = pass.alphaWrite;
                     key.alphaToCoverage = false;
                     key.depthBias = 0;
-                    if (mPipelineCache.find(key) == mPipelineCache.end()) {
-                        mPipelineCache[key] = CreatePipeline(key);
-                        ++created;
-                    }
+                    mPreWarmKeys.push_back(key);
                 }
             }
         }
     }
-    return created;
+}
+
+// Chunked pre-warm — see header. Creates at most `maxThisCall` pipelines from
+// mPreWarmCursor (the COUNT is the primary limiter — see header on why a wall
+// budget can't bound the async web compile); the optional budgetMs is a native
+// safety. Always makes ≥1 key of forward progress. The whole 240-key set warms
+// over ceil(240/maxThisCall) frames instead of one ~590 ms blocking flush.
+int PipelineManager::PreWarmStep(wgpu::TextureFormat mainFmt,
+                                 wgpu::TextureFormat rtFmt,
+                                 int maxThisCall, float budgetMs) {
+    BuildPreWarmKeys(mainFmt, rtFmt);
+    const int total = (int)mPreWarmKeys.size();
+    if (mPreWarmCursor >= total) return 0;
+    if (maxThisCall < 1) maxThisCall = 1;
+
+    double t0 = FrameTraceNowMs();
+    int madeThisCall = 0;
+    while (mPreWarmCursor < total && madeThisCall < maxThisCall) {
+        const PipelineKey& key = mPreWarmKeys[mPreWarmCursor];
+        if (mPipelineCache.find(key) == mPipelineCache.end())
+            mPipelineCache[key] = CreatePipeline(key);
+        ++mPreWarmCursor;
+        ++madeThisCall;
+        // Native safety budget (inert on web: client create is ~0 ms).
+        if (budgetMs > 0.f && (FrameTraceNowMs() - t0) >= (double)budgetMs)
+            break;
+    }
+    return total - mPreWarmCursor;  // remaining
 }
 
 wgpu::RenderPipeline PipelineManager::GetPipeline(const PipelineKey& key) {
