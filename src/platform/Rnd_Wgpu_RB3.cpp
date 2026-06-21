@@ -5510,6 +5510,78 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
                     c.red, c.green, c.blue, owner->NumBones());
             }
         }
+        // GAP B(a): big_club (+ every venue) audience renders as stark FLAT-WHITE.
+        // Two crowd render families, both dimmed here (RB3-only TU → DC3-safe).
+        //
+        // (1) DOMINANT — the 2D bowl-IMPOSTOR crowd BILLBOARDS. The visible white
+        //     audience lining the highway edges is NOT the skinned crowd characters
+        //     — measured (EMPTYNAME_PROBE): it is ~9000 4-vertex quads per frame,
+        //     drawn under world.cam, with an EMPTY mesh name (so the text heuristic
+        //     mis-tags them), an EMPTY-named shared material, color=(1,1,1), a baked
+        //     impostor diffuse, blend=1, non-skinned. Forcing every skinned crowd
+        //     char (and even every NAMED world.cam mesh) to magenta left these white
+        //     → they are a distinct, un-named, un-materialed billboard family. They
+        //     are the only empty-name world.cam draws that are NOT a Pentatonic/UI
+        //     font quad (real text is under ui.cam/overshell.cam with blend=3 and a
+        //     named font material), so the discriminator is exact:
+        //       world.cam  &&  empty mesh name  &&  empty material name  &&  !skinned.
+        //
+        // (2) the skinned crowd/extras CHARACTERS (char/crowd|extras/*, non-band).
+        //     Lower-magnitude but same retail-dim intent; band performers
+        //     (skeleton_unshared.milo) carry real baked AO and are hard-excluded.
+        //
+        // Both are downstream of lighting (white% is exposure-invariant), so the only
+        // lever is the BASE color. Measured A/B (big_club_01, foreground crowd strips):
+        // OFF crowdR luma 60 white% 19; default 0.10 → luma ~33 white% ~0 (band
+        // unchanged ~27). The impostor diffuse is near-white, so the multiplier must be
+        // small (~0.10) to land the dim-but-present retail audience; 0.0 removes them.
+        // Opt out RB3_CROWD_DIM_OFF=1; tune RB3_CROWD_DIM (default 0.10).
+        static int sCrowdDimOff = -1;
+        if (sCrowdDimOff < 0) {
+            const char* e = getenv("RB3_CROWD_DIM_OFF");
+            sCrowdDimOff = (e && e[0] && e[0] != '0') ? 1 : 0;
+        }
+        if (!sCrowdDimOff) {
+            RndCam* pc = RndCam::sCurrent;
+            bool worldCam = pc && pc->Name() &&
+                            std::strcmp(pc->Name(), "world.cam") == 0;
+            // (1) impostor crowd billboards: empty mesh name + empty material name
+            //     + non-skinned, drawn under world.cam.
+            bool impostorBillboard = worldCam && !skinned &&
+                                     isTextMeshHeur && matName[0] == '\0';
+            // (2) skinned crowd/extras characters (NOT band). Mirror the SHARD_GUARD
+            //     skeleton walk (:5154-5162): band binds skeleton_unshared.milo;
+            //     crowd/extras bind char/crowd/* | char/extras/* (or have a
+            //     crowd/extra mesh name).
+            bool skinnedCrowd = false;
+            if (skinned && !isTextMeshHeur && !isLikelyUiText) {
+                bool bandMember = false;
+                bool isCrowdOrExtras = (meshName &&
+                    (strstr(meshName, "crowd") || strstr(meshName, "extra"))) != 0;
+                int nbones = owner ? owner->NumBones() : 0;
+                for (int bi = 0; bi < nbones && !bandMember; bi++) {
+                    RndTransformable* bbt = owner->BoneTransAt(bi);
+                    ObjectDir* bbd = bbt ? bbt->Dir() : 0;
+                    if (bbd && !bbd->mStoredFile.empty()) {
+                        const char* sf = bbd->mStoredFile.c_str();
+                        if (strstr(sf, "skeleton_unshared.milo")) bandMember = true;
+                        else if (strstr(sf, "char/crowd/") || strstr(sf, "char/extras/"))
+                            isCrowdOrExtras = true;
+                    }
+                }
+                skinnedCrowd = isCrowdOrExtras && !bandMember;
+            }
+            if (impostorBillboard || skinnedCrowd) {
+                static float sCrowdDim = -1.0f;
+                if (sCrowdDim < 0.0f) {
+                    const char* e = getenv("RB3_CROWD_DIM");
+                    sCrowdDim = e ? (float)atof(e) : 0.10f;
+                }
+                mu.color[0] *= sCrowdDim;
+                mu.color[1] *= sCrowdDim;
+                mu.color[2] *= sCrowdDim;
+            }
+        }
     } else {
         mu.color[0] = mu.color[1] = mu.color[2] = mu.color[3] = 1.0f;
         mu.useTexture = 0.0f; mu.intensify = 1.0f; mu.prelit = 0.0f;
