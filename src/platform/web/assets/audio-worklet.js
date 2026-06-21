@@ -192,8 +192,9 @@ class MiloAudioProcessor extends AudioWorkletProcessor {
         // active stem gates the prime gate + under-run; a momentarily-short stem
         // contributes silence for its missing tail WITHOUT zeroing the others.
         let anyActive = false;
-        let minAvail = 0x7fffffff;                 // mix-rate frames (min across stems)
-        const active = [];                         // {slot, rp, avail, rf, gain, pan}
+        let anyUnpaused = false;                   // at least one playing (un-paused) stem
+        let minAvail = 0x7fffffff;                 // mix-rate frames (min across UNPAUSED stems)
+        const active = [];                         // {slot, rp, avail, rf, gain, pan, paused}
         for (let s = 0; s < this.maxStems; s++) {
             if ((mask & (1 << s)) === 0) continue;
             const hdr = stemHdr[s];
@@ -206,13 +207,23 @@ class MiloAudioProcessor extends AudioWorkletProcessor {
             const flags = Atomics.load(ctrlI, 4 + s * 4 + 2);
             const paused = (flags & 1) !== 0;
             anyActive = true;
-            if (avail < minAvail) minAvail = avail;
+            // A PAUSED stem must NOT gate minAvail and must NOT be advanced: the song
+            // is paused, so its ring legitimately stops being refilled. Counting it
+            // would drag minAvail to 0 once its buffered tail is consumed and pad
+            // silence every quantum (a false sustained under-run that ramped the
+            // on-main latency law to its ceiling — Bug-4), and advancing its rp would
+            // consume buffered audio it never mixes (so resume would jump forward).
+            // Freeze paused stems: skip them here, exclude from the advance below.
+            if (!paused) {
+                anyUnpaused = true;
+                if (avail < minAvail) minAvail = avail;
+            }
             active.push({
                 slot: s, rp: rp, avail: avail, rf: rfS, paused: paused,
                 gain: ctrlF[4 + s * 4 + 0], pan: ctrlF[4 + s * 4 + 1],
             });
         }
-        if (!anyActive) minAvail = 0;
+        if (!anyUnpaused) minAvail = 0;
 
         // --- SFX output ring (additive; benign if empty: just no SFX) ---
         let sfxRp = 0, sfxAvail = 0;
@@ -223,9 +234,12 @@ class MiloAudioProcessor extends AudioWorkletProcessor {
             sfxAvail = swp - sfxRp; if (sfxAvail < 0) sfxAvail += sfxBuf;
         }
 
-        if (!anyActive) {
-            // No music stems. Still drain the SFX ring so menu SFX play. The SFX
-            // ring is ALREADY at ctx rate (pump resampled it), so 1:1.
+        // No music stems, OR all registered stems are PAUSED (pause menu): nothing to
+        // mix. Drain SFX only and DO NOT count an under-run, so the on-main latency
+        // law sees a clean window (Bug-4) and the paused stems' rp/readTotal stay
+        // frozen (resume continues from the pause point).
+        if (!anyActive || !anyUnpaused) {
+            // The SFX ring is ALREADY at ctx rate (pump resampled it), so 1:1.
             this._drainSfxOnly(left, right, frames, sfxData, sfxBuf, sfxRp, sfxAvail);
             this.totalQuanta++; this.totalFrames += frames;
             this._reportOffMain(this.stemRingFrames);
@@ -292,11 +306,13 @@ class MiloAudioProcessor extends AudioWorkletProcessor {
                 right[o] = this._softClip(R * env);
             }
             this.limiterEnv = env;
-            // advance every active stem by the real frames emitted (lockstep),
-            // and bump the MONOTONIC readTotal (hdr[4]) so the pump can advance
-            // the producer back-pressure without wrap ambiguity.
+            // advance every UNPAUSED stem by the real frames emitted (lockstep), and
+            // bump the MONOTONIC readTotal (hdr[4]) so the pump can advance the
+            // producer back-pressure without wrap ambiguity. PAUSED stems are frozen
+            // (rp + readTotal held) so resume continues from the pause point. Bug-4.
             for (let a = 0; a < active.length; a++) {
                 const st = active[a];
+                if (st.paused) continue;
                 const hdr = stemHdr[st.slot];
                 Atomics.store(hdr, 1, (st.rp + real) % st.rf);
                 Atomics.store(hdr, 4, (Atomics.load(hdr, 4) + real) | 0);
@@ -418,6 +434,7 @@ class MiloAudioProcessor extends AudioWorkletProcessor {
         const stemAdv = Math.min(consumed, minAvail);
         for (let a = 0; a < active.length; a++) {
             const st = active[a];
+            if (st.paused) continue;              // frozen while paused (Bug-4)
             const hdr = stemHdr[st.slot];
             Atomics.store(hdr, 1, (st.rp + stemAdv) % st.rf);
             Atomics.store(hdr, 4, (Atomics.load(hdr, 4) + stemAdv) | 0);

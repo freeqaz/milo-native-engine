@@ -883,7 +883,23 @@ static int sPumpCount = 0;
 // style) is handled by the caller after this returns true.
 void AudioDevice::PumpAudioOffMainStems() {
     static const char *kStateKey = "_" MILO_WEB_AUDIO_NS_STR "Audio";
+    // Bug-1 opt-out (read once): RB3_NO_STEM_ANCHOR=1 reverts to the legacy
+    // seed-each-stem-the-tick-it-arms behavior (staggered-seed race possible).
+    static int sNoStemAnchor = -1;
+    if (sNoStemAnchor < 0) {
+        const char *e = getenv("RB3_NO_STEM_ANCHOR");
+        sNoStemAnchor = (e && e[0] && e[0] != '0') ? 1 : 0;
+    }
     std::lock_guard<std::mutex> lock(mMusicStemMutex);
+
+    // Bug-1: collect the slots that are armed but NOT yet seeded this tick. We only
+    // seed them once the set is STABLE (same count as the previous pump), so every
+    // stem of a stream that arms within a 1-tick window is seeded TOGETHER (one
+    // shared t=0, before the worklet's prime gate releases the bus clock). A
+    // separate earlier stream (CrowdAudio) has long since settled into its own
+    // batch, so it never drags the song's stems and vice-versa.
+    int pendingSeed[kMaxStems];
+    int pendingSeedN = 0;
 
     int activeCount = 0;
     for (size_t i = 0; i < mMusicStems.size(); i++) {
@@ -903,7 +919,13 @@ void AudioDevice::PumpAudioOffMainStems() {
                 int delta = rt - mStemLastReadTotal[i];
                 // Guard a 32-bit wrap of the monotonic counter (~13h of audio).
                 if (delta < 0) delta = 0;
-                if (delta > 0) stem->OffMainAdvanceConsumed(delta);
+                if (delta > 0) {
+                    stem->OffMainAdvanceConsumed(delta);
+                    // Bug-4 heartbeat: count frames consumed from an UNPAUSED stem.
+                    // (A paused stem's readTotal does not advance — the worklet
+                    // holds its cursor — so this naturally stays 0 while paused.)
+                    mOffMainFedFramesThisWindow += delta;
+                }
                 mStemLastReadTotal[i] = rt;
             }
         }
@@ -912,38 +934,92 @@ void AudioDevice::PumpAudioOffMainStems() {
         OffMainStemState st;
         stem->OffMainSnapshot(&st);
 
-        // The AVAILABILITY frontier (WRAPPED to [0,ringFrames)): the worklet may
-        // read frames up to here. The SAB PCM must be valid over [readFrame,
-        // availEnd). We copy the NEW slice [lastAvailEnd, availEnd) each tick
-        // (forward mod ringFrames; the per-tick advance is << ringFrames).
-        int rf = st.ringFrames;
-        int availEnd = st.readFrame + st.availFrames;       // unwrapped
-        availEnd %= rf; if (availEnd < 0) availEnd += rf;    // wrapped
-
-        // 3) Seed the worklet readPos at the song start on the first publish.
+        // 3) Defer seeding until the armed-unseeded set is stable (see above). Until
+        //    a stem is seeded we must NOT publish it: publishing advances the SAB
+        //    writePos and the worklet's prime gate would start the bus clock on a
+        //    partial set. Record it as pending and continue.
         if (!mStemSeeded[i]) {
-            int start = st.startFrame;
-            if (start < 0) continue;            // not armed yet
-            js_offmain_seed_stem((int)i, start, rf, /*generation*/1, kStateKey);
-            mStemSeeded[i] = true;
-            mStemLastWrite[i] = st.readFrame % rf; // copy from the play start
-            mStemLastReadTotal[i] = 0;             // matches the worklet's reset
+            if (st.startFrame < 0) continue;    // not armed yet (no play cursor)
+            if (sNoStemAnchor) {
+                // Legacy path: seed immediately, this tick.
+                int rfNow = st.ringFrames;
+                js_offmain_seed_stem((int)i, st.startFrame, rfNow,
+                                     /*generation*/1, kStateKey);
+                mStemSeeded[i] = true;
+                mStemLastWrite[i] = st.readFrame % rfNow;
+                mStemLastReadTotal[i] = 0;
+                // fall through to publish below
+            } else {
+                if (pendingSeedN < kMaxStems) pendingSeed[pendingSeedN++] = (int)i;
+                continue;                       // publish only after seeding
+            }
         }
 
-        // 4) Publish the newly-playable PCM slice [lastAvailEnd, availEnd) and the
-        //    AVAILABILITY writePos (= availEnd), plus params.
-        int flags = (st.paused ? 1 : 0) | (st.finished ? 2 : 0);
-        js_offmain_publish_stem((int)i,
-                                (int)(intptr_t)st.ringPcm, // byte ptr into HEAP16
-                                mStemLastWrite[i], availEnd, availEnd,
-                                (double)st.gain, (double)st.pan,
-                                flags, /*generation*/1, kStateKey);
-        mStemLastWrite[i] = availEnd;
+        // 4) Publish the newly-playable PCM slice for already-seeded stems.
+        PublishOffMainStem(i, st, kStateKey);
+    }
+
+    // Bug-1: seed the pending batch only when it has been STABLE for one pump (no
+    // new stem joined since last tick). They all share mRingReadPos-derived song
+    // starts captured THIS tick, so they get a common t=0. A still-growing set
+    // (a sibling arriving next tick) waits one more pump — bounded, sub-frame skew.
+    if (pendingSeedN > 0 && pendingSeedN == mPendingSeedCount) {
+        static int sDbg = -1;
+        if (sDbg < 0) { const char *e = getenv("RB3_WEB_OFFMAIN_DBG");
+                        sDbg = (e && e[0] && e[0] != '0') ? 1 : 0; }
+        int firstStart = -1, maxSkew = 0;
+        for (int k = 0; k < pendingSeedN; k++) {
+            int i = pendingSeed[k];
+            WebMusicStem *stem = mMusicStems[i];
+            if (!stem) continue;
+            OffMainStemState st;
+            stem->OffMainSnapshot(&st);
+            if (st.startFrame < 0) continue;
+            int rf = st.ringFrames;
+            js_offmain_seed_stem(i, st.startFrame, rf, /*generation*/1, kStateKey);
+            mStemSeeded[i] = true;
+            mStemLastWrite[i] = st.readFrame % rf;
+            mStemLastReadTotal[i] = 0;
+            if (firstStart < 0) firstStart = st.startFrame;
+            else { int d = st.startFrame - firstStart; if (d < 0) d = -d;
+                   if (d > maxSkew) maxSkew = d; }
+            // Publish its first playable slice in the same tick it is seeded.
+            PublishOffMainStem((size_t)i, st, kStateKey);
+        }
+        if (sDbg)
+            printf("AudioDevice: STEM-ANCHOR seeded %d stems in ONE tick "
+                   "(firstStart=%d maxStartSkew=%d frames)\n",
+                   pendingSeedN, firstStart, maxSkew);
+        mPendingSeedCount = 0;                  // batch drained
+    } else {
+        mPendingSeedCount = pendingSeedN;       // remember for the stability check
     }
 
     // 5) Publish the fixed output target depth (no adaptive law).
     (void)activeCount;
     js_offmain_set_target(sOffMainTargetFrames, kStateKey);
+}
+
+// Copy the newly-playable PCM slice of an already-seeded stem into its SAB and
+// publish the availability writePos + params. Factored out so the seed-now path
+// and the deferred-batch path publish identically.
+void AudioDevice::PublishOffMainStem(size_t i, const OffMainStemState &st,
+                                     const char *kStateKey) {
+    // The AVAILABILITY frontier (WRAPPED to [0,ringFrames)): the worklet may read
+    // frames up to here. The SAB PCM must be valid over [readFrame, availEnd). We
+    // copy the NEW slice [lastAvailEnd, availEnd) each tick (forward mod
+    // ringFrames; the per-tick advance is << ringFrames).
+    int rf = st.ringFrames;
+    int availEnd = st.readFrame + st.availFrames;       // unwrapped
+    availEnd %= rf; if (availEnd < 0) availEnd += rf;    // wrapped
+
+    int flags = (st.paused ? 1 : 0) | (st.finished ? 2 : 0);
+    js_offmain_publish_stem((int)i,
+                            (int)(intptr_t)st.ringPcm, // byte ptr into HEAP16
+                            mStemLastWrite[i], availEnd, availEnd,
+                            (double)st.gain, (double)st.pan,
+                            flags, /*generation*/1, kStateKey);
+    mStemLastWrite[i] = availEnd;
 }
 
 void AudioDevice::PumpAudio() {
@@ -1099,17 +1175,41 @@ void AudioDevice::PumpAudio() {
                 std::lock_guard<std::mutex> lock(mSourceMutex);
                 sourcesActive = !mSources.empty();
             }
+            // Bug-4: "is audio actually meant to be playing this window?" In OFF-MAIN
+            // mode the worklet's underruns are dominated by the MUSIC stems (a paused
+            // stem's avail drains to 0 and drags the worklet's min-avail to 0, so it
+            // pads silence every quantum and the hard underrun counter climbs even
+            // though nothing is wrong). `!mSources.empty()` is NOT a sufficient signal
+            // there — the music stems are NOT in mSources (off-main routes them to the
+            // worklet, not AddSource), so mSources holds only transient SFX one-shots
+            // and is usually EMPTY mid-song. We instead use a playback HEARTBEAT: the
+            // frames the worklet consumed from any UNPAUSED stem since the last window.
+            // Zero => paused / drained / seeking / no song => the drain is legitimate,
+            // not a main-thread stall, so we must NOT grow the latency target for it.
+            // When off-main is OFF, the music IS in mSources, so fall back to that.
+            const int fedThisWindow = mOffMainFedFramesThisWindow;
+            mOffMainFedFramesThisWindow = 0;          // reset per law window
+            const bool audioFeeding = sOffMainMix ? (fedThisWindow > 0) : sourcesActive;
             // Half the target: the "comfortably ahead" line. Dipping under it means
             // the pump was late enough this window that one more stall would underrun.
             // NOTE: a FULL-DRAIN window leaves minDepth==0 (no quantum saw any audio),
             // which fails (minDepth > 0) and skips soft pressure — but such a window
             // necessarily bumped the hard underrun counter (u[0]), so the hard branch
             // below covers it. softNearMiss is for the >=128-frame near-misses only.
-            const bool softNearMiss = (sLastUnderrun >= 0) && sourcesActive &&
+            const bool softNearMiss = (sLastUnderrun >= 0) && audioFeeding &&
                                       (minDepth > 0) && (minDepth < sTargetFrames / 2);
 
             if (sLastUnderrun < 0) {
                 sLastUnderrun = u[0];                 // baseline past the boot backlog (don't grow for it)
+            } else if (u[0] > sLastUnderrun && !audioFeeding) {
+                // Underruns this window but NO audio is being fed (paused / seeking /
+                // menu / drained) — the ring legitimately drained. Absorb the counter
+                // delta as the new baseline so we don't grow now OR retroactively on
+                // resume, and treat the window as clean (decay pressure / hold depth).
+                // This stops the pause-menu ramp to the 500ms ceiling (Bug-4).
+                sLastUnderrun = u[0];
+                sPressure >>= 1;
+                if (sCleanRun < kShrinkHoldWindows) sCleanRun++;
             } else if (u[0] > sLastUnderrun) {
                 // New underruns this window: build pressure. Only GROW once pressure is
                 // SUSTAINED (>=2 consecutive underrun windows) — a lone spike is ignored.

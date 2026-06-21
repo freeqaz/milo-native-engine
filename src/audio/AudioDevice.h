@@ -186,5 +186,24 @@ private:
     std::vector<bool> mStemSeeded;             // slot -> has readPos been seeded?
     std::vector<int> mStemLastReadTotal;       // slot -> last-seen worklet readTotal
     void PumpAudioOffMainStems();              // top-up pump (flag ON)
+    // Copy + publish one already-seeded stem's newly-playable PCM slice (shared by
+    // the seed-now and deferred-batch paths in PumpAudioOffMainStems).
+    void PublishOffMainStem(size_t slot, const OffMainStemState &st,
+                            const char *stateKey);
+    // STEM-SEED ANCHOR (Bug-1, RB3_NO_STEM_ANCHOR=1 opts out). Defer seeding any
+    // newly-armed stem until the set of armed-but-unseeded stems is STABLE for one
+    // pump tick, then seed the whole batch in the SAME tick (one t=0). This stops a
+    // stem (e.g. guitar) that arms one tick after its siblings from being seeded
+    // alone after the worklet has already primed + advanced the early stems' read
+    // cursors, which started it ~one stem ring (~8.9s) behind. See
+    // docs/native/song-offset-2026-06-21/GUITAR_OFFSET_DIAGNOSIS.md.
+    int mPendingSeedCount = 0;                 // armed-unseeded stems seen LAST pump
+    // OFF-MAIN PLAYBACK HEARTBEAT (Bug-4). Frames the worklet consumed from any
+    // UNPAUSED music stem since the previous PumpAudio. Zero across a pump window
+    // means the off-main music bus produced no audio this window (paused / drained /
+    // seeking / no song), so the on-main SFX-ring latency law must NOT grow its
+    // target for the resulting underruns — they aren't a main-thread stall. Updated
+    // in PumpAudioOffMainStems, read by the latency law in PumpAudio.
+    int mOffMainFedFramesThisWindow = 0;
 #endif
 };
