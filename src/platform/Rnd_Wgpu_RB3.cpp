@@ -5628,6 +5628,30 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
             const char* mname = mat->Name() ? mat->Name() : "";
             if (std::strcmp(mname, "surface.mat") == 0) {
                 mu.color[0] *= 0.12f; mu.color[1] *= 0.12f; mu.color[2] *= 0.12f;
+                // GAP A: the highway watermark (the authored clef-scroll filigree in
+                // surface.mat's emissive map, watermark_{bass,guitar,drum,keys}.tex,
+                // emisMul 0.40) is the SAME pattern retail draws — but native renders
+                // it ~3.4x too bright AND teal-saturated vs retail's faint near-neutral
+                // ghost (retail stroke-bg delta ~24, native ~82; teal g+b-2r retail ~-16,
+                // native ~+92). The shipped ×0.12 darkens only the base, never the
+                // emissive add (standard_wgsl.inc:868: finalColor += tint × emisMul ×
+                // tealSample), so the teal filigree dominates the dark base. Dim the
+                // emissive multiplier (NOT remove — retail has the pattern) toward
+                // retail's faint ghost: K ≈ 24/82 ≈ 0.30. RB3-only TU (DC3 uses
+                // Rnd_Wgpu.cpp). Opt out RB3_HIGHWAY_WATERMARK_OFF=1; tune
+                // RB3_HIGHWAY_WATERMARK_DIM. Note the emissiveMultiplier baseline was
+                // set in the general material block (menu-lighting fix 2).
+                static int sWmOff = -1;
+                if (sWmOff < 0) {
+                    const char* e = getenv("RB3_HIGHWAY_WATERMARK_OFF");
+                    sWmOff = (e && e[0] && e[0] != '0') ? 1 : 0;
+                }
+                static float sWmDim = -1.0f;
+                if (sWmDim < 0.0f) {
+                    const char* e = getenv("RB3_HIGHWAY_WATERMARK_DIM");
+                    sWmDim = e ? (float)atof(e) : 0.30f;
+                }
+                mu.emissiveMultiplier = sWmOff ? 0.0f : mu.emissiveMultiplier * sWmDim;
             }
             // Lit lanes: the track rails (rails.tex) are non-prelit, so they're
             // dimmed by the flat ambient and read as near-black separators on the
