@@ -3323,6 +3323,36 @@ void BandRnd::DrawRect(const Hmx::Rect& rect, const Hmx::Color& paramColor,
         if (!texView) texView = UploadRndTexIfNeeded(mGpu, diffuse);
         if (texView) hasTex = true;
     }
+    // RB3_SCREENMASK_FIX (default-ON): when the material's diffuse is a RENDER
+    // TARGET that was NEVER painted (no GPU view), SKIP this quad entirely
+    // instead of blitting the 1x1 mWhiteView. This is the festival
+    // `crowd_mass.*` screenmask case: `crowd_mass.tex` is an RT fed ONLY by a
+    // TexMovie Bink movie, which has no in-world decoder on native -> the RT is
+    // never painted -> the old `texView = mWhiteView` fallback blitted opaque
+    // white over the whole screen, blanking the festival mass-crowd shots.
+    // Skipping reveals the band + venue/world geometry behind it (far closer to
+    // retail than full-screen white).
+    //
+    // DISCRIMINATOR (must skip ONLY the dead movie RT):
+    //   - diffuse->IsRenderTarget()  -> it is a `kRendered`-type RT
+    //   - !hasTex                    -> NO painted view resolved
+    // A PAINTED RT (sky-dome `clouds_rnd.tex`) goes through BeginDrawTarget,
+    // which sets `uploaded=true` + a valid `view`, so GetRB3TexView returns it,
+    // hasTex==true, and it is NOT skipped. A null / non-RT diffuse (solid-color
+    // UI rects that legitimately want the white fallback) is not an RT, so it is
+    // unaffected and still gets mWhiteView as before. Opt-out
+    // RB3_SCREENMASK_FALLBACK_OFF=1 restores the original white blit (proves the
+    // gate). RB3-only TU (DC3 compiles Rnd_Wgpu.cpp, never this file).
+    if (!hasTex && diffuse && diffuse->IsRenderTarget()) {
+        static const bool kScreenmaskFallbackOff =
+            getenv("RB3_SCREENMASK_FALLBACK_OFF") != nullptr;
+        if (!kScreenmaskFallbackOff) {
+            if (getenv("RB3_SCREENMASK_DBG"))
+                fprintf(stderr, "[dbg] DrawRect skip unpainted-RT diffuse '%s'\n",
+                        diffuse->Name() ? diffuse->Name() : "?");
+            return;   // skip the quad — reveal what is behind the dead movie RT
+        }
+    }
     if (!hasTex) texView = mWhiteView;
 
     // Blend via the shared MapBlend; target format/depth per the ACTIVE pass.
