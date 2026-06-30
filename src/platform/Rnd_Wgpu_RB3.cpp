@@ -22,6 +22,7 @@
 #include "os/Debug.h"
 #include "platform/NativeSettings.h"
 #include "platform/FrameTraceCounters.h"
+#include "platform/RB3TexSharpenDebug.h"
 
 #include <algorithm>
 #include <array>
@@ -348,6 +349,15 @@ struct RB3TexEntry {
     const uint8_t*    lastPixels = nullptr;  // detect bitmap data churn
     uint32_t          fingerprint = 0;
     bool              uploaded = false;
+    // Dimensions of the GPU texture last created for this entry. The churn path
+    // (UploadRndTexIfNeeded) re-reads tex->mBitmap's W/H each call and recreates
+    // `tex` at whatever the current bitmap size is — there is NO same-size
+    // assumption — so when the progressive-sharpen manager swaps a stripped
+    // bitmap up to full-res these grow accordingly. Recorded for the sharpen
+    // recreate-at-new-size diagnostic (RB3DebugGetTexGpuInfo) and harmless
+    // otherwise. (-1 == never created.)
+    int               lastW = -1;
+    int               lastH = -1;
     // RTT: when isRenderTarget, `tex`/`view` hold a RENDER_ATTACHMENT |
     // TEXTURE_BINDING texture that BandRnd paints into (instead of a
     // CPU-uploaded bitmap). The sky-dome material then samples `view` to read
@@ -356,6 +366,13 @@ struct RB3TexEntry {
     bool              isRenderTarget = false;
 };
 static std::unordered_map<RndTex*, RB3TexEntry> sTexGpu;
+
+// Monotonic count of GPU-texture (re)creations in UploadRndTexIfNeeded. Bumped
+// on every CreateTexture there — first upload AND every churn-driven recreate
+// (incl. the progressive-sharpen swap-to-full-res). Read by the sharpen
+// recreate-at-new-size diagnostic to confirm a swap actually re-created the
+// texture rather than silently reusing the old (smaller) one. Diagnostic-only.
+static uint64_t sTexRecreateCount = 0;
 
 // ===========================================================================
 // Per-mesh GPU vertex/index buffer cache.
@@ -722,6 +739,8 @@ static wgpu::TextureView UploadRndTexIfNeeded(GpuDevice& gpu, RndTex* tex) {
             e.lastPixels = pixels;
             e.fingerprint = fp;
             e.uploaded = true;
+            e.lastW = w; e.lastH = h;
+            sTexRecreateCount++;
             if (gFrameTraceActive) {
                 gTexUploadMsThisFrame += (float)(FrameTraceNowMs() - ftStart);
                 gTexUploadCountThisFrame++;
@@ -802,11 +821,48 @@ static wgpu::TextureView UploadRndTexIfNeeded(GpuDevice& gpu, RndTex* tex) {
     e.lastPixels = pixels;
     e.fingerprint = fp;
     e.uploaded = true;
+    e.lastW = w; e.lastH = h;
+    sTexRecreateCount++;
     if (gFrameTraceActive) {
         gTexUploadMsThisFrame += (float)(FrameTraceNowMs() - ftStart);
         gTexUploadCountThisFrame++;
     }
     return e.view;
+}
+
+// ===========================================================================
+// Progressive-texture-sharpen recreate-at-new-size diagnostic (research/13 T0).
+//
+// The whole progressive-sharpen design rests on one engine assumption: swapping
+// a stripped (half-res) RndBitmap up to full-res + dirtying the churn key makes
+// UploadRndTexIfNeeded RECREATE the GPU texture at the NEW (larger) size and
+// publish a NEW view — with NO same-size assert. These native-only helpers let a
+// test drive that path directly (RB3DebugUploadTex) and inspect what happened
+// (RB3DebugGetTexGpuInfo) without exposing sTexGpu. Diagnostic surface only; not
+// referenced by any production draw path.
+// ===========================================================================
+bool RB3DebugUploadTex(RndTex* tex) {
+    if (!tex) return false;
+    // Exact production path: ResolveMaterialViews / WarmGpuForDir both reach the
+    // GPU texture through UploadRndTexIfNeeded with the engine's GpuDevice.
+    wgpu::TextureView v = UploadRndTexIfNeeded(gBandRnd.Gpu(), tex);
+    return v != nullptr;
+}
+
+RB3TexGpuInfo RB3DebugGetTexGpuInfo(RndTex* tex) {
+    RB3TexGpuInfo info{};
+    info.globalRecreateCount = sTexRecreateCount;
+    auto it = sTexGpu.find(tex);
+    if (it != sTexGpu.end()) {
+        const RB3TexEntry& e = it->second;
+        info.present = true;
+        info.uploaded = e.uploaded;
+        info.texW = e.lastW;
+        info.texH = e.lastH;
+        info.viewPtr = (const void*)e.view.Get();
+        info.texPtr = (const void*)e.tex.Get();
+    }
+    return info;
 }
 
 // Public accessor — used by MakeMaterialBindGroup to bind a material's
