@@ -319,6 +319,7 @@ set(MILO_ENGINE_GPU_PLATFORM_SOURCES
 # RB3's matched-fork rndobj via the consumer-injected context.
 set(MILO_ENGINE_GPU_PLATFORM_SOURCES_RB3
     src/platform/Rnd_Wgpu_RB3.cpp
+    src/platform/RB3TexSharpen.cpp   # progressive in-session texture sharpen (research/13 T1)
 )
 
 # Non-GPU platform sources — kept regardless of MILO_ENGINE_BUILD_GFX (file I/O,

@@ -23,6 +23,7 @@
 #include "platform/NativeSettings.h"
 #include "platform/FrameTraceCounters.h"
 #include "platform/RB3TexSharpenDebug.h"
+#include "platform/RB3TexSharpen.h"     // RB3SharpenReuploadTex / RB3SharpenTexFingerprint defs
 
 #include <algorithm>
 #include <array>
@@ -863,6 +864,55 @@ RB3TexGpuInfo RB3DebugGetTexGpuInfo(RndTex* tex) {
         info.texPtr = (const void*)e.tex.Get();
     }
     return info;
+}
+
+// ===========================================================================
+// Progressive-texture-sharpen PRODUCTION helpers (research/13 T1).
+//
+// The sharpen manager (RB3TexSharpen.cpp, a native-only TU) owns the state
+// machine: parse the .sharpen sidecar, match its entries to the venue's loaded
+// RndTex objects by a recomputed TexFingerprint, swap each matched RndBitmap up
+// to full-res, then RE-INVOKE the upload so UploadRndTexIfNeeded recreates the
+// GPU texture at the new (larger) size and publishes a new view. These two
+// helpers are the manager's ONLY contact with this TU's private sTexGpu cache +
+// the upload path:
+//
+//   RB3SharpenTexFingerprint — recompute the SAME TexFingerprint the upload path
+//     keys on, over the tex's CURRENT live pixels. This is the robust match key:
+//     the sidecar stores the fingerprint of the STRIPPED base (mip[levels]); the
+//     loaded stripped bitmap's pixels reproduce it byte-for-byte, so a sidecar
+//     entry is matched to its RndTex purely by value (no name/order assumption).
+//
+//   RB3SharpenReuploadTex — drive the production UploadRndTexIfNeeded for `tex`
+//     (the same call ResolveMaterialViews / WarmGpuForDir make). After the manager
+//     swaps mPixels/W/H, both churn keys (pixel pointer + fingerprint) differ, so
+//     this is a cache MISS → recreate at the new size → NEW e.view. The cached
+//     DrawMesh material bind group then rebuilds AUTOMATICALLY: its existing key
+//     `slot.matDiffuseView != diffuse.Get()` sees the new view handle that
+//     ResolveMaterialViews now returns (GetRB3TexView yields the fresh e.view).
+//     No new matBG invalidation key is required — the view-handle compare IS the
+//     invalidation (proven by test_texsharpen + the gate write-up). The OLD
+//     wgpu::Texture/View are refcounted-released when e.tex/e.view are overwritten
+//     in UploadRndTexIfNeeded, so no use-after-free: a matBG still binding the old
+//     view keeps it alive until that matBG is itself rebuilt on the next draw.
+//
+// Returns the recreate? — true iff this call recreated (cache-miss) vs hit cache.
+// The manager uses that to charge real work to its per-frame budget.
+uint32_t RB3SharpenTexFingerprint(const RndTex* tex) {
+    if (!tex) return 0;
+    const RndBitmap& bmp = tex->mBitmap;
+    const uint8_t* pixels = bmp.Pixels();
+    int pixBytes = bmp.PixelBytes();
+    if (!pixels || pixBytes < 16) return 0;
+    return TexFingerprint(pixels, pixBytes);
+}
+
+bool RB3SharpenReuploadTex(RndTex* tex) {
+    if (!tex || !gBandRnd.mGpuReady) return false;
+    uint64_t before = sTexRecreateCount;
+    wgpu::TextureView v = UploadRndTexIfNeeded(gBandRnd.Gpu(), tex);
+    (void)v;
+    return sTexRecreateCount != before; // true == a recreate happened
 }
 
 // Public accessor — used by MakeMaterialBindGroup to bind a material's
