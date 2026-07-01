@@ -225,6 +225,14 @@ int RB3SharpenLoadSidecar(ObjectDir* venueDir, const uint8_t* bytes, uint32_t le
         if (!tex) continue;
         const RndBitmap& bmp = tex->mBitmap;
         if (!bmp.Pixels() || bmp.Width() <= 0 || bmp.Height() <= 0) continue;
+        // Palette-safety backstop: RB3SharpenStep installs a single palette-free
+        // buffer (mBuffer==mPixels, mPalette=null), which is correct ONLY for
+        // DXT/BC bitmaps (mOrder & 0x38 != 0). A palette-indexed bitmap
+        // (bpp<=8, mOrder&0x38==0) lays out mBuffer=palette / mPixels=mBuffer+pal
+        // — the swap would break its layout and null-deref mPalette in the
+        // CPU-decode path. Venues are all-DXT, so requiring DXT here loses no
+        // coverage; it is a correctness guard against a non-DXT match.
+        if ((bmp.Order() & 0x38) == 0) continue;
         uint32_t fp = RB3SharpenTexFingerprint(tex);
         if (fp == 0) continue;
 
