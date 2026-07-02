@@ -3351,6 +3351,17 @@ static uint64_t RB3QuadPipeKey(wgpu::TextureFormat fmt, WgpuBlend blend,
            (uint64_t)(notex ? 1 : 0);
 }
 
+// RB3 outfit two-color composite scope flag. Set by OutfitConfig::MatSwap::
+// Compose (rb3 side, HX_NATIVE-guarded) around the four-pass DrawRect sequence
+// that paints an outfit's *_diffuse_output render target (eyes, skin, hair,
+// clothing, instruments). Lets DrawRect below identify the modulate layers of
+// that composite so they can be combined with a DEST-MULTIPLY blend (the layers
+// are authored to product-combine on Wii/360 via ColorModFlags TEV/shader
+// modes; native's DrawRect otherwise keeps REPLACE and the RT collapses to
+// "last layer wins" -> a near-white flat texture -> glowing white eyeballs).
+// Defined here so the engine always links; RB3-only TU so DC3 is unaffected.
+bool gRB3OutfitComposeActive = false;
+
 void BandRnd::DrawRect(const Hmx::Rect& rect, const Hmx::Color& paramColor,
                        RndMat* mat, const Hmx::Color* topRight,
                        const Hmx::Color* botLeft) {
@@ -3466,6 +3477,26 @@ void BandRnd::DrawRect(const Hmx::Rect& rect, const Hmx::Color& paramColor,
     if (mat) {
         int b = (int)mat->GetBlend();
         if (b >= 0 && b <= 10) blend = (WgpuBlend)b;
+    }
+    // RB3_COMPOSE_MULT (default-ON, opt-out RB3_COMPOSE_MULT_OFF=1): while the
+    // outfit two-color composite is painting its render target, combine the
+    // MODULATE layers (colorMod kColorModAlphaUnpackModulate=2 and
+    // kColorModModulate=3) with the destination via DEST-MULTIPLY instead of
+    // REPLACE. Compose fills a base color (colorMod None=0, stays REPLACE) then
+    // multiplies diffuse*col2, interp, and the gray(mask.a) layers on top; on
+    // Wii/360 those combine as a product, but native's DrawRect otherwise keeps
+    // REPLACE so the RT ends up equal to the last (mask) layer -> an untextured
+    // near-white eyeball that reads as a glowing dot under warm venue light.
+    // Scoped by gRB3OutfitComposeActive (set only inside Compose) + colorMod +
+    // mRtActiveTex so ONLY these composite layers are affected -- postproc/
+    // vignette DrawRects (which also carry colorMod) and the base fill are left
+    // untouched.
+    {
+        static const bool kComposeMultOff =
+            getenv("RB3_COMPOSE_MULT_OFF") != nullptr;
+        if (!kComposeMultOff && gRB3OutfitComposeActive && mRtActiveTex &&
+            (colorMod == 2 || colorMod == 3))
+            blend = WgpuBlend::Multiply;
     }
     bool rtPass = (mRtActiveTex != nullptr);
     wgpu::TextureFormat fmt = rtPass ? mRtFmt : mTargetFmt;   // NEVER hardcode RGBA8
