@@ -328,6 +328,25 @@ public:
     // repeated DrawRect calls don't recreate a pipeline every invocation.
     std::unordered_map<uint64_t, wgpu::RenderPipeline> mQuadPipelines;
 
+    // --- RB3 outfit two-color composite (OutfitConfig::MatSwap::Compose) ---
+    // State captured across the layered DrawRect sequence that paints an outfit
+    // *_diffuse_output render target while gRB3OutfitComposeActive is set. The
+    // authored recolor is  out.rgb = diff.rgb * lerp(color1, color2, w)  where
+    // color1 = base-fill color (colorMod None layer), color2 = the diff layer's
+    // tint, and w = the interp map's ALPHA channel (its RGB is a white carrier).
+    // We realize it as: base fill (color1) -> diff*color1 REPLACE -> a 2-texture
+    // pass that alpha-over-blends diff*color2 weighted by interp.a. See DrawRect.
+    Hmx::Color mComposeColor1;              // base fill color (colorMod 0 layer)
+    Hmx::Color mComposeColor2;              // diff layer tint (first colorMod 3)
+    wgpu::TextureView mComposeDiffView;     // diff layer texture (rgb detail)
+    bool mComposeHaveDiff = false;          // reset each base layer
+    // 2-texture interp-lerp pass: diff@0, interp@1, sampler@2, ComposeUB@3.
+    wgpu::ShaderModule mComposeShader;
+    wgpu::BindGroupLayout mComposeBGL;
+    wgpu::PipelineLayout mComposePL;
+    wgpu::Buffer mComposeUB;                // 16B: color2 (vec4f)
+    std::unordered_map<uint64_t, wgpu::RenderPipeline> mComposePipelines;
+
     // --- Particle billboard infra (built by EnsureParticlePipeline) ---
     // Group 0 = mPipelines.SceneLayout() (reused; the vs only reads binding 0 =
     // viewProj). Group 1 = particle diffuse tex@0 + sampler@1. The VB/IB are

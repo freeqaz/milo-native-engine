@@ -3368,6 +3368,72 @@ void BandRnd::EnsureQuadPipeline() {
     ubDesc.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
     mRectUB = dev.CreateBuffer(&ubDesc);
 
+    // --- Outfit two-color composite: interp-lerp pass (diff + interp) ---
+    // Separate module: it needs a 2-texture @group(0) layout (diff@0, interp@1,
+    // samp@2, ComposeUB@3) which conflicts with fs_rect's bindings, so it cannot
+    // share mQuadShader. vs_compose matches the same RB3RectVertex layout so the
+    // pass reuses mQuadVertexBuffer (already holding the full-screen quad).
+    static const char* kRB3ComposeShaderSource = R"WGSL(
+struct VertexRect { @location(0) pos: vec2f, @location(1) uv: vec2f, @location(2) color: vec4f, };
+struct VSOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f, };
+struct ComposeUB { color2: vec4f, };
+@group(0) @binding(0) var diffTex: texture_2d<f32>;
+@group(0) @binding(1) var interpTex: texture_2d<f32>;
+@group(0) @binding(2) var composeSampler: sampler;
+@group(0) @binding(3) var<uniform> cub: ComposeUB;
+@vertex fn vs_compose(in: VertexRect) -> VSOut {
+    var out: VSOut;
+    out.pos = vec4f(in.pos, 0.0, 1.0);
+    out.uv = in.uv;
+    return out;
+}
+@fragment fn fs_compose_interp(in: VSOut) -> @location(0) vec4f {
+    let d = textureSample(diffTex, composeSampler, in.uv);
+    let w = textureSample(interpTex, composeSampler, in.uv).a;
+    // src.rgb = diff.rgb * color2 ; src.a = interp weight w. Blended SrcAlpha
+    // OVER the destination (already = diff*color1) yields, per pixel:
+    //   diff.rgb * color2 * w + diff.rgb * color1 * (1-w)
+    //   = diff.rgb * lerp(color1, color2, w).
+    return vec4f(d.rgb * cub.color2.rgb, w);
+}
+)WGSL";
+    wgpu::ShaderSourceWGSL cWgsl{};
+    cWgsl.code = kRB3ComposeShaderSource;
+    wgpu::ShaderModuleDescriptor cSmDesc{};
+    cSmDesc.nextInChain = &cWgsl;
+    mComposeShader = dev.CreateShaderModule(&cSmDesc);
+
+    wgpu::BindGroupLayoutEntry cEntries[4] = {};
+    cEntries[0].binding = 0;
+    cEntries[0].visibility = wgpu::ShaderStage::Fragment;
+    cEntries[0].texture.sampleType = wgpu::TextureSampleType::Float;
+    cEntries[0].texture.viewDimension = wgpu::TextureViewDimension::e2D;
+    cEntries[1].binding = 1;
+    cEntries[1].visibility = wgpu::ShaderStage::Fragment;
+    cEntries[1].texture.sampleType = wgpu::TextureSampleType::Float;
+    cEntries[1].texture.viewDimension = wgpu::TextureViewDimension::e2D;
+    cEntries[2].binding = 2;
+    cEntries[2].visibility = wgpu::ShaderStage::Fragment;
+    cEntries[2].sampler.type = wgpu::SamplerBindingType::Filtering;
+    cEntries[3].binding = 3;
+    cEntries[3].visibility = wgpu::ShaderStage::Fragment;
+    cEntries[3].buffer.type = wgpu::BufferBindingType::Uniform;
+    cEntries[3].buffer.minBindingSize = 16;
+    wgpu::BindGroupLayoutDescriptor cBglDesc{};
+    cBglDesc.entryCount = 4;
+    cBglDesc.entries = cEntries;
+    mComposeBGL = dev.CreateBindGroupLayout(&cBglDesc);
+
+    wgpu::PipelineLayoutDescriptor cPlDesc{};
+    cPlDesc.bindGroupLayoutCount = 1;
+    cPlDesc.bindGroupLayouts = &mComposeBGL;
+    mComposePL = dev.CreatePipelineLayout(&cPlDesc);
+
+    wgpu::BufferDescriptor cUbDesc{};
+    cUbDesc.size = 16;
+    cUbDesc.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
+    mComposeUB = dev.CreateBuffer(&cUbDesc);
+
     // --- Stage 2: postproc grade module + bind-group layout + UB ---
     wgpu::ShaderSourceWGSL ppWgsl{};
     ppWgsl.code = kRB3PostProcShaderSource;
@@ -3554,29 +3620,123 @@ void BandRnd::DrawRect(const Hmx::Rect& rect, const Hmx::Color& paramColor,
         int b = (int)mat->GetBlend();
         if (b >= 0 && b <= 10) blend = (WgpuBlend)b;
     }
-    // RB3_COMPOSE_MULT (default-ON, opt-out RB3_COMPOSE_MULT_OFF=1): while the
-    // outfit two-color composite is painting its render target, combine the
-    // MODULATE layers (colorMod kColorModAlphaUnpackModulate=2 and
-    // kColorModModulate=3) with the destination via DEST-MULTIPLY instead of
-    // REPLACE. Compose fills a base color (colorMod None=0, stays REPLACE) then
-    // multiplies diffuse*col2, interp, and the gray(mask.a) layers on top; on
-    // Wii/360 those combine as a product, but native's DrawRect otherwise keeps
-    // REPLACE so the RT ends up equal to the last (mask) layer -> an untextured
-    // near-white eyeball that reads as a glowing dot under warm venue light.
-    // Scoped by gRB3OutfitComposeActive (set only inside Compose) + colorMod +
-    // mRtActiveTex so ONLY these composite layers are affected -- postproc/
-    // vignette DrawRects (which also carry colorMod) and the base fill are left
-    // untouched.
-    {
-        static const bool kComposeMultOff =
-            getenv("RB3_COMPOSE_MULT_OFF") != nullptr;
-        if (!kComposeMultOff && gRB3OutfitComposeActive && mRtActiveTex &&
-            (colorMod == 2 || colorMod == 3))
-            blend = WgpuBlend::Multiply;
-    }
     bool rtPass = (mRtActiveTex != nullptr);
     wgpu::TextureFormat fmt = rtPass ? mRtFmt : mTargetFmt;   // NEVER hardcode RGBA8
     bool hasDepth = !rtPass;   // RT pass: no depth; main pass: depth-disabled D24S8
+
+    // RB3 outfit two-color composite (default-ON, opt-out RB3_COMPOSE_MULT_OFF=1
+    // restores the pre-fix pure-REPLACE behavior for A/B). The authored recolor
+    // is  out.rgb = diff.rgb * lerp(color1, color2, w) , with w = the interp
+    // map's ALPHA (its RGB is a white carrier) — NOT a whole-RT replace (last
+    // layer wins -> near-white flat texture / glowing eyes) nor a pure product
+    // (color1*color2*diff -> black silhouettes). Compose issues the recolor as a
+    // layered DrawRect sequence into a *_diffuse_output RT while
+    // gRB3OutfitComposeActive is set; we collapse those layers:
+    //   colorMod 0 (base fill, no tex): record color1, REPLACE fill (fallback for
+    //       areas the diff doesn't cover + the tattoo/logo patches drawn after).
+    //   colorMod 3, first w/ tex (DIFF, tint=color2): record diff view + color2,
+    //       draw diff.rgb*color1 REPLACE (correct already for skin, where color2
+    //       is white and w~0 -> diff*color1).
+    //   colorMod 3, second (INTERP, white RGB, alpha=w): a 2-texture pass that
+    //       alpha-over-blends diff*color2 weighted by w over the diff*color1 dest
+    //       -> diff*lerp(color1,color2,w). Handled inline below (early return).
+    //   colorMod 2 (mask, alpha=coverage): DEST-MULTIPLY (coverage modulation).
+    // Scoped by gRB3OutfitComposeActive + mRtActiveTex so postproc/vignette
+    // DrawRects (which also carry colorMod) are untouched. RB3-only TU.
+    static const bool kComposeMultOff = getenv("RB3_COMPOSE_MULT_OFF") != nullptr;
+    bool composeActive = !kComposeMultOff && gRB3OutfitComposeActive && rtPass;
+    if (composeActive) {
+        if (colorMod == 0) {
+            // Base fill: record color1, reset per-composite state. REPLACE fill.
+            mComposeColor1 = matCol;
+            mComposeHaveDiff = false;
+        } else if (colorMod == 3 && !mComposeHaveDiff && hasTex) {
+            // DIFF layer: capture diff view + tint (color2), then draw
+            // diff.rgb * color1 (REPLACE). Override the modulation to color1.
+            mComposeColor2 = matCol;
+            mComposeDiffView = texView;
+            mComposeHaveDiff = true;
+            ub.mod[0] = mComposeColor1.red;
+            ub.mod[1] = mComposeColor1.green;
+            ub.mod[2] = mComposeColor1.blue;
+            ub.mod[3] = 1.0f;
+            mGpu.Queue().WriteBuffer(mRectUB, 0, &ub, sizeof(ub));
+            blend = WgpuBlend::Src;
+        } else if (colorMod == 3 && mComposeHaveDiff && hasTex && mComposeDiffView) {
+            // INTERP layer: 2-texture lerp pass (diff = captured, interp = current
+            // texView). Reuses mQuadVertexBuffer (already holding this call's
+            // full-screen quad). Alpha-over the diff*color1 destination.
+            EnsureQuadPipeline();
+            float cub[4] = { mComposeColor2.red, mComposeColor2.green,
+                             mComposeColor2.blue, 1.0f };
+            mGpu.Queue().WriteBuffer(mComposeUB, 0, cub, sizeof(cub));
+
+            uint64_t ckey = RB3QuadPipeKey(fmt, WgpuBlend::SrcAlpha, hasDepth,
+                                           /*isPost*/ false, /*notex*/ false);
+            wgpu::RenderPipeline cpipe;
+            auto cit = mComposePipelines.find(ckey);
+            if (cit != mComposePipelines.end()) {
+                cpipe = cit->second;
+            } else {
+                wgpu::BlendState cbs = mPipelines.MapBlend(WgpuBlend::SrcAlpha);
+                wgpu::ColorTargetState cct{};
+                cct.format = fmt;
+                cct.blend = &cbs;
+                cct.writeMask = wgpu::ColorWriteMask::All;
+                wgpu::FragmentState cfrag{};
+                cfrag.module = mComposeShader;
+                cfrag.entryPoint = "fs_compose_interp";
+                cfrag.targetCount = 1;
+                cfrag.targets = &cct;
+                wgpu::VertexAttribute cattrs[3] = {};
+                cattrs[0].format = wgpu::VertexFormat::Float32x2; cattrs[0].offset = 0;  cattrs[0].shaderLocation = 0;
+                cattrs[1].format = wgpu::VertexFormat::Float32x2; cattrs[1].offset = 8;  cattrs[1].shaderLocation = 1;
+                cattrs[2].format = wgpu::VertexFormat::Float32x4; cattrs[2].offset = 16; cattrs[2].shaderLocation = 2;
+                wgpu::VertexBufferLayout cvbl{};
+                cvbl.arrayStride = sizeof(RB3RectVertex);
+                cvbl.stepMode = wgpu::VertexStepMode::Vertex;
+                cvbl.attributeCount = 3;
+                cvbl.attributes = cattrs;
+                wgpu::DepthStencilState cds{};
+                cds.format = wgpu::TextureFormat::Depth24PlusStencil8;
+                cds.depthWriteEnabled = wgpu::OptionalBool::False;
+                cds.depthCompare = wgpu::CompareFunction::Always;
+                wgpu::RenderPipelineDescriptor cpd{};
+                cpd.layout = mComposePL;
+                cpd.vertex.module = mComposeShader;
+                cpd.vertex.entryPoint = "vs_compose";
+                cpd.vertex.bufferCount = 1;
+                cpd.vertex.buffers = &cvbl;
+                cpd.fragment = &cfrag;
+                cpd.depthStencil = hasDepth ? &cds : nullptr;
+                cpd.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+                cpd.multisample.count = 1;
+                cpipe = mGpu.Device().CreateRenderPipeline(&cpd);
+                mComposePipelines[ckey] = cpipe;
+            }
+            if (cpipe) {
+                wgpu::BindGroupEntry cbge[4] = {};
+                cbge[0].binding = 0; cbge[0].textureView = mComposeDiffView;
+                cbge[1].binding = 1; cbge[1].textureView = texView;
+                cbge[2].binding = 2; cbge[2].sampler = mSampler;
+                cbge[3].binding = 3; cbge[3].buffer = mComposeUB; cbge[3].offset = 0; cbge[3].size = 16;
+                wgpu::BindGroupDescriptor cbgd{};
+                cbgd.layout = mComposeBGL;
+                cbgd.entryCount = 4;
+                cbgd.entries = cbge;
+                wgpu::BindGroup cbg = mGpu.Device().CreateBindGroup(&cbgd);
+                mPass.SetPipeline(cpipe);
+                mPass.SetBindGroup(0, cbg, 0, nullptr);
+                mPass.SetVertexBuffer(0, mQuadVertexBuffer, 0, sizeof(verts));
+                mPass.Draw(6);
+                mPass.SetBindGroup(0, mSceneBindGroup, 0, nullptr);
+            }
+            return;
+        } else if (colorMod == 2) {
+            // Mask layer: coverage modulation -> dest-multiply.
+            blend = WgpuBlend::Multiply;
+        }
+    }
 
     uint64_t pkey = RB3QuadPipeKey(fmt, blend, hasDepth, /*isPost*/ false, /*notex*/ !hasTex);
     wgpu::RenderPipeline pipe;
@@ -4675,6 +4835,17 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
             }
             Transform skin;
             Multiply(owner->BoneOffsetAt(b), wt, skin);
+            if (getenv("RB3_HL2") && mesh->Name() &&
+                strncmp(mesh->Name(), "highlight_main", 14) == 0) {
+                ObjectDir* od = owner ? owner->Dir() : nullptr;
+                fprintf(stderr,
+                    "[HL2] meshPtr=%p dir=%s meshW=(%.1f,%.1f,%.1f) b=%d bone=%s "
+                    "boneW=(%.1f,%.1f,%.1f) skin=(%.1f,%.1f,%.1f)\n",
+                    (void*)mesh, (od && od->Name()) ? od->Name() : "-",
+                    mesh->WorldXfm().v.x, mesh->WorldXfm().v.y, mesh->WorldXfm().v.z,
+                    b, bt->Name() ? bt->Name() : "?", wt.v.x, wt.v.y, wt.v.z,
+                    skin.v.x, skin.v.y, skin.v.z);
+            }
             // HUB_BAR_PROBE (per-bone): the hub highlight bar's corner bones carry
             // the bar quad as their LOCAL xfm but their TransParent (pentatonic_
             // display) stays at the ORIGIN — so boneWorld + composed skin land near
