@@ -4835,17 +4835,6 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
             }
             Transform skin;
             Multiply(owner->BoneOffsetAt(b), wt, skin);
-            if (getenv("RB3_HL2") && mesh->Name() &&
-                strncmp(mesh->Name(), "highlight_main", 14) == 0) {
-                ObjectDir* od = owner ? owner->Dir() : nullptr;
-                fprintf(stderr,
-                    "[HL2] meshPtr=%p dir=%s meshW=(%.1f,%.1f,%.1f) b=%d bone=%s "
-                    "boneW=(%.1f,%.1f,%.1f) skin=(%.1f,%.1f,%.1f)\n",
-                    (void*)mesh, (od && od->Name()) ? od->Name() : "-",
-                    mesh->WorldXfm().v.x, mesh->WorldXfm().v.y, mesh->WorldXfm().v.z,
-                    b, bt->Name() ? bt->Name() : "?", wt.v.x, wt.v.y, wt.v.z,
-                    skin.v.x, skin.v.y, skin.v.z);
-            }
             // HUB_BAR_PROBE (per-bone): the hub highlight bar's corner bones carry
             // the bar quad as their LOCAL xfm but their TransParent (pentatonic_
             // display) stays at the ORIGIN — so boneWorld + composed skin land near
@@ -5466,6 +5455,32 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
         if (sExemptRebound && (mesh->mNativeBonesRebound ||
                                (owner && owner->mNativeBonesRebound)))
             guardActive = false;
+        // HUB / focused-menu highlight-bar shard-guard exemption (Defect 3 of the
+        // hub-highlight family; see also the Defect-1 colour fix ~L5620 and the
+        // Defect-2 placement fix ~L4504). The focused-item yellow bar
+        // (`highlight_main.mesh` / `highlight_pattern.mesh`, the LabelShrinkWrapper /
+        // UILabel highlight quad) is a SKINNED quad whose 4 corner bones are
+        // DELIBERATELY spread to shrink-wrap the focused label's text (UILabel::
+        // UpdateAndDrawHighlightMesh -> corner->SetLocalPos from the text width). Its
+        // bind-pose AABB is tiny, so for a WIDE label the blended world extent is many
+        // times the bind extent — exactly the ratio the V24 shard guard treats as a
+        // runaway crowd/character pose and DROPS. That is a false positive here: the
+        // stretch is the mesh's whole purpose, and the bones are finite/sane. The
+        // symptom is that the bar renders for NARROW items (QUICKPLAY, ratio < 2x) but
+        // VANISHES for WIDE ones (START A ROAD CHALLENGE, ratio > 2x) — the "highlight
+        // disappears on the bottom/long menu entry" bug. These meshes are already
+        // scoped by name for the placement + colour fixes; exempt them here too. They
+        // are screen-space UI overlays that cannot produce a scene-crossing shard.
+        // Opt-out: RB3_NO_HUB_BAR_SHARD_EXEMPT=1 (restores the drop for A/B).
+        {
+            static int sHlShardExemptOff = -1;
+            if (sHlShardExemptOff < 0)
+                sHlShardExemptOff = getenv("RB3_NO_HUB_BAR_SHARD_EXEMPT") ? 1 : 0;
+            if (!sHlShardExemptOff && mesh->Name() &&
+                (std::strncmp(mesh->Name(), "highlight_main", 14) == 0 ||
+                 std::strncmp(mesh->Name(), "highlight_pattern", 17) == 0))
+                guardActive = false;
+        }
         // Read bind verts through skinnedView so a cache-skipped unpack still
         // ratio-tests the same bind-pose data (cache == this draw's would-be unpack).
         int n = (int)skinnedView.size();
