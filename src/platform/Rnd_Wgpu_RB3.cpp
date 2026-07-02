@@ -1221,6 +1221,37 @@ static float sVenueAmbientFloor() { static float v = sVenueEnvFloat("RB3_VENUE_A
 static float sVenueAmbientClamp() { static float v = sVenueEnvFloat("RB3_VENUE_AMBIENT_CLAMP", 0.09f);  return v; }
 static float sVenueGreyKey()      { static float v = sVenueEnvFloat("RB3_VENUE_GREY_KEY",      0.22f);  return v; }
 
+// C8 face-shading fix (2026-07-02, impl-c8-shading). On Wii, RndEnviron splits
+// its lights: mLightsReal drive GX directional/point HARDWARE shading, while
+// mLightsApprox are the "fake" lights folded through BoxMapLighting into GX
+// AMBIENT (Env.cpp: IsFake() == in mLightsApprox; UpdateApproxLighting feeds
+// them to ApplyApproxLighting as an ambient box). Native's WriteSceneUniforms
+// historically promoted mLightsApprox to full Lambert directionals — fine for
+// the venue-geometry environs (the converge-2026-06-20 backdrop tuning is built
+// on it), but WRONG for CHARACTER environs (chars.env / char.env / *_char.env):
+// there the approx set is rim.lit + the four white *_silhouette.lit spots, so
+// band flesh gets a flat frontal white flood (over-bright + shadowless) instead
+// of the dim, single, distance-attenuated warm key (main.lit, the front-of-house
+// real light) the Wii shades faces with. GT (Dolphin) faces are dim + rim-lit
+// with a real shadow side. Fix: for character environs that actually carry a
+// usable real key, shade from mLightsReal and demote mLightsApprox to a modest
+// ambient fill; character environs with an EMPTY real list, and every non-char
+// environ, keep the legacy approx-promotion untouched (so the venue backdrop and
+// the arena tight-spot band key from converge STEP 1 do not regress). RB3-only
+// TU → DC3 byte-identical; world.cam venue path only → game.cam/menu untouched.
+// Default-ON, full clean revert via RB3_CHAR_REAL_LIGHT_OFF=1 (no rebuild).
+static bool sCharRealLight() {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("RB3_CHAR_REAL_LIGHT_OFF"); v = (e && e[0] && e[0] != '0') ? 0 : 1; }
+    return v != 0;
+}
+// Coefficient folding the demoted mLightsApprox (rim/silhouette) into ambient as
+// an AVERAGE (venue-stable — not a per-light sum that re-flattens), and the
+// per-channel clamp on the resulting char ambient. Tuned against the Dolphin GT
+// face oracle: keep faces dim so the real key carries the directional shading.
+static float sCharApproxAmbient() { static float v = sVenueEnvFloat("RB3_CHAR_APPROX_AMBIENT", 0.11f); return v; }
+static float sCharAmbientMax()    { static float v = sVenueEnvFloat("RB3_CHAR_AMBIENT_MAX",    0.14f); return v; }
+
 // render-polish 2026-06-19 (lighting-polish wrap-up, sub-item 2 "venue song-start
 // exposure"): the native lit sum (ambient + Sum point/dir diffuse) runs HOTTER than
 // the Wii GX backdrop on disco-lit venues (small_club), so the song-start lighting
@@ -1430,9 +1461,30 @@ void BandRnd::WriteSceneUniforms(RndCam* cam) {
                     venv->Name() ? venv->Name() : "<noname>",
                     amb.red, amb.green, amb.blue, s.ambientColor[0], s.ambientColor[1], s.ambientColor[2], total, showing);
         }
+        // C8 face-shading: choose the direct-shading light list. Character
+        // environs (chars.env / char.env / *_char.env) with a usable real key
+        // shade from mLightsReal (Wii's GX hardware lights) so band faces get the
+        // dim, single, distance-attenuated key (main.lit) instead of the flat
+        // white *_silhouette flood from the approx set; the approx lights are then
+        // demoted to a modest ambient fill below. Every other environ — and any
+        // char environ whose real list is empty — keeps the legacy approx
+        // promotion, leaving the venue backdrop tuning + arena spot-key untouched.
+        bool useReal = false;
+        if (sCharRealLight() && std::strstr(envNm, "char") != nullptr) {
+            for (ObjPtrList<RndLight>::iterator rit = venv->mLightsReal.begin();
+                 rit != venv->mLightsReal.end(); ++rit) {
+                RndLight* RL = *rit;
+                if (!RL || !RL->mColorOwner || !RL->Showing()) continue;
+                const Hmx::Color& rc = RL->GetColor();
+                if (rc.red + rc.green + rc.blue > 0.01f) { useReal = true; break; }
+            }
+        }
+        ObjPtrList<RndLight>& litList = useReal ? venv->mLightsReal : venv->mLightsApprox;
+        if (probe) fprintf(stderr, "[CHAR_REAL] env=%s isChar=%d useReal=%d\n",
+                           envNm, (int)(std::strstr(envNm, "char") != nullptr), (int)useReal);
         int dl = 0, pl = 0;
-        for (ObjPtrList<RndLight>::iterator it = venv->mLightsApprox.begin();
-             it != venv->mLightsApprox.end() && (dl < 4 || pl < 4); ++it) {
+        for (ObjPtrList<RndLight>::iterator it = litList.begin();
+             it != litList.end() && (dl < 4 || pl < 4); ++it) {
             RndLight* L = *it;
             if (!L || !L->mColorOwner || !L->Showing()) continue;
             const Hmx::Color& lc = L->GetColor();
@@ -1463,6 +1515,30 @@ void BandRnd::WriteSceneUniforms(RndCam* cam) {
                 s.pointLightColors[pl][3] = 1.0f;
                 s.pointLightRanges[pl] = L->Range() > 0.f ? L->Range() : 100.f;
                 pl++;
+            }
+        }
+        if (useReal) {
+            // Demote the character env's approx set (rim + *_silhouette spots) to
+            // a modest ambient FILL so the shadow side of faces reads without a
+            // frontal flood. Average (not sum) keeps this venue-stable — summing N
+            // white spots would just re-flatten the face. Clamped low so the real
+            // key (main.lit) carries the directional shading and faces stay
+            // GT-dim. Folds on top of the already-clamped env ambient set above.
+            float fr = 0, fg = 0, fb = 0; int fn = 0;
+            for (ObjPtrList<RndLight>::iterator ait = venv->mLightsApprox.begin();
+                 ait != venv->mLightsApprox.end(); ++ait) {
+                RndLight* AL = *ait;
+                if (!AL || !AL->mColorOwner || !AL->Showing()) continue;
+                const Hmx::Color& ac = AL->GetColor();
+                if (ac.red + ac.green + ac.blue <= 0.01f) continue;
+                fr += ac.red; fg += ac.green; fb += ac.blue; fn++;
+            }
+            if (fn > 0) {
+                const float k = sCharApproxAmbient() / (float)fn;   // average
+                const float mx = sCharAmbientMax();
+                s.ambientColor[0] = std::min(s.ambientColor[0] + fr * k, mx);
+                s.ambientColor[1] = std::min(s.ambientColor[1] + fg * k, mx);
+                s.ambientColor[2] = std::min(s.ambientColor[2] + fb * k, mx);
             }
         }
         if (dl == 0 && pl == 0) {
