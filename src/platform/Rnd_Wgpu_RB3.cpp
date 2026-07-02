@@ -4509,7 +4509,46 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
         if (hubBarOff < 0) hubBarOff = getenv("RB3_NO_HUB_BAR_PLACEMENT_FIX") ? 1 : 0;
         hubBarPlacement = !hubBarOff;
     }
-    if (skinned && hubBarPlacement) {
+    // SCROLLBAR THUMB placement fix (Bug 1b, ui-bugs wave 2). Same family as the
+    // hub highlight bar above: the scrollbar's red thumb (`scrollbar.mesh`) is a
+    // SKINNED UI mesh in the SHARED ui/resource/scrollbar_display.milo dir. Every
+    // ScrollbarDisplay component draws that ONE shared dir after
+    // pDir->SetWorldXfm(WorldXfm()) (ScrollbarDisplay::DrawShowing). The static
+    // sibling `scrollbar_bg.mesh` (the track) follows the freshly-set dir world to
+    // the list's right edge (world ~168), but the thumb's bones do NOT re-inherit
+    // that world (their local sub-tree is not re-dirtied by the parent SetWorldXfm),
+    // so the skinned palette (BoneOffset * boneWorld) places the thumb at the
+    // ORIGIN → it renders at screen centre (~x=640) instead of on the track.
+    //
+    // The bg track draws immediately BEFORE the thumb in the same pDir->Draw()
+    // (mDraws order), and the bg MESH's own WorldXfm carries the full correct
+    // placement (translation + the authored x-scale). So we STASH the bg mesh's
+    // WorldXfm and, when the thumb draws, use it as the thumb's obj.world instead
+    // of identity. The thumb bones already encode the thumb's position/size WITHIN
+    // the track (origin-relative, incl. the live scroll offset via their local z),
+    // so worldPos = bgPlacement * boneMatrix * vertex lands the thumb on the track
+    // and tracks scrolling. Scoped to the two named scrollbar meshes — characters,
+    // the hub bar, and all other skinned meshes are untouched. Wii path is
+    // unaffected (native-only draw path). Opt-out RB3_SCROLLBAR_THUMB_FIX_OFF=1.
+    static Transform sScrollbarPlacement; // last bg-track world (shared 1-widget)
+    static bool sHaveScrollbarPlacement = false;
+    bool scrollbarThumb = false;
+    if (mesh->Name()) {
+        static int sSbarThumbOff = -1;
+        if (sSbarThumbOff < 0) sSbarThumbOff = getenv("RB3_SCROLLBAR_THUMB_FIX_OFF") ? 1 : 0;
+        if (!sSbarThumbOff) {
+            if (strcmp(mesh->Name(), "scrollbar_bg.mesh") == 0) {
+                sScrollbarPlacement = mesh->WorldXfm();
+                sHaveScrollbarPlacement = true;
+            } else if (strcmp(mesh->Name(), "scrollbar.mesh") == 0 &&
+                       skinned && sHaveScrollbarPlacement) {
+                scrollbarThumb = true;
+            }
+        }
+    }
+    if (skinned && scrollbarThumb) {
+        MiloXfmToColMajor(sScrollbarPlacement, obj.world);
+    } else if (skinned && hubBarPlacement) {
         // identity rotation + label translation (column-major; translation in [12..14])
         for (int i = 0; i < 16; i++) obj.world[i] = (i % 5 == 0) ? 1.f : 0.f;
         const Vector3& mwv = mesh->WorldXfm().v;
