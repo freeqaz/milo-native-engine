@@ -3675,7 +3675,20 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     std::vector<RndMesh::Face>& faces = owner->mFaces;
     int nv = verts.size();
     int nf = (int)faces.size();
-    if (nf <= 0) return;
+    // RB3_HEADMAT_DBG (C8 head-invisible triage, temporary): name EVERY mesh
+    // that reaches DrawMesh with empty geometry, once per instance.
+    if (nf <= 0) {
+        if (getenv("RB3_HEADMAT_DBG")) {
+            static std::unordered_map<const void*, int> sSeen;
+            if (sSeen[(const void*)mesh]++ == 0) {
+                Hmx::Object* dirObj = mesh->Dir();
+                fprintf(stderr, "[HEADMAT] EMPTY mesh='%s' mesh=%p owner=%p dir='%s' nf=%d nv=%d\n",
+                        mesh->Name() ? mesh->Name() : "?", (void*)mesh, (void*)owner,
+                        (dirObj && dirObj->Name()) ? dirObj->Name() : "-", nf, nv);
+            }
+        }
+        return;
+    }
 
     // V14: skinned-mesh detection. The smasher / strike-plate (gem_smasher_*,
     // gem_mash0..5) and other rig meshes carry a non-empty mBones list with
@@ -3817,7 +3830,16 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
         // Cache miss / cache off — do the real per-vertex unpack (shared with the
         // L2 warm sweep via RB3UnpackMeshVerts, so warm-then-draw is byte-identical).
         nv = RB3UnpackMeshVerts(owner, skinned, gpuVerts, gpuVertsSkinned);
-        if (nv < 0) return; // no geometry
+        if (nv < 0) {
+            if (getenv("RB3_HEADMAT_DBG") && mesh->Name()
+                && std::strcmp(mesh->Name(), "head.mesh") == 0) {
+                static std::unordered_map<const void*, int> sSeen;
+                if (sSeen[(const void*)mesh]++ == 0)
+                    fprintf(stderr, "[HEADMAT] mesh='head.mesh' mesh=%p EARLY-OUT unpack nv<0\n",
+                            (void*)mesh);
+            }
+            return; // no geometry
+        }
 
         // VERT_PROBE: dump uncompressed-skinned bind verts (pos bounds + a few
         // samples w/ weights+indices) once per mesh, to ground-truth the band-
@@ -4130,7 +4152,16 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     wgpu::Buffer vbuf = meshEntry.vbuf;
     wgpu::Buffer ibuf = meshEntry.ibuf;
     uint32_t cachedIndexCount = meshEntry.indexCount;
-    if (!vbuf || !ibuf) return;  // upload failed / no geometry
+    if (!vbuf || !ibuf) {
+        if (getenv("RB3_HEADMAT_DBG") && mesh->Name()
+            && std::strcmp(mesh->Name(), "head.mesh") == 0) {
+            static std::unordered_map<const void*, int> sSeen;
+            if (sSeen[(const void*)mesh]++ == 0)
+                fprintf(stderr, "[HEADMAT] mesh='head.mesh' mesh=%p EARLY-OUT vbuf=%d ibuf=%d\n",
+                        (void*)mesh, (int)!!vbuf, (int)!!ibuf);
+        }
+        return;  // upload failed / no geometry
+    }
 
     // --- Claim this draw's per-INSTANCE uniform slot ---
     // The SAME RndMesh draws multiple times per frame with different obj/mat/bone
@@ -5385,6 +5416,14 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
 
     // --- Material uniforms ---
     RndMat* mat = mesh->Mat();
+    // RB3_HEADMAT_DBG: catch head.mesh reaching the material block with a NULL
+    // mat (C8 head-invisible triage). Temporary probe.
+    if (getenv("RB3_HEADMAT_DBG") && !mat && mesh->Name()
+        && std::strcmp(mesh->Name(), "head.mesh") == 0) {
+        static std::unordered_map<const void*, int> sNullSeen;
+        if (sNullSeen[(const void*)mesh]++ == 0)
+            fprintf(stderr, "[HEADMAT] mesh='head.mesh' owner=%p MAT=NULL\n", (void*)mesh);
+    }
     MaterialUniforms mu{};
     // W5 text-mesh heuristic — mirror the DC3 draw path (Mesh_Wgpu.cpp:188).
     // RndText::UpdateMesh / RndText::CreateLines build per-font sub-meshes via
@@ -5516,6 +5555,32 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
             if (v) hasTex = true;
         }
         mu.useTexture = hasTex ? 1.0f : 0.0f;
+        // RB3_HEADMAT_DBG: one-shot per mesh — dump the full material state of
+        // any mesh sampling a composited `*_skin_diffuse_output` RT (C8 head-
+        // invisible triage). Temporary probe.
+        if (getenv("RB3_HEADMAT_DBG")) {
+            const char* mnm = mesh->Name() ? mesh->Name() : "?";
+            bool skinRt = dt && dt->Name() && std::strstr(dt->Name(), "skin_diffuse_output");
+            Hmx::Object* meshDir = mesh->Dir();
+            if (true) {
+                static std::unordered_map<std::string, int> sSkinSeen;
+                char ptr[32]; snprintf(ptr, sizeof(ptr), "%p", (void*)mat);
+                if (sSkinSeen[std::string(mnm) + (mat->Name() ? mat->Name() : "?") + ptr]++ == 0) {
+                    const Hmx::Color& mc = mat->GetColor();
+                    fprintf(stderr,
+                        "[HEADMAT] mesh='%s' dir='%s' owner=%p mat='%s'@%p diffuse='%s' hasTex=%d isRT=%d "
+                        "blend=%d alphaCut=%d alphaThresh=%d zmode=%d color=(%.2f,%.2f,%.2f,a=%.2f) "
+                        "prelit=%d useEnviron=%d texWrap=%d\n",
+                        mnm, (meshDir && meshDir->Name()) ? meshDir->Name() : "-",
+                        (void*)mesh, mat->Name() ? mat->Name() : "?", (void*)mat,
+                        dt ? (dt->Name() ? dt->Name() : "?") : "<null>",
+                        (int)hasTex, dt ? (int)dt->IsRenderTarget() : 0,
+                        (int)mat->GetBlend(), (int)mat->mAlphaCut, (int)mat->mAlphaThresh,
+                        (int)mat->GetZMode(), mc.red, mc.green, mc.blue, mc.alpha,
+                        (int)mat->mPreLit, (int)mat->mUseEnviron, (int)mat->GetTexWrap());
+                }
+            }
+        }
         mu.intensify = mat->mIntensify ? 2.0f : 1.0f;
         // W5 Phase 1: force-prelit text so font glyph quads pick up the
         // material colour directly without lighting attenuation.
