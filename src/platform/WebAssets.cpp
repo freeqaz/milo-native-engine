@@ -813,6 +813,19 @@ int WebAssetsRangeTake(int reqId, void *dst, int dstCap) {
     return n;
 }
 
+int WebAssetsRangeInFlightCount() {
+    // Live (not-yet-completed) Range fetches. Abandoned requests are detached
+    // from sRangeRequests at drop time, so the !abandoned check is defensive.
+    // Used by the sharpen-sidecar chunk pump (rb3_texsharpen_native.cpp) as its
+    // yield-to-mogg signal: it only kicks a chunk when nothing else (i.e. mogg
+    // streaming — its own chunk is never in flight at check time) is fetching.
+    int n = 0;
+    for (auto *r : sRangeRequests)
+        if (!r->done && !r->abandoned)
+            n++;
+    return n;
+}
+
 void WebAssetsRangeDrop(int reqId) {
     for (auto it = sRangeRequests.begin(); it != sRangeRequests.end(); ++it) {
         if ((*it)->id == reqId) {

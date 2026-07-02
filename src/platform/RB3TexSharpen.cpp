@@ -104,6 +104,15 @@ struct SharpenEntry {
     // Match state:
     RndTex* tex = nullptr;   // the loaded RndTex this entry matched
     bool    sharpened = false;
+    // Retry state (research/14 Lane B fold-in): the CPU-side bitmap swap and the
+    // GPU reupload are separate steps. If RB3SharpenReuploadTex returns false
+    // (GPU not ready), the swap has ALREADY happened — `swapped` records that so
+    // the retry never re-swaps (the carried topmip was freed at swap time), and
+    // `retries` bounds how many frames we re-attempt the reupload before giving
+    // up on this entry (the bitmap stays full-res; a later organic draw-path
+    // upload will still pick it up once the GPU comes back).
+    bool    swapped = false;
+    int     retries = 0;
 };
 
 struct SharpenSession {
@@ -271,6 +280,11 @@ int RB3SharpenLoadSidecar(ObjectDir* venueDir, const uint8_t* bytes, uint32_t le
 // ---------------------------------------------------------------------------
 // Incremental swap + reupload.
 // ---------------------------------------------------------------------------
+// How many frames a not-ready GPU reupload is retried before the entry is
+// abandoned (marked done). ~2s at 60fps — long enough to ride out a transient
+// not-ready window, bounded so a permanently-not-ready state can't spin forever.
+static const int kSharpenRetryCap = 120;
+
 int RB3SharpenStep(int maxThisFrame) {
     if (!gSession.active) return 0;
     if (maxThisFrame <= 0) maxThisFrame = 1;
@@ -283,6 +297,7 @@ int RB3SharpenStep(int maxThisFrame) {
         if (!e.tex || e.sharpened) continue;
 
         RndBitmap& bmp = e.tex->mBitmap;
+        const size_t fullBytes = (size_t)e.fullRb * (size_t)e.fullH;
 
         // Reconstruct the full-res base level into an engine-owned buffer. The
         // sidecar's top-mip IS the original mip[0] (the full base level). We
@@ -296,41 +311,64 @@ int RB3SharpenStep(int maxThisFrame) {
         //
         // DXT bitmaps have no palette (PaletteBytes()==0 for mOrder & 0x38), so the
         // pre-strip layout is buffer==pixels — we mirror that exactly.
-        const size_t fullBytes = (size_t)e.fullRb * (size_t)e.fullH;
-        u8* newBuf = (u8*)_MemAlloc((int)fullBytes, 32);
-        if (!newBuf) {
-            // OOM — leave this texture stripped, count it consumed, move on.
-            e.sharpened = true;
+        //
+        // Skipped on a retry (e.swapped): the bitmap is ALREADY full-res and the
+        // carried topmip was freed at swap time — only the GPU reupload remains.
+        if (!e.swapped) {
+            u8* newBuf = (u8*)_MemAlloc((int)fullBytes, 32);
+            if (!newBuf) {
+                // OOM — leave this texture stripped, count it consumed, move on.
+                e.sharpened = true;
+                std::vector<uint8_t>().swap(e.topmip);
+                doneThisCall++;
+                continue;
+            }
+            std::memcpy(newBuf, e.topmip.data(), fullBytes);
+            // Free the carried copy now that it's been duplicated into the owned
+            // buffer.
             std::vector<uint8_t>().swap(e.topmip);
-            doneThisCall++;
-            continue;
-        }
-        std::memcpy(newBuf, e.topmip.data(), fullBytes);
-        // Free the carried copy now that it's been duplicated into the owned buffer.
-        std::vector<uint8_t>().swap(e.topmip);
 
-        // Free the old stripped allocation (the milo loader's _MemAlloc'd mBuffer,
-        // which == the old mPixels for these palette-free DXT bitmaps) and install
-        // the full-res buffer. If mBuffer was somehow null/shared we still install
-        // ours; the bitmap then owns exactly one buffer (no double free on teardown).
-        if (bmp.mBuffer) {
-            _MemFree(bmp.mBuffer);
-            bmp.mBuffer = nullptr;
+            // Free the old stripped allocation (the milo loader's _MemAlloc'd
+            // mBuffer, which == the old mPixels for these palette-free DXT bitmaps)
+            // and install the full-res buffer. If mBuffer was somehow null/shared
+            // we still install ours; the bitmap then owns exactly one buffer (no
+            // double free on teardown).
+            if (bmp.mBuffer) {
+                _MemFree(bmp.mBuffer);
+                bmp.mBuffer = nullptr;
+            }
+            bmp.mBuffer   = newBuf;
+            bmp.mPixels   = newBuf;
+            bmp.mPalette  = nullptr;     // DXT: no palette
+            bmp.mWidth    = (u16)e.fullW;
+            bmp.mHeight   = (u16)e.fullH;
+            bmp.mRowBytes = (u16)e.fullRb;
+            // Keep RndTex's own mirror fields consistent (some paths read these).
+            e.tex->mWidth  = e.fullW;
+            e.tex->mHeight = e.fullH;
+            e.swapped = true;
         }
-        bmp.mBuffer   = newBuf;
-        bmp.mPixels   = newBuf;
-        bmp.mPalette  = nullptr;     // DXT: no palette
-        bmp.mWidth    = (u16)e.fullW;
-        bmp.mHeight   = (u16)e.fullH;
-        bmp.mRowBytes = (u16)e.fullRb;
-        // Keep RndTex's own mirror fields consistent (some paths read these).
-        e.tex->mWidth  = e.fullW;
-        e.tex->mHeight = e.fullH;
 
         // Re-invoke the upload: pixel pointer + fingerprint both changed → cache
         // miss → recreate at full size → new view. The cached material bind group
         // rebuilds on the next draw via its existing view-handle compare.
+        //
+        // recreate==false means the GPU wasn't ready (no work happened). Research/14
+        // Lane B fold-in: do NOT mark the entry done and do NOT charge the per-frame
+        // budget — rewind the cursor and retry next frame, up to kSharpenRetryCap
+        // frames. Yield the rest of this frame's budget (a not-ready GPU is global;
+        // every later entry would fail the same way this frame).
         bool recreated = RB3SharpenReuploadTex(e.tex);
+        if (!recreated && e.retries < kSharpenRetryCap) {
+            e.retries++;
+            gSession.nextToSharpen--;   // revisit this same entry next frame
+            break;
+        }
+        if (!recreated) {
+            SHARPEN_LOG("[sharpen] %s reupload not ready after %d retries — "
+                        "giving up on this entry (bitmap stays full-res)\n",
+                        e.tex->Name() ? e.tex->Name() : "?", e.retries);
+        }
         e.sharpened = true;
         gSession.sharpenedCount++;
         gSession.bytesUpgraded += fullBytes;

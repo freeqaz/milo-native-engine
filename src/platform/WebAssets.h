@@ -111,4 +111,11 @@ int WebAssetsRangeTake(int reqId, void *dst, int dstCap);
 // Drop a Range request without taking its bytes (e.g. on error). Frees it.
 void WebAssetsRangeDrop(int reqId);
 
+// Number of Range fetches currently in flight (issued, not yet completed,
+// not abandoned). The sharpen-sidecar chunk pump polls this before kicking a
+// chunk so a cosmetic sidecar transfer strictly yields to mogg streaming
+// (research/14 Lane B). Cheap (registry scan; the registry holds only live +
+// just-completed-unconsumed requests).
+int WebAssetsRangeInFlightCount();
+
 #endif // __EMSCRIPTEN__
