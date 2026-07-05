@@ -85,5 +85,10 @@
   "RB3_NO_SFX":                    { "class": "workaround", "owner": "audio",       "faithfulStatus": "not-live: retail-disabled-SFX-payload compat default-OFF (truthy opt-in disables SFX; see PLAN.md Key-facts-4)", "default": "off", "read": "truthy" },
   "RB3_NO_SETLIST_FIX":            { "class": "workaround", "owner": "ui/setlist",  "faithfulStatus": "not-live: setlist fix default-ON (opt-out name)", "default": "on" },
   "RB3_NO_GUEST_PROFILE":          { "class": "workaround", "owner": "profile",     "faithfulStatus": "not-live: guest profile workaround default-ON", "default": "on" },
-  "RB3_NO_AV_CALIBRATION":         { "class": "workaround", "owner": "av/calibration", "faithfulStatus": "not-live: A/V calibration bypass default-ON", "default": "on" }
+  "RB3_NO_AV_CALIBRATION":         { "class": "workaround", "owner": "av/calibration", "faithfulStatus": "not-live: A/V calibration bypass default-ON", "default": "on" },
+
+  "RB3_FIXED_CLOCK":               { "class": "feature", "owner": "session-telemetry/determinism", "faithfulStatus": "n/a: headless-determinism harness flag (off in shipping runs) — trace-free fixed sim clock", "default": "off", "read": "presence" },
+  "RB3_FIXED_CLOCK_DT_MS":         { "class": "feature", "owner": "session-telemetry/determinism", "faithfulStatus": "n/a: headless-determinism harness value knob (fixed per-frame sim dt in ms; off = built-in 1/60s default)", "default": "off", "read": "value" },
+  "RB3_DRAWLOG":                   { "class": "probe", "owner": "render/determinism", "faithfulStatus": "n/a: per-draw state-log ring capture (W0.3 draw-log golden harness)", "default": "off", "read": "presence" },
+  "RB3_DRAWLOG_DUMP":              { "class": "probe", "owner": "render/determinism", "faithfulStatus": "n/a: draw-log JSON dump path (W0.3 draw-log golden harness)", "default": "off", "read": "value" }
 }
