@@ -408,8 +408,20 @@ TEST_F(ObjectLifetimeTest, MergeKeepCharClipSetRootDoesNotCorruptRefs) {
     delete toDir;
 }
 
-// Parity-oracle: kMoveAllSubdirs should transfer subdir ownership from source
-// to destination (source no longer reports the moved subdir).
+// Parity-oracle: kMoveAllSubdirs shares subdir ownership with the destination,
+// and the destination keeps the shared subdir alive across source teardown.
+//
+// The faithful RB3 decomp — rb3/src/system/obj/Utl.cpp:247 MergeObjectsRecurse,
+// case MergeFilter::kReplace: `if (!toDir->HasSubDir(fromDir))
+// toDir->AppendSubDir(ObjDirPtr<ObjectDir>(fromDir)); return;` — APPENDS the
+// subdir to the destination and does NOT erase it from the source. dc3's
+// MergeObjectsRecurse (src/system/obj/Utl.cpp) is identical after commit
+// 1c757f63 removed the pre-port source-erase. An earlier
+// `EXPECT_FALSE(fromDir->HasSubDir(movedSubdir))` oracle here encoded a
+// non-faithful "move erases source" expectation inherited from that pre-port
+// code; it is corrected below to the faithful shared-ownership + survival check.
+// (Do NOT re-add a source-erase to MergeObjectsRecurse — that diverges from the
+// RB3 target.)
 TEST_F(ObjectLifetimeTest, MergeDirsMoveAllSubdirsTransfersOwnership) {
     ObjectDir *toDir = Hmx::Object::New<ObjectDir>();
     ObjectDir *fromDir = Hmx::Object::New<ObjectDir>();
@@ -422,11 +434,16 @@ TEST_F(ObjectLifetimeTest, MergeDirsMoveAllSubdirsTransfersOwnership) {
     MergeFilter filt((MergeFilter::Action)1, MergeFilter::kMoveAllSubdirs);
     MergeDirs(fromDir, toDir, filt);
 
+    // Destination now references the subdir (ownership shared)...
     EXPECT_TRUE(toDir->HasSubDir(movedSubdir));
-    EXPECT_FALSE(fromDir->HasSubDir(movedSubdir));
+    // ...and the faithful merge leaves the source referencing it too (no erase).
+    EXPECT_TRUE(fromDir->HasSubDir(movedSubdir));
 
+    // Ownership survival: deleting the source must NOT destroy the shared subdir
+    // — the destination keeps it alive and reachable.
     delete fromDir;
-    EXPECT_NE(movedSubdir, nullptr);
+    EXPECT_TRUE(toDir->HasSubDir(movedSubdir));
+
     delete toDir;
 }
 
