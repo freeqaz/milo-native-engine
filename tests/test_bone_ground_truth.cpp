@@ -1009,7 +1009,21 @@ struct EffectorGolden {
 // gate. While this array is empty the test SKIPs (green-or-skip, never a
 // spurious red) — S1 ships the harness, S2 fills the numbers.
 static const EffectorGolden kEffectorGoldens[] = {
-    // { "bone_R-hand.mesh", 0.00f, 0.000000f, 0.000000f, 0.000000f },
+    { "bone_R-hand.mesh", 0.00f, 2.519011f, 13.530660f, 15.481359f },
+    { "bone_L-hand.mesh", 0.00f, 4.419144f, 10.330550f, 13.740979f },
+    { "bone_R-toe.mesh", 0.00f, 8.257820f, 2.759385f, -0.619148f },
+    { "bone_L-toe.mesh", 0.00f, -6.312924f, -8.265928f, 2.694563f },
+    { "bone_prop3.mesh", 0.00f, -0.000000f, 0.000000f, 0.000000f },
+    { "bone_R-hand.mesh", 0.50f, 2.753734f, 2.600021f, 46.956837f },
+    { "bone_L-hand.mesh", 0.50f, -4.046994f, 9.154058f, 11.256922f },
+    { "bone_R-toe.mesh", 0.50f, 8.278828f, 2.709412f, -0.756977f },
+    { "bone_L-toe.mesh", 0.50f, -6.438015f, -8.774557f, 2.522069f },
+    { "bone_prop3.mesh", 0.50f, -0.000000f, 0.000000f, 0.000000f },
+    { "bone_R-hand.mesh", 0.90f, 8.679708f, 7.524742f, 52.679539f },
+    { "bone_L-hand.mesh", 0.90f, -15.249717f, 4.059789f, 53.735123f },
+    { "bone_R-toe.mesh", 0.90f, 4.766071f, -9.629133f, 2.280952f },
+    { "bone_L-toe.mesh", 0.90f, -7.154653f, -9.448845f, 1.787806f },
+    { "bone_prop3.mesh", 0.90f, -0.000000f, 0.000000f, 0.000000f },
 };
 
 static CharClip *FindClipByName(ObjectDir *dir, const char *name) {
