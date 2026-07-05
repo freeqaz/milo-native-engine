@@ -45,9 +45,9 @@ static std::vector<uint8_t> MakeCompressedVertexRecord(
 static std::vector<uint8_t> SerializeCompressedVertexBE(const CompressedVertex_Xbox &cv) {
     std::vector<uint8_t> buf;
     buf.reserve(sizeof(CompressedVertex_Xbox));
-    PutBE32(buf, (uint32_t)cv.mPosX);
-    PutBE32(buf, (uint32_t)cv.mPosY);
-    PutBE32(buf, (uint32_t)cv.mPosZ);
+    PutBEFloat(buf, cv.mPosX);
+    PutBEFloat(buf, cv.mPosY);
+    PutBEFloat(buf, cv.mPosZ);
     PutBE32(buf, (uint32_t)cv.mColor);
     PutBE32(buf, (uint32_t)cv.mNormal);
     PutBE32(buf, (uint32_t)cv.mTangent);
