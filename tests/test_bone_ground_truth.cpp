@@ -967,6 +967,188 @@ TEST_F(ClipPoseFixture, FootOrientationCorrectAfterClip) {
 }
 
 // ============================================================================
+// W0.4: Live-pose effector WORLD-position golden (placement-regression net)
+//
+// Every other live-pose test in this file is a RELATIVE / INVARIANT check
+// (worldMoved > 0, isfinite, deterministic, world == local·parentWorld). None
+// of them pins a specific posed effector WORLD position to a committed number,
+// so a placement regression that still produces finite, deterministic, self-
+// consistent output — exactly the count-in-shard / hub-bar / crowd-colocation
+// bug class — passes green. This test closes that gap: it applies a PINNED clip
+// at PINNED beats to the real crowd skeleton and asserts the WORLD-space (x,y,z)
+// of the hand + foot effectors against committed golden constants within a
+// tight epsilon. It grades the Phase-2 skinned-placement rewrite against numbers
+// instead of eyeballs.
+//
+// Faithful reference: CharClip::PoseMeshes (StuffBones -> ScaleDown ->
+// ScaleAdd(1,beat,0) -> CharBonesMeshes::PoseMeshes), world composition via
+// Trans.cpp Multiply(local, parentWorld, world).
+//
+// The clip is pinned BY NAME and beats BY FRACTION of the clip range, so the
+// golden never silently re-baselines on ObjDirItr order or absolute-beat drift.
+//
+// Env hooks:
+//   MILO_TEST_DUMP_POSE_GOLDEN — print copy-paste-ready kEffectorGoldens[]
+//                                initializers, then SKIP (no assert). This is
+//                                how W0.4.S2 captures the goldens.
+//   MILO_TEST_POSE_PERTURB=<f> — add <f> world units to each measured X before
+//                                comparing (synthetic placement error), so S2/CI
+//                                can prove the gate fails RED on a real shift.
+// ============================================================================
+
+namespace {
+
+struct EffectorGolden {
+    const char *bone;   // effector bone name (resolved in sDir, the posed dir)
+    float beatFrac;     // pose beat as a fraction of the clip's [Start,Length]
+    float x, y, z;      // committed WORLD-space position (see kEffectorEps)
+};
+
+// W0.4.S2: run MILO_TEST_DUMP_POSE_GOLDEN and paste the emitted initializer
+// lines here (verbatim, keeping the printed float precision) to activate the
+// gate. While this array is empty the test SKIPs (green-or-skip, never a
+// spurious red) — S1 ships the harness, S2 fills the numbers.
+static const EffectorGolden kEffectorGoldens[] = {
+    // { "bone_R-hand.mesh", 0.00f, 0.000000f, 0.000000f, 0.000000f },
+};
+
+static CharClip *FindClipByName(ObjectDir *dir, const char *name) {
+    if (!dir)
+        return nullptr;
+    for (ObjDirItr<CharClip> it(dir, true); it; ++it) {
+        if (std::strcmp(it->Name(), name) == 0)
+            return it;
+    }
+    return nullptr;
+}
+
+} // namespace
+
+TEST_F(ClipPoseFixture, EffectorWorldPositionsMatchGolden) {
+    // Epsilon: the test runs in exactly one build config, so PoseMeshes is
+    // bit-deterministic (see PoseDeterminism). 0.05 world units absorbs any
+    // Phase-1 "byte-identical" FP reordering while leaving enormous margin over
+    // a real placement bug (count-in shard shifted effectors 50-65u). The model
+    // is centimeter-scale (hands ~15u from center).
+    static const float kEffectorEps = 0.05f;
+    static const char *kPinnedClip = "crouching_great_01"; // known L/R foreArm+hand carrier
+
+    CharClip *clip = FindClipByName(sClipDir, kPinnedClip);
+    if (!clip)
+        clip = FindClipByName(sDir, kPinnedClip);
+    if (!clip)
+        GTEST_SKIP() << "pinned clip '" << kPinnedClip << "' not found in loaded dirs";
+
+    // Effector set: hands + toes, with ankle/foot fallback if a toe is absent.
+    // Resolved against sDir ONLY — PoseMeshes(sDir, beat) poses sDir's bones, so
+    // only sDir bones have a valid posed WorldXfm to pin.
+    struct Effector { const char *primary; const char *fallback; };
+    const Effector wanted[] = {
+        {"bone_R-hand.mesh", nullptr},
+        {"bone_L-hand.mesh", nullptr},
+        {"bone_R-toe.mesh", "bone_R-ankle.mesh"},
+        {"bone_L-toe.mesh", "bone_L-ankle.mesh"},
+    };
+
+    struct Resolved { const char *name; RndTransformable *bone; };
+    std::vector<Resolved> effectors;
+    for (const auto &w : wanted) {
+        RndTransformable *b = FindBone(w.primary);
+        const char *used = w.primary;
+        if (!b && w.fallback) {
+            b = FindBone(w.fallback);
+            used = w.fallback;
+        }
+        if (b) {
+            effectors.push_back({used, b});
+            printf("  effector: '%s'\n", used);
+        }
+    }
+
+    // Prop / drum-stick bone probe (brief: "include if reachable"). Search the
+    // posed dir (sDir) only. skeleton_bones_resource is a bare crowd humanoid
+    // with no instrument props, so none is expected — probe so the omission is
+    // data-driven, not assumed. Do NOT load extra prop assets to chase one.
+    RndTransformable *propBone = nullptr;
+    const char *propName = nullptr;
+    for (ObjDirItr<RndTransformable> it(sDir, true); it; ++it) {
+        const char *n = it->Name();
+        if (n && (std::strstr(n, "stick") || std::strstr(n, "prop"))) {
+            propBone = it;
+            propName = n;
+            break;
+        }
+    }
+    if (propBone) {
+        effectors.push_back({propName, propBone});
+        printf("  prop/stick effector included: '%s'\n", propName);
+    } else {
+        printf("  no prop/stick bone reachable in sDir (expected for "
+               "skeleton_bones_resource) — prop effector omitted\n");
+    }
+
+    if (effectors.empty())
+        GTEST_SKIP() << "no effector bones resolved in current asset";
+
+    // Three pinned beats as fractions of the clip range. Avoid EndBeat() exactly
+    // (some clips wrap). Expressed as fractions so the golden survives an asset
+    // whose absolute beats shift.
+    static const float kFracs[] = {0.0f, 0.5f, 0.9f};
+    const float start = clip->StartBeat();
+    const float len = clip->LengthBeats();
+
+    // --- Golden-dump mode: emit initializers, then skip (no assertions) ---
+    if (std::getenv("MILO_TEST_DUMP_POSE_GOLDEN")) {
+        printf("\n// ==== W0.4 effector golden dump — clip '%s' ====\n", kPinnedClip);
+        printf("// W0.4.S2: paste the following into kEffectorGoldens[]:\n");
+        for (float frac : kFracs) {
+            clip->PoseMeshes(sDir, start + len * frac);
+            for (const auto &e : effectors) {
+                const Vector3 &w = e.bone->WorldXfm().v;
+                printf("    { \"%s\", %.2ff, %.6ff, %.6ff, %.6ff },\n",
+                       e.name, frac, w.x, w.y, w.z);
+            }
+        }
+        printf("// ==== end dump ====\n\n");
+        GTEST_SKIP() << "golden dump complete (MILO_TEST_DUMP_POSE_GOLDEN set)";
+    }
+
+    // --- Placeholder guard: green-or-skip until S2 fills the table ---
+    const size_t goldenCount = sizeof(kEffectorGoldens) / sizeof(kEffectorGoldens[0]);
+    if (goldenCount == 0) {
+        GTEST_SKIP() << "kEffectorGoldens[] is empty — run with "
+                        "MILO_TEST_DUMP_POSE_GOLDEN=1 and paste the output "
+                        "(W0.4.S2 fills the goldens and turns this test green)";
+    }
+
+    // --- Fail-red hook: synthetic X displacement proves the gate can go red ---
+    const char *perturbEnv = std::getenv("MILO_TEST_POSE_PERTURB");
+    const float perturb = perturbEnv ? (float)std::atof(perturbEnv) : 0.0f;
+    if (perturb != 0.0f)
+        printf("  MILO_TEST_POSE_PERTURB=%.4f — injecting synthetic X error\n", perturb);
+
+    int checked = 0;
+    for (const auto &g : kEffectorGoldens) {
+        RndTransformable *bone = FindBone(g.bone);
+        if (!bone) {
+            ADD_FAILURE() << "golden references bone missing from asset: " << g.bone;
+            continue;
+        }
+        clip->PoseMeshes(sDir, start + len * g.beatFrac);
+        const Vector3 &w = bone->WorldXfm().v;
+        EXPECT_NEAR(w.x + perturb, g.x, kEffectorEps)
+            << g.bone << " @frac " << g.beatFrac << " world X";
+        EXPECT_NEAR(w.y, g.y, kEffectorEps)
+            << g.bone << " @frac " << g.beatFrac << " world Y";
+        EXPECT_NEAR(w.z, g.z, kEffectorEps)
+            << g.bone << " @frac " << g.beatFrac << " world Z";
+        checked++;
+    }
+    printf("  checked %d effector golden(s) against eps=%.3f\n", checked, kEffectorEps);
+    EXPECT_GT(checked, 0);
+}
+
+// ============================================================================
 // main.milo_xbox loading (was DISABLED_ — crash fixed in RndMesh::OnSync)
 // ============================================================================
 
