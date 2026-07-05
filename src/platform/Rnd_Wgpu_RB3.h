@@ -28,6 +28,7 @@
 #include "gfx/Screenshot.h"
 #include "gfx/UniformStructs.h"
 #include "gfx/VertexFormats.h"   // GpuVertex — RB3 uses the engine's static vert layout
+#include "platform/RB3DrawLogDebug.h" // W0.3 RB3DrawRecord (per-draw state-log ring)
 #include "rndobj/Rnd.h"
 
 #include <webgpu/webgpu_cpp.h>
@@ -435,6 +436,28 @@ public:
         uint32_t indexCount;
     };
     std::vector<HaloDraw> mHaloDraws;
+
+    // W0.3 per-draw state-log ring (regression net; RB3DrawRecord in
+    // RB3DrawLogDebug.h). ADDITIVE + INERT when RB3_DRAWLOG is unset:
+    // RecordDrawLog early-returns on the cached-static DrawLogOn() branch, so the
+    // hot path pays one predicted branch and no allocation — rendered output is
+    // byte-identical when off. Cleared each BeginFrame; dumped to JSON at EndFrame
+    // when a dump path is configured. Bind-group handles are stored as OPAQUE
+    // identity tokens (never dereferenced) to detect the a0f98ad uniform-collapse
+    // class; world[16] (column-major) detects the crowd/drum co-location class.
+    std::vector<RB3DrawRecord> mDrawLog;
+    bool mDrawLogForced = false;  // debug setter override (RB3DebugSetDrawLogEnabled)
+    // True if recording is active (RB3_DRAWLOG env OR the debug override).
+    bool DrawLogOn() const;
+    // Push one POD record (copies world[16] + the four opaque bind-group tokens +
+    // counts/flags/name-hash). No expensive work. Caller gates with DrawLogOn().
+    void RecordDrawLog(const PipelineKey& key, const float world[16],
+                       const void* sceneBG, const void* matBG, const void* objBG,
+                       const void* boneBG, uint32_t idx, uint32_t tris,
+                       uint32_t verts, bool skinned, const char* name);
+    // Dense-ify bind-group tokens per stream + write the ring as JSON to the
+    // RB3_DRAWLOG_DUMP path (default drawlog.json in cwd). Called from EndFrame.
+    void DumpDrawLog();
 
     bool mGpuReady = false;
     bool mPreInited = false;

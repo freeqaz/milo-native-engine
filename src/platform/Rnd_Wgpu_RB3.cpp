@@ -1658,6 +1658,10 @@ void BandRnd::BeginFrame(RndCam* cam) {
     // EndFrame; menus / world.cam frames leave it empty so CompositeHaloBloom is
     // a no-op. Inert allocation when RB3_HIGHWAY_BLOOM_OFF=1 (vector stays empty).
     mHaloDraws.clear();
+    // W0.3 per-draw state-log ring: drop last frame's records. Stays empty (no
+    // allocation) unless RB3_DRAWLOG recording is active; reserve(512) is done
+    // lazily on first push in RecordDrawLog.
+    mDrawLog.clear();
 
     mFrameView = mGpu.IsHeadless() ? mGpu.AcquireHeadlessFrame() : mGpu.AcquireNextFrame();
     if (!mFrameView) { fprintf(stderr, "BandRnd: frame acquire failed\n"); return; }
@@ -1809,6 +1813,13 @@ void BandRnd::EndFrame() {
     // Default (no RENDER_DBG / RB3_RENDER_DBG): stay silent. Synchronous
     // console.log() in the browser is extremely expensive; a per-frame tally
     // here flooded the JS console (~60 msgs/s) and tanked menu FPS.
+
+    // W0.3 per-draw state-log ring: dump this frame's captured records to JSON.
+    // Guarded by DrawLogOn() so it is a no-op (one branch) when RB3_DRAWLOG is
+    // off. DumpDrawLog itself no-ops when no dump path is configured (the debug
+    // setter can enable recording for gtests without wanting a file written).
+    if (DrawLogOn())
+        DumpDrawLog();
 }
 
 // Build a material bind group against an explicit buffer (used for pre-warm).
@@ -6095,6 +6106,152 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
 
     mDrawnMeshes++;
     mDrawnTris += nf;
+
+    // W0.3 per-draw state-log ring. INERT when RB3_DRAWLOG is off: DrawLogOn()
+    // is a cached-static branch, so this compiles to one predicted test + return
+    // on the hot path (no allocation, no .Get() calls) and leaves rendered output
+    // byte-identical. When on, captures pipeline id, blend/zmode/layout/format/
+    // flags, the column-major world xfm, the four opaque scene/mat/obj/bone
+    // bind-group identity tokens, index/tri/vert counts, and the mesh-name hash.
+    if (DrawLogOn())
+        RecordDrawLog(key, obj.world, mSceneBindGroup.Get(), matBG.Get(),
+                      objBG.Get(), boneBG.Get(), cachedIndexCount, (uint32_t)nf,
+                      (uint32_t)(meshEntry.fpVerts > 0 ? meshEntry.fpVerts : 0),
+                      skinned, mesh->Name());
+}
+
+// ===========================================================================
+// W0.3 per-draw state-log ring — record / dump / debug accessors.
+//
+// ADDITIVE regression-net infra. INERT and near-zero-cost when RB3_DRAWLOG is
+// unset (DrawLogOn() is a cached-static branch). Records a structured per-draw
+// state snapshot from DrawMesh so the golden test (W0.3.S2/S3) can catch the
+// two historical per-draw regression classes mechanically: co-location
+// (identical world xfm across instances that should differ) and uniform/
+// bind-group collapse (the a0f98ad class — distinct draws sharing one bind
+// group). Bind-group handles are stored as OPAQUE identity tokens only (never
+// dereferenced), dense-ified per stream at dump time.
+// ===========================================================================
+
+// FNV-1a of a NUL-terminated string (empty/NULL -> 0). Stable across runs/hosts.
+static uint64_t RB3DrawLogFnv1a(const char* s) {
+    if (!s || !s[0]) return 0;
+    uint64_t h = 1469598103934665603ULL;  // FNV offset basis
+    for (; *s; ++s) {
+        h ^= (uint64_t)(unsigned char)*s;
+        h *= 1099511628211ULL;            // FNV prime
+    }
+    return h;
+}
+
+bool BandRnd::DrawLogOn() const {
+    // Cached env gate: getenv once, then a plain int test on the hot path. ORed
+    // with the debug override so gtests can force recording without an env var.
+    static int sEnabled = -1;
+    if (sEnabled < 0) {
+        const char* e = getenv("RB3_DRAWLOG");
+        sEnabled = (e && e[0] && e[0] != '0') ? 1 : 0;
+    }
+    return sEnabled != 0 || mDrawLogForced;
+}
+
+void BandRnd::RecordDrawLog(const PipelineKey& key, const float world[16],
+                            const void* sceneBG, const void* matBG,
+                            const void* objBG, const void* boneBG, uint32_t idx,
+                            uint32_t tris, uint32_t verts, bool skinned,
+                            const char* name) {
+    if (mDrawLog.capacity() == 0) mDrawLog.reserve(512);
+    RB3DrawRecord r;
+    r.pipelineHash = (uint64_t)PipelineKeyHash{}(key);
+    r.blend        = (uint8_t)(int)key.blend;
+    r.zMode        = (uint8_t)(int)key.zMode;
+    r.layout       = (uint8_t)(int)key.layout;
+    r.flags        = (uint8_t)((key.hasDepth   ? 1u : 0u)       |
+                               (key.alphaCut   ? 2u : 0u)       |
+                               (key.alphaWrite ? 4u : 0u)       |
+                               (skinned        ? 8u : 0u));
+    r.targetFormat = (uint32_t)key.targetFormat;
+    r.indexCount   = idx;
+    r.triCount     = tris;
+    r.vertCount    = verts;
+    r.meshNameHash = RB3DrawLogFnv1a(name);
+    for (int i = 0; i < 16; ++i) r.world[i] = world[i];
+    r.sceneBG = sceneBG;
+    r.matBG   = matBG;
+    r.objBG   = objBG;
+    r.boneBG  = boneBG;
+    mDrawLog.push_back(r);
+}
+
+void BandRnd::DumpDrawLog() {
+    // A dump is written only when RB3_DRAWLOG_DUMP is set. The debug setter can
+    // enable recording (for gtests reading RB3DebugGetDrawLog) without wanting a
+    // file, so absent a path this is a no-op even when DrawLogOn() is true.
+    const char* path = getenv("RB3_DRAWLOG_DUMP");
+    if (!path || !path[0]) return;
+
+    FILE* f = fopen(path, "wb");
+    if (!f) {
+        fprintf(stderr, "BandRnd: draw-log dump: cannot open %s\n", path);
+        return;
+    }
+
+    // Dense-ify each bind-group stream INDEPENDENTLY: assign 0-based ids in
+    // first-seen order across the frame. This erases raw pointers (run/host
+    // independent) while preserving the sharing pattern the golden compares.
+    std::unordered_map<const void*, int> sceneIds, matIds, objIds, boneIds;
+    auto denseId = [](std::unordered_map<const void*, int>& m, const void* p) -> int {
+        auto it = m.find(p);
+        if (it != m.end()) return it->second;
+        int id = (int)m.size();
+        m.emplace(p, id);
+        return id;
+    };
+
+    fprintf(f, "{ \"frame\": %d, \"count\": %d,\n  \"draws\": [", mFrameCount,
+            (int)mDrawLog.size());
+    for (size_t i = 0; i < mDrawLog.size(); ++i) {
+        const RB3DrawRecord& r = mDrawLog[i];
+        int sceneId = denseId(sceneIds, r.sceneBG);
+        int matId   = denseId(matIds,   r.matBG);
+        int objId   = denseId(objIds,   r.objBG);
+        int boneId  = denseId(boneIds,  r.boneBG);
+        fprintf(f, "%s\n    { \"i\":%d, \"name\":\"0x%llx\", \"pipe\":\"0x%llx\", "
+                   "\"blend\":%d, \"zmode\":%d, \"layout\":%d, \"fmt\":%u, "
+                   "\"hasDepth\":%s, \"alphaCut\":%s, \"alphaWrite\":%s, \"skinned\":%s, "
+                   "\"idx\":%u, \"tris\":%u, \"verts\":%u, "
+                   "\"scene\":%d, \"mat\":%d, \"obj\":%d, \"bone\":%d,\n"
+                   "      \"world\":[",
+                (i == 0 ? "" : ","),
+                (int)i,
+                (unsigned long long)r.meshNameHash,
+                (unsigned long long)r.pipelineHash,
+                (int)r.blend, (int)r.zMode, (int)r.layout, (unsigned)r.targetFormat,
+                (r.flags & 1) ? "true" : "false",
+                (r.flags & 2) ? "true" : "false",
+                (r.flags & 4) ? "true" : "false",
+                (r.flags & 8) ? "true" : "false",
+                (unsigned)r.indexCount, (unsigned)r.triCount, (unsigned)r.vertCount,
+                sceneId, matId, objId, boneId);
+        for (int e = 0; e < 16; ++e)
+            fprintf(f, "%s%.6g", (e == 0 ? "" : ","), (double)r.world[e]);
+        fprintf(f, "] }");
+    }
+    fprintf(f, "%s] }\n", mDrawLog.empty() ? "" : "\n  ");
+    fclose(f);
+}
+
+// --- rb3-tests debug accessors (declared in RB3DrawLogDebug.h) ---------------
+// Operate on the single global renderer gBandRnd. mDrawLog / mDrawLogForced are
+// public members, so no friend access is needed.
+const std::vector<RB3DrawRecord>& RB3DebugGetDrawLog() {
+    return gBandRnd.mDrawLog;
+}
+void RB3DebugSetDrawLogEnabled(bool on) {
+    gBandRnd.mDrawLogForced = on;
+}
+bool RB3DebugDrawLogEnabled() {
+    return gBandRnd.DrawLogOn();
 }
 
 // ---------------------------------------------------------------------------
