@@ -18,6 +18,7 @@
 #include <vector>
 
 class RndMesh;
+class BandRnd;  // upload helper takes it by ref (mGpu Device/Queue); defined in Rnd_Wgpu_RB3.h
 
 // ===========================================================================
 // Per-mesh GPU vertex/index buffer cache.
@@ -175,3 +176,15 @@ void CleanupGpuMesh(RndMesh* mesh);
 int RB3UnpackMeshVerts(RndMesh* owner, bool skinned,
                        std::vector<GpuVertex>& gpuVerts,
                        std::vector<GpuVertexSkinned>& gpuVertsSkinned);
+
+// ---------------------------------------------------------------------------
+// RB3EnsureMeshGpu — idempotent mesh-upload helper extracted from DrawMesh's
+// needUpload block. Unpacks (RB3UnpackMeshVerts) + uploads VB/IB + stamps the
+// sMeshGpu fingerprint with the SAME keys DrawMesh uses, AND populates the L1
+// skinned bind-vert cache, so after a warm pass the first real draw is a cache
+// hit (no re-unpack, no re-upload, warmed shard guard). Returns true iff it
+// actually uploaded (cache miss). No render-pass dependency — only creates+writes
+// buffers (queue ops), safe to call outside an open pass during the loading dwell.
+// Used by BandRnd::WarmGpuForDir. Takes BandRnd by ref for rnd.mGpu Device/Queue;
+// its DEFINITION (RB3MeshCache.cpp) includes Rnd_Wgpu_RB3.h for the full type.
+bool RB3EnsureMeshGpu(BandRnd& rnd, RndMesh* mesh);
