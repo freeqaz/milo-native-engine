@@ -594,17 +594,17 @@ set(DC3_RUNTIME_SOURCES
     ${DC3_RUNTIME_ROOT}/src/system/synth/ADSR.cpp
     ${DC3_RUNTIME_ROOT}/src/system/synth/AudioDucker.cpp
     ${DC3_RUNTIME_ROOT}/src/system/synth/BinkReader.cpp
-    ${DC3_RUNTIME_ROOT}/src/system/synth/BitCrushEffect.cpp
+    ${DC3_RUNTIME_ROOT}/src/system/dsp/BitCrushEffect.cpp
     ${DC3_RUNTIME_ROOT}/src/system/synth/ByteGrinder.cpp
     ${DC3_RUNTIME_ROOT}/src/system/synth/complex.cpp
     ${DC3_RUNTIME_ROOT}/src/system/synth/CompressionEffect.cpp
-    ${DC3_RUNTIME_ROOT}/src/system/synth/DelayEffect.cpp
-    ${DC3_RUNTIME_ROOT}/src/system/synth/DistortionEffect.cpp
+    ${DC3_RUNTIME_ROOT}/src/system/dsp/DelayEffect.cpp
+    ${DC3_RUNTIME_ROOT}/src/system/dsp/DistortionEffect.cpp
     ${DC3_RUNTIME_ROOT}/src/system/synth/Emitter.cpp
-    ${DC3_RUNTIME_ROOT}/src/system/synth/EQEffect.cpp
+    ${DC3_RUNTIME_ROOT}/src/system/dsp/EQEffect.cpp
     ${DC3_RUNTIME_ROOT}/src/system/synth/Faders.cpp
     ${DC3_RUNTIME_ROOT}/src/system/synth/filterdesign.cpp
-    ${DC3_RUNTIME_ROOT}/src/system/synth/FlangerEffect.cpp
+    ${DC3_RUNTIME_ROOT}/src/system/dsp/FlangerEffect.cpp
     ${DC3_RUNTIME_ROOT}/src/system/synth/FxSendBitCrush.cpp
     ${DC3_RUNTIME_ROOT}/src/system/synth/FxSendChorus.cpp
     ${DC3_RUNTIME_ROOT}/src/system/synth/FxSendCompress.cpp
@@ -651,7 +651,7 @@ set(DC3_RUNTIME_SOURCES
     ${DC3_RUNTIME_ROOT}/src/system/synth/tomcrypt/TomCryptLicense.cpp
     ${DC3_RUNTIME_ROOT}/src/system/synth/Utl.cpp
     ${DC3_RUNTIME_ROOT}/src/system/synth/VorbisReader.cpp
-    ${DC3_RUNTIME_ROOT}/src/system/synth/WahEffect.cpp
+    ${DC3_RUNTIME_ROOT}/src/system/dsp/WahEffect.cpp
     ${DC3_RUNTIME_ROOT}/src/system/synth/WavMgr.cpp
     ${DC3_RUNTIME_ROOT}/src/system/synth/WavReader.cpp
     ${DC3_RUNTIME_ROOT}/src/system/ui/CheatProvider.cpp
@@ -781,6 +781,7 @@ set(DC3_RUNTIME_SOURCES
     ${DC3_RUNTIME_ROOT}/src/system/world/ThreeDSoundManager.cpp
     ${DC3_RUNTIME_ROOT}/src/system/world/World.cpp
     ${DC3_RUNTIME_ROOT}/native/src/engine_stubs_generated.cpp
+    ${DC3_RUNTIME_ROOT}/native/src/StubTrace.cpp
     ${DC3_RUNTIME_ROOT}/native/src/native_job_stubs.cpp
     ${DC3_RUNTIME_ROOT}/native/src/native_link_glue.cpp
     ${DC3_RUNTIME_ROOT}/native/src/platform/Achievements_Stub.cpp
