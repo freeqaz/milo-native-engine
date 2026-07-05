@@ -157,3 +157,21 @@ extern int sMeshBGCreatesThisFrame;
 // from RndMesh's HX_NATIVE destructor so freed meshes release their GPU buffers
 // instead of leaking the cache slot for the lifetime of the process.
 void CleanupGpuMesh(RndMesh* mesh);
+
+// ---------------------------------------------------------------------------
+// RB3UnpackMeshVerts — the per-vertex CPU unpack shared by DrawMesh and the L2
+// GPU warm sweep (BandRnd::WarmGpuForDir). Reads owner->mVerts (uncompressed RB3
+// Vert, Color32-packed) OR owner->mCompressedVerts (Xbox-compressed, Be*-decoded
+// in RB3MeshCache.cpp), filling the static OR skinned engine layout per
+// `skinned`. Returns the unpacked vert count, or -1 if the mesh has no
+// geometry. Factored out so the warm sweep's pre-upload is byte-identical to
+// the draw-time upload (same VB bytes -> the first real draw is a guaranteed
+// cache hit). This is the dominant -O0-wasm cost class (research/09: Be*/
+// Half2Float/GpuVertexSkinned family) — charge it at the caller.
+//
+// Note: takes `GpuVertex` (the engine layout) rather than the RB3-only alias
+// `GpuVertexRB3` (Rnd_Wgpu_RB3.h) to keep this header from pulling in that TU's
+// header — the two names refer to the identical type.
+int RB3UnpackMeshVerts(RndMesh* owner, bool skinned,
+                       std::vector<GpuVertex>& gpuVerts,
+                       std::vector<GpuVertexSkinned>& gpuVertsSkinned);
