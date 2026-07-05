@@ -342,6 +342,7 @@ set(MILO_ENGINE_PLATFORM_SOURCES
     src/platform/Keygen_Stub.cpp
     src/platform/MapFile_Stub.cpp
     src/platform/Memory_Native.cpp
+    src/platform/NativeCompatFlags.cpp
     src/platform/Net_Stub.cpp
     src/platform/NetworkSocket_Stub.cpp
     src/platform/SampleInst_Native.cpp
