@@ -22,6 +22,7 @@
 #include "os/Debug.h"
 #include "platform/NativeSettings.h"
 #include "platform/RB3MeshCache.h"       // W1.2: RB3MeshEntry cache data + maps + invalidation
+#include "platform/RB3MaterialBinder.h"  // W1.3: cross-TU tex-helper decls + material binder iface
 #include "platform/FrameTraceCounters.h"
 #include "platform/RB3TexSharpenDebug.h"
 #include "platform/RB3TexSharpen.h"     // RB3SharpenReuploadTex / RB3SharpenTexFingerprint defs
@@ -528,7 +529,7 @@ static void ByteSwapDXT16(uint8_t* data, size_t size) {
 // Returns the GPU view for an RndTex, uploading the bitmap on first access (and
 // re-uploading when the underlying pixel pointer changes). Returns an empty
 // view on any failure — caller falls back to mWhiteView.
-static wgpu::TextureView UploadRndTexIfNeeded(GpuDevice& gpu, RndTex* tex) {
+wgpu::TextureView UploadRndTexIfNeeded(GpuDevice& gpu, RndTex* tex) {
     if (!tex) return {};
     // RTT: a render-target entry has no CPU bitmap pixels — its texture is
     // painted by BandRnd::BeginDrawTarget. Return its RT view (if created) and
@@ -797,7 +798,7 @@ bool RB3SharpenReuploadTex(RndTex* tex) {
 
 // Public accessor — used by MakeMaterialBindGroup to bind a material's
 // diffuse texture. Returns an empty view if not yet uploaded.
-static wgpu::TextureView GetRB3TexView(RndTex* tex) {
+wgpu::TextureView GetRB3TexView(RndTex* tex) {
     if (!tex) return {};
     auto it = sTexGpu.find(tex);
     if (it != sTexGpu.end() && it->second.uploaded) return it->second.view;
