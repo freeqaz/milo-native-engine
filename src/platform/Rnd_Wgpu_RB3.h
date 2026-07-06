@@ -58,6 +58,20 @@ struct RB3SceneBinding {
     uint32_t        offset = 0;
 };
 
+// Per-draw value object threaded explicitly into SubmitDraw (W1.6, SYS-3). Bundles
+// everything a single indexed draw consumes — most importantly the scene binding,
+// which was formerly an implicit mutable-member read ("whatever the last
+// WriteSceneUniforms left"). Making it a visible ctx field means each draw's
+// scene dependency is the value it was handed, not order-dependent global state.
+struct RB3DrawContext {
+    RB3SceneBinding      scene;   // explicit group-0 scene dependency (was the leaked member)
+    const float*         world;   // obj.world (column-major) — for halo capture / draw-log
+    wgpu::RenderPipeline pipe;
+    wgpu::BindGroup      mat, obj, bone;
+    wgpu::Buffer         vbuf, ibuf;
+    uint32_t             indexCount;
+};
+
 class BandRnd : public Rnd {
 public:
     BandRnd() {}
@@ -187,6 +201,11 @@ private:
     // group 0). Idempotent.
     void EnsureParticlePipeline();
     RB3SceneBinding WriteSceneUniforms(RndCam* cam);
+    // Issue one indexed draw from an explicit RB3DrawContext (W1.6, SYS-3): the
+    // exact SetPipeline + 4x SetBindGroup(0..3) + VB/IB + DrawIndexed sequence,
+    // with the group-0 scene binding taken from ctx.scene (a value) rather than a
+    // mutable member. Behaviour-identical to the former inline block.
+    void SubmitDraw(const RB3DrawContext& ctx);
     void CreateDefaultTextures();
     wgpu::BindGroup MakeMaterialBindGroup(uint32_t off, RndMat* mat);
     wgpu::BindGroup MakeMaterialBindGroupRaw(wgpu::Buffer buf, uint32_t off);

@@ -2103,6 +2103,21 @@ static unsigned long long RB3DrawOrderHash(const char* s) {
     return h;
 }
 
+// W1.6 (SYS-3): the single indexed-draw submission path. Every field it touches
+// arrives via the explicit ctx — in particular ctx.scene.group is the group-0
+// scene binding the caller handed it, not a mutable member read. Byte-identical
+// to the former inline SetPipeline/4x SetBindGroup/VB/IB/DrawIndexed block.
+void BandRnd::SubmitDraw(const RB3DrawContext& ctx) {
+    mPass.SetPipeline(ctx.pipe);
+    mPass.SetBindGroup(0, ctx.scene.group, 0, nullptr);
+    mPass.SetBindGroup(1, ctx.mat, 0, nullptr);
+    mPass.SetBindGroup(2, ctx.obj, 0, nullptr);
+    mPass.SetBindGroup(3, ctx.bone, 0, nullptr);
+    mPass.SetVertexBuffer(0, ctx.vbuf, 0, WGPU_WHOLE_SIZE);
+    mPass.SetIndexBuffer(ctx.ibuf, wgpu::IndexFormat::Uint16, 0, WGPU_WHOLE_SIZE);
+    mPass.DrawIndexed(ctx.indexCount, 1, 0, 0, 0);
+}
+
 void BandRnd::DrawMesh(RndMesh* mesh) {
     if (!mGpuReady || !mInPass || !mesh) return;
 
@@ -4132,9 +4147,16 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     wgpu::RenderPipeline pipe = mPipelines.GetPipeline(key);
     if (!pipe) return;
 
+    // W1.6 (SYS-3): bundle this draw's inputs into an explicit RB3DrawContext.
+    // ctx.scene = mActiveScene is captured HERE, so this draw's scene dependency
+    // is a value it holds — not a later implicit member read. The halo capture,
+    // SubmitDraw, and RecordDrawLog below all consume ctx.* rather than the member.
+    RB3DrawContext ctx{ mActiveScene, obj.world, pipe, matBG, objBG, boneBG,
+                        vbuf, ibuf, cachedIndexCount };
+
     // P1 highway bloom CAPTURE (Design B): under the live game.cam highway pass,
     // record a verbatim replay of each halo-source draw — pipeline, the LIVE
-    // pose-baked mActiveScene.group HANDLE (NOT the offset: game.cam is re-posed
+    // pose-baked ctx.scene.group HANDLE (NOT the offset: game.cam is re-posed
     // mid-frame, so replaying against the single final pose would mis-place every
     // halo; capturing the per-draw bind-group handle replays each source against
     // its authored pose), the mat/obj/bone bind groups, and the vbuf/ibuf/count.
@@ -4148,18 +4170,11 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
         // multiple times per frame never overwrites a captured slot before
         // EndFrame's replay — the captured handles are valid (slots are only
         // recycled at the NEXT BeginFrame, which also clears mHaloDraws).
-        mHaloDraws.push_back({pipe, mActiveScene.group, matBG, objBG, boneBG,
-                              vbuf, ibuf, cachedIndexCount});
+        mHaloDraws.push_back({ctx.pipe, ctx.scene.group, ctx.mat, ctx.obj, ctx.bone,
+                              ctx.vbuf, ctx.ibuf, ctx.indexCount});
     }
 
-    mPass.SetPipeline(pipe);
-    mPass.SetBindGroup(0, mActiveScene.group, 0, nullptr);
-    mPass.SetBindGroup(1, matBG, 0, nullptr);
-    mPass.SetBindGroup(2, objBG, 0, nullptr);
-    mPass.SetBindGroup(3, boneBG, 0, nullptr);
-    mPass.SetVertexBuffer(0, vbuf, 0, WGPU_WHOLE_SIZE);
-    mPass.SetIndexBuffer(ibuf, wgpu::IndexFormat::Uint16, 0, WGPU_WHOLE_SIZE);
-    mPass.DrawIndexed(cachedIndexCount, 1, 0, 0, 0);
+    SubmitDraw(ctx);
 
     mDrawnMeshes++;
     mDrawnTris += nf;
@@ -4171,8 +4186,8 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     // flags, the column-major world xfm, the four opaque scene/mat/obj/bone
     // bind-group identity tokens, index/tri/vert counts, and the mesh-name hash.
     if (DrawLogOn())
-        RecordDrawLog(key, obj.world, mActiveScene.group.Get(), matBG.Get(),
-                      objBG.Get(), boneBG.Get(), cachedIndexCount, (uint32_t)nf,
+        RecordDrawLog(key, ctx.world, ctx.scene.group.Get(), ctx.mat.Get(),
+                      ctx.obj.Get(), ctx.bone.Get(), ctx.indexCount, (uint32_t)nf,
                       (uint32_t)(meshEntry.fpVerts > 0 ? meshEntry.fpVerts : 0),
                       skinned, mesh->Name());
 }
@@ -4760,8 +4775,16 @@ void BandRnd::DrawParticles(RndParticleSys* sys) {
     bgd.entries = bge;
     wgpu::BindGroup texBG = mGpu.Device().CreateBindGroup(&bgd);
 
+    // W1.6 (SYS-3): thread the group-0 scene binding through an explicit ctx so
+    // the particle submit reads a value, not the member directly. Only ctx.scene
+    // is meaningful here — the particle path binds group 1 to texBG (not a
+    // material bind group) and uses its own VB/IB sizes + single-arg DrawIndexed,
+    // so it does NOT route through SubmitDraw; the rest of ctx stays default.
+    RB3DrawContext ctx{};
+    ctx.scene = mActiveScene;
+
     mPass.SetPipeline(pipe);
-    mPass.SetBindGroup(0, mActiveScene.group, 0, nullptr);
+    mPass.SetBindGroup(0, ctx.scene.group, 0, nullptr);
     mPass.SetBindGroup(1, texBG, 0, nullptr);
     mPass.SetVertexBuffer(0, mPartVB, 0, sVerts.size() * sizeof(RB3ParticleVertex));
     mPass.SetIndexBuffer(mPartIB, wgpu::IndexFormat::Uint16, 0,
@@ -4769,9 +4792,9 @@ void BandRnd::DrawParticles(RndParticleSys* sys) {
     mPass.DrawIndexed(neededIndices);
 
     // Restore the scene bind group at group 0 for the next DrawMesh (mirrors
-    // DrawRect — though we already bound mActiveScene.group at group 0 here, the
+    // DrawRect — though we already bound ctx.scene.group at group 0 here, the
     // next DrawMesh re-binds anyway; explicit for symmetry/safety).
-    mPass.SetBindGroup(0, mActiveScene.group, 0, nullptr);
+    mPass.SetBindGroup(0, ctx.scene.group, 0, nullptr);
 }
 
 // Strong def displacing the weak no-op stub
