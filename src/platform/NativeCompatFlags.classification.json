@@ -90,5 +90,6 @@
   "RB3_FIXED_CLOCK":               { "class": "feature", "owner": "session-telemetry/determinism", "faithfulStatus": "n/a: headless-determinism harness flag (off in shipping runs) — trace-free fixed sim clock", "default": "off", "read": "presence" },
   "RB3_FIXED_CLOCK_DT_MS":         { "class": "feature", "owner": "session-telemetry/determinism", "faithfulStatus": "n/a: headless-determinism harness value knob (fixed per-frame sim dt in ms; off = built-in 1/60s default)", "default": "off", "read": "value" },
   "RB3_DRAWLOG":                   { "class": "probe", "owner": "render/determinism", "faithfulStatus": "n/a: per-draw state-log ring capture (W0.3 draw-log golden harness)", "default": "off", "read": "presence" },
-  "RB3_DRAWLOG_DUMP":              { "class": "probe", "owner": "render/determinism", "faithfulStatus": "n/a: draw-log JSON dump path (W0.3 draw-log golden harness)", "default": "off", "read": "value" }
+  "RB3_DRAWLOG_DUMP":              { "class": "probe", "owner": "render/determinism", "faithfulStatus": "n/a: draw-log JSON dump path (W0.3 draw-log golden harness)", "default": "off", "read": "value" },
+  "RB3_DRAWORDER_TRACE":           { "class": "probe", "owner": "render/determinism", "faithfulStatus": "n/a: transparent/text queue pre/post-sort submission-order trace (W0.3c.S1 order-flake attribution)", "default": "off", "read": "presence" }
 }

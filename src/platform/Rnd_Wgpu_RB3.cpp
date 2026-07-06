@@ -2073,8 +2073,35 @@ static int RB3PipelinePrewarmPerFrame() {
     return v;
 }
 
+// W0.3c.S1 — submission-order pointer probe (RB3_DRAWORDER_TRACE).
+// DEFAULT-OFF, presence-read, INERT: when the flag is unset the gate is a
+// cached-static branch and DrawMesh output is byte-identical (the probe only
+// adds stderr). The rb3 BandRnd backend submits in pure scene-graph traversal
+// order (no transparent std::sort — TransparentQueue.cpp is DC3-only and not
+// compiled here), so this is the ONLY site that observes the rb3 submission
+// stream's mesh pointers. Prints one line per DrawMesh with the frame index,
+// mesh pointer, and the FNV-1a name hash (SAME hash as the RB3_DRAWLOG JSON) so
+// the 15-run sweep can (a) confirm the per-run order and (b) test whether a
+// given named mesh keeps the SAME heap address across runs (=> pure iteration-
+// order divergence) or a DIFFERENT one (=> allocation-sequence divergence).
+static bool RB3DrawOrderTraceOn() {
+    static int e = -1;
+    if (e < 0) e = (getenv("RB3_DRAWORDER_TRACE") != nullptr) ? 1 : 0;
+    return e != 0;
+}
+static unsigned long long RB3DrawOrderHash(const char* s) {
+    if (!s || !s[0]) return 0ull;
+    unsigned long long h = 1469598103934665603ull;
+    for (; *s; ++s) { h ^= (unsigned long long)(unsigned char)*s; h *= 1099511628211ull; }
+    return h;
+}
+
 void BandRnd::DrawMesh(RndMesh* mesh) {
     if (!mGpuReady || !mInPass || !mesh) return;
+
+    if (RB3DrawOrderTraceOn())
+        fprintf(stderr, "RB3_DORDER frame=%d ptr=%p hash=0x%llx\n",
+                mFrameCount, (void*)mesh, RB3DrawOrderHash(mesh->Name()));
 
     // RTT begin hook: the shared rndobj/Cam.cpp only fires the END side
     // (FinishDrawTarget). When the current cam has a TargetTex set and we have

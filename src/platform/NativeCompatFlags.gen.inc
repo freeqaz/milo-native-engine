@@ -89,6 +89,7 @@
 { "RB3_DATA", "unknown", FlagClass::Unknown, FlagRead::Truthy, "unclassified", "n/a", "RB3_DATA" },
 { "RB3_DRAWLOG", "off", FlagClass::Probe, FlagRead::Presence, "render/determinism", "n/a: per-draw state-log ring capture (W0.3 draw-log golden harness)", "RB3_DRAWLOG" },
 { "RB3_DRAWLOG_DUMP", "off", FlagClass::Probe, FlagRead::Value, "render/determinism", "n/a: draw-log JSON dump path (W0.3 draw-log golden harness)", "RB3_DRAWLOG_DUMP" },
+{ "RB3_DRAWORDER_TRACE", "off", FlagClass::Probe, FlagRead::Presence, "render/determinism", "n/a: transparent/text queue pre/post-sort submission-order trace (W0.3c.S1 order-flake attribution)", "RB3_DRAWORDER_TRACE" },
 { "RB3_DRAWRECT_DBG", "off", FlagClass::Unknown, FlagRead::Presence, "unclassified", "n/a", "RB3_DRAWRECT_DBG" },
 { "RB3_DTA_OVERLAY", "unknown", FlagClass::Unknown, FlagRead::Truthy, "unclassified", "n/a", "RB3_DTA_OVERLAY" },
 { "RB3_FAKE_ASYNC_OPEN_MS", "unknown", FlagClass::Unknown, FlagRead::Value, "unclassified", "n/a", "RB3_FAKE_ASYNC_OPEN_MS" },
