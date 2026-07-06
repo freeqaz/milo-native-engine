@@ -231,7 +231,10 @@ RB3MaterialBindResult RB3BuildMaterialUniforms(
         // the solid-circle alpha -> a SOLID WHITE CIRCLE (the overshell
         // white-blob bug). Letter fonts (Pentatonic_*) carry no "icon" in their
         // material name, so they keep the alpha->RGB glyph path.
-        bool isColorIconFont = matName[0] && std::strstr(matName, "icon") != nullptr;
+        // B10: the "icon" material-name test is relocated to the game hook
+        // (QueryDrawMaterialPolicy.isColorIcon); the engine keeps the useAlphaAsRGB
+        // math (text glyph alpha->RGB, EXCEPT colour-icon fonts).
+        bool isColorIconFont = matPolicy.isColorIcon;
         mu.useAlphaAsRGB = (isTextMeshHeur && !isColorIconFont) ? 1.0f : 0.0f;
         // W9 tail-color fix — apply the material's texture-coordinate transform.
         // RB3 sustain "tail" materials (tail_green.mat, tail_red.mat, ...) all
