@@ -38,6 +38,83 @@
 #ifndef MILO_ENGINE_PLATFORM_GAMERENDERHOOK_H
 #define MILO_ENGINE_PLATFORM_GAMERENDERHOOK_H
 
+// Forward decls only — this header names no Milo/RB3 concept and includes
+// nothing. The per-draw policy methods below receive engine renderer types as
+// forward-declared pointers so the header stays game-agnostic (the litmus test
+// from the file-scope comment: the ENGINE header must not name an RB3-only
+// concept — `RndMesh`/`RndMat`/`RndTransformable` are engine/Milo types, passed
+// opaquely; the concrete policy — "does THIS asset name mean X" — lives entirely
+// in the game's `<decomp>_render_hook.cpp`).
+class RndMesh;
+class RndMat;
+
+// ---------------------------------------------------------------------------
+// Per-draw policy PODs (W1.7)
+// ---------------------------------------------------------------------------
+// The two frame-pass methods below cover whole-frame stages. The renderer also
+// makes a handful of PER-DRAW decisions that today are hardcoded on RB3 asset/
+// material NAME strings inside the engine renderer (`DrawMesh`,
+// `RB3BuildMaterialUniforms`, `IsHaloSourceMat`). Those name→decision branches
+// are game content policy and must not live in the shared engine. W1.7 factors
+// each behavior branch behind the per-draw hook methods below; the engine asks
+// the hook for a small POD DECISION and keeps applying the same math it already
+// has (so relocated commits stay byte-identical).
+//
+// Every per-draw method has a base-class no-op default returning "no override"
+// (all-false / zero), so a decomp that supplies no policy (or DC3, which routes
+// none of these) needs no edit and gets identical prior behavior. The RB3 impl
+// (`BandRenderHook`) overrides them with the relocated name matches + the
+// existing `RB3_*` env-flag reads.
+
+// Geometric / draw-guard decisions (relocated from `DrawMesh`, B1–B5). The
+// engine keeps its matrix math; the hook returns only the DECISION + any
+// name-derived scalars so float ordering is never moved across the seam.
+struct DrawGeomPolicy {
+    // B1: hub highlight-bar world-xfm override (identity + label translation).
+    bool  hubBarPlacement = false;
+    // B2: scrollbar-thumb reuse of the previous scrollbar-bg draw's world xfm.
+    // `scrollbarBg` = the bg mesh (cache the world); `scrollbarThumb` = the
+    // thumb mesh (apply the cached world). Mutually exclusive.
+    bool  scrollbarBg = false;
+    bool  scrollbarThumb = false;
+    // B4/B5: shard-guard exemptions — hub-bar UI overlay meshes and band-member
+    // (skeleton_unshared) meshes are exempt from the scene-crossing shard guard.
+    bool  shardExemptHubBar = false;
+    bool  shardBandMember = false;
+};
+
+// Material-classification decisions (relocated from `RB3BuildMaterialUniforms`
+// and `IsHaloSourceMat`, B6–B13). The engine keeps the uniform math; the hook
+// returns WHICH class so the uniforms stay bit-identical. Fields default to
+// "not classified" so the engine falls through to its prior default path.
+struct DrawMaterialPolicy {
+    // B7: text/label heuristic (num*/_source.mesh/_comma.mesh/.lbl/font/label)
+    // → useAlphaAsRGB / prelit / UI-text colour floor handling.
+    bool  isUiText = false;
+    // B8: hub highlight bar material colour override.
+    bool  isHubHighlight = false;
+    // B9: skin-RTT diffuse (`skin_diffuse_output`) handling.
+    bool  isSkinRtt = false;
+    // B10: colour-icon-font (`icon`) useAlphaAsRGB exclusion.
+    bool  isColorIcon = false;
+    // B11: tail chain-select material (`tail_` + chain names).
+    bool  isTailChain = false;
+    // B12: crowd/extras vs band-member material path.
+    bool  isCrowdExtra = false;
+    bool  isBandMember = false;
+    // B13: highway per-material shading class (surface/rails/smasher/gem/
+    // peakstate/prism_gem under game.cam). 0 = none; game side defines the enum
+    // values it applies.
+    int   highwayClass = 0;
+};
+
+// Halo-source exclusion decision (relocated from `IsHaloSourceMat`, B6). The
+// engine keeps the emissive-map/multiplier test (that is data, not a name); the
+// hook answers only the NAME-based exclusion + the `RB3_SMASHER_HALO` flag.
+struct HaloPolicy {
+    bool  forceExclude = false;   // name says "never a halo source" (surface / smasher-off)
+};
+
 class GameRenderHook {
 public:
     virtual ~GameRenderHook() = default;
@@ -62,6 +139,46 @@ public:
     //
     // `renderCtx` is the same opaque cookie as `DrawGameOverlay`.
     virtual void RenderCharacterImpostors(void* renderCtx) = 0;
+
+    // -----------------------------------------------------------------------
+    // Per-draw policy hooks (W1.7). NON-pure — base no-op defaults return "no
+    // override" so a decomp that routes none of these (DC3) needs no edit and
+    // gets byte-identical prior behavior. RB3's `BandRenderHook` overrides them.
+    // -----------------------------------------------------------------------
+
+    // Geometric / draw-guard policy for one mesh draw (B1–B5). The engine calls
+    // this in `DrawMesh` with the mesh (and, for the scrollbar-thumb case, the
+    // scrollbar-bg world the engine cached from the previous draw is applied by
+    // the engine — the hook only signals WHICH decision applies). `outWorld` is
+    // an optional 16-float column-major world matrix the hook MAY fill for the
+    // hub-bar placement case (identity + label translation); the engine only
+    // reads it when `hubBarPlacement` is true. Default: no override.
+    virtual DrawGeomPolicy QueryDrawGeomPolicy(RndMesh* /*mesh*/,
+                                               float* /*outWorld16*/) {
+        return DrawGeomPolicy();
+    }
+
+    // Material-classification policy for one mesh/material (B7–B13). `skinned`
+    // and `owner` mirror the args the engine already has at the binder call
+    // site; `camName` is the active camera's name (passed IN by the engine so
+    // the hook never reaches into `RndCam::sCurrent` global state — the Bucket-C
+    // camera gate for B12/B13 stays a scene-scope condition the engine owns, but
+    // where a classification needs the cam name the engine supplies it). Default:
+    // no classification (engine takes its prior default path).
+    virtual DrawMaterialPolicy QueryDrawMaterialPolicy(RndMesh* /*mesh*/,
+                                                       RndMat* /*mat*/,
+                                                       bool /*skinned*/,
+                                                       RndMesh* /*owner*/,
+                                                       const char* /*camName*/) {
+        return DrawMaterialPolicy();
+    }
+
+    // Halo-source NAME exclusion policy (B6). The engine keeps the emissive-map
+    // /multiplier data test; this answers only the name-based exclusion + the
+    // `RB3_SMASHER_HALO` flag. Default: no forced exclusion.
+    virtual HaloPolicy QueryHaloPolicy(RndMat* /*mat*/) {
+        return HaloPolicy();
+    }
 
 protected:
     GameRenderHook() = default;
