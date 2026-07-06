@@ -1,5 +1,6 @@
 #include "gfx/ShadowPass.h"
 #include "gfx/GpuDevice.h"
+#include "gfx/UniformRingBuffer.h"
 #include "gfx/VertexFormats.h"
 #include "platform/Rnd_Wgpu.h"
 #include "rndobj/Cam.h"

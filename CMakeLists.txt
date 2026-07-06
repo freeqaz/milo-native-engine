@@ -266,6 +266,7 @@ set(MILO_ENGINE_GFX_SOURCES
     src/gfx/FrameCapture.cpp
     src/gfx/BloomPass.cpp
     src/gfx/GpuResourceRegistry.cpp
+    src/gfx/UniformRingBuffer.cpp
     src/gfx/VideoEncoder.cpp
     src/gfx/mikktspace.c
     src/gfx/ImGuiBackend.cpp

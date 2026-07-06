@@ -9,6 +9,7 @@
 #include "gfx/PostProcPass.h"
 #include "gfx/DrawRect2D.h"
 #include "gfx/UniformStructs.h"
+#include "gfx/UniformRingBuffer.h"
 #include "rndobj/Rnd_NG.h"
 #include "rndobj/ShaderMgr.h"
 
@@ -18,32 +19,7 @@
 #include <vector>
 #include <webgpu/webgpu_cpp.h>
 
-// ============================================================================
-// Uniform ring buffer — writes to different offsets per draw call
-// ============================================================================
-
-class UniformRingBuffer {
-public:
-    void Init(wgpu::Device& device, uint32_t capacity, const char* label = nullptr);
-    void Reset() { mOffset = 0; }
-    void Release() { mBuffer = nullptr; mDevice = nullptr; }
-
-    // Write data at next aligned offset, return the offset used
-    uint32_t Write(wgpu::Queue& queue, const void* data, uint32_t size);
-
-    wgpu::Buffer& Buffer() { return mBuffer; }
-    uint32_t Capacity() const { return mCapacity; }
-
-private:
-    void Grow(wgpu::Device& device);
-
-    static constexpr uint32_t kAlignment = 256; // minUniformBufferOffsetAlignment
-    wgpu::Device mDevice;
-    wgpu::Buffer mBuffer;
-    uint32_t mCapacity = 0;
-    uint32_t mOffset = 0;
-    const char* mLabel = "UniformRing";
-};
+// UniformRingBuffer moved to gfx/UniformRingBuffer.h (W1.5, shared gfx-core TU).
 
 // ============================================================================
 // WgpuShaderMgr — captures SetVConstant/SetPConstant into staging area
