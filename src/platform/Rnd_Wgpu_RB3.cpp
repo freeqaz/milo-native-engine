@@ -3059,8 +3059,9 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     // 0 -> 1 (after E1 Dolphin sign-off). RB3_PLACEMENT_CONTRACT_OFF is the opt-out and
     // takes precedence (fail-reds the placement oracle post-flip); the legacy
     // RB3_PLACEMENT_CONTRACT env stays a valid opt-in (all Wave-4 capture scripts + the
-    // placement oracle harness set it). Effective default is STILL OFF this item.
-    static const int kPlacementContractDefaultOn = 0;   // coordinator's ONE-LINE flip -> 1
+    // placement oracle harness set it). FLIPPED default-ON 2026-07-06 (Wave 6 E1
+    // sign-off: wash proven A/A-variable/flip-independent, oracles GREEN).
+    static const int kPlacementContractDefaultOn = 1;   // coordinator flip, Wave 6
     static int sPlacementContract = -1;
     if (sPlacementContract < 0) {
         if (getenv("RB3_PLACEMENT_CONTRACT_OFF"))      sPlacementContract = 0;   // opt-out wins
