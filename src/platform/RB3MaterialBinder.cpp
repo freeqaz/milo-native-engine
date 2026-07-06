@@ -186,8 +186,15 @@ RB3MaterialBindResult RB3BuildMaterialUniforms(
                         mnm, matName, mu.color[0], mu.color[1], mu.color[2]);
             }
             static int sUiTextFloorRelaxed = -1;
-            if (sUiTextFloorRelaxed < 0)
-                sUiTextFloorRelaxed = std::getenv("RB3_UI_TEXT_FLOOR_RELAXED") ? 1 : 0;
+            if (sUiTextFloorRelaxed < 0) {
+                // FLIPPED default-ON (Wave 7 coordinator sign-off: focused
+                // menu text renders authored dark-on-gold, the three labels
+                // the 0.6 floor originally rescued stay readable, verified
+                // cross-screen). Opt out via RB3_UI_TEXT_FLOOR_STRICT (restores
+                // the legacy unconditional 0.6 floor); legacy opt-in kept.
+                if (std::getenv("RB3_UI_TEXT_FLOOR_STRICT"))      sUiTextFloorRelaxed = 0;
+                else                                              sUiTextFloorRelaxed = 1;
+            }
             if (sUiTextFloorRelaxed) {
                 const float kTrueInvisibleUiText = 0.06f;
                 const float kRelaxedUiTextFloor = 0.25f;
