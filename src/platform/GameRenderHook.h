@@ -93,6 +93,20 @@ struct DrawGeomPolicy {
     bool  skelRebakeMesh = false;
 };
 
+// B13 highway-material shading classes (the values of
+// `DrawMaterialPolicy::highwayClass`). A neutral shared contract: the engine
+// applies its per-bucket shading math under its own game-cam gate; the game hook
+// maps material names to a bucket. The header names abstract shading buckets, not
+// specific asset file names (the name matches live in the game hook). Mutually
+// exclusive by construction (the hook maps each material name to exactly one).
+enum HighwayMaterialClass {
+    kHighwayNone      = 0,
+    kHighwaySurface   = 1,   // darken track surface + dim its emissive watermark
+    kHighwayRails     = 2,   // force prelit lanes + cool tint
+    kHighwaySmasher   = 3,   // boost now-bar/strike emissive
+    kHighwayPeakstate = 4,   // brighten SP peak-state overlay
+};
+
 // Material-classification decisions (relocated from `RB3BuildMaterialUniforms`
 // and `IsHaloSourceMat`, B6–B13). The engine keeps the uniform math; the hook
 // returns WHICH class so the uniforms stay bit-identical. Fields default to
@@ -121,10 +135,11 @@ struct DrawMaterialPolicy {
     // B12: crowd/extras vs band-member material path.
     bool  isCrowdExtra = false;
     bool  isBandMember = false;
-    // B13: highway per-material shading class (surface/rails/smasher/gem/
-    // peakstate/prism_gem under game.cam). 0 = none; game side defines the enum
-    // values it applies.
-    int   highwayClass = 0;
+    // B13: highway per-material shading class (surface/rails/smasher/peakstate
+    // under game.cam). One of `HighwayMaterialClass`; kHighwayNone (0) = no
+    // highway shading. The engine applies the matching shading math ONLY inside
+    // its own sTrackLight + game.cam gate (Bucket-C scene-scope stays inline).
+    int   highwayClass = kHighwayNone;
 };
 
 // Halo-source exclusion decision (relocated from `IsHaloSourceMat`, B6). The

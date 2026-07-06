@@ -422,8 +422,13 @@ RB3MaterialBindResult RB3BuildMaterialUniforms(
     if (sTrackLight && mat) {
         RndCam* pc = RndCam::sCurrent;
         if (pc && pc->Name() && std::strcmp(pc->Name(), "game.cam") == 0) {
-            const char* mname = mat->Name() ? mat->Name() : "";
-            if (std::strcmp(mname, "surface.mat") == 0) {
+            // B13: the surface/rails/gem_smasher_glow/peakstate material-NAME matches
+            // are relocated to the game hook (matPolicy.highwayClass). The engine
+            // keeps the sTrackLight master flag + the game.cam scene gate above
+            // (Bucket C, inline), the exact if/else-if/if/if structure, ALL shading
+            // math, and its sub-flags (RB3_HIGHWAY_WATERMARK_*, RB3_FRET_GLOW_OFF).
+            const int highwayClass = matPolicy.highwayClass;
+            if (highwayClass == kHighwaySurface) {
                 mu.color[0] *= 0.12f; mu.color[1] *= 0.12f; mu.color[2] *= 0.12f;
                 // GAP A: the highway watermark (the authored clef-scroll filigree in
                 // surface.mat's emissive map, watermark_{bass,guitar,drum,keys}.tex,
@@ -455,7 +460,7 @@ RB3MaterialBindResult RB3BuildMaterialUniforms(
             // now-dark surface — the opposite of retail's bright glowing lane
             // dividers. Force them prelit so rails.tex shows at full authored
             // brightness (self-lit lanes), matching the dark-highway/bright-lane look.
-            else if (std::strcmp(mname, "rails.mat") == 0) {
+            else if (highwayClass == kHighwayRails) {
                 mu.prelit = 1.0f;
                 // rails.tex is authored bright-white; retail's lane dividers are a
                 // cooler blue-white (measured normalized ~0.58/0.70/1.00 — blue
@@ -483,7 +488,7 @@ RB3MaterialBindResult RB3BuildMaterialUniforms(
             // authored while keeping the per-slot colour from saturating to white.
             // Opt-out RB3_FRET_GLOW_OFF=1 zeroes the multiplier → invisible (old
             // behaviour) for clean A/B of the held-fret glow.
-            if (std::strcmp(mname, "gem_smasher_glow.mat") == 0) {
+            if (highwayClass == kHighwaySmasher) {
                 static int sFretGlowOff = -1;
                 if (sFretGlowOff < 0) {
                     const char* e = getenv("RB3_FRET_GLOW_OFF");
@@ -496,7 +501,7 @@ RB3MaterialBindResult RB3BuildMaterialUniforms(
             // (gray base color × blue diffuse, alpha-blended). Brighten its color so the
             // blue reads as a glow over the dark track (retail's SP track is vividly
             // blue); the anim's alpha still drives the fade-in.
-            if (std::strstr(mname, "peakstate") != nullptr) {
+            if (highwayClass == kHighwayPeakstate) {
                 mu.color[0] *= 2.0f; mu.color[1] *= 2.0f; mu.color[2] *= 2.0f;
             }
         }
