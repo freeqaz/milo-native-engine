@@ -11,6 +11,7 @@
 // with them.
 
 #include "platform/Rnd_Wgpu_RB3.h"
+#include "platform/GameRenderHook.h"   // W1.7 B6: relocated halo-source NAME exclusions
 
 #include "rndobj/Mat.h"
 #include "rndobj/Tex.h"
@@ -67,15 +68,12 @@ bool BandRnd::HighwayBloomEnabled() {
 bool BandRnd::IsHaloSourceMat(RndMat* mat) {
     if (!mat) return false;
     if ((RndTex*)mat->mEmissiveMap == nullptr || mat->mEmissiveMultiplier <= 0.0f) return false;
-    const char* mn = mat->Name();
-    if (mn && std::strstr(mn, "surface")) return false;   // full-quad track plane — would wash
-    if (mn && std::strstr(mn, "gem_smasher_glow")) {       // now-bar plate — blooms to a white sphere
-        static int sSmasherHalo = -1;
-        if (sSmasherHalo < 0) {
-            const char* e = getenv("RB3_SMASHER_HALO");
-            sSmasherHalo = (e && e[0] && e[0] != '0') ? 1 : 0;
-        }
-        if (!sSmasherHalo) return false;
+    // W1.7 B6: the name-based exclusions (surface full-quad, gem_smasher_glow now-bar)
+    // and the RB3_SMASHER_HALO opt-in flag are game content policy — relocated to the
+    // game hook (QueryHaloPolicy). The engine keeps the emissive-map/multiplier DATA
+    // test above and only asks the hook for the NAME-based exclusion.
+    if (GameRenderHook* hook = GetGameRenderHook()) {
+        if (hook->QueryHaloPolicy(mat).forceExclude) return false;
     }
     return true;
 }
