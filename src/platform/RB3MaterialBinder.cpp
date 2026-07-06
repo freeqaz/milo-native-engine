@@ -165,7 +165,8 @@ RB3MaterialBindResult RB3BuildMaterialUniforms(
         // invisible triage). Temporary probe.
         if (getenv("RB3_HEADMAT_DBG")) {
             const char* mnm = mesh->Name() ? mesh->Name() : "?";
-            bool skinRt = dt && dt->Name() && std::strstr(dt->Name(), "skin_diffuse_output");
+            bool skinRt = dt && dt->Name() && GetGameRenderHook() &&
+                          GetGameRenderHook()->IsSkinDiffuseOutputTex(dt->Name());
             Hmx::Object* meshDir = mesh->Dir();
             if (true) {
                 static std::unordered_map<std::string, int> sSkinSeen;
@@ -514,7 +515,7 @@ RB3MaterialBindResult RB3BuildMaterialUniforms(
     bool gemForce = false;
     if (getenv("GEM_FORCE")) {
         const char* mn = mesh->Name() ? mesh->Name() : "?";
-        if (std::strstr(mn, "prism_gem")) {
+        if (GetGameRenderHook() && GetGameRenderHook()->IsGemMesh(mn)) {
             gemForce = true;
             mu.color[0] = 1.0f; mu.color[1] = 0.0f; mu.color[2] = 1.0f; mu.color[3] = 1.0f;
             mu.useTexture = 0.0f; mu.intensify = 1.0f; mu.prelit = 1.0f;

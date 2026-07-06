@@ -2096,8 +2096,8 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     // where each gem sits in world space. Gated on CAM_DBG; throttled per name.
     if (getenv("CAM_DBG")) {
         const char* mn = mesh->Name() ? mesh->Name() : "?";
-        bool key = std::strstr(mn, "prism_gem") || std::strstr(mn, "gem_smasher") ||
-                   std::strstr(mn, "surface");
+        GameRenderHook* dbgHook = GetGameRenderHook();
+        bool key = dbgHook && dbgHook->IsCamDbgHighwayMesh(mn);
         if (key) {
             static std::unordered_map<std::string, int> sSeen;
             int& n = sSeen[mn];
@@ -2211,8 +2211,7 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     // (Defect 2) — confirms it is a skinned mesh and reports its (correct) mesh
     // WorldXfm vs the (origin) bone palette. Render-inert, env-gated.
     if (getenv("HUB_BAR_PROBE") && mesh->Name() &&
-        (strstr(mesh->Name(), "highlight_main") ||
-         strstr(mesh->Name(), "highlight_pattern"))) {
+        GetGameRenderHook() && GetGameRenderHook()->IsHubBarMesh(mesh->Name())) {
         static std::unordered_map<std::string,int> sHBd;
         std::string key = mesh->Name();
         if (sHBd[key]++ % 240 == 0)
@@ -2338,7 +2337,7 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
         nv = RB3UnpackMeshVerts(owner, skinned, gpuVerts, gpuVertsSkinned);
         if (nv < 0) {
             if (getenv("RB3_HEADMAT_DBG") && mesh->Name()
-                && std::strcmp(mesh->Name(), "head.mesh") == 0) {
+                && GetGameRenderHook() && GetGameRenderHook()->IsHeadMesh(mesh->Name())) {
                 static std::unordered_map<const void*, int> sSeen;
                 if (sSeen[(const void*)mesh]++ == 0)
                     fprintf(stderr, "[HEADMAT] mesh='head.mesh' mesh=%p EARLY-OUT unpack nv<0\n",
@@ -2534,7 +2533,7 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     // unpack actually ran this draw (one-shot per mesh — first draw is a miss).
     if (getenv("GEM_VTX") && !skipUnpack && !skinned) {
         const char* mn = mesh->Name() ? mesh->Name() : "?";
-        if (std::strstr(mn, "prism_gem")) {
+        if (GetGameRenderHook() && GetGameRenderHook()->IsGemMesh(mn)) {
             static std::unordered_map<std::string, int> sVtxSeen;
             if (sVtxSeen[mn]++ == 0) {
                 float mn3[3] = {1e9f,1e9f,1e9f}, mx3[3] = {-1e9f,-1e9f,-1e9f};
@@ -2660,7 +2659,7 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     uint32_t cachedIndexCount = meshEntry.indexCount;
     if (!vbuf || !ibuf) {
         if (getenv("RB3_HEADMAT_DBG") && mesh->Name()
-            && std::strcmp(mesh->Name(), "head.mesh") == 0) {
+            && GetGameRenderHook() && GetGameRenderHook()->IsHeadMesh(mesh->Name())) {
             static std::unordered_map<const void*, int> sSeen;
             if (sSeen[(const void*)mesh]++ == 0)
                 fprintf(stderr, "[HEADMAT] mesh='head.mesh' mesh=%p EARLY-OUT vbuf=%d ibuf=%d\n",
@@ -2846,9 +2845,7 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
         static bool sBoneProbeDone = false;
         const char* probeName = getenv("BONE_PROBE_NAME");
         bool nameMatch = mesh->Name() && (probeName ? (strstr(mesh->Name(), probeName) != nullptr) :
-                         (strstr(mesh->Name(), "plaidshirt") ||
-                         strstr(mesh->Name(), "trackjacket") || strstr(mesh->Name(), "shirt") ||
-                         strstr(mesh->Name(), "jacket") || strstr(mesh->Name(), "vestdenim")));
+                         (GetGameRenderHook() && GetGameRenderHook()->IsBoneProbeDefaultMesh(mesh->Name())));
         // IK diagnosis (render-polish wave-4): allow delaying the one-shot to a min
         // frame so we capture the leg chain AFTER animation flings it (frame ~121+).
         static int sBoneProbeMinFrame = -2;
@@ -3119,8 +3116,7 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
             // WorldXfm). This is why the placement fix injects the mesh translation
             // into obj.world. Render-inert, env-gated.
             if (getenv("HUB_BAR_PROBE") && mesh->Name() &&
-                (strstr(mesh->Name(), "highlight_main") ||
-                 strstr(mesh->Name(), "highlight_pattern"))) {
+                GetGameRenderHook() && GetGameRenderHook()->IsHubBarMesh(mesh->Name())) {
                 static std::unordered_map<std::string,int> sHB;
                 std::string key = std::string(mesh->Name()) + "@b" + std::to_string(b);
                 if (sHB[key]++ % 240 == 0) {
@@ -3274,7 +3270,7 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
         // (worldPos varies frame to frame) or is STATIC (constant). Decides whether
         // a constant per-bone correction would yield a frozen vs trackable female.
         if (const char* xt = getenv("XBONE_TRACK")) {
-            if (mesh->Name() && strstr(mesh->Name(), "trackjacket")) {
+            if (mesh->Name() && GetGameRenderHook() && GetGameRenderHook()->IsTrackjacketMesh(mesh->Name())) {
                 for (int b = 0; b < numBones; b++) {
                     RndTransformable* bt = owner->BoneTransAt(b);
                     if (!bt || !bt->Name() || strstr(bt->Name(), xt) == nullptr) continue;
@@ -3989,7 +3985,7 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     // RB3_HEADMAT_DBG: catch head.mesh reaching the material block with a NULL
     // mat (C8 head-invisible triage). Temporary probe.
     if (getenv("RB3_HEADMAT_DBG") && !mat && mesh->Name()
-        && std::strcmp(mesh->Name(), "head.mesh") == 0) {
+        && GetGameRenderHook() && GetGameRenderHook()->IsHeadMesh(mesh->Name())) {
         static std::unordered_map<const void*, int> sNullSeen;
         if (sNullSeen[(const void*)mesh]++ == 0)
             fprintf(stderr, "[HEADMAT] mesh='head.mesh' owner=%p MAT=NULL\n", (void*)mesh);
