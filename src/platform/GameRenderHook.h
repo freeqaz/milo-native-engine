@@ -77,10 +77,20 @@ struct DrawGeomPolicy {
     // thumb mesh (apply the cached world). Mutually exclusive.
     bool  scrollbarBg = false;
     bool  scrollbarThumb = false;
-    // B4/B5: shard-guard exemptions — hub-bar UI overlay meshes and band-member
-    // (skeleton_unshared) meshes are exempt from the scene-crossing shard guard.
+    // B4: shard-guard exemption for hub-bar UI overlay meshes (mesh-name only, so
+    // it fits this mesh-scoped POD).
     bool  shardExemptHubBar = false;
+    // B5's band-member shard discriminator needs per-bone iteration (the owner's
+    // bones), which a mesh-only POD cannot express, so it is answered by the
+    // per-string classifier `IsBandMemberSkeletonFile` below rather than a POD
+    // field. `shardBandMember` is retained (unused) for source-compat with S1's
+    // scaffolding; the live decision is the classifier.
     bool  shardBandMember = false;
+    // B3: skel-rebake mesh-level gate == (RB3_NO_SKEL_REBAKE disabled) &&
+    // !(dynamic face/hair/fingernail mesh name). The engine ANDs this with the
+    // numBones / rebound / worst-bone conditions and keeps all rebake math; the
+    // per-bone + dir tests are the classifiers below.
+    bool  skelRebakeMesh = false;
 };
 
 // Material-classification decisions (relocated from `RB3BuildMaterialUniforms`
@@ -178,6 +188,25 @@ public:
     // `RB3_SMASHER_HALO` flag. Default: no forced exclusion.
     virtual HaloPolicy QueryHaloPolicy(RndMat* /*mat*/) {
         return HaloPolicy();
+    }
+
+    // Per-string name classifiers (W1.7 B3/B5). These answer a single asset-name
+    // question about a string the ENGINE already holds while iterating (a bone's
+    // owning-dir stored file, or a bone's name), so the engine keeps the loop and
+    // the hook owns only the name match. Base defaults return false ("engine's
+    // prior default path"); RB3's `BandRenderHook` supplies the real matches.
+
+    // B3/B5: does this bone's owning-dir stored file name the STATIC shared band
+    // skeleton (`skeleton_unshared.milo`)? Used for the B3 rebake band-only gate
+    // and the B5 shard-guard band-member discriminator.
+    virtual bool IsBandMemberSkeletonFile(const char* /*storedFile*/) {
+        return false;
+    }
+
+    // B3: is this bone part of a per-frame-driven dynamic chain (hair / facial /
+    // finger bones) that must be EXCLUDED from the one-time static rebake?
+    virtual bool IsRebakeDynamicBone(const char* /*boneName*/) {
+        return false;
     }
 
 protected:

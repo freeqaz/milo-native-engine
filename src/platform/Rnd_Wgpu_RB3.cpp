@@ -2725,7 +2725,8 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     // no hook is registered). `outWorld16` is unused today — the engine keeps the
     // hub-bar matrix math itself so no float ordering crosses the seam.
     DrawGeomPolicy geomPolicy;
-    if (GameRenderHook* geomHook = GetGameRenderHook())
+    GameRenderHook* geomHook = GetGameRenderHook();
+    if (geomHook)
         geomPolicy = geomHook->QueryDrawGeomPolicy(mesh, nullptr);
     // HUB MENU HIGHLIGHT BAR placement fix (Defect 2 of the hub-highlight pair; see
     // docs/native/render-polish-2026-06-11/task-hub-bar-placement-impl.md).
@@ -2904,8 +2905,6 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
         // One-time per mesh (mNativeBonesRebound flag, which also tells the clamp to skip
         // this mesh). Default-on; opt-out RB3_NO_SKEL_REBAKE=1.
         {
-            static int sRebake = -1;
-            if (sRebake < 0) sRebake = getenv("RB3_NO_SKEL_REBAKE") ? 0 : 1;
             // MESH-LEVEL DYNAMIC EXCLUSION: face / hair / fingernail outfit meshes are
             // skinned to bones driven every frame by CharFaceServo / CharHair /
             // CharIKFingers, so a one-time static rebake of those does not stick (the
@@ -2916,12 +2915,12 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
             // on the provably-static band skeleton is the real ~20u fling, and a static
             // rebake there is a permanent correction. (The 650u goatee/hair flings stay
             // exactly as the shipped clamp left them.)
-            const char* mn0 = mesh->Name();
-            bool dynamicMesh = mn0 && (strstr(mn0, "facehair") || strstr(mn0, "goatee") ||
-                strstr(mn0, "hair") || strstr(mn0, "bedhead") || strstr(mn0, "blownback") ||
-                strstr(mn0, "mohawk") || strstr(mn0, "fingernails") ||
-                strstr(mn0, "eyebrow") || strstr(mn0, "tongue") || strstr(mn0, "facial"));
-            if (sRebake && !dynamicMesh && numBones >= 8 && !mesh->mNativeBonesRebound &&
+            // W1.7 B3: the RB3_NO_SKEL_REBAKE flag + the face/hair/fingernail mesh-name
+            // exclusion are relocated to the hook: geomPolicy.skelRebakeMesh ==
+            // (rebake enabled) && !(dynamic mesh name). The band-skeleton dir test and
+            // the per-bone dynamic-chain exclusion are asked of the hook below, keeping
+            // all rebake math (Invert/Multiply/SetBone) in the engine.
+            if (geomPolicy.skelRebakeMesh && numBones >= 8 && !mesh->mNativeBonesRebound &&
                 (!owner || !owner->mNativeBonesRebound)) {
                 const Transform& mw = mesh->WorldXfm();
                 Transform invMw; Invert(mw, invMw);
@@ -2948,8 +2947,11 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
                 // (static-skeleton) meshes are touched.
                 RndTransformable* wbone = (worstB >= 0) ? owner->BoneTransAt(worstB) : 0;
                 ObjectDir* wdir = wbone ? wbone->Dir() : 0;
-                bool bandStatic = wdir && !wdir->mStoredFile.empty() &&
-                    strstr(wdir->mStoredFile.c_str(), "skeleton_unshared.milo") != 0;
+                // W1.7 B3: the skeleton_unshared.milo dir-name test is relocated to
+                // the hook (IsBandMemberSkeletonFile); the engine keeps the worst-bone
+                // selection + the stored-file null/empty guards.
+                bool bandStatic = wdir && !wdir->mStoredFile.empty() && geomHook &&
+                    geomHook->IsBandMemberSkeletonFile(wdir->mStoredFile.c_str());
                 if (worst2 > 144.0f && bandStatic) {
                     // Rebake ONLY the individual flung bones (mesh-local skin > 12u) to
                     // the current pose. On the band the upper-body arm/twist chain is
@@ -2978,16 +2980,10 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
                         // the STATIC arm/twist/torso/leg chain (the real ~20u bind
                         // mismatch), which is provably static so its correction is
                         // permanent. Identify dynamic bones by name.
+                        // W1.7 B3: the dynamic-chain bone-name test is relocated to
+                        // the hook (IsRebakeDynamicBone); the engine keeps the loop.
                         const char* bn = bt->Name();
-                        if (bn && (strstr(bn, "hair") || strstr(bn, "-lid") ||
-                                   strstr(bn, "_lid") || strstr(bn, "jaw") ||
-                                   strstr(bn, "lip") || strstr(bn, "brow") ||
-                                   strstr(bn, "eye") || strstr(bn, "mouth") ||
-                                   strstr(bn, "cheek") || strstr(bn, "nose") ||
-                                   strstr(bn, "tongue") || strstr(bn, "goatee") ||
-                                   strstr(bn, "index") || strstr(bn, "middle") ||
-                                   strstr(bn, "pinky") || strstr(bn, "ring") ||
-                                   strstr(bn, "thumb") || strstr(bn, "finger")))
+                        if (bn && geomHook && geomHook->IsRebakeDynamicBone(bn))
                             continue;
                         const Transform& wt2 = bt->WorldXfm();
                         if (!(std::fabs(wt2.v.x) < 1e5f && std::fabs(wt2.v.y) < 1e5f &&
