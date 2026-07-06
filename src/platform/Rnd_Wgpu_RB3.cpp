@@ -1157,7 +1157,7 @@ static bool sVenuePointFalloffGx() {
     return v != 0;
 }
 
-void BandRnd::WriteSceneUniforms(RndCam* cam) {
+RB3SceneBinding BandRnd::WriteSceneUniforms(RndCam* cam) {
     SceneUniforms s{};
 
     float viewProj[16];
@@ -1448,6 +1448,11 @@ void BandRnd::WriteSceneUniforms(RndCam* cam) {
         mLastSceneCamPose[0] = cw.v.x; mLastSceneCamPose[1] = cw.v.y; mLastSceneCamPose[2] = cw.v.z;
         mLastSceneCamPose[3] = cw.m.y.x; mLastSceneCamPose[4] = cw.m.y.y; mLastSceneCamPose[5] = cw.m.y.z;
     }
+    // W1.6 (SYS-3): return the freshly-created binding as an immutable value.
+    // During the S1 transition the legacy mSceneBindGroup/mSceneOffset members
+    // are still written verbatim above (bind sites read them); the returned
+    // value simply mirrors that pair so callers can latch mActiveScene.
+    return RB3SceneBinding{ mSceneBindGroup, mSceneOffset };
 }
 
 void BandRnd::BeginFrame(RndCam* cam) {
@@ -1549,7 +1554,7 @@ void BandRnd::BeginFrame(RndCam* cam) {
     }
     EnsureDepth(fbW, fbH);
 
-    WriteSceneUniforms(cam);
+    mActiveScene = WriteSceneUniforms(cam);
 
     mEncoder = mGpu.Device().CreateCommandEncoder();
 
@@ -2183,7 +2188,7 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
             camChanged = true;
     }
     if (camChanged) {
-        WriteSceneUniforms(RndCam::sCurrent);
+        mActiveScene = WriteSceneUniforms(RndCam::sCurrent);
         mPass.SetBindGroup(0, mSceneBindGroup, 0, nullptr);
         const Transform& cw = RndCam::sCurrent->WorldXfm();
         mLastSceneCamPose[0] = cw.v.x; mLastSceneCamPose[1] = cw.v.y; mLastSceneCamPose[2] = cw.v.z;
@@ -2199,7 +2204,7 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     else if (sVenueLightEnabled() && RndCam::sCurrent &&
              RndCam::sCurrent->Name() && std::strcmp(RndCam::sCurrent->Name(), "world.cam") == 0 &&
              (void*)RndEnviron::sCurrent != mLastSceneEnv) {
-        WriteSceneUniforms(RndCam::sCurrent);
+        mActiveScene = WriteSceneUniforms(RndCam::sCurrent);
         mPass.SetBindGroup(0, mSceneBindGroup, 0, nullptr);
         mLastSceneEnv = (void*)RndEnviron::sCurrent;
     }

@@ -48,6 +48,16 @@ class RndMat;
 class RndParticleSys;
 class ObjectDir;
 
+// Immutable per-write scene binding returned by WriteSceneUniforms (W1.6, SYS-3).
+// A value carrying the group-0 bind group + its dynamic-uniform offset, so a
+// draw's scene dependency is an explicit value it was handed rather than
+// "whatever the last write left in a mutable member". See Rnd_Wgpu_RB3.cpp
+// WriteSceneUniforms.
+struct RB3SceneBinding {
+    wgpu::BindGroup group;
+    uint32_t        offset = 0;
+};
+
 class BandRnd : public Rnd {
 public:
     BandRnd() {}
@@ -176,7 +186,7 @@ private:
     // tex/sampler BGL + pipeline layout reusing mPipelines.SceneLayout() at
     // group 0). Idempotent.
     void EnsureParticlePipeline();
-    void WriteSceneUniforms(RndCam* cam);
+    RB3SceneBinding WriteSceneUniforms(RndCam* cam);
     void CreateDefaultTextures();
     wgpu::BindGroup MakeMaterialBindGroup(uint32_t off, RndMat* mat);
     wgpu::BindGroup MakeMaterialBindGroupRaw(wgpu::Buffer buf, uint32_t off);
@@ -278,6 +288,12 @@ public:
     // own scene cam after BeginDrawing affect subsequent draws).
     wgpu::BindGroup mSceneBindGroup;
     uint32_t mSceneOffset = 0;
+    // W1.6 (SYS-3): the ONE field naming "the scene binding currently bound at
+    // group 0". Assigned only `= WriteSceneUniforms(...)` at the 3 write sites;
+    // never mutated field-by-field. During the S1 transition it mirrors the
+    // legacy mSceneBindGroup/mSceneOffset pair (which bind sites still read);
+    // S2 collapses the reads onto this value and deletes the legacy members.
+    RB3SceneBinding mActiveScene;
     RndCam* mLastSceneCam = nullptr;
     // Last-written camera world transform (translation + forward basis). The
     // gem highway scroll (TrackDir::DrawShowing) re-poses the SAME game.cam
