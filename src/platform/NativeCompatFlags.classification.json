@@ -3,6 +3,7 @@
   "_schema": "{ \"FLAG_NAME\": { \"class\": \"probe|workaround|feature|perf|unknown\", \"owner\": \"subsystem tag\", \"faithfulStatus\": \"n/a | not-live: <reason> | live | probe\", \"default\": \"on|off|unknown (optional, overrides the scanner's naming-based guess)\" } }",
 
   "BONE_PROBE":                    { "class": "probe", "owner": "skinning",         "faithfulStatus": "n/a: archaeological debug probe" },
+  "RB3_CROWD_BONE_PROBE":          { "class": "probe", "owner": "render/crowd",     "faithfulStatus": "n/a: W2.3.S1 crowd bone-source seam characterization (owner vs own-bone SKIN_CLAMP extent; SHARED/SELF+POISON decision)" },
   "BONE_PROBE_MINFRAME":           { "class": "probe", "owner": "skinning",         "faithfulStatus": "n/a: archaeological debug probe (cadence knob for BONE_PROBE)" },
   "BONE_PROBE_NAME":               { "class": "probe", "owner": "skinning",         "faithfulStatus": "n/a: archaeological debug probe" },
   "SHARD_DBG":                     { "class": "probe", "owner": "skinning",         "faithfulStatus": "n/a: archaeological debug probe (mesh-shard investigation)" },

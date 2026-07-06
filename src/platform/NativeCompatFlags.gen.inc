@@ -111,6 +111,7 @@
 { "RB3_CHAR_REAL_LIGHT_OFF", "on", FlagClass::Workaround, FlagRead::Truthy, "render/lighting", "not-live: real-key character lighting approximation default-ON (see project_c8_faces memory)", "RB3_CHAR_REAL_LIGHT_OFF" },
 { "RB3_CLEAR_COLOR", "unknown", FlagClass::Unknown, FlagRead::Truthy, "unclassified", "n/a", "RB3_CLEAR_COLOR" },
 { "RB3_COMPOSE_MULT_OFF", "on", FlagClass::Workaround, FlagRead::Presence, "render/compose", "not-live: composite-blend multiply-fallback default-ON (see project_c8_faces memory)", "RB3_COMPOSE_MULT_OFF" },
+{ "RB3_CROWD_BONE_PROBE", "off", FlagClass::Probe, FlagRead::Presence, "render/crowd", "n/a: W2.3.S1 crowd bone-source seam characterization (owner vs own-bone SKIN_CLAMP extent; SHARED/SELF+POISON decision)", "RB3_CROWD_BONE_PROBE" },
 { "RB3_CROWD_DIM", "unknown", FlagClass::Unknown, FlagRead::Value, "unclassified", "n/a", "RB3_CROWD_DIM" },
 { "RB3_CROWD_DIM_OFF", "on", FlagClass::Workaround, FlagRead::Truthy, "render/crowd", "not-live: crowd-dim heuristic default-ON", "RB3_CROWD_DIM_OFF" },
 { "RB3_CROWD_IMPOSTER_OFF", "on", FlagClass::Workaround, FlagRead::Truthy, "render/crowd", "not-live: crowd impostor rendering default-ON", "RB3_CROWD_IMPOSTER_OFF" },

@@ -2946,6 +2946,91 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     if (skinned) {
         int numBones = owner->NumBones();
         if (numBones > kMaxBones) numBones = kMaxBones;
+        // RB3_CROWD_BONE_PROBE (W2.3.S1): characterize the crowd bone-source seam —
+        // does reading the DRAWN mesh's OWN bones make the draw-time
+        // RebindCrowdCharBonesToOwnSkeleton (Crowd.cpp) unnecessary? For each
+        // skinned crowd/extras mesh in the SKIN_CLAMP population (numBones>=8,
+        // not a rebound band member — the exact set that shards when the rebind is
+        // OFF), one line for the first few instances:
+        //   Q1 (SHARED vs SELF): owner==mesh? + diffInstance = # bones where
+        //      owner->BoneTransAt(b) != mesh->BoneTransAt(b) — the shared-owner
+        //      de-alias signal RebindCrowd's Find-by-name repoint measures. owner
+        //      pointer is printed per instance so an owner shared across instances
+        //      of one name (the SHARED thesis) is visible directly.
+        //   Q2 (OFFSET POISON): worst-bone MESH-LOCAL skin extent — the exact
+        //      SKIN_CLAMP metric |BoneOffset(b)*boneWorld * inverse(meshWorld)|,
+        //      the >12u shard threshold — computed from (a) the OWNER's bones
+        //      [today's palette source, :3193/:3249] vs (b) the DRAWN mesh's OWN
+        //      bones. If own-bone extent < 12u while owner's > 12u, reading own
+        //      bones is the fix (SHARED). If BOTH > 12u, own bones are offset-
+        //      poisoned too and "read own bones" is a no-op (SELF+POISON). Run this
+        //      under RB3_NO_CROWD_REBIND=1 to read the RAW (un-rebaked) owner seam.
+        // Render-inert, env-gated, NO behavior change (reads only; does not touch
+        // the palette, obj.world, or any bone). Placed BEFORE the SKEL_REBAKE /
+        // RECOMPUTE_OFFSETS pre-passes so it reports the seam as the Crowd.cpp
+        // rebind state (not a DrawMesh-side mutation) leaves it.
+        if (getenv("RB3_CROWD_BONE_PROBE") && mesh->Name() && numBones >= 8 &&
+            !mesh->mNativeBonesRebound) {
+            static std::unordered_map<std::string,int> sCbpSeen;
+            std::string cbpKey = mesh->Name();
+            int seen = sCbpSeen[cbpKey]++;
+            if (seen < 6) {
+                const Transform& mw = mesh->WorldXfm();
+                Transform invMw; Invert(mw, invMw);
+                int meshBones = mesh->NumBones();
+                int diffInstance = 0, nullOwner = 0, nullOwn = 0;
+                float worstOwner = -1.f, worstOwn = -1.f;
+                int worstOwnerB = -1, worstOwnB = -1;
+                for (int b = 0; b < numBones; b++) {
+                    RndTransformable* obt = owner->BoneTransAt(b);
+                    RndTransformable* mbt = (b < meshBones) ? mesh->BoneTransAt(b) : nullptr;
+                    if (obt != mbt) diffInstance++;
+                    // owner-bone mesh-local skin extent (today's palette source).
+                    if (obt) {
+                        const Transform& wt = obt->WorldXfm();
+                        if (std::fabs(wt.v.x) < 1e5f && std::fabs(wt.v.y) < 1e5f &&
+                            std::fabs(wt.v.z) < 1e5f) {
+                            Transform sk; Multiply(owner->BoneOffsetAt(b), wt, sk);
+                            Transform loc; Multiply(sk, invMw, loc);
+                            float e = std::sqrt(loc.v.x*loc.v.x + loc.v.y*loc.v.y +
+                                                loc.v.z*loc.v.z);
+                            if (e > worstOwner) { worstOwner = e; worstOwnerB = b; }
+                        }
+                    } else nullOwner++;
+                    // own-bone mesh-local skin extent (the candidate palette source).
+                    if (mbt) {
+                        const Transform& wt = mbt->WorldXfm();
+                        if (std::fabs(wt.v.x) < 1e5f && std::fabs(wt.v.y) < 1e5f &&
+                            std::fabs(wt.v.z) < 1e5f) {
+                            Transform sk; Multiply(mesh->BoneOffsetAt(b), wt, sk);
+                            Transform loc; Multiply(sk, invMw, loc);
+                            float e = std::sqrt(loc.v.x*loc.v.x + loc.v.y*loc.v.y +
+                                                loc.v.z*loc.v.z);
+                            if (e > worstOwn) { worstOwn = e; worstOwnB = b; }
+                        }
+                    } else nullOwn++;
+                }
+                const char* crowdTag =
+                    (GetGameRenderHook() && GetGameRenderHook()->IsCrowdExtraMeshName(mesh->Name()))
+                        ? "crowdextra" : "otherskin";
+                // Per-mesh verdict on the >12u SKIN_CLAMP axis: OWNER-CLEAN (rebind
+                // already fixed the owner), OWN-BONES-FIX (own clean while owner
+                // poisoned -> SHARED), or OWN-BONES-POISON (both poisoned ->
+                // SELF+POISON, reading own bones cannot help).
+                const char* verdict = (worstOwner >= 0 && worstOwner <= 12.f) ? "OWNER-CLEAN"
+                                    : (worstOwn >= 0 && worstOwn <= 12.f)      ? "OWN-BONES-FIX"
+                                                                               : "OWN-BONES-POISON";
+                fprintf(stderr,
+                    "[CROWD_BONE_PROBE] tag=%s mesh='%s' inst=%d owner=%p mesh=%p "
+                    "ownerEqMesh=%d ownerBones=%d meshBones=%d diffInstance=%d "
+                    "nullOwner=%d nullOwn=%d worstOwnerExtent=%.1fu(b%d) "
+                    "worstOwnExtent=%.1fu(b%d) SKIN_CLAMP=12u -> %s\n",
+                    crowdTag, mesh->Name(), seen, (void*)owner, (void*)mesh,
+                    (owner == mesh) ? 1 : 0, owner->NumBones(), meshBones,
+                    diffInstance, nullOwner, nullOwn,
+                    worstOwner, worstOwnerB, worstOwn, worstOwnB, verdict);
+            }
+        }
         // BONE_PROBE: once, for the first body-sized skinned mesh (>=20 bones),
         // dump each bone's local-rotation orthonormality (det), world pose, the
         // inverse-bind offset, and the composed skin determinant. Localizes
