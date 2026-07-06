@@ -2715,6 +2715,18 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     // world matrix must be IDENTITY to avoid double-transforming. (Mirrors
     // DC3's Mesh_Wgpu.cpp skinned path.) Static meshes use the mesh WorldXfm.
     ObjectUniforms obj{};
+    // Per-draw geometric / draw-guard policy (W1.7 B1–B5). The RB3 asset-name
+    // branches that used to decide these placements/guards inline are relocated
+    // to the game side (rb3/native/src/rb3_render_hook.cpp, BandRenderHook::
+    // QueryDrawGeomPolicy + the skel/shard name classifiers). The ENGINE keeps
+    // ALL matrix / palette math below unchanged; the hook returns only the
+    // DECISION and owns the RB3_* opt-out flag reads, so every relocation stays
+    // byte-identical. Fetched once per DrawMesh (defaults to "no override" when
+    // no hook is registered). `outWorld16` is unused today — the engine keeps the
+    // hub-bar matrix math itself so no float ordering crosses the seam.
+    DrawGeomPolicy geomPolicy;
+    if (GameRenderHook* geomHook = GetGameRenderHook())
+        geomPolicy = geomHook->QueryDrawGeomPolicy(mesh, nullptr);
     // HUB MENU HIGHLIGHT BAR placement fix (Defect 2 of the hub-highlight pair; see
     // docs/native/render-polish-2026-06-11/task-hub-bar-placement-impl.md).
     //
@@ -2739,15 +2751,10 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     // focused hub item and tracks DUP/DDOWN. Same SPECIFIC mesh-name scope as the
     // Defect-1 colour fix, so the overshell choose-difficulty highlight
     // (`highlight.mesh`) and gameplay/HUD meshes are untouched.
-    // Opt-out: RB3_NO_HUB_BAR_PLACEMENT_FIX.
-    bool hubBarPlacement = false;
-    if (skinned && mesh->Name() &&
-        (strncmp(mesh->Name(), "highlight_main", 14) == 0 ||
-         strncmp(mesh->Name(), "highlight_pattern", 17) == 0)) {
-        static int hubBarOff = -1;
-        if (hubBarOff < 0) hubBarOff = getenv("RB3_NO_HUB_BAR_PLACEMENT_FIX") ? 1 : 0;
-        hubBarPlacement = !hubBarOff;
-    }
+    // Opt-out: RB3_NO_HUB_BAR_PLACEMENT_FIX (now read inside the hook). The
+    // name match + flag decision is relocated; the engine keeps the `skinned`
+    // gate here so the value is byte-identical to the prior inline computation.
+    bool hubBarPlacement = skinned && geomPolicy.hubBarPlacement;
     // SCROLLBAR THUMB placement fix (Bug 1b, ui-bugs wave 2). Same family as the
     // hub highlight bar above: the scrollbar's red thumb (`scrollbar.mesh`) is a
     // SKINNED UI mesh in the SHARED ui/resource/scrollbar_display.milo dir. Every
