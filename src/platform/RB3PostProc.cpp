@@ -78,7 +78,7 @@ void BandRnd::FlushPostProcMidFrame() {
 
     mPass = mEncoder.BeginRenderPass(&rp);
     mInPass = true;
-    mPass.SetBindGroup(0, mSceneBindGroup, 0, nullptr);
+    mPass.SetBindGroup(0, mActiveScene.group, 0, nullptr);
     mLastSceneCam = nullptr;   // next DrawMesh re-resolves the active cam
 
     if (getenv("RB3_RENDER_DBG") || getenv("RB3_TIER2_DBG"))

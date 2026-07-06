@@ -967,7 +967,7 @@ void BandRnd::Shutdown() {
     mPass = nullptr;
     mEncoder = nullptr;
     mFrameView = nullptr;
-    mSceneBindGroup = nullptr;
+    mActiveScene = {};
     mInPass = false;
     mRtActiveTex = nullptr;
 
@@ -1430,10 +1430,11 @@ RB3SceneBinding BandRnd::WriteSceneUniforms(RndCam* cam) {
     s.shadowEnabled = 0;
     s.numProjLights = 0;
 
-    mSceneOffset = mSceneRing.Write(mGpu.Queue(), &s, sizeof(s));
+    RB3SceneBinding sb;
+    sb.offset = mSceneRing.Write(mGpu.Queue(), &s, sizeof(s));
 
     wgpu::BindGroupEntry e[5] = {};
-    e[0].binding = 0; e[0].buffer = mSceneRing.Buffer(); e[0].offset = mSceneOffset; e[0].size = sizeof(SceneUniforms);
+    e[0].binding = 0; e[0].buffer = mSceneRing.Buffer(); e[0].offset = sb.offset; e[0].size = sizeof(SceneUniforms);
     e[1].binding = 1; e[1].textureView = mShadowView;
     e[2].binding = 2; e[2].sampler = mShadowSampler;
     e[3].binding = 3; e[3].textureView = mWhiteView;
@@ -1441,18 +1442,19 @@ RB3SceneBinding BandRnd::WriteSceneUniforms(RndCam* cam) {
     wgpu::BindGroupDescriptor bd{};
     bd.layout = mPipelines.SceneLayout();
     bd.entryCount = 5; bd.entries = e;
-    mSceneBindGroup = mGpu.Device().CreateBindGroup(&bd);
+    sb.group = mGpu.Device().CreateBindGroup(&bd);
     mLastSceneCam = cam;
     if (cam) {
         const Transform& cw = cam->WorldXfm();
         mLastSceneCamPose[0] = cw.v.x; mLastSceneCamPose[1] = cw.v.y; mLastSceneCamPose[2] = cw.v.z;
         mLastSceneCamPose[3] = cw.m.y.x; mLastSceneCamPose[4] = cw.m.y.y; mLastSceneCamPose[5] = cw.m.y.z;
     }
-    // W1.6 (SYS-3): return the freshly-created binding as an immutable value.
-    // During the S1 transition the legacy mSceneBindGroup/mSceneOffset members
-    // are still written verbatim above (bind sites read them); the returned
-    // value simply mirrors that pair so callers can latch mActiveScene.
-    return RB3SceneBinding{ mSceneBindGroup, mSceneOffset };
+    // W1.6 (SYS-3): the freshly-created binding is the ONE immutable value that
+    // names "the scene binding currently bound at group 0". Latch it into
+    // mActiveScene (the sole member the bind sites read) and return it so
+    // callers can thread it explicitly. No mutable per-field mirror remains.
+    mActiveScene = sb;
+    return sb;
 }
 
 void BandRnd::BeginFrame(RndCam* cam) {
@@ -1592,7 +1594,7 @@ void BandRnd::BeginFrame(RndCam* cam) {
 
     mPass = mEncoder.BeginRenderPass(&rp);
     mInPass = true;
-    mPass.SetBindGroup(0, mSceneBindGroup, 0, nullptr);
+    mPass.SetBindGroup(0, mActiveScene.group, 0, nullptr);
 
     // Dispatch the engine's pre-clear render-to-texture pass once the main pass is
     // open. The shared Rnd::DrawPreClear() iterates the registered pre-clear
@@ -1903,7 +1905,7 @@ void BandRnd::BeginDrawTarget(RndTex* tex) {
 
     mPass = mEncoder.BeginRenderPass(&rp);
     mInPass = true;
-    mPass.SetBindGroup(0, mSceneBindGroup, 0, nullptr);
+    mPass.SetBindGroup(0, mActiveScene.group, 0, nullptr);
     mRtActiveTex = tex;
     // Force the next DrawMesh to RE-RESOLVE and re-write the scene uniforms for the
     // camera that draws into this RT. Without this, the DrawMesh camChanged check
@@ -1958,7 +1960,7 @@ void BandRnd::EndDrawTarget() {
     // The cam was restored to the prior scene cam (current->Select()) after the
     // RT draw; force a scene-uniform re-write on the next DrawMesh by clearing
     // the staleness latch, then bind the existing scene group for now.
-    mPass.SetBindGroup(0, mSceneBindGroup, 0, nullptr);
+    mPass.SetBindGroup(0, mActiveScene.group, 0, nullptr);
     mLastSceneCam = nullptr;   // next DrawMesh re-resolves the active cam
 }
 
@@ -2005,7 +2007,7 @@ void BandRnd::ClearDepthForOverlay() {
 
     mPass = mEncoder.BeginRenderPass(&rp);
     mInPass = true;
-    mPass.SetBindGroup(0, mSceneBindGroup, 0, nullptr);
+    mPass.SetBindGroup(0, mActiveScene.group, 0, nullptr);
     mLastSceneCam = nullptr;
 }
 
@@ -2189,7 +2191,7 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     }
     if (camChanged) {
         mActiveScene = WriteSceneUniforms(RndCam::sCurrent);
-        mPass.SetBindGroup(0, mSceneBindGroup, 0, nullptr);
+        mPass.SetBindGroup(0, mActiveScene.group, 0, nullptr);
         const Transform& cw = RndCam::sCurrent->WorldXfm();
         mLastSceneCamPose[0] = cw.v.x; mLastSceneCamPose[1] = cw.v.y; mLastSceneCamPose[2] = cw.v.z;
         mLastSceneCamPose[3] = cw.m.y.x; mLastSceneCamPose[4] = cw.m.y.y; mLastSceneCamPose[5] = cw.m.y.z;
@@ -2205,7 +2207,7 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
              RndCam::sCurrent->Name() && std::strcmp(RndCam::sCurrent->Name(), "world.cam") == 0 &&
              (void*)RndEnviron::sCurrent != mLastSceneEnv) {
         mActiveScene = WriteSceneUniforms(RndCam::sCurrent);
-        mPass.SetBindGroup(0, mSceneBindGroup, 0, nullptr);
+        mPass.SetBindGroup(0, mActiveScene.group, 0, nullptr);
         mLastSceneEnv = (void*)RndEnviron::sCurrent;
     }
 
@@ -2475,7 +2477,7 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
                         nxMin, nxMax, nyMin, nyMax,
                         mRtActiveTex ? (mRtActiveTex->Name() ? mRtActiveTex->Name() : "?") : "none",
                         (mLastSceneCam && mLastSceneCam->Name()) ? mLastSceneCam->Name() : "?",
-                        mSceneOffset);
+                        mActiveScene.offset);
                 }
             }
         }
@@ -4132,7 +4134,7 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
 
     // P1 highway bloom CAPTURE (Design B): under the live game.cam highway pass,
     // record a verbatim replay of each halo-source draw — pipeline, the LIVE
-    // pose-baked mSceneBindGroup HANDLE (NOT mSceneOffset: game.cam is re-posed
+    // pose-baked mActiveScene.group HANDLE (NOT the offset: game.cam is re-posed
     // mid-frame, so replaying against the single final pose would mis-place every
     // halo; capturing the per-draw bind-group handle replays each source against
     // its authored pose), the mat/obj/bone bind groups, and the vbuf/ibuf/count.
@@ -4146,12 +4148,12 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
         // multiple times per frame never overwrites a captured slot before
         // EndFrame's replay — the captured handles are valid (slots are only
         // recycled at the NEXT BeginFrame, which also clears mHaloDraws).
-        mHaloDraws.push_back({pipe, mSceneBindGroup, matBG, objBG, boneBG,
+        mHaloDraws.push_back({pipe, mActiveScene.group, matBG, objBG, boneBG,
                               vbuf, ibuf, cachedIndexCount});
     }
 
     mPass.SetPipeline(pipe);
-    mPass.SetBindGroup(0, mSceneBindGroup, 0, nullptr);
+    mPass.SetBindGroup(0, mActiveScene.group, 0, nullptr);
     mPass.SetBindGroup(1, matBG, 0, nullptr);
     mPass.SetBindGroup(2, objBG, 0, nullptr);
     mPass.SetBindGroup(3, boneBG, 0, nullptr);
@@ -4169,7 +4171,7 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     // flags, the column-major world xfm, the four opaque scene/mat/obj/bone
     // bind-group identity tokens, index/tri/vert counts, and the mesh-name hash.
     if (DrawLogOn())
-        RecordDrawLog(key, obj.world, mSceneBindGroup.Get(), matBG.Get(),
+        RecordDrawLog(key, obj.world, mActiveScene.group.Get(), matBG.Get(),
                       objBG.Get(), boneBG.Get(), cachedIndexCount, (uint32_t)nf,
                       (uint32_t)(meshEntry.fpVerts > 0 ? meshEntry.fpVerts : 0),
                       skinned, mesh->Name());
@@ -4420,7 +4422,7 @@ struct RB3ParticleVertex {
 
 // WGSL: vs projects world→clip via the SHARED scene group-0 viewProj; fs
 // samples tex × per-vertex color with an alpha discard. Group 0 reuses the
-// main renderer's SceneLayout (5 bindings) so mSceneBindGroup binds directly —
+// main renderer's SceneLayout (5 bindings) so mActiveScene.group binds directly —
 // the vs only reads binding 0 (viewProj), the unused shadow/white entries are
 // allowed by WebGPU bind-group/layout compatibility.
 const char* kRB3ParticleShaderSource =
@@ -4456,7 +4458,7 @@ void BandRnd::EnsureParticlePipeline() {
     bgl1Desc.entries = e1;
     mPartTexBGL = mGpu.Device().CreateBindGroupLayout(&bgl1Desc);
 
-    // Group 0 reuses the shared scene layout (mSceneBindGroup is compatible).
+    // Group 0 reuses the shared scene layout (mActiveScene.group is compatible).
     wgpu::BindGroupLayout layouts[2] = { mPipelines.SceneLayout(), mPartTexBGL };
     wgpu::PipelineLayoutDescriptor plDesc{};
     plDesc.bindGroupLayoutCount = 2;
@@ -4759,7 +4761,7 @@ void BandRnd::DrawParticles(RndParticleSys* sys) {
     wgpu::BindGroup texBG = mGpu.Device().CreateBindGroup(&bgd);
 
     mPass.SetPipeline(pipe);
-    mPass.SetBindGroup(0, mSceneBindGroup, 0, nullptr);
+    mPass.SetBindGroup(0, mActiveScene.group, 0, nullptr);
     mPass.SetBindGroup(1, texBG, 0, nullptr);
     mPass.SetVertexBuffer(0, mPartVB, 0, sVerts.size() * sizeof(RB3ParticleVertex));
     mPass.SetIndexBuffer(mPartIB, wgpu::IndexFormat::Uint16, 0,
@@ -4767,9 +4769,9 @@ void BandRnd::DrawParticles(RndParticleSys* sys) {
     mPass.DrawIndexed(neededIndices);
 
     // Restore the scene bind group at group 0 for the next DrawMesh (mirrors
-    // DrawRect — though we already bound mSceneBindGroup at group 0 here, the
+    // DrawRect — though we already bound mActiveScene.group at group 0 here, the
     // next DrawMesh re-binds anyway; explicit for symmetry/safety).
-    mPass.SetBindGroup(0, mSceneBindGroup, 0, nullptr);
+    mPass.SetBindGroup(0, mActiveScene.group, 0, nullptr);
 }
 
 // Strong def displacing the weak no-op stub

@@ -41,7 +41,7 @@ struct RB3DrawRecord {
     uint32_t vertCount;       // meshEntry.fpVerts (>=0)
     uint64_t meshNameHash;    // FNV-1a of mesh->Name() (empty -> 0) — alignment key
     float    world[16];       // obj.world, column-major — FLOAT EPS compared
-    const void* sceneBG;      // mSceneBindGroup.Get() — opaque identity token
+    const void* sceneBG;      // mActiveScene.group.Get() — opaque identity token
     const void* matBG;        // matBG.Get()
     const void* objBG;        // objBG.Get()
     const void* boneBG;       // boneBG.Get()

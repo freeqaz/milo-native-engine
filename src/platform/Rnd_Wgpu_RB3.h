@@ -238,7 +238,7 @@ private:
     // Design B (capture-and-replay; NOT the rejected redirect/Design A). During
     // the live game.cam highway pass, DrawMesh CAPTURES (no GPU work) a small
     // per-draw record for each bloom-source mesh (pipeline + the LIVE pose-baked
-    // mSceneBindGroup HANDLE + mat/obj/bone bind groups + vbuf/ibuf + indexCount).
+    // mActiveScene.group HANDLE + mat/obj/bone bind groups + vbuf/ibuf + indexCount).
     // At EndFrame (after mPass.End(), before Finish()), CompositeHaloBloom opens a
     // transparent-cleared sampleable halo buffer, REPLAYS those captured draws
     // verbatim against their authored poses, runs a 2nd BloomPass over it, and
@@ -286,13 +286,13 @@ public:
     // group was last written against — DrawMesh re-writes the scene uniforms
     // when RndCam::sCurrent changes mid-frame (so panels that Select() their
     // own scene cam after BeginDrawing affect subsequent draws).
-    wgpu::BindGroup mSceneBindGroup;
-    uint32_t mSceneOffset = 0;
+    //
     // W1.6 (SYS-3): the ONE field naming "the scene binding currently bound at
-    // group 0". Assigned only `= WriteSceneUniforms(...)` at the 3 write sites;
-    // never mutated field-by-field. During the S1 transition it mirrors the
-    // legacy mSceneBindGroup/mSceneOffset pair (which bind sites still read);
-    // S2 collapses the reads onto this value and deletes the legacy members.
+    // group 0" (group handle + ring offset). Assigned only
+    // `= WriteSceneUniforms(...)` at the 3 write sites; never mutated
+    // field-by-field, so the old "last-write-wins implicit dependency" is gone
+    // by construction — each bind/draw reads this immutable value. Replaces the
+    // former mutable mSceneBindGroup/mSceneOffset pair.
     RB3SceneBinding mActiveScene;
     RndCam* mLastSceneCam = nullptr;
     // Last-written camera world transform (translation + forward basis). The
@@ -425,7 +425,7 @@ public:
     wgpu::RenderPipeline mHaloAddPipeline;       // additive (One/One)
     wgpu::Buffer mHaloBlendBuf;                  // blendUB@3 (blend float, 16B)
     bool mHaloBlitReady = false;
-    // Per-frame replay list. CAPTURES the LIVE mSceneBindGroup HANDLE per draw (NOT
+    // Per-frame replay list. CAPTURES the LIVE mActiveScene.group HANDLE per draw (NOT
     // a uint32_t offset — a dynamicOffsetCount mismatch on replay would discard the
     // whole command buffer). Cleared each BeginFrame; refcounted handles stay valid
     // through EndFrame. reserve(16) once on first use.

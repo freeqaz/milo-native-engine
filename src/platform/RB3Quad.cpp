@@ -449,7 +449,7 @@ void BandRnd::DrawRect(const Hmx::Rect& rect, const Hmx::Color& paramColor,
                 mPass.SetBindGroup(0, cbg, 0, nullptr);
                 mPass.SetVertexBuffer(0, mQuadVertexBuffer, 0, sizeof(verts));
                 mPass.Draw(6);
-                mPass.SetBindGroup(0, mSceneBindGroup, 0, nullptr);
+                mPass.SetBindGroup(0, mActiveScene.group, 0, nullptr);
             }
             return;
         } else if (colorMod == 2) {
@@ -530,7 +530,7 @@ void BandRnd::DrawRect(const Hmx::Rect& rect, const Hmx::Color& paramColor,
     // CRITICAL: restore the SCENE bind group at group 0 — DrawRect rebinds
     // group 0 to its own 2D layout, and the next DrawMesh aborts in Dawn
     // (bind-group/layout mismatch) unless we put the scene group back.
-    mPass.SetBindGroup(0, mSceneBindGroup, 0, nullptr);
+    mPass.SetBindGroup(0, mActiveScene.group, 0, nullptr);
 
     // One-shot RB3_DRAWRECT_DBG: report the rect, modulation color, diffuse
     // name, colorMod, and whether the RT redirect was active (verification
