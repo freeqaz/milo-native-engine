@@ -26,6 +26,7 @@
 #include "gfx/GpuDevice.h"
 #include "gfx/PipelineManager.h"
 #include "gfx/Screenshot.h"
+#include "gfx/UniformRingBuffer.h" // shared bump-allocated uniform ring (W1.5)
 #include "gfx/UniformStructs.h"
 #include "gfx/VertexFormats.h"   // GpuVertex — RB3 uses the engine's static vert layout
 #include "platform/RB3DrawLogDebug.h" // W0.3 RB3DrawRecord (per-draw state-log ring)
@@ -46,23 +47,6 @@ class RndMesh;
 class RndMat;
 class RndParticleSys;
 class ObjectDir;
-
-// Simple bump-allocated uniform ring (mirrors Rnd_Wgpu.h UniformRingBuffer).
-class BandUniformRing {
-public:
-    void Init(wgpu::Device device, uint32_t capacity, const char* label);
-    void Reset() { mOffset = 0; }
-    void Release() { mBuffer = nullptr; mDevice = nullptr; }
-    uint32_t Write(wgpu::Queue queue, const void* data, uint32_t size);
-    wgpu::Buffer& Buffer() { return mBuffer; }
-private:
-    static constexpr uint32_t kAlign = 256;
-    wgpu::Device mDevice;
-    wgpu::Buffer mBuffer;
-    uint32_t mCapacity = 0;
-    uint32_t mOffset = 0;
-    const char* mLabel = "BandRing";
-};
 
 class BandRnd : public Rnd {
 public:
@@ -262,10 +246,10 @@ public:
     GpuDevice mGpu;
     PipelineManager mPipelines;
 
-    BandUniformRing mSceneRing;
-    BandUniformRing mMaterialRing;
-    BandUniformRing mObjectRing;
-    BandUniformRing mBoneRing;
+    UniformRingBuffer mSceneRing;
+    UniformRingBuffer mMaterialRing;
+    UniformRingBuffer mObjectRing;
+    UniformRingBuffer mBoneRing;
 
     wgpu::TextureFormat mTargetFmt = wgpu::TextureFormat::RGBA8Unorm;
     wgpu::CommandEncoder mEncoder;

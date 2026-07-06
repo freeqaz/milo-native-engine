@@ -120,29 +120,8 @@ const wgpu::VertexBufferLayout& SkinnedLayout() {
 }
 } // namespace VertexFormats
 
-// ===========================================================================
-// BandUniformRing
-// ===========================================================================
-void BandUniformRing::Init(wgpu::Device device, uint32_t capacity, const char* label) {
-    mDevice = device;
-    mLabel = label;
-    wgpu::BufferDescriptor d{};
-    d.label = label;
-    d.size = capacity;
-    d.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
-    mBuffer = device.CreateBuffer(&d);
-    mCapacity = capacity;
-    mOffset = 0;
-}
-
-uint32_t BandUniformRing::Write(wgpu::Queue queue, const void* data, uint32_t size) {
-    uint32_t aligned = (size + kAlign - 1) & ~(kAlign - 1);
-    if (mOffset + aligned > mCapacity) mOffset = 0; // wrap (defensive)
-    uint32_t off = mOffset;
-    queue.WriteBuffer(mBuffer, off, data, size);
-    mOffset += aligned;
-    return off;
-}
+// (BandUniformRing removed in W1.5 — the four rings now use the shared
+//  gfx/UniformRingBuffer.h; overflow behavior unified to Grow. See W1.5.S2.)
 
 // ===========================================================================
 // Matrix helpers — output is 16 floats COLUMN-MAJOR (WGSL mat4x4f reads cols),
