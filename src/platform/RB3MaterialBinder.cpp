@@ -346,19 +346,23 @@ RB3MaterialBindResult RB3BuildMaterialUniforms(
             //     skeleton walk (:5154-5162): band binds skeleton_unshared.milo;
             //     crowd/extras bind char/crowd/* | char/extras/* (or have a
             //     crowd/extra mesh name).
+            // B12: the mesh-name (crowd/extra) + dir (char/crowd/|char/extras/) +
+            // band-member (skeleton_unshared.milo) NAME tests are relocated to the
+            // game hook; the engine keeps this owner-bone loop + the world.cam gate
+            // above (Bucket C, scene-scope). Mirrors the S2 B3/B5 pattern (loop in
+            // engine, name match in the hook).
             bool skinnedCrowd = false;
             if (skinned && !isTextMeshHeur && !isLikelyUiText) {
                 bool bandMember = false;
-                bool isCrowdOrExtras = (meshName &&
-                    (strstr(meshName, "crowd") || strstr(meshName, "extra"))) != 0;
+                bool isCrowdOrExtras = matHook && matHook->IsCrowdExtraMeshName(meshName);
                 int nbones = owner ? owner->NumBones() : 0;
                 for (int bi = 0; bi < nbones && !bandMember; bi++) {
                     RndTransformable* bbt = owner->BoneTransAt(bi);
                     ObjectDir* bbd = bbt ? bbt->Dir() : 0;
                     if (bbd && !bbd->mStoredFile.empty()) {
                         const char* sf = bbd->mStoredFile.c_str();
-                        if (strstr(sf, "skeleton_unshared.milo")) bandMember = true;
-                        else if (strstr(sf, "char/crowd/") || strstr(sf, "char/extras/"))
+                        if (matHook && matHook->IsBandMemberSkeletonFile(sf)) bandMember = true;
+                        else if (matHook && matHook->IsCrowdExtraDir(sf))
                             isCrowdOrExtras = true;
                     }
                 }

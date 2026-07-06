@@ -218,6 +218,19 @@ public:
         return false;
     }
 
+    // B12: crowd/extras material-path classifiers. The engine keeps the owner-bone
+    // loop + the `world.cam` scene-scope gate (Bucket C, inline) and asks the hook
+    // only the NAME questions. `IsCrowdExtraMeshName` seeds the crowd/extras flag
+    // from a mesh NAME (crowd/extra); `IsCrowdExtraDir` sets it from a bone's
+    // owning-dir stored file (char/crowd/ | char/extras/). Band members are still
+    // discriminated via `IsBandMemberSkeletonFile` above (shared with B3/B5).
+    virtual bool IsCrowdExtraMeshName(const char* /*meshName*/) {
+        return false;
+    }
+    virtual bool IsCrowdExtraDir(const char* /*storedFile*/) {
+        return false;
+    }
+
 protected:
     GameRenderHook() = default;
 };
