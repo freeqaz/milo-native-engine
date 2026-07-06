@@ -23,6 +23,7 @@
 #include "platform/NativeSettings.h"
 #include "platform/RB3MeshCache.h"       // W1.2: RB3MeshEntry cache data + maps + invalidation
 #include "platform/RB3MaterialBinder.h"  // W1.3: cross-TU tex-helper decls + material binder iface
+#include "platform/RB3PostProc.h"        // W1.4: cross-TU RB3PostProcDisabled decl + postproc TU iface
 #include "platform/FrameTraceCounters.h"
 #include "platform/RB3TexSharpenDebug.h"
 #include "platform/RB3TexSharpen.h"     // RB3SharpenReuploadTex / RB3SharpenTexFingerprint defs
@@ -50,7 +51,7 @@ void RB3RegisterLegacyRndAliases();
 // Stage 2 A/B canary gate: RB3_PP_OFF=1 forces the whole postproc intermediate
 // path inactive (frame renders straight to the framebuffer, no composite) — used
 // to prove a postproc-active screen is pixel-identical with the grade skipped.
-static bool RB3PostProcDisabled();
+// (RB3PostProcDisabled is declared in platform/RB3PostProc.h — W1.4 de-static.)
 static bool RB3PipelinePrewarmDisabled();
 static bool RB3PipelinePrewarmNoChunk();
 static int RB3PipelinePrewarmPerFrame();
@@ -2192,7 +2193,7 @@ void BandRnd::EnsureDepth(int w, int h) {
 // overwrite — no Load reliance, web BGRA8 safe). Reads grade params from
 // RndPostProc::Current() via the HX_NATIVE accessors. Bloom is v1-skipped:
 // mBlackView is bound to bloomTex@3, so the screen-blend bloom term is a no-op.
-static bool RB3PostProcDisabled() {
+bool RB3PostProcDisabled() {
     static int s = -1;
     if (s < 0) { const char* e = getenv("RB3_PP_OFF"); s = (e && e[0] && e[0] != '0') ? 1 : 0; }
     return s != 0;
