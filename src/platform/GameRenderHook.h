@@ -246,6 +246,65 @@ public:
         return false;
     }
 
+    // -----------------------------------------------------------------------
+    // Debug-probe name classifiers (W1.7.S4, Bucket A). The engine's stderr-only
+    // diagnostic probes (CAM_DBG, HUB_BAR_PROBE, RB3_HEADMAT_DBG, GEM_VTX/
+    // GEM_FORCE, BONE_PROBE, XBONE_TRACK) each gate "should I log/override for
+    // THIS mesh/texture" on a hardcoded RB3 asset-name match. These carry zero
+    // rendered-output risk in normal operation (the probes are opt-in via env
+    // vars that default off; most only fprintf, and none change behavior when
+    // their env var is unset), but the asset-name literal itself is still game
+    // content that must not live in the shared engine. Each classifier below
+    // answers a single yes/no name question; the engine keeps ALL of the
+    // probe's actual diagnostic computation/printing/throttling. Base defaults
+    // return false (a decomp with no override just never matches, i.e. its
+    // probes never fire — matching "no hook registered" behavior).
+
+    // CAM_DBG: is this a highway "key" mesh worth logging camera/NDC info for
+    // (prism_gem / gem_smasher / surface)?
+    virtual bool IsCamDbgHighwayMesh(const char* /*meshName*/) {
+        return false;
+    }
+
+    // HUB_BAR_PROBE: is this the focused-menu highlight-bar mesh
+    // (highlight_main / highlight_pattern)? Pure name test — independent of the
+    // B1/B4 opt-out flags, since the probe should fire regardless of whether
+    // those production fixes are enabled.
+    virtual bool IsHubBarMesh(const char* /*meshName*/) {
+        return false;
+    }
+
+    // RB3_HEADMAT_DBG (C8 head-invisible triage): is this the band-member head
+    // mesh ("head.mesh")?
+    virtual bool IsHeadMesh(const char* /*meshName*/) {
+        return false;
+    }
+
+    // RB3_HEADMAT_DBG: does this diffuse texture name the composited skin RTT
+    // output ("skin_diffuse_output")?
+    virtual bool IsSkinDiffuseOutputTex(const char* /*texName*/) {
+        return false;
+    }
+
+    // GEM_VTX / GEM_FORCE: is this a gem prism mesh ("prism_gem")?
+    virtual bool IsGemMesh(const char* /*meshName*/) {
+        return false;
+    }
+
+    // BONE_PROBE: default outfit-mesh name set used when BONE_PROBE_NAME is not
+    // set (plaidshirt / trackjacket / shirt / jacket / vestdenim). The env-var
+    // override path (BONE_PROBE_NAME=<substr>) stays in the engine — it carries
+    // no baked-in RB3 asset name, just a runtime user-supplied selector.
+    virtual bool IsBoneProbeDefaultMesh(const char* /*meshName*/) {
+        return false;
+    }
+
+    // XBONE_TRACK: is this the trackjacket outfit mesh (the probe's fixed mesh
+    // filter, independent of the bone-name selector supplied via the env var)?
+    virtual bool IsTrackjacketMesh(const char* /*meshName*/) {
+        return false;
+    }
+
 protected:
     GameRenderHook() = default;
 };
