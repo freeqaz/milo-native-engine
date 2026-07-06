@@ -12,6 +12,7 @@
 // no reorder). isTextMeshHeur / gemForce are hoisted into the result struct.
 
 #include "platform/RB3MaterialBinder.h"
+#include "platform/GameRenderHook.h"   // W1.7 B7–B13: relocated material-name classifications
 
 #include "rndobj/Cam.h"
 #include "rndobj/Mesh.h"
@@ -84,25 +85,24 @@ RB3MaterialBindResult RB3BuildMaterialUniforms(
     // news-ticker / FRIEND-RANKINGS / CHOOSE-INSTRUMENT) is unchanged.
     const char* meshName = mesh->Name();
     const char* matName = (mat && mat->Name()) ? mat->Name() : "";
-    bool isLikelyUiText = isTextMeshHeur;
-    if (!isLikelyUiText && meshName && meshName[0]) {
-        // BandScoreboard digit/source meshes — see BandScoreboard.cpp:79-91.
-        if ((meshName[0] == 'n' && std::strncmp(meshName, "num", 3) == 0) ||
-            std::strstr(meshName, "_source.mesh") ||
-            std::strstr(meshName, "_comma.mesh")) {
-            isLikelyUiText = true;
-        }
-        // Generic UILabel `*.lbl`-suffixed widgets.
-        else if (std::strstr(meshName, ".lbl")) {
-            isLikelyUiText = true;
-        }
+    // W1.7 (B7–B13): the RB3 asset-name material classifications below are game
+    // content policy, relocated behind the game hook (QueryDrawMaterialPolicy). The
+    // engine fetches the policy ONCE here and applies each class at its original
+    // site with the SAME uniform math, so uniforms stay bit-identical. `camName` is
+    // the active scene camera name, passed IN so the hook never reaches into
+    // RndCam::sCurrent (Bucket-C: the cam gates for crowd/highway stay inline below).
+    GameRenderHook* matHook = GetGameRenderHook();
+    DrawMaterialPolicy matPolicy;
+    if (matHook) {
+        const char* camName = RndCam::sCurrent ? RndCam::sCurrent->Name() : nullptr;
+        matPolicy = matHook->QueryDrawMaterialPolicy(mesh, mat, skinned, owner, camName);
     }
-    if (!isLikelyUiText && matName[0]) {
-        // Font / label material name patterns — third safety net.
-        if (std::strstr(matName, "font") || std::strstr(matName, "label")) {
-            isLikelyUiText = true;
-        }
-    }
+    // B7: engine keeps the empty-name RndText discriminator (isTextMeshHeur, a
+    // direct '\0' compare — not an asset-name string; see BandScoreboard.cpp:79-91
+    // + Text.cpp:1766 for the named-mesh cases the hook now owns) and ORs it with
+    // the hook's NAMED-mesh (num*/_source.mesh/_comma.mesh/.lbl) + font/label
+    // material-name half.
+    bool isLikelyUiText = isTextMeshHeur || matPolicy.isUiText;
     // Menu-highlight-bar fix — the focused-menu-item yellow highlight bar.
     // UILabel::UpdateAndDrawHighlightMesh (src/system/ui/UILabel.cpp:316) and
     // LabelShrinkWrapper::UpdateAndDrawWrapper (LabelShrinkWrapper.cpp:49) draw
