@@ -3885,13 +3885,16 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
             // so the relaxation can never pass a truly exploded band mesh. Crowd /
             // extras / instrument / UI keep the proven, crowd-safe 2.0x EXACTLY.
             // Native-only file -> Wii byte-identical + DC3-inert by construction.
+            // W1.7 B5: the skeleton_unshared.milo dir-name test is relocated to the
+            // hook (IsBandMemberSkeletonFile — same classifier as B3's bandStatic);
+            // the engine keeps the bone loop + the stored-file null/empty guards.
             bool bandMember = false;
             int nb = owner ? owner->NumBones() : 0;
             for (int bm = 0; bm < nb && !bandMember; bm++) {
                 RndTransformable* bbt = owner->BoneTransAt(bm);
                 ObjectDir* bbd = bbt ? bbt->Dir() : 0;
-                if (bbd && !bbd->mStoredFile.empty() &&
-                    strstr(bbd->mStoredFile.c_str(), "skeleton_unshared.milo") != 0)
+                if (bbd && !bbd->mStoredFile.empty() && geomHook &&
+                    geomHook->IsBandMemberSkeletonFile(bbd->mStoredFile.c_str()))
                     bandMember = true;
             }
             bool degenerate;
