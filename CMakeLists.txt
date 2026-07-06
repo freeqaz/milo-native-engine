@@ -322,6 +322,7 @@ set(MILO_ENGINE_GPU_PLATFORM_SOURCES_RB3
     src/platform/RB3MeshCache.cpp    # W1.2: per-mesh GPU upload cache (RB3-only; twin of DC3 MeshGpuCache)
     src/platform/RB3MaterialBinder.cpp    # W1.3: material->MaterialUniforms binder (RB3-only; twin of DC3 MaterialSetup)
     src/platform/RB3HaloPass.cpp    # W1.4: additive-halo gem-bloom capture/replay pass (RB3-only; no DC3 counterpart)
+    src/platform/RB3PostProc.cpp    # W1.4: Stage-2 postproc composite/grade (RB3-only; NOT gfx/PostProcPass)
     src/platform/RB3TexSharpen.cpp   # progressive in-session texture sharpen (research/13 T1)
 )
 
