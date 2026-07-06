@@ -87,6 +87,7 @@
   "RB3_NO_GUEST_PROFILE":          { "class": "workaround", "owner": "profile",     "faithfulStatus": "not-live: guest profile workaround default-ON", "default": "on" },
   "RB3_NO_AV_CALIBRATION":         { "class": "workaround", "owner": "av/calibration", "faithfulStatus": "not-live: A/V calibration bypass default-ON", "default": "on" },
 
+  "RB3_PLACEMENT_CONTRACT":        { "class": "feature", "owner": "render/placement", "faithfulStatus": "not-live: SYS-1 skinned-placement contract (obj.world=meshWorld + bind-relative palette), default-OFF pending coordinator flip", "default": "off", "read": "presence" },
   "RB3_FIXED_CLOCK":               { "class": "feature", "owner": "session-telemetry/determinism", "faithfulStatus": "n/a: headless-determinism harness flag (off in shipping runs) — trace-free fixed sim clock", "default": "off", "read": "presence" },
   "RB3_FIXED_CLOCK_DT_MS":         { "class": "feature", "owner": "session-telemetry/determinism", "faithfulStatus": "n/a: headless-determinism harness value knob (fixed per-frame sim dt in ms; off = built-in 1/60s default)", "default": "off", "read": "value" },
   "RB3_DRAWLOG":                   { "class": "probe", "owner": "render/determinism", "faithfulStatus": "n/a: per-draw state-log ring capture (W0.3 draw-log golden harness)", "default": "off", "read": "presence" },

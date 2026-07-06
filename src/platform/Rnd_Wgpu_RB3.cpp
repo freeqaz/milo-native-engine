@@ -2837,6 +2837,51 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
         sHaveScrollbarPlacement = true;
     }
     bool scrollbarThumb = geomPolicy.scrollbarThumb && skinned && sHaveScrollbarPlacement;
+    // W2.1 SYS-1 SKINNED-PLACEMENT CONTRACT (default-OFF, feature flag
+    // RB3_PLACEMENT_CONTRACT). A coupled, PROVABLY-VERTEX-INVARIANT reorganization
+    // of where a skinned draw's model->world placement is encoded: today this arm
+    // forces obj.world = IDENTITY and every skinned draw derives placement entirely
+    // from the bone palette (skin = BoneOffset(b)*boneWorld, world-space). SYS-1 /
+    // W2.3 want obj.world to carry the mesh's placement so the drawn object records
+    // a meaningful world (the S1 crowd oracle asserts obj.world == the per-instance
+    // spXfm the decomp posed). The contract does this WITHOUT moving a single
+    // vertex: it is the identity  obj.world*palette == (I)*(palette_old)  rewritten
+    // as  obj.world=meshWorld , palette *= meshWorld^-1  (Half B, below). Then for
+    // EVERY bone  worldPos = meshWorld*(skin*meshWorld^-1)*v = skin*v  — byte-for-
+    // byte the flag-OFF result — while obj.world now reads meshWorld.
+    //
+    // EMPIRICAL (one-shot mesh-world dump, this venue): character meshes (band, crowd,
+    // extras — head/hands/outfit/*_crowd_body*/*_extra_*) all have WorldXfm ==
+    // IDENTITY (placement lives in their world-space bones), so the reorg is an
+    // exact no-op for them (meshWorld=I -> obj.world=I, palette*=I). Only the meshes
+    // that genuinely carry a non-identity mesh world — bone-attached PROPS
+    // (fist.mesh, bonesandspikes) and the PER-INSTANCE crowd draws that
+    // WorldCrowd::Draw3DChars placed via SetWorldXfm(spXfm) — take the reorg, and
+    // there it is still vertex-exact (the meshWorld^-1 on the palette cancels the
+    // meshWorld on obj.world). CRUCIAL: the cancellation must cover the palette's
+    // identity FALLBACK bones too (the null/runaway/V24/skin-clamp `continue` paths
+    // that leave a bone at identity) — those are initialized to meshWorld^-1 under
+    // the flag so their fallback also stays vertex-exact. A naive obj.world=meshWorld
+    // WITHOUT the fallback strip tears the crowd/extras (clamped bones fly to
+    // meshWorld*v while survivors stay at skin*v) and the flung emissive shards feed
+    // the bloom pass into a full-screen wash — the exact failure the coupled design
+    // avoids. Because the reorg is vertex-invariant, SkinGolden/HandsBindOracle/
+    // ClipPoseFixture (upstream skinning math) and the canonical splash comparator
+    // stay green on BOTH flag states. The name-scoped scrollbar-thumb / hub-bar arms
+    // keep their own obj.world under BOTH states (kept structurally intact this wave;
+    // the flag only rewrites the general `else if (skinned)` arm + its palette).
+    // Cached-static read (release-safe; mirrors :3083-3084).
+    static int sPlacementContract = -1;
+    if (sPlacementContract < 0) sPlacementContract = getenv("RB3_PLACEMENT_CONTRACT") ? 1 : 0;
+    // True only for the general skinned arm the contract rewrites (NOT the
+    // name-scoped UI arms, whose bones stay world-space and must not be stripped).
+    bool placementContractArm = sPlacementContract && skinned &&
+                                !scrollbarThumb && !hubBarPlacement;
+    // Freeze ONE copy of the mesh world for both Half A (obj.world) and Half B
+    // (inverse), so the reorg cancels against the exact same matrix even if a
+    // later pass in this draw were to re-dirty WorldXfm.
+    Transform contractMeshWorld;
+    if (placementContractArm) contractMeshWorld = mesh->WorldXfm();
     if (skinned && scrollbarThumb) {
         MiloXfmToColMajor(sScrollbarPlacement, obj.world);
     } else if (skinned && hubBarPlacement) {
@@ -2845,13 +2890,27 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
         const Vector3& mwv = mesh->WorldXfm().v;
         obj.world[12] = mwv.x; obj.world[13] = mwv.y; obj.world[14] = mwv.z;
     } else if (skinned) {
-        for (int i = 0; i < 16; i++) obj.world[i] = (i % 5 == 0) ? 1.f : 0.f;
+        if (placementContractArm) {
+            // Half A (flag ON): obj.world = meshWorld (== I for character meshes,
+            // byte-identical to the identity fill; == spXfm/prop world otherwise).
+            MiloXfmToColMajor(contractMeshWorld, obj.world);
+        } else {
+            // flag OFF: verbatim prior behavior — identity, palette carries world.
+            for (int i = 0; i < 16; i++) obj.world[i] = (i % 5 == 0) ? 1.f : 0.f;
+        }
     } else {
         MiloXfmToColMajor(mesh->WorldXfm(), obj.world);
     }
-    // worldInvTranspose: for unscaled rigid xfm, the rotation part suffices.
-    // Use the world rotation as-is (good enough for normals on rigid meshes).
-    std::memcpy(obj.worldInvTranspose, obj.world, sizeof(obj.world));
+    // worldInvTranspose: for unscaled rigid xfm, the rotation part suffices. Under
+    // the placement contract obj.world may carry the mesh rotation (props/crowd),
+    // but skinned normals are driven by the bone palette in the shader, so keep the
+    // skinned inverse-transpose IDENTITY exactly as the flag-OFF path did (obj.world
+    // was I there) — this avoids feeding a rotated obj.world into the normal path.
+    if (placementContractArm) {
+        for (int i = 0; i < 16; i++) obj.worldInvTranspose[i] = (i % 5 == 0) ? 1.f : 0.f;
+    } else {
+        std::memcpy(obj.worldInvTranspose, obj.world, sizeof(obj.world));
+    }
     // Per-(mesh,instance) persistent object uniform buffer + bind group (created
     // once per slot, reused across frames). The world transform changes per frame
     // (animation / panel pose) AND per instance (each list row poses the shared
@@ -3105,11 +3164,41 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
                 }
             }
         }
+        // W2.1 SYS-1 placement contract — Half B (bind-relative bone palette).
+        // Coupled with Half A above (obj.world = mesh->WorldXfm()): when the flag
+        // is ON AND the mesh carries a non-identity world, express each composed
+        // bone skin RELATIVE TO THE MESH (`skin * inverse(meshWorld)` — the SAME
+        // frame the SKIN_CLAMP computes as `local` below) so obj.world = meshWorld
+        // supplies placement exactly once and worldPos = skin*v is unchanged. Gated
+        // on a non-identity meshWorld so character meshes (meshWorld == I, the
+        // common case) skip the strip entirely and stay bit-for-bit identical. The
+        // identity FALLBACK of a null/runaway/clamped bone is initialized to
+        // inverse(meshWorld) below (not I) so those bones cancel too. Computed once
+        // per mesh. Only for the general skinned arm the contract rewrote
+        // (`placementContractArm`) — name-scoped scrollbar/hub-bar meshes untouched.
+        Transform contractInvMeshWorld;
+        bool contractReorg = false;
+        if (placementContractArm) {
+            const Transform& cmw = contractMeshWorld;
+            bool ident = std::fabs(cmw.v.x) < 1e-5f && std::fabs(cmw.v.y) < 1e-5f &&
+                         std::fabs(cmw.v.z) < 1e-5f &&
+                         std::fabs(cmw.m.x.x - 1.f) < 1e-6f && std::fabs(cmw.m.y.y - 1.f) < 1e-6f &&
+                         std::fabs(cmw.m.z.z - 1.f) < 1e-6f && std::fabs(cmw.m.x.y) < 1e-6f &&
+                         std::fabs(cmw.m.x.z) < 1e-6f && std::fabs(cmw.m.y.x) < 1e-6f &&
+                         std::fabs(cmw.m.y.z) < 1e-6f && std::fabs(cmw.m.z.x) < 1e-6f &&
+                         std::fabs(cmw.m.z.y) < 1e-6f;
+            if (!ident) { Invert(cmw, contractInvMeshWorld); contractReorg = true; }
+        }
         for (int b = 0; b < numBones; b++) {
             RndTransformable* bt = owner->BoneTransAt(b);
             // Identity fallback for a null/garbage bone.
             float* dst = bones.bones[b];
-            for (int i = 0; i < 16; i++) dst[i] = (i % 5 == 0) ? 1.f : 0.f;
+            // Fallback for a null/runaway/clamped bone. Flag-OFF (and identity-mesh
+            // flag-ON): identity, so obj.world(=I)*dst*v = v (bind). Under the
+            // placement reorg (non-identity meshWorld): inverse(meshWorld), so
+            // obj.world(=meshWorld)*dst*v = v — the SAME vertex as flag-OFF.
+            if (contractReorg) MiloXfmToColMajor(contractInvMeshWorld, dst);
+            else for (int i = 0; i < 16; i++) dst[i] = (i % 5 == 0) ? 1.f : 0.f;
             if (sBonesIdentity) continue; // TRUE identity palette -> worldPos == bindPos
             if (!bt) { sFallbackBones++;
                 if (doBoneProbe) fprintf(stderr, "  bone[%d] NULL\n", b);
@@ -3312,7 +3401,18 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
                             bt->TransParent()&&bt->TransParent()->Name()?bt->TransParent()->Name():"-");
                 }
             }
-            MiloXfmToColMajor(skin, dst);
+            // W2.1 SYS-1 placement contract — Half B: strip the mesh world so
+            // obj.world (= meshWorld, Half A) applies placement exactly once.
+            // Only when the mesh carries a non-identity world (contractReorg);
+            // identity-mesh / flag-OFF path writes the composed skin verbatim ->
+            // byte-identical. worldPos = meshWorld*(skin*meshWorld^-1)*v = skin*v.
+            if (contractReorg) {
+                Transform meshRel;
+                Multiply(skin, contractInvMeshWorld, meshRel);
+                MiloXfmToColMajor(meshRel, dst);
+            } else {
+                MiloXfmToColMajor(skin, dst);
+            }
         }
         // XBONE_TRACK: print the named bone's worldPos for the trackjacket mesh on
         // EVERY draw, to settle whether the shared band skeleton magnet ANIMATES
@@ -3828,6 +3928,18 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
                     ox=m[0]*lx+m[4]*ly+m[8]*lz+m[12];
                     oy=m[1]*lx+m[5]*ly+m[9]*lz+m[13];
                     oz=m[2]*lx+m[6]*ly+m[10]*lz+m[14]; }
+                // W2.1 placement contract: under the flag the palette is mesh-
+                // relative and obj.world carries the mesh placement, so the TRUE
+                // world vertex is obj.world*blended. Apply it so this shard guard
+                // measures the SAME world extent it saw flag-OFF (obj.world was I
+                // there, so the flag-OFF path is byte-identical and untouched) — the
+                // reorg is vertex-invariant and must not change which meshes drop.
+                if (placementContractArm) {
+                    float wx = obj.world[0]*ox + obj.world[4]*oy + obj.world[8]*oz + obj.world[12];
+                    float wy = obj.world[1]*ox + obj.world[5]*oy + obj.world[9]*oz + obj.world[13];
+                    float wz = obj.world[2]*ox + obj.world[6]*oy + obj.world[10]*oz + obj.world[14];
+                    ox = wx; oy = wy; oz = wz;
+                }
                 if(ox<wmn[0])wmn[0]=ox; if(ox>wmx[0])wmx[0]=ox;
                 if(oy<wmn[1])wmn[1]=oy; if(oy>wmx[1])wmx[1]=oy;
                 if(oz<wmn[2])wmn[2]=oz; if(oz>wmx[2])wmx[2]=oz;
