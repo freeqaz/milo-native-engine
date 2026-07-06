@@ -3749,15 +3749,12 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
         // scoped by name for the placement + colour fixes; exempt them here too. They
         // are screen-space UI overlays that cannot produce a scene-crossing shard.
         // Opt-out: RB3_NO_HUB_BAR_SHARD_EXEMPT=1 (restores the drop for A/B).
-        {
-            static int sHlShardExemptOff = -1;
-            if (sHlShardExemptOff < 0)
-                sHlShardExemptOff = getenv("RB3_NO_HUB_BAR_SHARD_EXEMPT") ? 1 : 0;
-            if (!sHlShardExemptOff && mesh->Name() &&
-                (std::strncmp(mesh->Name(), "highlight_main", 14) == 0 ||
-                 std::strncmp(mesh->Name(), "highlight_pattern", 17) == 0))
-                guardActive = false;
-        }
+        // W1.7 B4: the highlight_main/highlight_pattern name match + the
+        // RB3_NO_HUB_BAR_SHARD_EXEMPT flag are relocated to the hook
+        // (geomPolicy.shardExemptHubBar, fetched once at the top of DrawMesh); the
+        // engine keeps the guard toggle.
+        if (geomPolicy.shardExemptHubBar)
+            guardActive = false;
         // Read bind verts through skinnedView so a cache-skipped unpack still
         // ratio-tests the same bind-pose data (cache == this draw's would-be unpack).
         int n = (int)skinnedView.size();
