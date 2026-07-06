@@ -22,6 +22,14 @@ struct PostProcUB {
     noiseScaleX: f32,
     noiseScaleY: f32,
     noiseHasMap: f32,
+    // W3.3-fix (RB3_PP_LUMA_CEILING): 0.0=per-channel ceiling (default,
+    // byte-identical to pre-flag), 1.0=luminance-preserving ceiling. Padded to
+    // a full vec4-worth of trailing floats — see PostProcUniforms in
+    // RB3PostProc.h for why.
+    lumaCeilingActive: f32,
+    _padLumaCeiling0: f32,
+    _padLumaCeiling1: f32,
+    _padLumaCeiling2: f32,
 };
 
 @group(0) @binding(0) var sceneTex: texture_2d<f32>;
@@ -183,12 +191,33 @@ struct VOut {
     // backdrop (the gameplay highway / gems / HUD draw UNGRADED on the framebuffer
     // after the mid-frame flush — FlushPostProcMidFrame), so this never dims the
     // HUD, gem cores, or bright UI.
+    //
+    // W3.3-fix (RB3_PP_LUMA_CEILING, default-OFF, pp.lumaCeilingActive):
+    // the per-channel rolloff above compresses each channel toward the SAME
+    // ceiling independently, which DESATURATES a hot saturated-color moment
+    // (e.g. the song-start stage-light reveal, songMs ~2000-6000) into the
+    // observed grey/washed field — retail and our RB3_PP_OFF / post-settle
+    // captures show that moment COLORED. The luma-preserving alternative
+    // compresses on LUMINANCE only and scales RGB uniformly, so hue/chroma
+    // survive the ceiling compression (bright-but-colored instead of grey).
+    // Both paths are identity below the knee (correctly-exposed frames are
+    // byte-identical either way) — flag-OFF reproduces today's per-channel
+    // behavior exactly.
     let ppCeil = 0.97;
     let ppKnee = 0.82;
     let ppSpan = ppCeil - ppKnee;
-    let ppOver = max(color - vec3f(ppKnee), vec3f(0.0));
-    let ppRolled = vec3f(ppKnee) + vec3f(ppSpan) * (ppOver / (ppOver + vec3f(ppSpan)));
-    color = select(color, ppRolled, color > vec3f(ppKnee));
+    if (pp.lumaCeilingActive > 0.5) {
+        let ppLuma = dot(color, vec3f(0.2126, 0.7152, 0.0722));
+        if (ppLuma > ppKnee) {
+            let ppOver = ppLuma - ppKnee;
+            let ppRolledLuma = ppKnee + ppSpan * (ppOver / (ppOver + ppSpan));
+            color = color * (ppRolledLuma / max(ppLuma, 1e-4));
+        }
+    } else {
+        let ppOver = max(color - vec3f(ppKnee), vec3f(0.0));
+        let ppRolled = vec3f(ppKnee) + vec3f(ppSpan) * (ppOver / (ppOver + vec3f(ppSpan)));
+        color = select(color, ppRolled, color > vec3f(ppKnee));
+    }
 
     return vec4f(clamp(color, vec3f(0.0), vec3f(1.0)), 1.0);
 }

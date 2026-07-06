@@ -175,6 +175,14 @@ bool RB3PostProcDisabled() {
     return s != 0;
 }
 
+// W3.3-fix: RB3_PP_LUMA_CEILING=1 -> luminance-preserving highlight ceiling.
+// Default-OFF; see RB3PostProc.h.
+bool RB3PPLumaCeilingActive() {
+    static int s = -1;
+    if (s < 0) { const char* e = getenv("RB3_PP_LUMA_CEILING"); s = (e && e[0] && e[0] != '0') ? 1 : 0; }
+    return s != 0;
+}
+
 void BandRnd::RunPostProcComposite(wgpu::TextureView dst) {
     if (!mGpuReady || !dst || !mIntermediateView) return;
     RndPostProc* pp = RndPostProc::Current();
@@ -274,6 +282,10 @@ void BandRnd::RunPostProcComposite(wgpu::TextureView dst) {
     }
 
     uni.time = (float)mFrameCount;
+    // W3.3-fix: RB3_PP_LUMA_CEILING toggle for the highlight-ceiling guard
+    // below the knee (see rb3_postproc.wgsl.inc fs_postproc). Default 0.0 ->
+    // byte-identical per-channel path (today's shipped behavior).
+    uni.lumaCeilingActive = RB3PPLumaCeilingActive() ? 1.0f : 0.0f;
     // V2 NOISE GRAIN. RB3's postproc noise is a TILED NOISE TEXTURE (mNoiseMap +
     // mNoiseBaseScale tiling, midtone-overlay blended) — a SUBTLE film grain on
     // the Wii. v1 zeroed it because the procedural hash fallback at RB3's real

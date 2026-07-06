@@ -26,6 +26,16 @@
 // renders straight to the framebuffer, no composite) — the Stage-2 A/B canary.
 bool RB3PostProcDisabled();
 
+// RB3_PP_LUMA_CEILING=1 switches the composite's highlight-ceiling guard (the
+// "Gameplay-entry first-frame flash" rolloff in rb3_postproc.wgsl.inc) from a
+// PER-CHANNEL Reinhard rolloff to a LUMINANCE-preserving one: compress on luma
+// and scale RGB uniformly so hue/saturation survive the compression, instead
+// of the per-channel path desaturating a hot moment toward grey. Default-OFF
+// (flag-first, W3.3-fix); identity below the ceiling knee either way, so
+// flag-OFF is byte-identical to pre-flag behavior. See
+// docs/native/engine-arch-review-2026-07-05/execution/W3.3/STATUS.md.
+bool RB3PPLumaCeilingActive();
+
 // Stage-2 grade uniform block (ported from gfx/PostProcPass.cpp). Declared here
 // (not in RB3PostProc.cpp) because it is SHARED cross-TU: RunPostProcComposite
 // fills it, and the staying BandRnd::EnsureQuadPipeline in Rnd_Wgpu_RB3.cpp (→
@@ -57,8 +67,17 @@ struct PostProcUniforms {
     float noiseScaleX;   // was _pad0 — mNoiseBaseScale.x (X tiling)
     float noiseScaleY;   // was _pad1 — mNoiseBaseScale.y (Y tiling)
     float noiseHasMap;   // was _pad2 — 1.0 if a noise bitmap is bound
+    // W3.3-fix (RB3_PP_LUMA_CEILING): highlight-ceiling mode toggle, 0.0=off
+    // (per-channel, today's behavior) / 1.0=on (luminance-preserving). Grown
+    // by a full vec4 (not just one float) to keep the struct's size a
+    // multiple of 16 bytes, which the WGSL uniform address space requires
+    // given the vec4 members above; the 3 trailing floats are unused padding.
+    float lumaCeilingActive;
+    float _padLumaCeiling0;
+    float _padLumaCeiling1;
+    float _padLumaCeiling2;
 };
-static_assert(sizeof(PostProcUniforms) == 160, "PostProcUniforms must be 160 bytes");
+static_assert(sizeof(PostProcUniforms) == 176, "PostProcUniforms must be 176 bytes");
 
 // The Stage-2 grade WGSL (fs_postproc / vs_fullscreen). De-static'd from
 // Rnd_Wgpu_RB3.cpp: shared by RunPostProcComposite AND the staying
