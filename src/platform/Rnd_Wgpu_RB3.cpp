@@ -2871,8 +2871,19 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     // keep their own obj.world under BOTH states (kept structurally intact this wave;
     // the flag only rewrites the general `else if (skinned)` arm + its palette).
     // Cached-static read (release-safe; mirrors :3083-3084).
+    // Default+opt-out shape (W2.1-flip.S1): the coordinator flips the SYS-1
+    // placement contract default-ON with the ONE-LINE change kPlacementContractDefaultOn
+    // 0 -> 1 (after E1 Dolphin sign-off). RB3_PLACEMENT_CONTRACT_OFF is the opt-out and
+    // takes precedence (fail-reds the placement oracle post-flip); the legacy
+    // RB3_PLACEMENT_CONTRACT env stays a valid opt-in (all Wave-4 capture scripts + the
+    // placement oracle harness set it). Effective default is STILL OFF this item.
+    static const int kPlacementContractDefaultOn = 0;   // coordinator's ONE-LINE flip -> 1
     static int sPlacementContract = -1;
-    if (sPlacementContract < 0) sPlacementContract = getenv("RB3_PLACEMENT_CONTRACT") ? 1 : 0;
+    if (sPlacementContract < 0) {
+        if (getenv("RB3_PLACEMENT_CONTRACT_OFF"))      sPlacementContract = 0;   // opt-out wins
+        else if (getenv("RB3_PLACEMENT_CONTRACT"))     sPlacementContract = 1;   // legacy opt-in kept
+        else                                           sPlacementContract = kPlacementContractDefaultOn;
+    }
     // True only for the general skinned arm the contract rewrites (NOT the
     // name-scoped UI arms, whose bones stay world-space and must not be stripped).
     bool placementContractArm = sPlacementContract && skinned &&
