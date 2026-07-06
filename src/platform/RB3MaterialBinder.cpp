@@ -125,17 +125,10 @@ RB3MaterialBindResult RB3BuildMaterialUniforms(
     // affected. These are screen-space UI overlay meshes drawn only via the
     // UILabel / LabelShrinkWrapper highlight path; route them through the
     // register-colour (prelit) path exactly like text.
-    // Opt-out: RB3_NO_HUB_HIGHLIGHT_FIX.
-    bool isUiHighlightOverlay = false;
-    {
-        static int hubFixOff = -1;
-        if (hubFixOff < 0) hubFixOff = getenv("RB3_NO_HUB_HIGHLIGHT_FIX") ? 1 : 0;
-        if (!hubFixOff && meshName &&
-            (std::strncmp(meshName, "highlight_main", 14) == 0 ||
-             std::strncmp(meshName, "highlight_pattern", 17) == 0)) {
-            isUiHighlightOverlay = true;
-        }
-    }
+    // B8: the name match + the RB3_NO_HUB_HIGHLIGHT_FIX opt-out flag are relocated
+    // to the game hook (QueryDrawMaterialPolicy.isHubHighlight); the engine keeps
+    // the prelit-colour application below.
+    bool isUiHighlightOverlay = matPolicy.isHubHighlight;
     if (mat) {
         const Hmx::Color& c = mat->GetColor();
         mu.color[0] = c.red; mu.color[1] = c.green; mu.color[2] = c.blue; mu.color[3] = c.alpha;
