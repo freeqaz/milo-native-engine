@@ -24,6 +24,7 @@
 #include "platform/RB3MeshCache.h"       // W1.2: RB3MeshEntry cache data + maps + invalidation
 #include "platform/RB3MaterialBinder.h"  // W1.3: cross-TU tex-helper decls + material binder iface
 #include "platform/RB3PostProc.h"        // W1.4: cross-TU RB3PostProcDisabled decl + postproc TU iface
+#include "platform/RB3Quad.h"            // W1.4: cross-TU RB3RttDisabled decl + quad/DrawRect TU iface
 #include "platform/FrameTraceCounters.h"
 #include "platform/RB3TexSharpenDebug.h"
 #include "platform/RB3TexSharpen.h"     // RB3SharpenReuploadTex / RB3SharpenTexFingerprint defs
@@ -1835,7 +1836,7 @@ wgpu::BindGroup BandRnd::MakeMaterialBindGroup(uint32_t off, RndMat* mat) {
 // target tex (e.g. clouds_rnd.tex) is never painted and the sky-dome material
 // samples an empty view (the prior static-sky behaviour).
 // ===========================================================================
-static bool RB3RttDisabled() {
+bool RB3RttDisabled() {
     static int s = -1;
     if (s < 0) { const char* e = getenv("RB3_RTT_OFF"); s = (e && e[0] && e[0] != '0') ? 1 : 0; }
     return s != 0;
