@@ -33,6 +33,13 @@ class RndTex;
 wgpu::TextureView GetRB3TexView(RndTex* tex);
 wgpu::TextureView UploadRndTexIfNeeded(GpuDevice& gpu, RndTex* tex);
 
+// W3.1a.S1: cross-TU flag accessor (defined in Rnd_Wgpu_RB3.cpp, which already
+// includes this header — W1.3 — so no new include edge). Presence-truthy
+// opt-in, default OFF. Gates both the scene-side fog fill (WriteSceneUniforms)
+// and the material-side materialFogEnabled write below, which must agree
+// (WGSL ANDs scene.fogEnabled && material.materialFogEnabled).
+bool RB3EnvFogEnabled();
+
 // Outputs of the material->uniform translation that DrawMesh reads after the
 // block: the filled uniforms plus the two heuristic flags consumed by the
 // downstream PipelineKey blend/zmode derivation.

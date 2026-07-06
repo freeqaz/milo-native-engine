@@ -1157,6 +1157,21 @@ static bool sVenuePointFalloffGx() {
     return v != 0;
 }
 
+// W3.1a.S1: faithful venue fog fill (SYS-4 lighting, first struct-neutral slice).
+// Presence-truthy OPT-IN (default OFF, mirrors RB3_PLACEMENT_CONTRACT's read —
+// NOT sVenueLightEnabled's opt-out shape): unset/"0" -> false, any other value
+// -> true. Non-static (exported) so RB3MaterialBinder.cpp's
+// RB3BuildMaterialUniforms can gate the material-side materialFogEnabled write
+// in lock-step (WGSL ANDs scene.fogEnabled && material.materialFogEnabled —
+// see standard_wgsl.inc:872 — so both sides must agree or fog silently never
+// renders). Declared in RB3MaterialBinder.h (already included here, W1.3), so
+// no new include edge on either TU.
+bool RB3EnvFogEnabled() {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("RB3_ENV_FOG"); v = (e && e[0] && e[0] != '0') ? 1 : 0; }
+    return v != 0;
+}
+
 RB3SceneBinding BandRnd::WriteSceneUniforms(RndCam* cam) {
     SceneUniforms s{};
 
@@ -1426,7 +1441,21 @@ RB3SceneBinding BandRnd::WriteSceneUniforms(RndCam* cam) {
         s.ambientColor[0] = s.ambientColor[1] = s.ambientColor[2] = 0.45f; s.ambientColor[3] = 1.0f;
         s.numPointLights = 0;
     }
-    s.fogEnabled = 0;
+    // W3.1a.S1: faithful RndEnviron fog fill, default-OFF (RB3_ENV_FOG). Reuses
+    // the `venv` fetch above (:1287) and the same mAmbientFogOwner deref-safety
+    // guard as the venue lighting block (:1288) — fog is a per-environ property
+    // independent of camera scoping, so this is NOT gated on world.cam (faithful:
+    // Wii applies GX fog whenever the current environ has it enabled, on every
+    // cam). flag-OFF leaves s.fogEnabled=0, byte-identical to before.
+    if (RB3EnvFogEnabled() && venv && venv->mAmbientFogOwner && venv->FogEnable()) {
+        s.fogEnabled = 1.0f;
+        s.fogStart = venv->GetFogStart();
+        s.fogEnd = venv->GetFogEnd();
+        const Hmx::Color& fc = venv->FogColor();
+        s.fogColor[0] = fc.red; s.fogColor[1] = fc.green; s.fogColor[2] = fc.blue;
+    } else {
+        s.fogEnabled = 0;
+    }
     s.shadowEnabled = 0;
     s.numProjLights = 0;
 

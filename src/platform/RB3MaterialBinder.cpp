@@ -204,6 +204,14 @@ RB3MaterialBindResult RB3BuildMaterialUniforms(
         // Text/UI keep going through the prelit path above (isTextMeshHeur), so
         // they are unaffected by this flag.
         mu.unlit = (!mat->mUseEnviron && !mat->mPreLit) ? 1.0f : 0.0f;
+        // W3.1a.S1: material-side fog enable, default-OFF (RB3_ENV_FOG). WGSL
+        // ANDs scene.fogEnabled && material.materialFogEnabled
+        // (standard_wgsl.inc:872) — without this the scene-side fill alone
+        // renders no fog. Faithful: RndMat::mFog (Mat.h:329) is the per-material
+        // authored fog-eligibility bit. flag-OFF leaves materialFogEnabled at
+        // its value-init 0, byte-identical to before.
+        if (RB3EnvFogEnabled())
+            mu.materialFogEnabled = mat->mFog ? 1.0f : 0.0f;
         // Menu-lighting fix 2: material EMISSIVE on ALL cameras (was previously
         // only enabled inside the game.cam track-light block, so the menu venue's
         // self-lit windows / marquees / neon signage rendered with emissive=0).
