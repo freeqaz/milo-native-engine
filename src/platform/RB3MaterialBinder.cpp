@@ -142,10 +142,67 @@ RB3MaterialBindResult RB3BuildMaterialUniforms(
         // bright labels — max() guards regressions on the news-ticker /
         // FRIEND-RANKINGS / CHOOSE-INSTRUMENT text the W5 Phase 1 fix
         // recovered.
+        //
+        // W4.2-fix (Wave 7, RB3_UI_TEXT_FLOOR_RELAXED, default-OFF): the
+        // unconditional 0.6 floor also clobbers correctly-authored
+        // per-focus-state UILabel colours (UILabel::Draw picks the colour
+        // per State BEFORE this binder runs — src/system/ui/UILabel.cpp:266).
+        // A focused hub menu item authors near-black text meant to read on
+        // the bright gold highlight bar; the 0.6 floor turns it pale/
+        // near-white and illegible. An unfocused sibling authors a dimmed
+        // grey meant to read dimmer than the focused item; the same floor
+        // pushes it to >=0.6 so it reads as bright white instead of dimmed
+        // grey.
+        //
+        // Calibration note (measured, RB3_UI_FLOOR_DBG capture on
+        // main_hub_screen, 2026-07-06): the live focus-state raw colours are
+        // NOT the 0.20-0.50 range the original W5p3 comment assumed — the
+        // hub menu list's authored greys land at 0.118-0.247 per channel.
+        // A `kNearInvisibleUiText=0.22 / target=0.4` relaxation (the first
+        // cut of this fix) still visually collapsed to the SAME washed-out
+        // pale glyph as the unconditional 0.6 clamp (screenshot A/B,
+        // `_w42-hub-text-capture.py` + `/tmp/w42/sweep.py` captures) — any
+        // floor target in the ~0.4-0.6 band reads identically washed after
+        // the downstream draw pipeline's own brightening, so a "gentler
+        // clamp" at that scale is not actually a fix. Disabling the floor
+        // entirely for that range (screenshot capture) DOES restore visibly
+        // dark focused text on the gold bar and a dimmer (not bright-white)
+        // unfocused sibling, while the news-ticker prompt (one of the three
+        // originally-rescued labels, and one of the only ones reachable
+        // headless without a live profile/network) stayed legible with no
+        // floor at all. So: pass authored colours through UNCHANGED across
+        // that whole 0.118-0.247 band, and keep a floor ONLY for genuinely
+        // near-zero colours (all channels below kTrueInvisibleUiText, well
+        // below anything observed on the live hub sweep) at a modest target
+        // — a safety net for a truly-(0,0,0)-authored label this capture
+        // didn't exercise, without re-introducing the wash on the labels
+        // that ARE exercised. Flag-OFF keeps the exact byte-identical 0.6
+        // clamp. RB3_UI_FLOOR_DBG=1 dumps pre-floor (mesh,mat,rgb) to
+        // stderr for re-calibration.
         if (isLikelyUiText) {
-            mu.color[0] = std::max(0.6f, mu.color[0]);
-            mu.color[1] = std::max(0.6f, mu.color[1]);
-            mu.color[2] = std::max(0.6f, mu.color[2]);
+            if (getenv("RB3_UI_FLOOR_DBG")) {
+                const char* mnm = mesh->Name() ? mesh->Name() : "?";
+                fprintf(stderr, "[uifloordbg] mesh='%s' mat='%s' pre=(%.3f,%.3f,%.3f)\n",
+                        mnm, matName, mu.color[0], mu.color[1], mu.color[2]);
+            }
+            static int sUiTextFloorRelaxed = -1;
+            if (sUiTextFloorRelaxed < 0)
+                sUiTextFloorRelaxed = std::getenv("RB3_UI_TEXT_FLOOR_RELAXED") ? 1 : 0;
+            if (sUiTextFloorRelaxed) {
+                const float kTrueInvisibleUiText = 0.06f;
+                const float kRelaxedUiTextFloor = 0.25f;
+                if (mu.color[0] < kTrueInvisibleUiText &&
+                    mu.color[1] < kTrueInvisibleUiText &&
+                    mu.color[2] < kTrueInvisibleUiText) {
+                    mu.color[0] = std::max(kRelaxedUiTextFloor, mu.color[0]);
+                    mu.color[1] = std::max(kRelaxedUiTextFloor, mu.color[1]);
+                    mu.color[2] = std::max(kRelaxedUiTextFloor, mu.color[2]);
+                }
+            } else {
+                mu.color[0] = std::max(0.6f, mu.color[0]);
+                mu.color[1] = std::max(0.6f, mu.color[1]);
+                mu.color[2] = std::max(0.6f, mu.color[2]);
+            }
         }
         mu.alphaThreshold = mat->mAlphaCut ? (mat->mAlphaThresh / 255.0f) : 0.0f;
         // V1: enable texture sampling if the material has a valid diffuse map.
