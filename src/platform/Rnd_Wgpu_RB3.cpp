@@ -2776,22 +2776,18 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     // and tracks scrolling. Scoped to the two named scrollbar meshes — characters,
     // the hub bar, and all other skinned meshes are untouched. Wii path is
     // unaffected (native-only draw path). Opt-out RB3_SCROLLBAR_THUMB_FIX_OFF=1.
+    // The bg-track world cache + the `skinned && have` guard stay in the engine
+    // (state/math); the name match (`scrollbar_bg.mesh`/`scrollbar.mesh`) and the
+    // RB3_SCROLLBAR_THUMB_FIX_OFF flag are relocated to the hook
+    // (geomPolicy.scrollbarBg / .scrollbarThumb). Mutually exclusive by name, so
+    // the prior `else if` is preserved by testing scrollbarBg then scrollbarThumb.
     static Transform sScrollbarPlacement; // last bg-track world (shared 1-widget)
     static bool sHaveScrollbarPlacement = false;
-    bool scrollbarThumb = false;
-    if (mesh->Name()) {
-        static int sSbarThumbOff = -1;
-        if (sSbarThumbOff < 0) sSbarThumbOff = getenv("RB3_SCROLLBAR_THUMB_FIX_OFF") ? 1 : 0;
-        if (!sSbarThumbOff) {
-            if (strcmp(mesh->Name(), "scrollbar_bg.mesh") == 0) {
-                sScrollbarPlacement = mesh->WorldXfm();
-                sHaveScrollbarPlacement = true;
-            } else if (strcmp(mesh->Name(), "scrollbar.mesh") == 0 &&
-                       skinned && sHaveScrollbarPlacement) {
-                scrollbarThumb = true;
-            }
-        }
+    if (geomPolicy.scrollbarBg) {
+        sScrollbarPlacement = mesh->WorldXfm();
+        sHaveScrollbarPlacement = true;
     }
+    bool scrollbarThumb = geomPolicy.scrollbarThumb && skinned && sHaveScrollbarPlacement;
     if (skinned && scrollbarThumb) {
         MiloXfmToColMajor(sScrollbarPlacement, obj.world);
     } else if (skinned && hubBarPlacement) {
