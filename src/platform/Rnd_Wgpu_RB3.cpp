@@ -28,6 +28,7 @@
 #include "platform/FrameTraceCounters.h"
 #include "platform/RB3TexSharpenDebug.h"
 #include "platform/RB3TexSharpen.h"     // RB3SharpenReuploadTex / RB3SharpenTexFingerprint defs
+#include "platform/GameRenderHook.h"    // W1.7: frame-pass hook dispatch (DrawGameOverlay / RenderCharacterImpostors)
 
 #include <algorithm>
 #include <array>
@@ -1607,6 +1608,19 @@ void BandRnd::BeginFrame(RndCam* cam) {
         if (s < 0) { const char* e = getenv("RB3_NO_PRECLEAR"); s = (e && e[0] && e[0] != '0') ? 0 : 1; }
         if (s) Rnd::DrawPreClear();
     }
+
+    // W1.7: game-supplied off-screen render passes (RB3's analog of DC3's
+    // per-HamCharacter impostor RTTs). Dispatched here — encoder open, right
+    // after the pre-clear RTT passes — mirroring DC3 Rnd_Wgpu.cpp, which calls
+    // RenderCharacterImpostors after DrawPreClear() and before the main frame
+    // pass. RB3's BeginFrame opens the main pass earlier (before DrawPreClear),
+    // so the hook runs with the main pass already active; the impl is
+    // responsible for opening/closing its own RTT passes (suspend/resume the
+    // main pass) exactly as DC3's does. No-op today (BandRenderHook has no
+    // impostor loop wired on native), so output is byte-identical.
+    if (GameRenderHook* hook = GetGameRenderHook()) {
+        hook->RenderCharacterImpostors(this);
+    }
 }
 
 void BandRnd::EndFrame() {
@@ -1642,6 +1656,19 @@ void BandRnd::EndFrame() {
     // RB3_HIGHWAY_BLOOM_OFF=1 (mHaloDraws empty) or off a gameplay frame.
     if (HighwayBloomEnabled() && !mHaloDraws.empty() && mFrameView)
         CompositeHaloBloom();
+
+    // W1.7: game-supplied HUD/overlay draw pass (RB3's analog of DC3's
+    // HamDirector overlay). Dispatched here — after the venue/post-proc + halo
+    // composites, encoder still open, before Finish() — mirroring DC3
+    // Rnd_Wgpu.cpp, which calls DrawGameOverlay once the post-processed venue is
+    // resolved into the framebuffer. Unlike DC3, RB3 draws its HUD/track panel
+    // inline in the main pass and does NOT open a dedicated 1x no-depth overlay
+    // pass here; if a future RB3 overlay needs one, the impl opens its own pass
+    // via the renderer API (as RenderCharacterImpostors does for RTTs). No-op
+    // today (BandRenderHook issues no overlay), so output is byte-identical.
+    if (GameRenderHook* hook = GetGameRenderHook()) {
+        hook->DrawGameOverlay(this);
+    }
 
     wgpu::CommandBuffer cmd = mEncoder.Finish();
     mGpu.Queue().Submit(1, &cmd);
