@@ -212,6 +212,11 @@ RB3MaterialBindResult RB3BuildMaterialUniforms(
         // its value-init 0, byte-identical to before.
         if (RB3EnvFogEnabled())
             mu.materialFogEnabled = mat->mFog ? 1.0f : 0.0f;
+        // W3.1b.S2: probe — force material fog-eligibility so the scene-side
+        // RB3_ENV_FOG_FORCE synthesis actually renders (no venue authors mFog).
+        // Gated on both flags; flag-OFF byte-identical.
+        if (RB3EnvFogEnabled() && RB3EnvFogForce())
+            mu.materialFogEnabled = 1.0f;
         // Menu-lighting fix 2: material EMISSIVE on ALL cameras (was previously
         // only enabled inside the game.cam track-light block, so the menu venue's
         // self-lit windows / marquees / neon signage rendered with emissive=0).

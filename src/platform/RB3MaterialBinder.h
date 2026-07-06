@@ -39,6 +39,11 @@ wgpu::TextureView UploadRndTexIfNeeded(GpuDevice& gpu, RndTex* tex);
 // and the material-side materialFogEnabled write below, which must agree
 // (WGSL ANDs scene.fogEnabled && material.materialFogEnabled).
 bool RB3EnvFogEnabled();
+// W3.1b.S2: fog visual-verification probe (default-OFF, RB3_ENV_FOG_FORCE). When
+// set (with RB3_ENV_FOG) forces materialFogEnabled=1 regardless of RndMat::mFog so
+// the scene∧material AND-gate can render on a real venue for a screenshot A/B (no
+// in-repo asset authors fog). Instrumentation only. Defined in Rnd_Wgpu_RB3.cpp.
+bool RB3EnvFogForce();
 
 // Outputs of the material->uniform translation that DrawMesh reads after the
 // block: the filled uniforms plus the two heuristic flags consumed by the

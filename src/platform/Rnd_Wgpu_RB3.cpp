@@ -1172,6 +1172,107 @@ bool RB3EnvFogEnabled() {
     return v != 0;
 }
 
+// W3.1b.S2: fog VISUAL-VERIFICATION probe (default-OFF, RB3_ENV_FOG_FORCE).
+// No boot-reachable venue authors fog (all 34 environs FogEnable()==false; the
+// extracted DTA carries fog only as editor property *schema*, never authored-ON),
+// so RB3_ENV_FOG alone can never render on a shipping venue. This probe
+// synthesizes authored fog on the CURRENT environ at the scene fill site so an
+// /api/screenshot A/B can drive the real shipping scene∧material fog path end to
+// end. Requires RB3_ENV_FOG also set (the material-side materialFogEnabled write
+// gates on RB3_ENV_FOG, and WGSL ANDs scene.fogEnabled && material.materialFogEnabled).
+// Instrumentation only — never ships behavior; the non-force FogEnable() branch is
+// untouched. Presence-truthy opt-in, mirrors RB3EnvFogEnabled's read. Exported (declared
+// in RB3MaterialBinder.h) so the material binder can force materialFogEnabled=1 in
+// lock-step — the WGSL ANDs scene.fogEnabled && material.materialFogEnabled, and no
+// venue material authors mFog, so the probe must force BOTH sides or nothing renders.
+bool RB3EnvFogForce() {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("RB3_ENV_FOG_FORCE"); v = (e && e[0] && e[0] != '0') ? 1 : 0; }
+    return v != 0;
+}
+
+// W3.1b.S1: faithful venue projected-light (kFakeSpot gobo) fill (default-OFF,
+// RB3_ENV_PROJLIGHT). The SceneUniforms.projLight* fields + WGSL consume path
+// (standard_wgsl.inc bindings 3/4) already exist, so this writes fields only —
+// zero DC3/struct/WGSL blast by construction. Presence-truthy opt-in.
+static bool RB3EnvProjLightEnabled() {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("RB3_ENV_PROJLIGHT"); v = (e && e[0] && e[0] != '0') ? 1 : 0; }
+    return v != 0;
+}
+
+// W3.1b.S1: projected-light FORCE probe (default-OFF, RB3_ENV_PROJLIGHT_FORCE).
+// Boot sweep found no reachable venue authoring a kFakeSpot-with-gobo light, so
+// this synthesizes one from an existing showing spot/dir light (retagged kFakeSpot
+// with a stand-in gobo view) to drive the projLight A/B screenshot through the real
+// pipeline. Requires RB3_ENV_PROJLIGHT also set. Instrumentation only.
+static bool RB3EnvProjLightForce() {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("RB3_ENV_PROJLIGHT_FORCE"); v = (e && e[0] && e[0] != '0') ? 1 : 0; }
+    return v != 0;
+}
+
+// W3.1b.S1: DC3-only helpers ported file-local (RB3 has no RndLight::Projection()
+// nor MakeShadowBias() — keeping them here is zero decomp-source blast). Ported
+// verbatim from dc3-decomp/src/system/rndobj/Lit.cpp:84-139; the float-temp
+// ordering is deliberately shaped for FP-bit fidelity — do NOT "simplify".
+static Transform RB3MakeShadowBias() {
+    Transform bias;
+    bias.m.x.Set(0.5f, 0.0f, 0.0f);
+    bias.m.y.Set(0.0f, 0.5f, 0.0f);
+    bias.m.z.Set(0.5f, 0.5f, 1.0f);
+    bias.v.Set(0.0f, 0.0f, 0.0f);
+    return bias;
+}
+
+static Transform RB3RndLightProjection(RndLight* light) {
+    Transform result;
+    if (light->mRange == 0.0f) {
+        result.Reset();
+    } else {
+        Vector3 xRow = light->WorldXfm().m.x;
+
+        const Transform& wz = light->WorldXfm();
+        float nzx = -wz.m.z.x;
+        float nzy = -wz.m.z.y;
+        float nzz = -wz.m.z.z;
+
+        Vector3 yRow = light->WorldXfm().m.y;
+
+        Vector3 pos = light->WorldXfm().v;
+
+        float topR = light->mTopRadius;
+        float slope = (light->mBotRadius - topR) / light->mRange;
+
+        result.m.x.y = nzx;
+        float _fpr0 = yRow.y;
+        float _fpr1 = yRow.z;
+        float _fpr2 = yRow.x;
+        float _fpr3 = pos.z;
+        float _fpr4 = pos.y;
+        float _fpr5 = pos.x;
+        result.m.y.z = _fpr0 * slope;
+        result.m.z.z = _fpr1 * slope;
+        result.m.x.z = _fpr2 * slope;
+
+        result.v.x = -((_fpr3 * xRow.z + (_fpr4 * xRow.y + _fpr5 * xRow.x)));
+        result.v.y = -((_fpr5 * nzx + (_fpr4 * nzy + _fpr3 * nzz)));
+        result.v.z = topR - _fpr5 * _fpr2 * slope - _fpr4 * _fpr0 * slope - _fpr3 * _fpr1 * slope;
+
+        result.m.x.x = xRow.x;
+        result.m.y.x = xRow.y;
+        result.m.z.x = xRow.z;
+        result.m.y.y = nzy;
+        result.m.z.y = nzz;
+
+        Multiply(result, light->mTextureXfm, result);
+
+        static const Transform sBias = RB3MakeShadowBias();
+        Multiply(result, sBias, result);
+    }
+    return result;
+}
+
 RB3SceneBinding BandRnd::WriteSceneUniforms(RndCam* cam) {
     SceneUniforms s{};
 
@@ -1456,8 +1557,61 @@ RB3SceneBinding BandRnd::WriteSceneUniforms(RndCam* cam) {
     } else {
         s.fogEnabled = 0;
     }
+    // W3.1b.S2: fog VISUAL-VERIFICATION probe. When RB3_ENV_FOG_FORCE is set (with
+    // RB3_ENV_FOG), synthesize authored fog on the current environ regardless of
+    // FogEnable() so distant geometry visibly fades — the reproducible-screenshot
+    // path replacing W3.1a's reverted temp override (no in-repo asset authors fog).
+    // The non-force FogEnable() branch above is untouched; this only overwrites the
+    // fog fields on the probe path. Requires venv (fog is a per-environ property).
+    if (RB3EnvFogEnabled() && RB3EnvFogForce() && venv) {
+        s.fogEnabled = 1.0f;
+        // Aggressive near/short range so even a tight venue interior fogs
+        // unmistakably — this is a VISUAL-VERIFICATION probe (proving the pipeline
+        // renders fog), not shipping fog params. Grey-blue against the magenta bar
+        // makes the tint obvious and exceeds the per-capture animation noise floor.
+        s.fogStart = 8.0f;
+        s.fogEnd   = 80.0f;
+        s.fogColor[0] = 0.55f; s.fogColor[1] = 0.60f; s.fogColor[2] = 0.72f;  // grey-blue tint
+    }
     s.shadowEnabled = 0;
+
+    // W3.1b.S1: faithful venue projected-light (kFakeSpot gobo) fill, default-OFF
+    // (RB3_ENV_PROJLIGHT). Port of dc3 Rnd_Wgpu.cpp:1597-1636 over venv->mLightsReal:
+    // first showing kFakeSpot with a gobo texture -> projLight* scene fields + slot-3
+    // gobo bind. flag-OFF: numProjLights stays 0 and projView stays mWhiteView, so the
+    // scene struct AND the bind group are byte-identical to before. RB3_ENV_PROJLIGHT_FORCE
+    // relaxes the type/gobo gates (probe) to synthesize an A/B when no venue authors one.
+    wgpu::TextureView projView = mWhiteView;
     s.numProjLights = 0;
+    if (RB3EnvProjLightEnabled() && venv) {
+        bool force = RB3EnvProjLightForce();
+        for (ObjPtrList<RndLight>::iterator it = venv->mLightsReal.begin();
+             it != venv->mLightsReal.end(); ++it) {
+            RndLight* light = *it;
+            if (!light || !light->Showing()) continue;
+            if (!force && light->GetType() != RndLight::kFakeSpot) continue;
+            RndTex* gobo = light->mTexture.Ptr();
+            if (!gobo && !force) continue;
+
+            // Direction: light points along -Y axis of its local frame.
+            const Transform& lxfm = light->WorldXfm();
+            s.projLightDir[0] = -lxfm.m.y.x; s.projLightDir[1] = -lxfm.m.y.y;
+            s.projLightDir[2] = -lxfm.m.y.z; s.projLightDir[3] = 0.0f;
+            const Hmx::Color& lc = light->GetColor();
+            s.projLightColor[0] = lc.red; s.projLightColor[1] = lc.green;
+            s.projLightColor[2] = lc.blue; s.projLightColor[3] = 1.0f;
+            // Projection matrix -> UV rows (row0 reads proj.m.*.x, row1 reads proj.m.*.y).
+            Transform proj = RB3RndLightProjection(light);
+            s.projLightProjRow0[0] = proj.m.x.x; s.projLightProjRow0[1] = proj.m.y.x;
+            s.projLightProjRow0[2] = proj.m.z.x; s.projLightProjRow0[3] = proj.v.x;
+            s.projLightProjRow1[0] = proj.m.x.y; s.projLightProjRow1[1] = proj.m.y.y;
+            s.projLightProjRow1[2] = proj.m.z.y; s.projLightProjRow1[3] = proj.v.y;
+            s.numProjLights = 1.0f;
+            wgpu::TextureView gv = gobo ? GetRB3TexView(gobo) : wgpu::TextureView{};
+            if (gv) projView = gv;  // else stays mWhiteView (uniform stand-in gobo)
+            break;  // one projected light supported (matches DC3)
+        }
+    }
 
     RB3SceneBinding sb;
     sb.offset = mSceneRing.Write(mGpu.Queue(), &s, sizeof(s));
@@ -1466,7 +1620,7 @@ RB3SceneBinding BandRnd::WriteSceneUniforms(RndCam* cam) {
     e[0].binding = 0; e[0].buffer = mSceneRing.Buffer(); e[0].offset = sb.offset; e[0].size = sizeof(SceneUniforms);
     e[1].binding = 1; e[1].textureView = mShadowView;
     e[2].binding = 2; e[2].sampler = mShadowSampler;
-    e[3].binding = 3; e[3].textureView = mWhiteView;
+    e[3].binding = 3; e[3].textureView = projView;  // W3.1b.S1: gobo when projLight filled, else mWhiteView (byte-identical flag-OFF)
     e[4].binding = 4; e[4].sampler = mSampler;
     wgpu::BindGroupDescriptor bd{};
     bd.layout = mPipelines.SceneLayout();
