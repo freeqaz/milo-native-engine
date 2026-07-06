@@ -270,35 +270,19 @@ RB3MaterialBindResult RB3BuildMaterialUniforms(
         // from the material name (tail_green/red/yellow/blue/orange/...) yields
         // a correctly-tinted, shaped tail without depending on the fragile
         // strip-UV mapping. tail_bonus/star and tail_white stay white by name.
-        {
-            const char* mn = mat->Name();
-            const char* tc = mn ? std::strstr(mn, "tail_") : nullptr;
-            if (tc) {
-                tc += 5; // past "tail_"
-                struct { const char* name; float r,g,b; } kFret[] = {
-                    {"green",  0.18f, 0.85f, 0.20f},
-                    {"red",    0.90f, 0.16f, 0.13f},
-                    {"yellow", 0.95f, 0.85f, 0.10f},
-                    {"blue",   0.13f, 0.55f, 0.92f},
-                    {"orange", 0.95f, 0.50f, 0.08f},
-                    {"purple", 0.62f, 0.20f, 0.85f},
-                };
-                for (auto& f : kFret) {
-                    size_t L = std::strlen(f.name);
-                    if (std::strncmp(tc, f.name, L) == 0 && tc[L] == '.') {
-                        // Drive the fret colour directly and drop the atlas tint
-                        // (useTexture=0): the atlas only contributes the fragile
-                        // strip selection we can't reproduce, so a solid fret
-                        // colour is both correct and clean. The tail's vertex
-                        // alpha + SrcAlphaAdd blend still give it the lit look.
-                        mu.color[0] = f.r; mu.color[1] = f.g; mu.color[2] = f.b;
-                        mu.useTexture = 0.0f;
-                        break;
-                    }
-                }
-                // tail_white / tail_bonus(star) / tail_chord / tail_miss keep the
-                // material's own (white/grey) colour — correct for star power etc.
-            }
+        // B11: the tail_* fret-name match + fret colour TABLE are relocated to the
+        // game hook (QueryDrawMaterialPolicy.tailForceColor / .tailColor). The
+        // engine applies the name-derived colour directly and drops the atlas tint
+        // (useTexture=0): the atlas only contributes the fragile strip selection we
+        // can't reproduce, so a solid fret colour is both correct and clean; the
+        // tail's vertex alpha + SrcAlphaAdd blend still give it the lit look.
+        // tail_white/bonus(star)/chord/miss have no fret match → keep the material's
+        // own (white/grey) colour — correct for star power etc.
+        if (matPolicy.tailForceColor) {
+            mu.color[0] = matPolicy.tailColor[0];
+            mu.color[1] = matPolicy.tailColor[1];
+            mu.color[2] = matPolicy.tailColor[2];
+            mu.useTexture = 0.0f;
         }
         // CHAR_DBG: one-shot per skinned mesh — report whether the character
         // outfit material resolved a diffuse texture (and what kind), to tell

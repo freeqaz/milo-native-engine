@@ -107,8 +107,17 @@ struct DrawMaterialPolicy {
     bool  isSkinRtt = false;
     // B10: colour-icon-font (`icon`) useAlphaAsRGB exclusion.
     bool  isColorIcon = false;
-    // B11: tail chain-select material (`tail_` + chain names).
+    // B11: tail chain-select material (`tail_` + chain names). `isTailChain` is
+    // retained (unused by the engine) for source-compat with S1's scaffolding;
+    // the LIVE decision is `tailForceColor` — when a KNOWN fret name matched
+    // (tail_{green,red,yellow,blue,orange,purple}.), the engine writes `tailColor`
+    // into mu.color[0..2] and sets useTexture=0. The name→colour lookup table lives
+    // entirely in the game hook; `tailColor` is a name-derived scalar the engine
+    // applies, so float ordering never crosses the seam (tail_white/bonus/star/
+    // chord/miss do NOT match and keep the material's own colour).
     bool  isTailChain = false;
+    bool  tailForceColor = false;
+    float tailColor[3] = {0.f, 0.f, 0.f};
     // B12: crowd/extras vs band-member material path.
     bool  isCrowdExtra = false;
     bool  isBandMember = false;
