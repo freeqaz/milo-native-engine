@@ -1060,6 +1060,37 @@ static bool sVenueLightEnabled() {
     return v != 0;
 }
 
+// WASH-fix (Wave 8 A.S1): probe-only instrumentation for the two-hypothesis
+// venue-wash root-cause. When RB3_WASH_PROBE=1, WriteSceneUniforms emits a
+// throttled per-world.cam digest tagging the P4 venue-light engagement decision
+// (Rnd_Wgpu_RB3.cpp:1404 — which sub-clause failed, incl. the silent
+// mAmbientFogOwner==null miss), the grey-key no-lights fallback (:1523), and the
+// resulting dl/pl counts; DrawMesh emits the env-staleness rewrite path (:2404).
+// Additive, behaviour-neutral (no state written, only stderr under the flag) —
+// registered probe flag, drawlog-golden byte-identical with the flag unset.
+static bool sWashProbe() {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("RB3_WASH_PROBE"); v = (e && e[0] && e[0] != '0') ? 1 : 0; }
+    return v != 0;
+}
+
+// Throttle: emit a world.cam venue digest only when its state tuple changes, plus
+// a heartbeat every N emits so the log tail always reflects the captured frame.
+static void sWashDigest(const char* tag, const char* env, int engaged,
+                        const char* miss, int dl, int pl, int greyKey) {
+    static std::string sLast;
+    static int sHeartbeat = 0;
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+             "[WASHPROBE] %s env=%s engaged=%d miss=%s dl=%d pl=%d greykey=%d",
+             tag, env ? env : "<null>", engaged, miss, dl, pl, greyKey);
+    std::string key(buf);
+    if (key != sLast || (++sHeartbeat % 60) == 0) {
+        fprintf(stderr, "%s\n", buf);
+        sLast = key;
+    }
+}
+
 // render-polish 2026-06-11 (menu-contrast, wave-5 "Fix 3"): the venue-light
 // heuristic's floor lighting (the ambient floor, the near-white-ambient clamp,
 // and the no-light grey key) was tuned conservatively-bright so nothing crushed
@@ -1401,6 +1432,12 @@ RB3SceneBinding BandRnd::WriteSceneUniforms(RndCam* cam) {
     // ring-buffer sized for the extra per-environ writes (see InitGpuResources).
     const char* camNm = cam ? cam->Name() : nullptr;
     RndEnviron* venv = RndEnviron::sCurrent;
+    // WASH-fix (Wave 8 A.S1) probe scaffolding: outer-scope state so both the
+    // engaged and the flat-default else branch can emit one digest naming the
+    // engagement outcome. Read-only; no behaviour change when the flag is unset.
+    const bool washOn = sWashProbe() && camNm && std::strcmp(camNm, "world.cam") == 0;
+    bool washGreyKey = false;
+    const char* washEnvNm = venv && venv->Name() ? venv->Name() : "<noname>";
     if (sVenueLightEnabled() && camNm && std::strcmp(camNm, "world.cam") == 0 && venv && venv->mAmbientFogOwner) {
         // STEP 1 (GAP 2): use the GX-faithful inverse-linear point falloff for the
         // venue path so tight range-55 silhouette spots reach the band (default 0 =
@@ -1532,15 +1569,27 @@ RB3SceneBinding BandRnd::WriteSceneUniforms(RndCam* cam) {
             const float grey = sVenueGreyKey() * sVenueDirExposure();
             s.lightColors[0][0] = grey; s.lightColors[0][1] = grey; s.lightColors[0][2] = grey; s.lightColors[0][3] = 1.0f;
             dl = 1;
+            washGreyKey = true;
         }
         s.numLights = dl;
         s.numPointLights = pl;
+        // WASH-fix probe: engaged venue branch taken (H1 = ENGAGED for this shot).
+        if (washOn) sWashDigest("SCENE", washEnvNm, 1, "engaged", dl, pl, washGreyKey ? 1 : 0);
     } else {
         s.numLights = 1;
         s.lightDirs[0][0] = -0.4f; s.lightDirs[0][1] = -0.5f; s.lightDirs[0][2] = -0.75f; s.lightDirs[0][3] = 0;
         s.lightColors[0][0] = 1.0f; s.lightColors[0][1] = 1.0f; s.lightColors[0][2] = 1.0f; s.lightColors[0][3] = 1.0f;
         s.ambientColor[0] = s.ambientColor[1] = s.ambientColor[2] = 0.45f; s.ambientColor[3] = 1.0f;
         s.numPointLights = 0;
+        // WASH-fix probe: flat-default else (the PINK base). Name which engagement
+        // sub-clause failed for this world.cam write — the H1 miss classifier.
+        if (washOn) {
+            const char* miss = !sVenueLightEnabled() ? "venue_off"
+                             : (venv == nullptr) ? "no_env"
+                             : (venv->mAmbientFogOwner == nullptr) ? "fogowner_null"
+                             : "other";
+            sWashDigest("SCENE", washEnvNm, 0, miss, 1, 0, 0);
+        }
     }
     // W3.1a.S1: faithful RndEnviron fog fill, default-OFF (RB3_ENV_FOG). Reuses
     // the `venv` fetch above (:1287) and the same mAmbientFogOwner deref-safety
@@ -2404,6 +2453,15 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     else if (sVenueLightEnabled() && RndCam::sCurrent &&
              RndCam::sCurrent->Name() && std::strcmp(RndCam::sCurrent->Name(), "world.cam") == 0 &&
              (void*)RndEnviron::sCurrent != mLastSceneEnv) {
+        // WASH-fix probe: env-staleness rewrite path (:2453) fired — pointer
+        // change on a world.cam venue draw. Logs the env-pointer transition so a
+        // freed-env-reallocated-at-same-address staleness (pointer-equality miss)
+        // is visible as an ABSENCE of this line despite an env-name change.
+        if (sWashProbe()) {
+            RndEnviron* ne = RndEnviron::sCurrent;
+            fprintf(stderr, "[WASHPROBE] STALE rewrite=env env=%s ptr=%p prevptr=%p\n",
+                    ne && ne->Name() ? ne->Name() : "<noname>", (void*)ne, mLastSceneEnv);
+        }
         mActiveScene = WriteSceneUniforms(RndCam::sCurrent);
         mPass.SetBindGroup(0, mActiveScene.group, 0, nullptr);
         mLastSceneEnv = (void*)RndEnviron::sCurrent;

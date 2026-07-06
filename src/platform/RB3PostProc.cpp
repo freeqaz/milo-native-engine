@@ -161,6 +161,22 @@ void BandRnd::EnsureIntermediate(int w, int h) {
     mIntermediateView = t.CreateView();
     mIntermediateWidth = w;
     mIntermediateHeight = h;
+    // WASH-fix (Wave 8 A.S1) H2 probe: the composite intermediate is created at
+    // the framebuffer format (mTargetFmt — RGBA8/BGRA8 UNORM, never a float HDR
+    // format), so the scene renders into a per-channel [0,1] UNORM target. Any
+    // hot (>1.0) venue lighting is clamped at the intermediate WRITE, before any
+    // grade/ceiling can act — the mechanism H2 predicts feeds the mid-tone desat.
+    // Log the format ONCE per (re)create so the unorm fact is on the record.
+    static bool sWashPP = false, sWashPPInit = false;
+    if (!sWashPPInit) { const char* e = getenv("RB3_WASH_PROBE"); sWashPP = (e && e[0] && e[0] != '0'); sWashPPInit = true; }
+    if (sWashPP) {
+        const char* fn = (mTargetFmt == wgpu::TextureFormat::RGBA8Unorm) ? "RGBA8Unorm"
+                       : (mTargetFmt == wgpu::TextureFormat::BGRA8Unorm) ? "BGRA8Unorm"
+                       : "other";
+        fprintf(stderr, "[WASHPROBE] PP intermediate %dx%d fmt=%s (unorm=%d) — hot>1.0 clamped at write\n",
+                w, h, fn, (mTargetFmt == wgpu::TextureFormat::RGBA8Unorm ||
+                           mTargetFmt == wgpu::TextureFormat::BGRA8Unorm) ? 1 : 0);
+    }
 }
 
 // Grade the intermediate onto `dst` (the framebuffer): a single fullscreen

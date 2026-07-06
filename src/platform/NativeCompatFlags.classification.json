@@ -35,6 +35,7 @@
   "IK_SHARD_VERT":                 { "class": "probe", "owner": "skinning",        "faithfulStatus": "n/a: archaeological debug probe" },
   "RB3_LIGHT_PROBE":               { "class": "probe", "owner": "render/lighting", "faithfulStatus": "n/a: archaeological debug probe" },
   "RB3_VENUE_PROBE":               { "class": "probe", "owner": "render/lighting", "faithfulStatus": "n/a: archaeological debug probe" },
+  "RB3_WASH_PROBE":                { "class": "probe", "owner": "render/lighting", "faithfulStatus": "n/a: Wave 8 WASH-fix A.S1 two-hypothesis venue-wash root-cause probe (SCENE engagement/miss digest + PP unorm-intermediate fact + env-staleness rewrite path)" },
   "RB3_GAMEWARM_PROBE":            { "class": "probe", "owner": "load/perf",       "faithfulStatus": "n/a: archaeological debug probe" },
   "REBIND_DRAW_FLING":             { "class": "probe", "owner": "skinning",        "faithfulStatus": "n/a: archaeological debug probe" },
   "REBIND_DRAW_SKINPOS":           { "class": "probe", "owner": "skinning",        "faithfulStatus": "n/a: archaeological debug probe" },
