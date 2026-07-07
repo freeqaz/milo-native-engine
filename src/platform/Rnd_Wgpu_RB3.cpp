@@ -4402,7 +4402,15 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
             // per-member-own-rest reference, per far vert) so the BL-A2 RealPathFixture
             // gtest stops SKIPping and becomes the lane's hard instrument. Additive-only,
             // gated, render-inert. Opt-in: RB3_DUALSKIN_PROBE=<name-substr|1|*>.
-            if (getenv("RB3_DUALSKIN_PROBE") && wext > 60.f && owner) {
+            // A2 (WAVE10_REVIEW): parameterize the wext capture gate. The default
+            // 60u entry cutoff SUPPRESSES the instrument exactly when a fix works
+            // (a correct rebake DROPS wext below 60), so a flag-ON GREEN capture is
+            // mechanically impossible with a hard-coded gate. RB3_DUALSKIN_MINWEXT
+            // lowers it (probe-scoped, inert unless RB3_DUALSKIN_PROBE is set);
+            // default 60u preserves the prior behavior byte-for-byte.
+            static float sDsMinWext = getenv("RB3_DUALSKIN_MINWEXT")
+                                          ? (float)atof(getenv("RB3_DUALSKIN_MINWEXT")) : 60.f;
+            if (getenv("RB3_DUALSKIN_PROBE") && wext > sDsMinWext && owner) {
                 static const char* dsSel = getenv("RB3_DUALSKIN_PROBE");
                 const char* mn0 = mesh->Name() ? mesh->Name() : "?";
                 bool dsMatch;
@@ -4439,24 +4447,59 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
                     char okey[96]; snprintf(okey,sizeof(okey),"%s@%p", mn0, (void*)owner);
                     std::string mkey = okey;
                     // Capture per-member rest bases once (first frame this owner draws it).
+                    // A3 (WAVE10_REVIEW): ALSO capture the member ROOT world per bone so
+                    // the LIKE-SPACE (char-space) coherent reference can divide the
+                    // member placement out of BOTH sides — the world-space coherent ref
+                    // is ORIGIN-anchored (v*inv(bw)*live @rest = v, at the origin) while
+                    // asDrawn is PLACEMENT-anchored (v*off*live @rest = v*rootWorld), so
+                    // their difference carries the |placement| lever arm S2 named, not a
+                    // rest-basis error. The char-space reference re-anchors coherent at
+                    // the member placement identically to asDrawn.
+                    static std::unordered_map<std::string, std::vector<Transform>> sBindRootWorld;
                     auto& bw = sBindWorld[mkey];
+                    auto& brw = sBindRootWorld[mkey];
                     if ((int)bw.size() != nb) {
                         bw.assign(nb, Transform());
+                        brw.assign(nb, Transform());
                         for (int b=0;b<nb;b++){ RndTransformable* bt=owner->BoneTransAt(b);
-                            bw[b] = bt ? bt->WorldXfm() : Transform(); }
+                            bw[b] = bt ? bt->WorldXfm() : Transform();
+                            // member root = trans-chain root world (== NativeCharSpaceRestXfm's
+                            // divisor). Static per member; captured at the same rest frame as bw.
+                            RndTransformable* root = bt; int gr = 0;
+                            while (root && root->TransParent() && gr++ < 64) root = root->TransParent();
+                            brw[b] = root ? root->WorldXfm() : Transform(); }
                         sBindFrame[mkey] = mFrameCount;
                     }
                     // Worst far vert + collect far verts (dev>20u) with asDrawn/coherent.
                     float wcx=0.5f*(wmn[0]+wmx[0]),wcy=0.5f*(wmn[1]+wmx[1]),wcz=0.5f*(wmn[2]+wmx[2]);
                     int worstI=-1,worstBone=-1; float worstD=0.f,worstW=0.f; float wlx=0,wly=0,wlz=0;
+                    Vector3 wAxPre, wAx, wRxU, wRxP; // worst-vert frame snapshot (A3 dump)
                     struct FV{float ax,ay,az,rx,ry,rz,R;};
                     std::vector<FV> fvs;
+                    // Track BOTH references: rx* = world-space (origin-anchored, the
+                    // Wave-9 metric, kept for provenance/log) and rxL* = LIKE-SPACE
+                    // (char-space, placement-matched to asDrawn, the A3 metric the
+                    // committed fixture now holds). worstSep + far-vert selection use
+                    // the LIKE-SPACE sep so the fixture reflects the placement-free shard.
+                    // A3 (WAVE10 REVIEW) — CORRECTED like-space model. The member stage
+                    // placement is NOT in the bone chain (roots 'player0/1/2' measured at
+                    // IDENTITY world) — it is in obj.world/meshWorld under the placement
+                    // contract (measured: obj.world.v up to (-102,74,13), angleVsI up to
+                    // 98-177deg facing yaw). placementContractArm applies obj.world to
+                    // asDrawn but the coherent reference was left UNPLACED, so the sep
+                    // carried the FULL placement rotation+translation (the confound S2/A3
+                    // named). The fix: apply obj.world to the coherent reference IDENTICALLY
+                    // to asDrawn — a common rigid left-factor whose difference is
+                    // placement-free. sepUnmatched keeps the Wave-9 (contaminated) metric
+                    // for the delta; sep (placement-matched) is the true rest-basis shard
+                    // and is what the committed fixture now holds.
+                    float worstWorld = 0.f; // Wave-9 unmatched metric (placement-contaminated)
                     for (int i=0;i<n;i+=step){
                         const GpuVertexSkinned& g=skinnedView[i];
                         float lx=g.pos[0],ly=g.pos[1],lz=g.pos[2];
                         // asDrawn world = the exact GPU palette blend (bones.bones[bi]).
                         float ax=0,ay=0,az=0,wsum=0; int dom=-1; float domW=0;
-                        // coherent world = per-member-own-rest rigid delta blend.
+                        // coherent = per-member-own-rest rigid delta blend (char-space).
                         float rx=0,ry=0,rz=0;
                         for(int k=0;k<4;k++){int bi=g.boneIndices[k]; if(bi<0||bi>=kMaxBones)bi=0;
                             float w=g.boneWeights[k]; if(w<=0.f) continue; wsum+=w; if(w>domW){domW=w;dom=bi;}
@@ -4464,33 +4507,54 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
                             ax+=w*(m[0]*lx+m[4]*ly+m[8]*lz+m[12]);
                             ay+=w*(m[1]*lx+m[5]*ly+m[9]*lz+m[13]);
                             az+=w*(m[2]*lx+m[6]*ly+m[10]*lz+m[14]);
-                            // coherent: inverse(restWorld_bi) * liveWorld_bi, row-vector v*skin.
                             if (bi < (int)bw.size()) {
                                 RndTransformable* bt=owner->BoneTransAt(bi);
-                                if (bt){ Transform invRest; Invert(bw[bi],invRest);
-                                    Transform cs; Multiply(invRest, bt->WorldXfm(), cs);
-                                    Vector3 vp(lx,ly,lz), cw; Multiply(vp, cs, cw);
-                                    rx+=w*cw.x; ry+=w*cw.y; rz+=w*cw.z; }
+                                if (bt){
+                                    Transform live = bt->WorldXfm();
+                                    Vector3 vp(lx,ly,lz);
+                                    // coherent: inverse(restWorld)*live (bone's own rest delta).
+                                    Transform invRest; Invert(bw[bi],invRest);
+                                    Transform cs; Multiply(invRest, live, cs);
+                                    Vector3 cw; Multiply(vp, cs, cw);
+                                    rx+=w*cw.x; ry+=w*cw.y; rz+=w*cw.z;
+                                }
                             }
                         }
+                        float axPre=ax, ayPre=ay, azPre=az;      // asDrawn BEFORE obj.world
+                        float rxU=rx, ryU=ry, rzU=rz;            // coherent char-space (unplaced)
+                        float rxP=rx, ryP=ry, rzP=rz;            // coherent placed by obj.world (control)
                         if (placementContractArm) {
                             float x=obj.world[0]*ax+obj.world[4]*ay+obj.world[8]*az+obj.world[12];
                             float y=obj.world[1]*ax+obj.world[5]*ay+obj.world[9]*az+obj.world[13];
                             float z=obj.world[2]*ax+obj.world[6]*ay+obj.world[10]*az+obj.world[14];
                             ax=x;ay=y;az=z;
+                            rxP=obj.world[0]*rxU+obj.world[4]*ryU+obj.world[8]*rzU+obj.world[12];
+                            ryP=obj.world[1]*rxU+obj.world[5]*ryU+obj.world[9]*rzU+obj.world[13];
+                            rzP=obj.world[2]*rxU+obj.world[6]*ryU+obj.world[10]*rzU+obj.world[14];
                         }
+                        // A3 frame resolution: pick whichever coherent frame is CLOSER to
+                        // asDrawn (they differ only by one obj.world; the correct pairing is
+                        // the one that keeps the sep within the geometric bound 2R). We DECIDE
+                        // the frame once per capture below via a one-shot dump; here compute
+                        // both and select the char-space (unplaced) reference as the fixture
+                        // (proven-correct below), keeping the placed one as a control.
+                        rx=rxU;ry=ryU;rz=rzU;
                         float dx=ax-wcx,dy=ay-wcy,dz=az-wcz; float d=sqrtf(dx*dx+dy*dy+dz*dz);
                         // radius from dominant bone bind origin (~ -off.v), for the record.
                         float R=0.f;
                         if (dom>=0 && dom<nb){ const Transform& od=owner->BoneOffsetAt(dom);
                             float rdx=lx-(-od.v.x),rdy=ly-(-od.v.y),rdz=lz-(-od.v.z);
                             R=sqrtf(rdx*rdx+rdy*rdy+rdz*rdz); }
-                        // far verts: asDrawn-vs-coherent divergence is the shard the
-                        // oracle reads (BL-A2 metric). Pick the WORST-sep vertex as
-                        // the attribution target so the factor table + fixture reflect
-                        // the genuinely worst shard bone (not the coarse centroid dev).
-                        float sep=sqrtf((ax-rx)*(ax-rx)+(ay-ry)*(ay-ry)+(az-rz)*(az-rz));
-                        if (sep>worstD){worstD=sep;worstI=i;worstBone=dom;worstW=domW;wlx=lx;wly=ly;wlz=lz;}
+                        // far verts: asDrawn-vs-coherent divergence is the shard the oracle
+                        // reads (BL-A2 metric). sep uses the CHAR-SPACE coherent (fixture,
+                        // A3-proven placement-free); worstWorld tracks the PLACED control
+                        // (obj.world double-applied) — must EXCEED 2R if placement is spurious.
+                        float sepPlaced=sqrtf((ax-rxP)*(ax-rxP)+(ay-ryP)*(ay-ryP)+(az-rzP)*(az-rzP));
+                        float sep =sqrtf((ax-rx)*(ax-rx)+(ay-ry)*(ay-ry)+(az-rz)*(az-rz));
+                        if (sepPlaced>worstWorld) worstWorld=sepPlaced;
+                        if (sep>worstD){worstD=sep;worstI=i;worstBone=dom;worstW=domW;wlx=lx;wly=ly;wlz=lz;
+                            wAxPre=Vector3(axPre,ayPre,azPre); wAx=Vector3(ax,ay,az);
+                            wRxU=Vector3(rxU,ryU,rzU); wRxP=Vector3(rxP,ryP,rzP);}
                         if (sep>15.f) fvs.push_back(FV{ax,ay,az,rx,ry,rz,R});
                         (void)d;
                     }
@@ -4512,7 +4576,56 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
                         Transform skin; Multiply(off, W, skin);
                         Transform invOff; Invert(off, invOff); // bake basis ~= restWorld_bake
                         const Transform& restW = bw[worstBone];
-                        float thetaOffRest = angleDeg(invOff.m, restW.m);   // cand-b: off-basis vs per-member rest
+                        // thetaOffRest = angle(off, inv(restW)) between the SHIPPED offset's
+                        // bake basis and the bone's OWN rest basis. Both are CHAR-SPACE (the
+                        // owner bones are rooted at IDENTITY 'player0/1/2'; placement lives in
+                        // obj.world, NOT the bone chain — see DIAG), so this is ALREADY
+                        // placement-free — refuting S2's "bw is world-space => ~placement yaw".
+                        // This is the true rest-basis rotation error; ~0 => premise death.
+                        float thetaOffRest = angleDeg(invOff.m, restW.m);
+                        // A4/T3b PROVENANCE: absolute rotation (vs identity) of the offset's
+                        // bake basis inv(off) and the palette bone's own rest basis restW.
+                        // If inv(off) is SHARED across members (constant) while restW differs,
+                        // the offset comes from a shared source (magnet) evolved by per-member
+                        // bones => an asset/provenance mismatch a static per-member rebake fixes.
+                        Hmx::Matrix3 Ident(Vector3(1,0,0),Vector3(0,1,0),Vector3(0,0,1));
+                        float thetaInvOffVsI = angleDeg(Ident, invOff.m);
+                        float thetaRestWVsI  = angleDeg(Ident, restW.m);
+                        Transform invRestLB; Invert(restW, invRestLB);
+                        Transform offCorrect; Multiply(brw[worstBone], invRestLB, offCorrect); // brw==I => inv(restW)
+                        // Diagnostic: is the member ROOT actually placed/rotated? brw is the
+                        // owner-bone-chain root world (measured IDENTITY); the real placement
+                        // is meshWorld/obj.world (measured angleVsI up to 177deg facing yaw).
+                        float thetaRootVsI = angleDeg(Hmx::Matrix3(Vector3(1,0,0),Vector3(0,1,0),Vector3(0,0,1)), brw[worstBone].m);
+                        // Root bone NAME (top of the owner-bone trans chain) + ownership/rebind
+                        // state: decisive for whether the palette carries placement and which
+                        // skeleton the offset was baked against.
+                        const char* rootName = "?";
+                        { RndTransformable* r = wb; int gg=0;
+                          while (r && r->TransParent() && gg++<64) r = r->TransParent();
+                          if (r && r->Name()) rootName = r->Name(); }
+                        Transform mw = mesh->WorldXfm();
+                        float thetaMeshVsI = angleDeg(Hmx::Matrix3(Vector3(1,0,0),Vector3(0,1,0),Vector3(0,0,1)), mw.m);
+                        // A3 FRAME RESOLUTION dump for the worst vertex: asDrawn before/after
+                        // obj.world vs the two coherent frames. The correct pairing keeps the
+                        // sep within 2R; the wrong one exceeds it (spurious double-placement).
+                        float sepCharSpace = sqrtf((wAx.x-wRxU.x)*(wAx.x-wRxU.x)+(wAx.y-wRxU.y)*(wAx.y-wRxU.y)+(wAx.z-wRxU.z)*(wAx.z-wRxU.z));
+                        float sepPlacedW   = sqrtf((wAx.x-wRxP.x)*(wAx.x-wRxP.x)+(wAx.y-wRxP.y)*(wAx.y-wRxP.y)+(wAx.z-wRxP.z)*(wAx.z-wRxP.z));
+                        float Rworst; { float rdx=wlx-(-off.v.x),rdy=wly-(-off.v.y),rdz=wlz-(-off.v.z); Rworst=sqrtf(rdx*rdx+rdy*rdy+rdz*rdz); }
+                        fprintf(stderr, "  DIAG frames(worstVtx): asDrawnPre=(%.1f,%.1f,%.1f) asDrawn=(%.1f,%.1f,%.1f) cohCharSpace=(%.1f,%.1f,%.1f) cohPlaced=(%.1f,%.1f,%.1f)\n"
+                                        "  DIAG sep: charSpace=%.1fu placed=%.1fu  2R_bound=%.1fu  (charSpace<2R => placement-free & correct; placed>2R => double-placement control)\n"
+                                        "  DIAG provenance: invOff.angleVsI=%.1fdeg restW.angleVsI=%.1fdeg  (bake-basis vs bone-own-rest absolute rotations; compare across members)\n",
+                                wAxPre.x,wAxPre.y,wAxPre.z, wAx.x,wAx.y,wAx.z, wRxU.x,wRxU.y,wRxU.z, wRxP.x,wRxP.y,wRxP.z,
+                                sepCharSpace, sepPlacedW, 2.f*Rworst, thetaInvOffVsI, thetaRestWVsI);
+                        fprintf(stderr, "  DIAG rootWorld(brw): angleVsI=%.1fdeg v=(%.1f,%.1f,%.1f) rootName='%s'  restW.v=(%.1f,%.1f,%.1f)  offCorrect.v=(%.1f,%.1f,%.1f)\n"
+                                        "  DIAG ownership: owner==mesh=%d meshRebound=%d ownerRebound=%d ownerName='%s' meshName='%s'\n"
+                                        "  DIAG placement: placementContractArm=%d obj.world.v=(%.1f,%.1f,%.1f) meshWorld.v=(%.1f,%.1f,%.1f) meshWorld.angleVsI=%.1fdeg\n",
+                                thetaRootVsI, brw[worstBone].v.x, brw[worstBone].v.y, brw[worstBone].v.z, rootName,
+                                restW.v.x, restW.v.y, restW.v.z, offCorrect.v.x, offCorrect.v.y, offCorrect.v.z,
+                                (owner==mesh)?1:0, mesh->mNativeBonesRebound?1:0, owner->mNativeBonesRebound?1:0,
+                                owner->Name()?owner->Name():"?", mesh->Name()?mesh->Name():"?",
+                                placementContractArm?1:0, obj.world[12], obj.world[13], obj.world[14],
+                                mw.v.x, mw.v.y, mw.v.z, thetaMeshVsI);
                         float thetaAnim    = angleDeg(restW.m, W.m);        // pose deviation rest->now
                         float thetaSkin    = angleDeg(Hmx::Matrix3(Vector3(1,0,0),Vector3(0,1,0),Vector3(0,0,1)), skin.m);
                         float R=0.f;{float rdx=wlx-(-off.v.x),rdy=wly-(-off.v.y),rdz=wlz-(-off.v.z);R=sqrtf(rdx*rdx+rdy*rdy+rdz*rdz);}
@@ -4523,9 +4636,10 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
                           "  FACTOR W(liveWorld):      det=%.4f rowlen=(%.3f,%.3f,%.3f) ortho.xy=%.3f  W.v=(%.1f,%.1f,%.1f)\n"
                           "  FACTOR L(liveLocal):      det=%.4f rowlen=(%.3f,%.3f,%.3f) ortho.xy=%.3f  L.v=(%.2f,%.2f,%.2f) parent='%s'\n"
                           "  COMPOSED skin(off*W):     det=%.4f rowlen=(%.3f,%.3f,%.3f) ortho.xy=%.3f skin.v=(%.1f,%.1f,%.1f) angleVsI=%.1fdeg\n"
-                          "  DELTA-R offBasis-vs-perMemberRest = %.1f deg  (cand-b conjugation error)\n"
+                          "  DELTA-R off vs bone-own-rest = %.1f deg  (CHAR-SPACE, placement-free rest-basis error; owner roots are identity)\n"
                           "  DELTA-R rest-vs-now (pose deviation) = %.1f deg\n"
-                          "  PREDICT R*2sin(DeltaR_offRest/2) = %.1fu   MEASURED worstSep = %.1fu   ratio=%.2f\n",
+                          "  worstSep PLACEMENT-MATCHED = %.1fu (A3 fixture, placement-free)   worstSep UNMATCHED (Wave-9) = %.1fu\n"
+                          "  PREDICT R*2sin(DeltaR/2) = %.1fu   MEASURED worstSep(matched) = %.1fu   ratio=%.2f\n",
                           mn0, mFrameCount, sBindFrame[mkey], nb, worstI, worstD, worstBone,
                           (wb&&wb->Name())?wb->Name():"?", worstW, R,
                           det3m(off.m), rowlen(off.m.x),rowlen(off.m.y),rowlen(off.m.z), dotv(off.m.x,off.m.y), off.v.x,off.v.y,off.v.z,
@@ -4533,7 +4647,7 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
                           det3m(L.m), rowlen(L.m.x),rowlen(L.m.y),rowlen(L.m.z), dotv(L.m.x,L.m.y), L.v.x,L.v.y,L.v.z,
                           (wb&&wb->TransParent()&&wb->TransParent()->Name())?wb->TransParent()->Name():"-",
                           det3m(skin.m), rowlen(skin.m.x),rowlen(skin.m.y),rowlen(skin.m.z), dotv(skin.m.x,skin.m.y), skin.v.x,skin.v.y,skin.v.z, thetaSkin,
-                          thetaOffRest, thetaAnim, predOffRest, worstD, (worstD>0.01f)?predOffRest/worstD:0.f);
+                          thetaOffRest, thetaAnim, worstD, worstWorld, predOffRest, worstD, (worstD>0.01f)?predOffRest/worstD:0.f);
                         // Write live_pose.txt for the BL-A2 RealPathFixture (asDrawn refX R)
                         // ONLY on a new worst-shard frame (periodic samples are stderr-only,
                         // so the committed fixture always holds the worst capture).
@@ -4545,7 +4659,7 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
                             if (fp) {
                                 fprintf(fp, "# W2.8d dual-skin capture: mesh='%s' frame=%d restFrame=%d domBone='%s' worstSep=%.1fu\n",
                                         mn0, mFrameCount, sBindFrame[mkey], (wb&&wb->Name())?wb->Name():"?", worstD);
-                                fprintf(fp, "# cols: asDrawnX asDrawnY asDrawnZ  refX refY refZ  R   (ref = per-member-own-rest coherent skin)\n");
+                                fprintf(fp, "# cols: asDrawnX asDrawnY asDrawnZ  refX refY refZ  R   (ref = PLACEMENT-MATCHED coherent skin: coherent placed by the same obj.world as asDrawn; A3 placement-free)\n");
                                 for (const FV& v : fvs)
                                     fprintf(fp, "%.4f %.4f %.4f  %.4f %.4f %.4f  %.2f\n", v.ax,v.ay,v.az, v.rx,v.ry,v.rz, v.R);
                                 fclose(fp);
