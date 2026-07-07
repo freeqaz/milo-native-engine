@@ -515,6 +515,20 @@
   "default": "off",
   "read": "value"
  },
+ "RB3_DRAWLOG_PROV": {
+  "class": "probe",
+  "owner": "render/ui-forensics",
+  "faithfulStatus": "n/a: W17 R3-UIDUMP provenance sidecar for the draw-log ring (mesh/mat/cam names, screen rect, render-pass idx + depth LoadOp, game-fed panel/owner scope). Implies RB3_DRAWLOG on; render output byte-identical.",
+  "default": "off",
+  "read": "presence"
+ },
+ "RB3_MENU_DEPTH_CLEAR": {
+  "class": "probe",
+  "owner": "render/ui-forensics",
+  "faithfulStatus": "n/a: W17 R3-UIDUMP G4 test knob — forces the Wave-14 menu-boundary re-open depth LoadOp back to Clear to re-manifest the SETLISTS red band on demand (RB3PostProc). Test-only; shipped default preserves LoadOp::Load.",
+  "default": "off",
+  "read": "presence"
+ },
  "RB3_DRAWORDER_TRACE": {
   "class": "probe",
   "owner": "render/determinism",

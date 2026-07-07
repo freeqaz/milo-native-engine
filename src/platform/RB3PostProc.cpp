@@ -89,8 +89,20 @@ void BandRnd::FlushPostProcMidFrame() {
     //    (menuBoundary=false) keeps LoadOp::Clear so the highway/HUD composite over
     //    venue geometry — byte-identical to before (the latch is never set outside
     //    the menu trigger). Stencil follows depth for the same reason.
-    const wgpu::LoadOp menuDepthOp =
+    wgpu::LoadOp menuDepthOp =
         menuBoundary ? wgpu::LoadOp::Load : wgpu::LoadOp::Clear;
+    // W17 R3-UIDUMP G4 test knob (RB3_MENU_DEPTH_CLEAR): force the menu-boundary
+    // re-open depth LoadOp back to Clear on demand, re-manifesting the Wave-14
+    // SETLISTS red band (z-occluded UI revealed). Test-only, default-OFF; the
+    // shipped state preserves LoadOp::Load at the boundary. Cached getenv.
+    if (menuBoundary) {
+        static int sMenuDepthClear = -1;
+        if (sMenuDepthClear < 0) {
+            const char* e = getenv("RB3_MENU_DEPTH_CLEAR");
+            sMenuDepthClear = (e && e[0] && e[0] != '0') ? 1 : 0;
+        }
+        if (sMenuDepthClear) menuDepthOp = wgpu::LoadOp::Clear;
+    }
 
     wgpu::RenderPassColorAttachment colorAtt{};
     colorAtt.view = mFrameView;
@@ -111,6 +123,10 @@ void BandRnd::FlushPostProcMidFrame() {
 
     mPass = mEncoder.BeginRenderPass(&rp);
     mInPass = true;
+    // W17 R3-UIDUMP: note this pass + its EFFECTIVE depth LoadOp (0 Clear, 1 Load)
+    // for the provenance sidecar — so /api/uidump reports whether a menu-boundary
+    // draw's pass cleared or preserved depth (the G4 red-band diagnosis datum).
+    ProvNotePassOpen(menuDepthOp == wgpu::LoadOp::Clear ? 0 : 1);
     mPass.SetBindGroup(0, mActiveScene.group, 0, nullptr);
     mLastSceneCam = nullptr;   // next DrawMesh re-resolves the active cam
 

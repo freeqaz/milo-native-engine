@@ -1484,6 +1484,10 @@ RB3SceneBinding BandRnd::WriteSceneUniforms(RndCam* cam) {
     }
 
     std::memcpy(s.viewProj, viewProj, sizeof(viewProj));
+    // W17 R3-UIDUMP: retain a CPU copy of this cam's viewProj for the provenance
+    // sidecar's screen-rect projection (RecordDrawProv). Gated for zero-delta
+    // discipline; column-major, same layout the GPU consumes.
+    if (ProvOn()) std::memcpy(mActiveViewProjCpu, viewProj, sizeof(viewProj));
     s.cameraPos[0] = camPos[0]; s.cameraPos[1] = camPos[1]; s.cameraPos[2] = camPos[2];
 
     // Lighting. Default (non-venue cams): one white directional + 0.45 grey ambient
@@ -1872,6 +1876,12 @@ void BandRnd::BeginFrame(RndCam* cam) {
     // allocation) unless RB3_DRAWLOG recording is active; reserve(512) is done
     // lazily on first push in RecordDrawLog.
     mDrawLog.clear();
+    // W17 R3-UIDUMP: drop last frame's provenance sidecar + reset the per-frame
+    // render-pass sequence. Stays empty (no allocation) unless RB3_DRAWLOG_PROV.
+    mDrawProv.clear();
+    mProvPassCounter = 0;
+    mProvCurPassIdx = 0;
+    mProvCurPassDepthOp = 0;
 
     mFrameView = mGpu.IsHeadless() ? mGpu.AcquireHeadlessFrame() : mGpu.AcquireNextFrame();
     if (!mFrameView) { fprintf(stderr, "BandRnd: frame acquire failed\n"); return; }
@@ -1934,6 +1944,7 @@ void BandRnd::BeginFrame(RndCam* cam) {
 
     mPass = mEncoder.BeginRenderPass(&rp);
     mInPass = true;
+    ProvNotePassOpen(0);  // W17 R3-UIDUMP: depthLoadOp = Clear
     mPass.SetBindGroup(0, mActiveScene.group, 0, nullptr);
 
     // Dispatch the engine's pre-clear render-to-texture pass once the main pass is
@@ -2245,6 +2256,7 @@ void BandRnd::BeginDrawTarget(RndTex* tex) {
 
     mPass = mEncoder.BeginRenderPass(&rp);
     mInPass = true;
+    ProvNotePassOpen(2);  // W17 R3-UIDUMP: no depth attachment
     mPass.SetBindGroup(0, mActiveScene.group, 0, nullptr);
     mRtActiveTex = tex;
     // Force the next DrawMesh to RE-RESOLVE and re-write the scene uniforms for the
@@ -2297,6 +2309,7 @@ void BandRnd::EndDrawTarget() {
 
     mPass = mEncoder.BeginRenderPass(&rp);
     mInPass = true;
+    ProvNotePassOpen(1);  // W17 R3-UIDUMP: depthLoadOp = Load (resumed pass)
     // The cam was restored to the prior scene cam (current->Select()) after the
     // RT draw; force a scene-uniform re-write on the next DrawMesh by clearing
     // the staleness latch, then bind the existing scene group for now.
@@ -2347,6 +2360,7 @@ void BandRnd::ClearDepthForOverlay() {
 
     mPass = mEncoder.BeginRenderPass(&rp);
     mInPass = true;
+    ProvNotePassOpen(0);  // W17 R3-UIDUMP: depthLoadOp = Clear
     mPass.SetBindGroup(0, mActiveScene.group, 0, nullptr);
     mLastSceneCam = nullptr;
 }
@@ -5388,6 +5402,12 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
                       ctx.obj.Get(), ctx.bone.Get(), ctx.indexCount, (uint32_t)nf,
                       (uint32_t)(meshEntry.fpVerts > 0 ? meshEntry.fpVerts : 0),
                       skinned, mesh->Name());
+    // W17 R3-UIDUMP provenance sidecar, index-aligned with the ring above (ProvOn()
+    // implies DrawLogOn(), so the push order is: RecordDrawLog then RecordDrawProv).
+    // boundColor = the effective post-binder material color (UI text floor applied)
+    // that was just written to this draw's material uniform buffer (mu.color).
+    if (ProvOn())
+        RecordDrawProv(mesh, mat, mu.color, skinned, ctx.world);
 }
 
 // ===========================================================================
@@ -5417,12 +5437,171 @@ static uint64_t RB3DrawLogFnv1a(const char* s) {
 bool BandRnd::DrawLogOn() const {
     // Cached env gate: getenv once, then a plain int test on the hot path. ORed
     // with the debug override so gtests can force recording without an env var.
+    // ALSO ORed with ProvOn(): RB3_DRAWLOG_PROV implies the ring is recording, so
+    // the sidecar (filled only when ProvOn) stays index-aligned with mDrawLog.
     static int sEnabled = -1;
     if (sEnabled < 0) {
         const char* e = getenv("RB3_DRAWLOG");
         sEnabled = (e && e[0] && e[0] != '0') ? 1 : 0;
     }
-    return sEnabled != 0 || mDrawLogForced;
+    return sEnabled != 0 || mDrawLogForced || ProvOn();
+}
+
+// W17 R3-UIDUMP: cached RB3_DRAWLOG_PROV gate. Implies DrawLogOn() (above), so
+// mDrawLog and mDrawProv are pushed together in DrawMesh at the same index.
+bool BandRnd::ProvOn() const {
+    static int sProv = -1;
+    if (sProv < 0) {
+        const char* e = getenv("RB3_DRAWLOG_PROV");
+        sProv = (e && e[0] && e[0] != '0') ? 1 : 0;
+    }
+    return sProv != 0;
+}
+
+// Free-function form of the same cached gate, for the RB3DrawLogDebug.h scope API
+// (which has no BandRnd instance in scope). Same env, same cache semantics.
+bool RB3DrawProvEnabled() {
+    static int sProv = -1;
+    if (sProv < 0) {
+        const char* e = getenv("RB3_DRAWLOG_PROV");
+        sProv = (e && e[0] && e[0] != '0') ? 1 : 0;
+    }
+    return sProv != 0;
+}
+
+const std::vector<RB3DrawProv>& RB3DebugGetDrawProv() {
+    return gBandRnd.mDrawProv;
+}
+
+// --- Provenance scope stack (engine-owned, game-fed via RB3DrawLogDebug.h) ----
+// Single render thread, so a plain file-static stack is sufficient (no TLS). Two
+// independent stacks keyed by kind so an OWNER push/pop nested inside a PANEL
+// push/pop cannot corrupt the panel top. NO-OP (one cached branch) when prov off.
+namespace {
+std::vector<std::string> sProvScopePanel;   // kind 0
+std::vector<std::string> sProvScopeOwner;   // kind 1
+}
+void RB3DrawScopePush(int kind, const char* name) {
+    if (!RB3DrawProvEnabled()) return;
+    std::vector<std::string>& s = (kind == 0) ? sProvScopePanel : sProvScopeOwner;
+    s.emplace_back(name ? name : "");
+}
+void RB3DrawScopePop(int kind) {
+    if (!RB3DrawProvEnabled()) return;
+    std::vector<std::string>& s = (kind == 0) ? sProvScopePanel : sProvScopeOwner;
+    if (!s.empty()) s.pop_back();
+}
+
+// Note a render-pass open for the prov sidecar. NO-OP when prov off. depthLoadOp:
+// 0 Clear, 1 Load, 2 none. Assigns this pass the next monotonic index; RecordDraw-
+// Prov snapshots the current (idx, op) per draw.
+void BandRnd::ProvNotePassOpen(int depthLoadOp) {
+    if (!ProvOn()) return;
+    mProvCurPassIdx = mProvPassCounter++;
+    mProvCurPassDepthOp = (uint8_t)depthLoadOp;
+}
+
+// Project a mesh-local position through world -> viewProj -> screen pixels. Both
+// matrices column-major (WGSL convention: clip = viewProj * (world * pos)).
+// Returns false if the point is at/behind the camera (clip.w <= eps).
+static bool RB3ProvProjectToScreen(const float world[16], const float vp[16],
+                                   float lx, float ly, float lz,
+                                   float vpW, float vpH, float& px, float& py) {
+    // worldPos = world * [lx,ly,lz,1]  (column-major mat*vec)
+    float wx = world[0]*lx + world[4]*ly + world[8]*lz  + world[12];
+    float wy = world[1]*lx + world[5]*ly + world[9]*lz  + world[13];
+    float wz = world[2]*lx + world[6]*ly + world[10]*lz + world[14];
+    float ww = world[3]*lx + world[7]*ly + world[11]*lz + world[15];
+    if (ww != 0.f && ww != 1.f) { wx /= ww; wy /= ww; wz /= ww; }
+    // clip = viewProj * [wx,wy,wz,1]
+    float cx = vp[0]*wx + vp[4]*wy + vp[8]*wz  + vp[12];
+    float cy = vp[1]*wx + vp[5]*wy + vp[9]*wz  + vp[13];
+    float cw = vp[3]*wx + vp[7]*wy + vp[11]*wz + vp[15];
+    if (cw <= 1e-4f) return false;                 // at/behind camera
+    float ndcx = cx / cw, ndcy = cy / cw;          // WebGPU NDC, y up
+    px = (ndcx * 0.5f + 0.5f) * vpW;
+    py = (0.5f - ndcy * 0.5f) * vpH;               // framebuffer y down
+    return true;
+}
+
+void BandRnd::RecordDrawProv(RndMesh* mesh, RndMat* mat, const float boundColor[4],
+                             bool skinned, const float world[16]) {
+    if (mDrawProv.capacity() == 0) mDrawProv.reserve(512);
+    RB3DrawProv p;
+    p.meshName    = (mesh && mesh->Name()) ? mesh->Name() : "";
+    p.matName     = (mat && mat->Name()) ? mat->Name() : "";
+    RndCam* cam   = RndCam::sCurrent;
+    p.camName     = (cam && cam->Name()) ? cam->Name() : "";
+    RndTransformable* tp = mesh ? mesh->TransParent() : nullptr;
+    p.transParent = (tp && tp->Name()) ? tp->Name() : "";
+    p.scopePanel  = sProvScopePanel.empty() ? std::string() : sProvScopePanel.back();
+    p.scopeOwner  = sProvScopeOwner.empty() ? std::string() : sProvScopeOwner.back();
+    // authored material color
+    if (mat) {
+        const Hmx::Color& c = mat->GetColor();
+        p.matColor[0]=c.red; p.matColor[1]=c.green; p.matColor[2]=c.blue; p.matColor[3]=c.alpha;
+    } else { p.matColor[0]=p.matColor[1]=p.matColor[2]=p.matColor[3]=1.f; }
+    for (int i=0;i<4;i++) p.boundColor[i] = boundColor ? boundColor[i] : 1.f;
+    // pass state snapshot
+    p.passIdx         = mProvCurPassIdx;
+    p.passDepthLoadOp = mProvCurPassDepthOp;
+    // Screen-rect projection. Viewport = current framebuffer size (headless: fixed
+    // WindowWidth/Height; on-screen: live). CPU verts are exact for static UI
+    // quads/glyphs; skinned meshes are pre-skin -> sphere fallback.
+    float vpW = (float)mGpu.WindowWidth(), vpH = (float)mGpu.WindowHeight();
+    if (vpW < 1.f) vpW = 1.f; if (vpH < 1.f) vpH = 1.f;
+    float minx=1e30f, miny=1e30f, maxx=-1e30f, maxy=-1e30f;
+    bool anyBehind = false, gotAny = false;
+    uint8_t kind = 2;
+    RndMesh::VertVector* vv = (mesh && !skinned) ? &mesh->Verts() : nullptr;
+    if (vv && !vv->empty() && vv->size() <= 4096) {
+        kind = 0;
+        int n = vv->size();
+        for (int i = 0; i < n; ++i) {
+            const Vector3& pos = (*vv)[i].pos;
+            float sx, sy;
+            if (RB3ProvProjectToScreen(world, mActiveViewProjCpu, pos.x, pos.y, pos.z,
+                                       vpW, vpH, sx, sy)) {
+                if (sx<minx)minx=sx; if(sy<miny)miny=sy; if(sx>maxx)maxx=sx; if(sy>maxy)maxy=sy;
+                gotAny = true;
+            } else anyBehind = true;
+        }
+    } else if (mesh) {
+        // Sphere-fallback (static RB3 meshes retain no CPU verts past GPU upload).
+        // Project the 8 corners of the local center+-radius box and accumulate the
+        // bbox over the corners IN FRONT of the camera. This preserves aspect (a
+        // wide-short bar reads wide-short, not square) — unlike a center+radius
+        // square. Corners that cross the near plane are simply skipped: the
+        // in-front bbox stays POSITIONED (an under-bound, never full-viewport). Loose
+        // vs exact CPU verts, but correctly placed for the ROI instrument.
+        kind = 1;
+        const Sphere& sp = mesh->GetSphere();
+        float r = sp.radius > 0.f ? sp.radius : 1.f;
+        for (int c = 0; c < 8; ++c) {
+            float ox = (c&1)? r : -r, oy = (c&2)? r : -r, oz = (c&4)? r : -r;
+            float sx, sy;
+            if (RB3ProvProjectToScreen(world, mActiveViewProjCpu,
+                                       sp.center.x+ox, sp.center.y+oy, sp.center.z+oz,
+                                       vpW, vpH, sx, sy)) {
+                if (sx<minx)minx=sx; if(sy<miny)miny=sy; if(sx>maxx)maxx=sx; if(sy>maxy)maxy=sy;
+                gotAny = true;
+            } else anyBehind = true;
+        }
+    }
+    (void)anyBehind;   // behind corners are skipped, not a full-viewport trigger
+    if (gotAny) {
+        // Clamp the (possibly partial) in-front bbox to the viewport. Positioned +
+        // aspect-preserving; rectKind records exact-vert (0) vs sphere (1).
+        if (minx < 0) minx = 0; if (miny < 0) miny = 0;
+        if (maxx > vpW) maxx = vpW; if (maxy > vpH) maxy = vpH;
+        p.rect[0]=minx; p.rect[1]=miny; p.rect[2]=maxx-minx; p.rect[3]=maxy-miny;
+        p.rectKind = kind;
+    } else {
+        // Nothing projected in front of the camera -> unavailable (w<0 sentinel).
+        p.rect[0]=p.rect[1]=0; p.rect[2]=-1; p.rect[3]=-1;
+        p.rectKind = 2;
+    }
+    mDrawProv.push_back(std::move(p));
 }
 
 void BandRnd::RecordDrawLog(const PipelineKey& key, const float world[16],

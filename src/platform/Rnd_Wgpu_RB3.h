@@ -490,6 +490,33 @@ public:
     // RB3_DRAWLOG_DUMP path (default drawlog.json in cwd). Called from EndFrame.
     void DumpDrawLog();
 
+    // W17 R3-UIDUMP provenance sidecar (RB3_DRAWLOG_PROV). Parallel to mDrawLog,
+    // one entry per record at the same index; filled by RecordDrawProv from
+    // DrawMesh only when ProvOn(). Cleared each BeginFrame with mDrawLog. See
+    // RB3DrawLogDebug.h for the data contract. INERT when prov off (empty vector,
+    // ProvOn() is a cached-static branch).
+    std::vector<RB3DrawProv> mDrawProv;
+    // Cached RB3_DRAWLOG_PROV gate (implies DrawLogOn()).
+    bool ProvOn() const;
+    // Capture one provenance sidecar entry for the draw RecordDrawLog just pushed.
+    // Reads mesh/mat names + RndCam::sCurrent, projects the mesh bbox to screen px
+    // via mActiveViewProjCpu, and snapshots the current pass + scope-stack state.
+    void RecordDrawProv(RndMesh* mesh, RndMat* mat, const float boundColor[4],
+                        bool skinned, const float world[16]);
+    // CPU copy of the last WriteSceneUniforms viewProj (column-major) + cam name,
+    // for RecordDrawProv's screen-rect projection. Written only when ProvOn().
+    float       mActiveViewProjCpu[16] = {0};
+    // Frame-monotonic render-pass bookkeeping for the prov sidecar. Reset in
+    // BeginFrame; ProvNotePassOpen bumps the counter + records the depth LoadOp at
+    // each BeginRenderPass site. RecordDrawProv snapshots the CURRENT pass.
+    uint16_t    mProvPassCounter   = 0;   // next passIdx to assign
+    uint16_t    mProvCurPassIdx    = 0;   // idx of the pass currently open
+    uint8_t     mProvCurPassDepthOp = 0;  // 0 Clear / 1 Load / 2 none
+    // Note a render-pass open for the prov sidecar. depthLoadOp: 0 Clear, 1 Load,
+    // 2 none (no depth attachment). No-op when prov off. Called at each
+    // BeginRenderPass site (Rnd_Wgpu_RB3 + RB3PostProc).
+    void ProvNotePassOpen(int depthLoadOp);
+
     bool mGpuReady = false;
     bool mPreInited = false;
     bool mPipelinesPrewarmed = false;  // A5 one-shot pipeline pre-warm guard
