@@ -69,6 +69,22 @@ bool RB3UIPostGradeActive();
 void RB3SetMenuUIFlushPending();
 bool RB3ConsumeMenuUIFlushPending();
 
+// Wave-14 U-CLEAN: flush-ONLY menu-UI post-grade seam. The game-side venue->UI
+// boundary trigger (PanelDir::DrawShowing) calls this INSTEAD of the former
+// TheRnd->ClearDepthForOverlay() drive. It sets the menu-flush latch (so the
+// composite grades with venueGrade=false, the A5-safe Tier-1 menu semantic) and
+// drives BandRnd::FlushPostProcMidFrame() DIRECTLY — the mid-frame venue grade
+// with NO depth-clear side effect. ClearDepthForOverlay's else-branch cleared
+// depth+stencil per subsequent menu UI dir (the note-highway fallback), which on
+// song_select produced a visible red band on the SETLISTS row; driving the flush
+// directly removes it while keeping the hub grade-exemption win. Gated on
+// RB3_UI_POST_GRADE (default-OFF): a no-op when the flag is unset or rnd is null.
+// The flush is idempotent per frame (mPostProcFlushed) and early-returns when no
+// graded venue is pending, so extra menu dirs are safe. `rnd` is TheRnd, always a
+// BandRnd on the native backend. Declared with a forward Rnd (defined in Rnd.h).
+class Rnd;
+void RB3FlushMenuUIPostGrade(Rnd* rnd);
+
 // Stage-2 grade uniform block (ported from gfx/PostProcPass.cpp). Declared here
 // (not in RB3PostProc.cpp) because it is SHARED cross-TU: RunPostProcComposite
 // fills it, and the staying BandRnd::EnsureQuadPipeline in Rnd_Wgpu_RB3.cpp (→

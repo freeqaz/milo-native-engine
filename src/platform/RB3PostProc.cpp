@@ -77,6 +77,21 @@ void BandRnd::FlushPostProcMidFrame() {
     //    (drawn with their own game.cam) composite on top instead of being occluded
     //    by venue geometry depth. (Same suspend/resume contract as EndDrawTarget;
     //    depthClearValue must be finite for Dawn validation even with Load.)
+    //
+    //    Wave-14 U-CLEAN: at a MENU venue->UI boundary (menuBoundary — the
+    //    RB3_UI_POST_GRADE grade-exemption flush), re-open with depth LoadOp::Load
+    //    (PRESERVE the venue depth) instead of Clear. The menu win only needs the
+    //    COLOR composite (graded venue, UI ungraded on top); additionally CLEARING
+    //    depth reveals z-occluded menu UI — on song_select the SETLISTS-row
+    //    selection quad (occluded in the flag-OFF layering, only its right edge
+    //    poking past the album panel) drew full-width as a red band. Preserving
+    //    depth keeps occluded UI occluded and removes the band. Gameplay
+    //    (menuBoundary=false) keeps LoadOp::Clear so the highway/HUD composite over
+    //    venue geometry — byte-identical to before (the latch is never set outside
+    //    the menu trigger). Stencil follows depth for the same reason.
+    const wgpu::LoadOp menuDepthOp =
+        menuBoundary ? wgpu::LoadOp::Load : wgpu::LoadOp::Clear;
+
     wgpu::RenderPassColorAttachment colorAtt{};
     colorAtt.view = mFrameView;
     colorAtt.loadOp = wgpu::LoadOp::Load;    // preserve the graded venue blit
@@ -84,9 +99,9 @@ void BandRnd::FlushPostProcMidFrame() {
 
     wgpu::RenderPassDepthStencilAttachment depthAtt{};
     depthAtt.view = mDepthView;
-    depthAtt.depthLoadOp = wgpu::LoadOp::Clear; depthAtt.depthStoreOp = wgpu::StoreOp::Store;
+    depthAtt.depthLoadOp = menuDepthOp; depthAtt.depthStoreOp = wgpu::StoreOp::Store;
     depthAtt.depthClearValue = 1.0f;
-    depthAtt.stencilLoadOp = wgpu::LoadOp::Clear; depthAtt.stencilStoreOp = wgpu::StoreOp::Store;
+    depthAtt.stencilLoadOp = menuDepthOp; depthAtt.stencilStoreOp = wgpu::StoreOp::Store;
     depthAtt.stencilClearValue = 0;
 
     wgpu::RenderPassDescriptor rp{};
@@ -251,6 +266,19 @@ bool RB3ConsumeMenuUIFlushPending() {
     bool p = sMenuUIFlushPending;
     sMenuUIFlushPending = false;
     return p;
+}
+
+// Wave-14 U-CLEAN: flush-ONLY menu-UI post-grade seam (see RB3PostProc.h). Sets
+// the menu-flush latch and drives the mid-frame venue grade DIRECTLY, WITHOUT the
+// ClearDepthForOverlay else-branch depth-clear that produced the song_select red
+// band. `rnd` is TheRnd (a BandRnd on native); the direct FlushPostProcMidFrame
+// call consumes the latch at its top and early-returns when there is nothing to
+// flush, so a menu dir with no graded venue is a safe no-op. Default-OFF: gated on
+// RB3_UI_POST_GRADE via RB3UIPostGradeActive().
+void RB3FlushMenuUIPostGrade(Rnd* rnd) {
+    if (!RB3UIPostGradeActive() || !rnd) return;
+    RB3SetMenuUIFlushPending();
+    static_cast<BandRnd*>(rnd)->FlushPostProcMidFrame();
 }
 
 void BandRnd::RunPostProcComposite(wgpu::TextureView dst, bool venueGrade) {

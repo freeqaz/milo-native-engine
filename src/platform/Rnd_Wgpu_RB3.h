@@ -254,7 +254,16 @@ private:
     // LoadOp::Clear depth = let the highway/HUD composite on top, ungraded).
     // Fires exactly once per frame (guarded by mPostProcFlushed). No-op when no
     // postproc is active or the frame never rendered to the intermediate.
+    // Wave-14 U-CLEAN: made PUBLIC so the flush-only menu-UI seam
+    // (RB3FlushMenuUIPostGrade in RB3PostProc.cpp) can drive the mid-frame venue
+    // grade DIRECTLY — bypassing ClearDepthForOverlay's depth-clear else-branch,
+    // which cleared depth+stencil per subsequent menu UI dir and produced a
+    // VISIBLE red band on song_select's SETLISTS row. Idempotent per frame; safe
+    // to call from any menu UI dir (early-returns once flushed / when no graded
+    // venue is pending).
+public:
     void FlushPostProcMidFrame();
+private:
 
     // --- P1 additive-halo-only highway gem bloom (default-on; RB3_HIGHWAY_BLOOM_OFF) ---
     // Design B (capture-and-replay; NOT the rejected redirect/Design A). During
