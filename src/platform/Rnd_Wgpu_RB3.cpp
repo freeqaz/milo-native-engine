@@ -4669,6 +4669,135 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
                     }
                 }
             }
+            // ============ RB3_HANDS_ATTACH_PROBE (W2.8f: rest-capture-free palette invariants) =======
+            // The TRUSTWORTHY hands instrument the Wave-10 refutation demanded. Two
+            // palette-INTERNAL invariants on the UPLOADED palette (bones.bones[]). NO
+            // rest capture for Tier 2 -> the confound class that produced the W2.8e
+            // stale-bone artifact is DEAD (the old probe's dual-skin "shard" compared
+            // the drawn vertex against a PRE-repoint bone the draw never uses -> only
+            // satisfiable by FREEZING the hands; its "rest" was captured at the first
+            // wext>60 already-smeared frame). This block is NOT gated on wext, so it
+            // co-samples the full 61->106u trajectory (A7 co-variation).
+            //
+            //  Tier 1 (amplitude predictor, secondary): full-palette per-bone rest
+            //    sweep with POINTER-IDENTITY freshness validation. Capture restW_b once
+            //    per BoneTransAt(b) pointer identity; the repoint bound->own IS a pointer
+            //    change -> recapture (kills the stale-bone confound). Report per bone
+            //    angle(off_b * restW_b, I) (A5 literal; ~0 for a coherent off=inv(restW)
+            //    bake, magnet-vs-own residual for a mis-baked/mixed entry) plus the
+            //    pose-independent cross-check angle(inv(off_b), restW_b).
+            //  Tier 2 (PRIMARY, pose-tracking, rest-capture-FREE): parent/child joint-
+            //    attachment. For each palette bone b with parent p (TransParent, pointer-
+            //    matched into the owner bone list), the authored child joint j_b = -off_b.v
+            //    must map to the SAME world point under BOTH uploaded palette matrices:
+            //    attach_b = ||j_b*P[p] - j_b*P[b]||. ~0 at EVERY pose for a coherent
+            //    palette (rotation-only articulation, constant bone lengths); grows as
+            //    R*sin(theta_pose) for a wrong-basis factor on b; ZERO at rest. Also
+            //    computed with the EXACT bind joint inverse(off_b).v as a cross-check.
+            // Additive, getenv-gated, render-inert. Opt-in RB3_HANDS_ATTACH_PROBE=<sub|1|*>.
+            static const char* haSel0 = getenv("RB3_HANDS_ATTACH_PROBE");
+            if (haSel0 && owner && owner->NumBones() > 0) {
+                const char* mnH = mesh->Name() ? mesh->Name() : "?";
+                bool haMatch;
+                if (haSel0[0]==0 || (haSel0[0]=='1'&&haSel0[1]==0) || (haSel0[0]=='*'&&haSel0[1]==0))
+                    haMatch = std::strstr(mnH,"hands_naked")!=nullptr || std::strstr(mnH,"finger")!=nullptr
+                           || std::strstr(mnH,"glove")!=nullptr;
+                else { haMatch=false; char hb[256]; std::strncpy(hb,haSel0,255); hb[255]=0;
+                    for(char*t=std::strtok(hb,",");t;t=std::strtok(nullptr,","))
+                        if(std::strstr(mnH,t)){haMatch=true;break;} }
+                if (haMatch) {
+                    int nb = owner->NumBones(); if (nb > kMaxBones) nb = kMaxBones;
+                    // A5 fail-red: perturb ONE palette entry's rotation (~0.15 rad about Z)
+                    // in a LOCAL copy used only by the probe (render untouched). The
+                    // perturbed bone's CHILDREN joints then jump ~boneLen*0.15 in Tier-2,
+                    // proving the joint-attach metric CAN read RED (so a ~0 reading is a
+                    // real GREEN, not a dead metric). RB3_HANDS_ATTACH_PERTURB=<boneIdx>.
+                    static const char* haPert = getenv("RB3_HANDS_ATTACH_PERTURB");
+                    int pertIdx = haPert ? atoi(haPert) : -1;
+                    float pertMat[16];
+                    if (pertIdx >= 0 && pertIdx < nb) {
+                        const float* sp = bones.bones[pertIdx];
+                        for (int t=0;t<16;t++) pertMat[t]=sp[t];
+                        float th=0.15f, cth=cosf(th), sth=sinf(th);
+                        for (int col=0; col<3; col++) { float* cp=&pertMat[col*4];
+                            float x=cp[0], y=cp[1]; cp[0]=cth*x - sth*y; cp[1]=sth*x + cth*y; }
+                    }
+                    auto haMat = [&](int idx)->const float*{ return (idx==pertIdx && pertIdx>=0) ? pertMat : bones.bones[idx]; };
+                    // angle(deg) between rotation bases A,B via R = A^T*B (assumes ~ortho).
+                    auto haAng = [](const Hmx::Matrix3& A, const Hmx::Matrix3& B){
+                        Hmx::Matrix3 At; At.x=Vector3(A.x.x,A.y.x,A.z.x); At.y=Vector3(A.x.y,A.y.y,A.z.y); At.z=Vector3(A.x.z,A.y.z,A.z.z);
+                        Hmx::Matrix3 R; Multiply(At,B,R);
+                        float tr=R.x.x+R.y.y+R.z.z; float c=(tr-1.f)*0.5f; if(c>1.f)c=1.f; if(c<-1.f)c=-1.f;
+                        return acosf(c)*57.29578f; };
+                    // transform authored point p by an uploaded palette matrix m (float[16],
+                    // SAME indexing as the asDrawn blend: cols at m[0..],m[4..],m[8..],m[12..]).
+                    auto haPal = [](const float* m, float px,float py,float pz, float out[3]){
+                        out[0]=m[0]*px+m[4]*py+m[8]*pz+m[12];
+                        out[1]=m[1]*px+m[5]*py+m[9]*pz+m[13];
+                        out[2]=m[2]*px+m[6]*py+m[10]*pz+m[14]; };
+                    Hmx::Matrix3 HaI(Vector3(1,0,0),Vector3(0,1,0),Vector3(0,0,1));
+                    char hkey[112]; snprintf(hkey,sizeof(hkey),"%s@%p", mnH, (void*)owner);
+                    std::string hk = hkey;
+                    // ---- Tier 1: freshness-validated per-bone rest-coherence sweep ----
+                    static std::unordered_map<std::string,std::vector<Transform> > sHaRest;
+                    static std::unordered_map<std::string,std::vector<const void*> > sHaPtr;
+                    static std::unordered_map<std::string,std::vector<int> > sHaRestFrame;
+                    auto& haRest = sHaRest[hk]; auto& haPtr = sHaPtr[hk]; auto& haRf = sHaRestFrame[hk];
+                    if ((int)haRest.size()!=nb){ haRest.assign(nb,Transform()); haPtr.assign(nb,nullptr); haRf.assign(nb,-1); }
+                    int t1Recap=0, t1Count=0; float t1Worst=0.f; int t1WorstBone=-1;
+                    float t1XWorst=0.f; int t1XWorstBone=-1; // cross-check angle(inv(off),restW)
+                    for (int b=0;b<nb;b++){
+                        RndTransformable* bt = owner->BoneTransAt(b);
+                        const void* cur = (const void*)bt;
+                        if (cur != haPtr[b]) { haPtr[b]=cur; haRest[b]= bt ? bt->WorldXfm() : Transform(); haRf[b]=mFrameCount; t1Recap++; }
+                        const Transform& off = owner->BoneOffsetAt(b);
+                        Transform sk; Multiply(off, haRest[b], sk); // off*restW; coherent bake => ~I
+                        float a = haAng(HaI, sk.m);
+                        if (a > 5.f) t1Count++;
+                        if (a > t1Worst){ t1Worst=a; t1WorstBone=b; }
+                        Transform invOff; Invert(off, invOff);
+                        float ax = haAng(invOff.m, haRest[b].m); // pose-indep bake-vs-own-rest
+                        if (ax > t1XWorst){ t1XWorst=ax; t1XWorstBone=b; }
+                    }
+                    // ---- Tier 2 (PRIMARY): parent/child joint-attachment on the palette ----
+                    float t2Worst=0.f; int t2WB=-1,t2WP=-1; float t2WR=0.f; float t2WExact=0.f;
+                    int t2Pairs=0; float t2ExactWorst=0.f;
+                    for (int b=0;b<nb;b++){
+                        RndTransformable* bt = owner->BoneTransAt(b);
+                        if (!bt) continue;
+                        RndTransformable* par = bt->TransParent();
+                        if (!par) continue;
+                        int p=-1; for (int q=0;q<nb;q++){ if (owner->BoneTransAt(q)==par){ p=q; break; } }
+                        if (p<0) continue; // parent not in this mesh's palette (e.g. chain root)
+                        t2Pairs++;
+                        const Transform& off = owner->BoneOffsetAt(b);
+                        float jx=-off.v.x, jy=-off.v.y, jz=-off.v.z;   // A5: R-radius base
+                        Transform invOff; Invert(off, invOff);          // exact bind joint
+                        float ex=invOff.v.x, ey=invOff.v.y, ez=invOff.v.z;
+                        float pc[3],cc[3]; haPal(haMat(p),jx,jy,jz,pc); haPal(haMat(b),jx,jy,jz,cc);
+                        float att = sqrtf((pc[0]-cc[0])*(pc[0]-cc[0])+(pc[1]-cc[1])*(pc[1]-cc[1])+(pc[2]-cc[2])*(pc[2]-cc[2]));
+                        float pe[3],ce[3]; haPal(haMat(p),ex,ey,ez,pe); haPal(haMat(b),ex,ey,ez,ce);
+                        float attE = sqrtf((pe[0]-ce[0])*(pe[0]-ce[0])+(pe[1]-ce[1])*(pe[1]-ce[1])+(pe[2]-ce[2])*(pe[2]-ce[2]));
+                        float R = sqrtf(jx*jx+jy*jy+jz*jz);
+                        if (att > t2Worst){ t2Worst=att; t2WB=b; t2WP=p; t2WR=R; t2WExact=attE; }
+                        if (attE > t2ExactWorst) t2ExactWorst=attE;
+                    }
+                    // Compact per-frame co-sampling line (wext alongside the tiers) so a
+                    // post-run analysis shows Tier-2 co-varies with hands_naked worldExt (A7).
+                    static std::unordered_map<std::string,int> sHaLog;
+                    if (sHaLog[hk]++ % 20 == 0) {
+                        RndTransformable* wb1 = (t1WorstBone>=0)?owner->BoneTransAt(t1WorstBone):nullptr;
+                        RndTransformable* wb2 = (t2WB>=0)?owner->BoneTransAt(t2WB):nullptr;
+                        fprintf(stderr,
+                          "[HANDS_ATTACH] mesh='%s' owner='%s' frame=%d nb=%d wext=%.1f rebound=%d\n"
+                          "  TIER1 rest-coherence: worst=%.1fdeg bone[%d]='%s' count(>5deg)=%d freshRecap=%d  xcheck(invOff-vs-restW) worst=%.1fdeg bone[%d]\n"
+                          "  TIER2 joint-attach(PRIMARY): worst=%.2fu bone[%d]='%s' parent[%d] R=%.1f exactJoint=%.2fu pairs=%d  (palette-wide exactWorst=%.2fu)\n",
+                          mnH, owner->Name()?owner->Name():"?", mFrameCount, nb, wext, owner->mNativeBonesRebound?1:0,
+                          t1Worst, t1WorstBone, (wb1&&wb1->Name())?wb1->Name():"?", t1Count, t1Recap, t1XWorst, t1XWorstBone,
+                          t2Worst, t2WB, (wb2&&wb2->Name())?wb2->Name():"?", t2WP, t2WR, t2WExact, t2Pairs, t2ExactWorst);
+                    }
+                }
+            }
             // RATIO test (blended-extent / bind-extent). Measuring every skinned
             // mesh over the song shows a roughly bimodal split: correctly-posed
             // meshes (crowd bodies, extras bodies, hair, mic stand, animated
