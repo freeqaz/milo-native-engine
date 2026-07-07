@@ -199,11 +199,17 @@ bool RB3PPLumaCeilingActive() {
     return s != 0;
 }
 
-// WASH-fix (Wave 8 A.S2) FIX-H2: RB3_PP_CHROMA_PRESERVE=1 -> venue-scoped
-// chroma-preserving composite grade. Default-OFF; see RB3PostProc.h.
+// WASH-fix (Wave 8 A.S2) FIX-H2: venue-scoped chroma-preserving composite
+// grade. FLIPPED default-ON (Wave 8 coordinator sign-off, 2026-07-07: grey
+// venue -> restored colored stage lighting, vlo fail-red 6/6 -> 0/5, flag-OFF
+// was byte-identical). Opt out via RB3_PP_CHROMA_PRESERVE_OFF; the legacy
+// opt-in name stays valid. See RB3PostProc.h.
 bool RB3PPChromaPreserveActive() {
     static int s = -1;
-    if (s < 0) { const char* e = getenv("RB3_PP_CHROMA_PRESERVE"); s = (e && e[0] && e[0] != '0') ? 1 : 0; }
+    if (s < 0) {
+        if (getenv("RB3_PP_CHROMA_PRESERVE_OFF"))              s = 0;   // opt-out wins
+        else { const char* e = getenv("RB3_PP_CHROMA_PRESERVE"); s = (e && e[0] == '0') ? 0 : 1; }   // "=0" legacy disable kept; unset -> ON
+    }
     return s != 0;
 }
 
