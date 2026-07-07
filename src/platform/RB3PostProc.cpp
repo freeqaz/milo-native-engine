@@ -248,11 +248,15 @@ bool RB3PPChromaPreserveActive() {
 
 // Wave-13 Lane G: RB3_UI_POST_GRADE=1 -> generalize the mid-frame venue flush to
 // the menu venue->UI boundary (UI draws ungraded over the graded venue).
-// Default-OFF; see RB3PostProc.h. Flag-OFF the game-side trigger never sets the
-// menu-flush latch, so the flush behaves exactly as before (venueGrade=true).
+// Default-ON since the Wave-14 coordinator E1 flip (hub focused-text contrast
+// 1.95->2.20, song_select red-band fixed by the menu-boundary depth
+// LoadOp::Load). Opt out with RB3_UI_POST_GRADE_OFF; legacy =0 disable kept.
 bool RB3UIPostGradeActive() {
     static int s = -1;
-    if (s < 0) { const char* e = getenv("RB3_UI_POST_GRADE"); s = (e && e[0] && e[0] != '0') ? 1 : 0; }
+    if (s < 0) {
+        if (getenv("RB3_UI_POST_GRADE_OFF")) s = 0;
+        else { const char* e = getenv("RB3_UI_POST_GRADE"); s = (e && e[0] == '0') ? 0 : 1; }
+    }
     return s != 0;
 }
 
