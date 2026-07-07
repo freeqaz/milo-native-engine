@@ -36,6 +36,16 @@ bool RB3PostProcDisabled();
 // docs/native/engine-arch-review-2026-07-05/execution/W3.3/STATUS.md.
 bool RB3PPLumaCeilingActive();
 
+// WASH-fix (Wave 8 A.S2) FIX-H2 (RB3_PP_CHROMA_PRESERVE=1): venue-scoped chroma
+// preservation for the composite grade. The B+W_film02 grade desaturates a hot
+// venue moment (songMs ~2000-6000) to grey; when set, the venue-backdrop
+// composite reconstructs its output from the ungraded scene chroma scaled to the
+// graded luminance (uniform value-scaling preserves HSV saturation), keeping the
+// RB3_PP_OFF hue/sat while retaining the grade's exposure. Default-OFF; only the
+// venue-grade path (FlushPostProcMidFrame) is affected, so the menu/song_select
+// B+W look and the flag-OFF path are byte-identical. See rb3_postproc.wgsl.inc.
+bool RB3PPChromaPreserveActive();
+
 // Stage-2 grade uniform block (ported from gfx/PostProcPass.cpp). Declared here
 // (not in RB3PostProc.cpp) because it is SHARED cross-TU: RunPostProcComposite
 // fills it, and the staying BandRnd::EnsureQuadPipeline in Rnd_Wgpu_RB3.cpp (→
@@ -73,8 +83,12 @@ struct PostProcUniforms {
     // multiple of 16 bytes, which the WGSL uniform address space requires
     // given the vec4 members above; the 3 trailing floats are unused padding.
     float lumaCeilingActive;
-    float _padLumaCeiling0;
-    float _padLumaCeiling1;
+    // WASH-fix (Wave 8 A.S2) FIX-H2: repurposed pads (struct stays 176B).
+    // chromaPreserveActive=1.0 -> restore input chroma over graded luma;
+    // venueGrade=1.0 -> this composite is grading the venue backdrop (scopes the
+    // chroma-preserve fix away from the menu B+W look). See rb3_postproc.wgsl.inc.
+    float chromaPreserveActive;
+    float venueGrade;
     float _padLumaCeiling2;
 };
 static_assert(sizeof(PostProcUniforms) == 176, "PostProcUniforms must be 176 bytes");

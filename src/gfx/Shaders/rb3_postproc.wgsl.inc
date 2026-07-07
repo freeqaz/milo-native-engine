@@ -27,8 +27,14 @@ struct PostProcUB {
     // a full vec4-worth of trailing floats — see PostProcUniforms in
     // RB3PostProc.h for why.
     lumaCeilingActive: f32,
-    _padLumaCeiling0: f32,
-    _padLumaCeiling1: f32,
+    // WASH-fix (Wave 8 A.S2) FIX-H2 (RB3_PP_CHROMA_PRESERVE): repurposed pads.
+    // chromaPreserveActive=1.0 restores the input chroma over the graded luma so a
+    // hot venue moment keeps its mid/low-tone saturation (the RB3_PP_OFF look)
+    // instead of the composite grade desaturating it to grey; venueGrade=1.0 marks
+    // the venue-backdrop composite (FlushPostProcMidFrame) so the menu/song_select
+    // B+W grade is left untouched. Both 0.0 by default -> byte-identical path.
+    chromaPreserveActive: f32,
+    venueGrade: f32,
     _padLumaCeiling2: f32,
 };
 
@@ -84,6 +90,10 @@ struct VOut {
     } else {
         color = textureSample(sceneTex, sceneSampler, in.uv).rgb;
     }
+
+    // WASH-fix (Wave 8 A.S2) FIX-H2: capture the ungraded scene color so the
+    // chroma-preserve branch below can restore the venue's hue/saturation.
+    let sceneColor = color;
 
     let inRange = max(pp.levelInHi.rgb - pp.levelInLo.rgb, vec3f(0.001));
     let normalized = clamp((color - pp.levelInLo.rgb) / inRange, vec3f(0.0), vec3f(1.0));
@@ -206,6 +216,30 @@ struct VOut {
     let ppCeil = 0.97;
     let ppKnee = 0.82;
     let ppSpan = ppCeil - ppKnee;
+    // WASH-fix (Wave 8 A.S2) FIX-H2 (RB3_PP_CHROMA_PRESERVE, venue-scoped):
+    // the composite grade (B+W_film02 saturation -40 + black-lift) desaturates a
+    // hot venue moment (songMs ~2000-6000) toward grey — S1 measured default
+    // mid_sat 0.026-0.079 vs the RB3_PP_OFF control 0.389-0.746 on the SAME
+    // clamped input. Reconstruct the output from the ungraded scene chroma scaled
+    // to the graded luminance: uniform RGB value-scaling preserves HSV saturation
+    // exactly, so the venue keeps the PP_OFF hue/sat while retaining the grade's
+    // exposure/brightness. A luminance-preserving ceiling replaces the per-channel
+    // one here so genuinely-hot pixels roll off without re-desaturating. Gated on
+    // venueGrade so the menu/song_select B+W "etched" look is untouched; flag-OFF
+    // (chromaPreserveActive==0) skips this entirely -> byte-identical.
+    if (pp.chromaPreserveActive > 0.5 && pp.venueGrade > 0.5) {
+        let wLuma = vec3f(0.2126, 0.7152, 0.0722);
+        let inLuma = dot(sceneColor, wLuma);
+        let gradedLuma = dot(color, wLuma);
+        var cpColor = sceneColor * (gradedLuma / max(inLuma, 1e-4));
+        let cpL = dot(cpColor, wLuma);
+        if (cpL > ppKnee) {
+            let cpOver = cpL - ppKnee;
+            let cpRolled = ppKnee + ppSpan * (cpOver / (cpOver + ppSpan));
+            cpColor = cpColor * (cpRolled / max(cpL, 1e-4));
+        }
+        return vec4f(clamp(cpColor, vec3f(0.0), vec3f(1.0)), 1.0);
+    }
     if (pp.lumaCeilingActive > 0.5) {
         let ppLuma = dot(color, vec3f(0.2126, 0.7152, 0.0722));
         if (ppLuma > ppKnee) {

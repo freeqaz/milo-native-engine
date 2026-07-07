@@ -51,7 +51,7 @@ void BandRnd::FlushPostProcMidFrame() {
 
     // 2. Grade the intermediate onto the framebuffer (runs bloom + composite; opens
     //    and closes its own render pass against mFrameView).
-    RunPostProcComposite(mFrameView);
+    RunPostProcComposite(mFrameView, /*venueGrade=*/true);
     mPostProcFlushed = true;
 
     // 3. Re-open the main pass targeting the FRAMEBUFFER. Color LoadOp::Load keeps
@@ -199,7 +199,15 @@ bool RB3PPLumaCeilingActive() {
     return s != 0;
 }
 
-void BandRnd::RunPostProcComposite(wgpu::TextureView dst) {
+// WASH-fix (Wave 8 A.S2) FIX-H2: RB3_PP_CHROMA_PRESERVE=1 -> venue-scoped
+// chroma-preserving composite grade. Default-OFF; see RB3PostProc.h.
+bool RB3PPChromaPreserveActive() {
+    static int s = -1;
+    if (s < 0) { const char* e = getenv("RB3_PP_CHROMA_PRESERVE"); s = (e && e[0] && e[0] != '0') ? 1 : 0; }
+    return s != 0;
+}
+
+void BandRnd::RunPostProcComposite(wgpu::TextureView dst, bool venueGrade) {
     if (!mGpuReady || !dst || !mIntermediateView) return;
     RndPostProc* pp = RndPostProc::Current();
     if (!pp) return;
@@ -302,6 +310,11 @@ void BandRnd::RunPostProcComposite(wgpu::TextureView dst) {
     // below the knee (see rb3_postproc.wgsl.inc fs_postproc). Default 0.0 ->
     // byte-identical per-channel path (today's shipped behavior).
     uni.lumaCeilingActive = RB3PPLumaCeilingActive() ? 1.0f : 0.0f;
+    // WASH-fix (Wave 8 A.S2) FIX-H2: venue-scoped chroma preservation. Only the
+    // venue-backdrop composite (venueGrade) is eligible; flag default-OFF ->
+    // chromaPreserveActive 0.0 -> the shader path is byte-identical.
+    uni.chromaPreserveActive = RB3PPChromaPreserveActive() ? 1.0f : 0.0f;
+    uni.venueGrade = venueGrade ? 1.0f : 0.0f;
     // V2 NOISE GRAIN. RB3's postproc noise is a TILED NOISE TEXTURE (mNoiseMap +
     // mNoiseBaseScale tiling, midtone-overlay blended) — a SUBTLE film grain on
     // the Wii. v1 zeroed it because the procedural hash fallback at RB3's real

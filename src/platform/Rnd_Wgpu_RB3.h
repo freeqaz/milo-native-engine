@@ -243,7 +243,10 @@ private:
     // InitGpuResources and every BeginFrame; recreates only on a size change so a
     // window/devtools resize keeps depth matching the live color attachment.
     void EnsureDepth(int w, int h);
-    void RunPostProcComposite(wgpu::TextureView dst);
+    // venueGrade=true when grading the venue backdrop (FlushPostProcMidFrame) so
+    // the FIX-H2 chroma-preserve path (RB3_PP_CHROMA_PRESERVE) is scoped to the
+    // venue and never the menu/song_select B+W composite. WASH-fix (Wave 8 A.S2).
+    void RunPostProcComposite(wgpu::TextureView dst, bool venueGrade = false);
 
     // Tier 2 mid-frame layering: close the main (intermediate) pass, grade the
     // venue intermediate onto the framebuffer, then re-open the main pass

@@ -1188,6 +1188,21 @@ static bool sVenuePointFalloffGx() {
     return v != 0;
 }
 
+// WASH-fix (Wave 8 A.S2) FIX-H1: RB3_VENUE_FALLBACK_FIX=1 -> a DIM, exposure-safe
+// key for the broken/unlit VENUE fallback. The flat-default else branch (:1578)
+// floods `1.0 white dir + 0.45 grey ambient`, which over-exposes the venue through
+// the Stage-2 composite -> the deterministic RB3_VENUE_LIGHT_OFF PINK wash (S1:
+// 8/8). When ON, a world.cam frame that fell through to the flat default
+// (venue_off / no_env / fogowner_null) gets a dim neutral key instead, so a
+// genuinely-broken venue env renders dim-and-readable rather than pink/washed.
+// Scoped to world.cam so menus + the game.cam highway keep the flat default.
+// Presence-truthy opt-in (default OFF); flag-OFF is byte-identical.
+static bool sVenueFallbackFix() {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("RB3_VENUE_FALLBACK_FIX"); v = (e && e[0] && e[0] != '0') ? 1 : 0; }
+    return v != 0;
+}
+
 // W3.1a.S1: faithful venue fog fill (SYS-4 lighting, first struct-neutral slice).
 // Presence-truthy OPT-IN (default OFF, mirrors RB3_PLACEMENT_CONTRACT's read —
 // NOT sVenueLightEnabled's opt-out shape): unset/"0" -> false, any other value
@@ -1576,10 +1591,25 @@ RB3SceneBinding BandRnd::WriteSceneUniforms(RndCam* cam) {
         // WASH-fix probe: engaged venue branch taken (H1 = ENGAGED for this shot).
         if (washOn) sWashDigest("SCENE", washEnvNm, 1, "engaged", dl, pl, washGreyKey ? 1 : 0);
     } else {
+        // WASH-fix (Wave 8 A.S2) FIX-H1: when a WORLD.CAM frame falls through to the
+        // flat default (broken/unlit venue env — venue_off / no_env / fogowner_null),
+        // the `1.0 white dir + 0.45 ambient` flood over-exposes the venue through the
+        // composite -> the deterministic PINK wash. With RB3_VENUE_FALLBACK_FIX a dim
+        // neutral key replaces the flood so a broken venue renders dim-and-readable,
+        // NOT pink/washed. Scoped to world.cam so menus + the game.cam highway keep
+        // the flat default (byte-identical); flag-OFF is byte-identical everywhere.
+        const bool worldCamFallback =
+            sVenueFallbackFix() && camNm && std::strcmp(camNm, "world.cam") == 0;
         s.numLights = 1;
         s.lightDirs[0][0] = -0.4f; s.lightDirs[0][1] = -0.5f; s.lightDirs[0][2] = -0.75f; s.lightDirs[0][3] = 0;
-        s.lightColors[0][0] = 1.0f; s.lightColors[0][1] = 1.0f; s.lightColors[0][2] = 1.0f; s.lightColors[0][3] = 1.0f;
-        s.ambientColor[0] = s.ambientColor[1] = s.ambientColor[2] = 0.45f; s.ambientColor[3] = 1.0f;
+        if (worldCamFallback) {
+            const float k = 0.50f;    // dim key — well below the composite over-exposure onset
+            s.lightColors[0][0] = k; s.lightColors[0][1] = k; s.lightColors[0][2] = k; s.lightColors[0][3] = 1.0f;
+            s.ambientColor[0] = s.ambientColor[1] = s.ambientColor[2] = 0.10f; s.ambientColor[3] = 1.0f;
+        } else {
+            s.lightColors[0][0] = 1.0f; s.lightColors[0][1] = 1.0f; s.lightColors[0][2] = 1.0f; s.lightColors[0][3] = 1.0f;
+            s.ambientColor[0] = s.ambientColor[1] = s.ambientColor[2] = 0.45f; s.ambientColor[3] = 1.0f;
+        }
         s.numPointLights = 0;
         // WASH-fix probe: flat-default else (the PINK base). Name which engagement
         // sub-clause failed for this world.cam write — the H1 miss classifier.
