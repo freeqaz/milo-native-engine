@@ -1091,6 +1091,53 @@ static void sWashDigest(const char* tag, const char* env, int engaged,
     }
 }
 
+// BOOTRNG (Wave 11 A.S1, diagnosis-only): the Wave-8 "byte-identical lighting
+// inputs" exoneration was derived from sWashDigest, which carries light COUNTS
+// only (env/engaged/miss/dl/pl/greykey) and is therefore COLOR-BLIND (A3). Two
+// different LightPresetManager preset picks can produce the same count signature
+// but different per-light colors/types. This probe emits a per-light VALUE digest
+// over the current world.cam venue environ (quantized GetColor + type + Showing
+// hashed over mLightsReal + mLightsApprox) plus the resolved ambient, so
+// "identical lighting inputs" becomes a value-level claim this wave. Additive,
+// gated by RB3_BOOTRNG_PROBE, no state written.
+static bool sBootRngProbe() {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("RB3_BOOTRNG_PROBE"); v = (e && e[0] && e[0] != '0') ? 1 : 0; }
+    return v != 0;
+}
+static unsigned long sHashLightList(unsigned long h, ObjPtrList<RndLight>& lst) {
+    // FNV-1a over per-light (type, showing, quantized color, quantized WORLD
+    // position/direction + range). Order-sensitive, but the list order is
+    // deterministic per environ; a preset that rewrites colors/types OR ANIMATES
+    // a light's position/direction perturbs the hash even at a fixed light count.
+    // Position/range folded in (A.S1 v2) so "identical lighting inputs" covers the
+    // full uploaded light state, not just color — the one attribute the color-only
+    // v1 hash omitted.
+    for (ObjPtrList<RndLight>::iterator it = lst.begin(); it != lst.end(); ++it) {
+        RndLight* L = *it;
+        if (!L) { h = (h ^ 0xFFu) * 0x100000001b3ULL; continue; }
+        int ty = L->mColorOwner ? (int)L->GetType() : -1;
+        int sh = L->Showing() ? 1 : 0;
+        int cr = 0, cg = 0, cb = 0;
+        if (L->mColorOwner) {
+            const Hmx::Color& c = L->GetColor();
+            cr = (int)(c.red * 255.0f + 0.5f); cg = (int)(c.green * 255.0f + 0.5f); cb = (int)(c.blue * 255.0f + 0.5f);
+        }
+        unsigned char bytes[5] = { (unsigned char)ty, (unsigned char)sh,
+            (unsigned char)cr, (unsigned char)cg, (unsigned char)cb };
+        for (int i = 0; i < 5; i++) h = (h ^ bytes[i]) * 0x100000001b3ULL;
+        // World position (point) / direction (dir) + range, quantized to 0.1u.
+        const Transform& wx = L->WorldXfm();
+        long qp[4] = { (long)(wx.v.x * 10.0f), (long)(wx.v.y * 10.0f), (long)(wx.v.z * 10.0f),
+                       (long)(L->Range() * 10.0f) };
+        for (int i = 0; i < 4; i++) {
+            unsigned long u = (unsigned long)qp[i];
+            for (int b = 0; b < 8; b++) { h = (h ^ (u & 0xFF)) * 0x100000001b3ULL; u >>= 8; }
+        }
+    }
+    return h;
+}
+
 // render-polish 2026-06-11 (menu-contrast, wave-5 "Fix 3"): the venue-light
 // heuristic's floor lighting (the ambient floor, the near-white-ambient clamp,
 // and the no-light grey key) was tuned conservatively-bright so nothing crushed
@@ -1604,6 +1651,23 @@ RB3SceneBinding BandRnd::WriteSceneUniforms(RndCam* cam) {
         s.numPointLights = pl;
         // WASH-fix probe: engaged venue branch taken (H1 = ENGAGED for this shot).
         if (washOn) sWashDigest("SCENE", washEnvNm, 1, "engaged", dl, pl, washGreyKey ? 1 : 0);
+        // BOOTRNG A.S1: per-light VALUE digest (A3 — NOT count-based). Hash the
+        // per-light colors/types/showing across BOTH lists + the resolved ambient
+        // this write uploads. Throttled per env-tuple change + heartbeat so the log
+        // tail reflects the captured frame. world.cam engaged path only.
+        if (sBootRngProbe() && camNm && std::strcmp(camNm, "world.cam") == 0) {
+            unsigned long vh = 1469598103934665603ULL;      // FNV-1a offset basis
+            vh = sHashLightList(vh, venv->mLightsReal);
+            vh = sHashLightList(vh, venv->mLightsApprox);
+            char lb[256];
+            snprintf(lb, sizeof(lb),
+                     "[BOOTRNG] LIGHTVAL env=%s valhash=%016lx dl=%d pl=%d amb=(%.3f,%.3f,%.3f)",
+                     washEnvNm, vh, dl, pl,
+                     s.ambientColor[0], s.ambientColor[1], s.ambientColor[2]);
+            static std::string sLVLast; static int sLVHB = 0;
+            std::string lvk(lb);
+            if (lvk != sLVLast || (++sLVHB % 60) == 0) { fprintf(stderr, "%s\n", lb); sLVLast = lvk; }
+        }
     } else {
         // WASH-fix (Wave 8 A.S2) FIX-H1: when a WORLD.CAM frame falls through to the
         // flat default (broken/unlit venue env — venue_off / no_env / fogowner_null),

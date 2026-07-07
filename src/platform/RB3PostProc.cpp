@@ -23,6 +23,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <string>  // BOOTRNG A.S1: throttle key for the PPRESOLVED probe
 #include <cstring>
 
 // ===========================================================================
@@ -244,6 +245,33 @@ void BandRnd::RunPostProcComposite(wgpu::TextureView dst, bool venueGrade) {
     uni.levelOutLo[2] = cxfm.mLevelOutLo.blue; uni.levelOutLo[3] = 0;
     uni.levelOutHi[0] = cxfm.mLevelOutHi.red; uni.levelOutHi[1] = cxfm.mLevelOutHi.green;
     uni.levelOutHi[2] = cxfm.mLevelOutHi.blue; uni.levelOutHi[3] = 1;
+
+    // BOOTRNG (Wave 11 A.S1, diagnosis-only): log the RESOLVED ColorXfm values the
+    // native composite actually consumes (A2). RndPostProc::Current()'s NAME is
+    // constant per boot on the gameplay path (world.pp rewritten in place), but its
+    // grade params differ when BandDirector::Poll interps a different postproc pair
+    // — this is the value that reaches pixels. Throttled per change + heartbeat.
+    // Gated by RB3_BOOTRNG_PROBE; additive, no behaviour change.
+    {
+        static int sBRP = -1;
+        if (sBRP < 0) { const char* e = getenv("RB3_BOOTRNG_PROBE"); sBRP = (e && e[0] && e[0] != '0') ? 1 : 0; }
+        if (sBRP) {
+            char pb[320];
+            snprintf(pb, sizeof(pb),
+                     "[BOOTRNG] PPRESOLVED pp=%s con=%.4f bri=%.4f sat=%.4f vig=%.4f "
+                     "lvlInLo=(%.3f,%.3f,%.3f) lvlInHi=(%.3f,%.3f,%.3f) "
+                     "lvlOutLo=(%.3f,%.3f,%.3f) lvlOutHi=(%.3f,%.3f,%.3f)",
+                     pp->Name() ? pp->Name() : "<null>",
+                     uni.contrast, uni.brightness, uni.saturation, uni.vignetteIntensity,
+                     uni.levelInLo[0], uni.levelInLo[1], uni.levelInLo[2],
+                     uni.levelInHi[0], uni.levelInHi[1], uni.levelInHi[2],
+                     uni.levelOutLo[0], uni.levelOutLo[1], uni.levelOutLo[2],
+                     uni.levelOutHi[0], uni.levelOutHi[1], uni.levelOutHi[2]);
+            static std::string sPPLast; static int sPPHB = 0;
+            std::string ppk(pb);
+            if (ppk != sPPLast || (++sPPHB % 60) == 0) { fprintf(stderr, "%s\n", pb); sPPLast = ppk; }
+        }
+    }
 
     // V2 BLOOM. Run the threshold/blur/upsample mip chain on the intermediate
     // (the fully-rendered, pre-grade scene) and additive-blend its OutputView()
