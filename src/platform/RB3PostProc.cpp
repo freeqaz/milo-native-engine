@@ -52,7 +52,14 @@ void BandRnd::FlushPostProcMidFrame() {
 
     // 2. Grade the intermediate onto the framebuffer (runs bloom + composite; opens
     //    and closes its own render pass against mFrameView).
-    RunPostProcComposite(mFrameView, /*venueGrade=*/true);
+    //    Wave-13 Lane G: when this flush was triggered at a MENU venue->UI
+    //    boundary (RB3_UI_POST_GRADE, latch set by the game-side trigger), grade
+    //    with venueGrade=FALSE — the Tier-1 menu semantic — so the default-ON
+    //    chroma-preserve (gated on venueGrade>0.5) stays OFF and the authored B+W
+    //    menu look is untouched (A5 trap). Unset (gameplay Tier-2) -> venueGrade
+    //    stays true, byte-identical to before.
+    const bool menuBoundary = RB3ConsumeMenuUIFlushPending();
+    RunPostProcComposite(mFrameView, /*venueGrade=*/!menuBoundary);
     mPostProcFlushed = true;
 
     // 3. Re-open the main pass targeting the FRAMEBUFFER. Color LoadOp::Load keeps
@@ -212,6 +219,28 @@ bool RB3PPChromaPreserveActive() {
         else { const char* e = getenv("RB3_PP_CHROMA_PRESERVE"); s = (e && e[0] == '0') ? 0 : 1; }   // "=0" legacy disable kept; unset -> ON
     }
     return s != 0;
+}
+
+// Wave-13 Lane G: RB3_UI_POST_GRADE=1 -> generalize the mid-frame venue flush to
+// the menu venue->UI boundary (UI draws ungraded over the graded venue).
+// Default-OFF; see RB3PostProc.h. Flag-OFF the game-side trigger never sets the
+// menu-flush latch, so the flush behaves exactly as before (venueGrade=true).
+bool RB3UIPostGradeActive() {
+    static int s = -1;
+    if (s < 0) { const char* e = getenv("RB3_UI_POST_GRADE"); s = (e && e[0] && e[0] != '0') ? 1 : 0; }
+    return s != 0;
+}
+
+// Menu-flush-pending latch (Wave-13 Lane G). Set by the game-side menu venue->UI
+// boundary trigger right before Rnd::EndWorld(); consumed (read-and-cleared) by
+// FlushPostProcMidFrame to select venueGrade=false. File-scope, single-threaded
+// render path (same thread that runs the flush). No-op unless RB3_UI_POST_GRADE.
+static bool sMenuUIFlushPending = false;
+void RB3SetMenuUIFlushPending() { if (RB3UIPostGradeActive()) sMenuUIFlushPending = true; }
+bool RB3ConsumeMenuUIFlushPending() {
+    bool p = sMenuUIFlushPending;
+    sMenuUIFlushPending = false;
+    return p;
 }
 
 void BandRnd::RunPostProcComposite(wgpu::TextureView dst, bool venueGrade) {

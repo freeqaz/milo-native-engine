@@ -46,6 +46,29 @@ bool RB3PPLumaCeilingActive();
 // B+W look and the flag-OFF path are byte-identical. See rb3_postproc.wgsl.inc.
 bool RB3PPChromaPreserveActive();
 
+// Wave-13 Lane G (RB3_UI_POST_GRADE=1): generalize the Tier-2 mid-frame venue
+// flush to the MENU venue->UI boundary so menu UI (hub/song_select/partdiff)
+// draws UNGRADED over the graded venue backdrop, instead of the whole frame
+// (venue+UI) being graded once at EndFrame (which washes the focused-item text:
+// hub p60/p5 1.95 default vs 2.20 with the grade off). Default-OFF; when unset
+// the menu-flush-pending latch is never set, so FlushPostProcMidFrame keeps
+// venueGrade=true (gameplay Tier-2) and the flag-OFF path is byte-identical. The
+// game-side TRIGGER (PanelDir::DrawShowing venue->UI boundary) is wired
+// separately (coordinator sign-off) — this accessor + the latch are the
+// renderer-side machinery. See execution/UIGRADE/PLAN.md.
+bool RB3UIPostGradeActive();
+
+// Menu-flush-pending latch: the game-side menu venue->UI boundary trigger sets
+// this immediately before invoking Rnd::EndWorld() (-> DoPostProcess ->
+// FlushPostProcMidFrame), so the flush composites the venue with
+// venueGrade=FALSE (Tier-1 menu semantic: chroma-preserve stays OFF, the
+// authored B+W menu look is untouched — the A5 trap). FlushPostProcMidFrame
+// consumes (reads-and-clears) it, defaulting to venueGrade=true (gameplay) when
+// unset. File-scope in RB3PostProc.cpp; free functions so the game-side trigger
+// TU can set it without touching the renderer's private state.
+void RB3SetMenuUIFlushPending();
+bool RB3ConsumeMenuUIFlushPending();
+
 // Stage-2 grade uniform block (ported from gfx/PostProcPass.cpp). Declared here
 // (not in RB3PostProc.cpp) because it is SHARED cross-TU: RunPostProcComposite
 // fills it, and the staying BandRnd::EnsureQuadPipeline in Rnd_Wgpu_RB3.cpp (→
