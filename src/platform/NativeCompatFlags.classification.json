@@ -1435,5 +1435,12 @@
   "faithfulStatus": "live opt-out for the song-select album-art assembly move (default-ON as of Wave 14); setting this restores the header-overlapping art",
   "default": "off",
   "read": "presence"
+ },
+ "RB3_PLAYER_NAME_FALLBACK": {
+  "class": "feature",
+  "owner": "ui/profile",
+  "faithfulStatus": "not-live: W4.5-GAMERTAG (Wave 15 Lane N). Native has no profile/gamertag subsystem (TheWiiProfileMgr is Wii-SDK-bound, not compiled here), so PlatformMgr::IsSignedIn(pad) is always false and PlatformMgr::GetName(pad) previously resolved to the weak dta_link_stubs.s no-op stub (returns NULL) -> every %s-formatting consumer printed the literal string \"(null)\": the song_select header (AppLabel::SetUserName(int) -> ThePlatformMgr.GetName) and the overshell player plate (LocalUser::UserName() -> ThePlatformMgr.GetName, os/User.cpp:107) both hit the same call. Fix: a strong PlatformMgr::GetName(int) override in rb3_platform_native.cpp ports the Wii fallback body verbatim (PlatformMgr_Wii.cpp:489-496, MakeString(\"%s %d\", Localize(player,0), pad+1)) -- one provider fixes every consumer. Localize() already degrades to the literal token string (\"player\") when TheLocale has no translation, so no extra hide/hard-code fallback is needed. Verified: flag-ON song_select header + overshell plate both read \"Player 1\" (screenshot), flag-OFF unchanged (still \"(null)\", byte-identical, drawlog-792 canonical-order PASS). [rb3 native/src/rb3_platform_native.cpp PlatformMgr::GetName]",
+  "default": "off",
+  "read": "presence"
  }
 }
