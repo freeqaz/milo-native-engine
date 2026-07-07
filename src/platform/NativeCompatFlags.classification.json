@@ -1414,5 +1414,12 @@
   "faithfulStatus": "live opt-out for the main-hub ticker stacking fix (default-ON as of Wave 13); setting this restores the overlapping one-line ticker",
   "default": "off",
   "read": "presence"
+ },
+ "RB3_HANDS_RESKIN": {
+  "class": "workaround",
+  "owner": "skinning/hands",
+  "faithfulStatus": "not-live REFUTED, do-NOT default-flip (Wave 14 Lane RESKIN R2): the R1-headline per-member hands reskin. Synthesized per-vertex weighted multi-bone blend (RndMeshDeform::Reskin LBS primitive, computed directly in BandCharacter native code) that re-poses hands_naked verts from the authored bind basis onto the member's OWN gender-posed rest, wired at SyncObjects rest time (post-SetDeformation, authored offsets intact), once-per-mesh-pointer latched, composing with the default-ON RebindHeadHandsAtRest rebake. Fires correctly (all bones resolved, gender-distinct: female 40 bones/1256v vs male 38 bones/1876v, per-member in-place mutate, zero engine TU edits). MEASURED a REGRESSION on the pre-registered IK_SHARD_VERT wext gate (gameplay burst, N~1000 draws/arm): hands_naked wext flag-OFF 60-106u mean 74.8 (39 distinct=animating) -> flag-ON 60-105u mean 87.7 (WORSE); reskin-alone (RB3_NO_HEAD_REBIND) 75-187u mean 136 (much worse). E1 band screenshots corroborate (flag-ON = LARGER hand shards, both genders). ROOT CAUSE (refutes R1's rest-shape thesis): the hands shard is an ANIMATION-BASIS problem (own_rest vs own_live rotation, R*sin(theta) far-vert smear), NOT a rest-shape/bind-basis one; a one-time vertex re-pose leaves the animation delta identical by construction and amplifies the shard (re-posed verts sit at larger radius). Same dead-end class as the refuted RB3_APPENDAGE_REST_ROT / RB3_APPENDAGE_ASSET_REBAKE; the genuine fix is asset/skeleton-basis (skeleton_unshared.milo per-member bind), not any vert/offset bake. Kept in-tree default-OFF as the definitive measured artifact so the per-member-reskin lever is not re-attempted. flag-OFF inert (early-return) / Wii byte-identical (#ifdef HX_NATIVE) [rb3 BandCharacter.cpp NativeReskinHandsAtRest + SyncObjects]",
+  "default": "off",
+  "read": "presence"
  }
 }
