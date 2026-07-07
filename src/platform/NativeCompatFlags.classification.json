@@ -1352,6 +1352,41 @@
   "default": "off",
   "read": "presence"
  },
+ "RB3_PALETTE_DUMP": {
+  "class": "probe",
+  "owner": "skinning",
+  "faithfulStatus": "probe: R2 (Wave 17) skinning-fixture dump. Writes one PaletteFrame text file per (mesh,ownerPtr,dumpIdx) capturing the exact (verts,weights,uploaded palette bones.bones[], per-bone off/world/palette-parent) triple the skinned shader blends, so the R2 oracle-validation harness (native/tests/skinning_oracle.h) grades a palette against committed known-good/known-bad fixtures OFFLINE. Value=comma-substrs|*|1 (mesh selector, env-driven NOT hardcoded to hands). Assembled from ingredients already read by RB3_HANDS_ATTACH_PROBE/INSTR_B within 150 lines. Render-inert, getenv-gated, flag-OFF byte-identical (drawlog 792) [Rnd_Wgpu_RB3.cpp]",
+  "default": "off",
+  "read": "value"
+ },
+ "RB3_PALETTE_DUMP_DIR": {
+  "class": "probe",
+  "owner": "skinning",
+  "faithfulStatus": "probe: R2 output dir for RB3_PALETTE_DUMP (default \".\"). Inert unless RB3_PALETTE_DUMP set [Rnd_Wgpu_RB3.cpp]",
+  "default": "off",
+  "read": "value"
+ },
+ "RB3_PALETTE_DUMP_EVERY": {
+  "class": "probe",
+  "owner": "skinning",
+  "faithfulStatus": "probe: R2 dump-every-Nth-matched-draw for RB3_PALETTE_DUMP (default 60). Inert unless RB3_PALETTE_DUMP set [Rnd_Wgpu_RB3.cpp]",
+  "default": "off",
+  "read": "value"
+ },
+ "RB3_PALETTE_DUMP_MAXFRAMES": {
+  "class": "probe",
+  "owner": "skinning",
+  "faithfulStatus": "probe: R2 stop-after-K-dumps-per-mesh for RB3_PALETTE_DUMP (default 6). Inert unless RB3_PALETTE_DUMP set [Rnd_Wgpu_RB3.cpp]",
+  "default": "off",
+  "read": "value"
+ },
+ "RB3_PALETTE_DUMP_TAG": {
+  "class": "probe",
+  "owner": "skinning",
+  "faithfulStatus": "probe: R2 arm-label written into the PaletteFrame header for RB3_PALETTE_DUMP. Inert unless RB3_PALETTE_DUMP set [Rnd_Wgpu_RB3.cpp]",
+  "default": "off",
+  "read": "value"
+ },
  "RB3_HANDS_ATTACH_PERTURB": {
   "class": "probe",
   "owner": "skinning",

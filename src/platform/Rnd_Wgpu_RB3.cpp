@@ -4986,6 +4986,110 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
                     }
                 }
             }
+            // ============ RB3_PALETTE_DUMP (R2 skinning fixtures, Wave 17 / Lane S) ======
+            // Additive, getenv-gated, render-inert dump of the exact
+            // (verts, weights, uploaded palette, bone offsets/worlds) triple the skinned
+            // shader blends, so the R2 oracle-validation harness
+            // (native/tests/skinning_oracle.h) can grade a palette against known-good /
+            // known-bad committed fixtures OFFLINE (no boot, no GPU). Every ingredient is
+            // already read by the HANDS_ATTACH / INSTR_B probes above within this same
+            // scope: skinnedView[i] (pos/boneIndices/boneWeights), owner->BoneOffsetAt(b),
+            // owner->BoneTransAt(b)->WorldXfm()/TransParent(), bones.bones[b] (col-major).
+            // Writes one PaletteFrame text file per (mesh, ownerPtr, dumpIdx) into
+            // RB3_PALETTE_DUMP_DIR (default "."); format = '#'-commented whitespace floats
+            // (the goldens/w2.2-hands README convention). The mesh selector is env-driven
+            // (NOT hardcoded to the hands substr list) so good-body arms can dump torso
+            // meshes. Flag-unset => the first getenv is null => zero further work, no files,
+            // no stderr => byte-identical render (drawlog-792 golden holds).
+            //   RB3_PALETTE_DUMP=<comma substrs | * | 1>   which meshes to dump (required)
+            //   RB3_PALETTE_DUMP_DIR=<dir>                 output dir (default ".")
+            //   RB3_PALETTE_DUMP_EVERY=<N>                 dump every Nth matched draw (default 60)
+            //   RB3_PALETTE_DUMP_MAXFRAMES=<K>             stop after K dumps per mesh (default 6)
+            //   RB3_PALETTE_DUMP_TAG=<armTag>              arm label written into the header
+            static const char* pdSel0 = getenv("RB3_PALETTE_DUMP");
+            if (pdSel0 && owner && owner->NumBones() > 0 && n >= 3) {
+                const char* mnP = mesh->Name() ? mesh->Name() : "?";
+                bool pdMatch;
+                if (pdSel0[0]==0 || (pdSel0[0]=='*'&&pdSel0[1]==0) || (pdSel0[0]=='1'&&pdSel0[1]==0))
+                    pdMatch = true;
+                else { pdMatch=false; char pb[256]; std::strncpy(pb,pdSel0,255); pb[255]=0;
+                    for(char*t=std::strtok(pb,",");t;t=std::strtok(nullptr,","))
+                        if(std::strstr(mnP,t)){pdMatch=true;break;} }
+                if (pdMatch) {
+                    const char* pdEvEnv = getenv("RB3_PALETTE_DUMP_EVERY");
+                    const char* pdMxEnv = getenv("RB3_PALETTE_DUMP_MAXFRAMES");
+                    static const int pdEvery = pdEvEnv ? atoi(pdEvEnv) : 60;
+                    static const int pdMaxF  = pdMxEnv ? atoi(pdMxEnv) : 6;
+                    static const char* pdDir = getenv("RB3_PALETTE_DUMP_DIR");
+                    static const char* pdTag = getenv("RB3_PALETTE_DUMP_TAG");
+                    char pdkey[128]; snprintf(pdkey,sizeof(pdkey),"%s@%p", mnP, (void*)owner);
+                    std::string pdk = pdkey;
+                    static std::unordered_map<std::string,int> sPdSeen;
+                    static std::unordered_map<std::string,int> sPdDumped;
+                    int seen = sPdSeen[pdk]++;
+                    if ((pdEvery<=0 || (seen % pdEvery)==0) && sPdDumped[pdk] < pdMaxF) {
+                        int dumpIdx = sPdDumped[pdk]++;
+                        int nbp = owner->NumBones(); if (nbp > kMaxBones) nbp = kMaxBones;
+                        char safe[96]; int si=0;
+                        for (const char* c=mnP; *c && si<95; c++) {
+                            char ch=*c;
+                            bool ok=(ch>='0'&&ch<='9')||(ch>='A'&&ch<='Z')||(ch>='a'&&ch<='z')||ch=='_'||ch=='-';
+                            safe[si++]= ok ? ch : '_';
+                        }
+                        safe[si]=0;
+                        char path[600];
+                        snprintf(path,sizeof(path),"%s/palette_%s_%p_f%d.txt",
+                                 pdDir?pdDir:".", safe, (void*)owner, dumpIdx);
+                        FILE* pf = fopen(path,"w");
+                        if (pf) {
+                            fprintf(pf,"# R2 PaletteFrame v1\n");
+                            fprintf(pf,"mesh %s\n", mnP);
+                            fprintf(pf,"owner %s\n", owner->Name()?owner->Name():"?");
+                            fprintf(pf,"owner_ptr %p\n", (void*)owner);
+                            fprintf(pf,"frame %d\n", mFrameCount);
+                            fprintf(pf,"dump_index %d\n", dumpIdx);
+                            fprintf(pf,"nb %d\n", nbp);
+                            fprintf(pf,"arm %s\n", pdTag?pdTag:"?");
+                            fprintf(pf,"rebound %d\n", owner->mNativeBonesRebound?1:0);
+                            // Per-bone: idx name parent | off[9m+3v] | world[9m+3v] | palette[16 colmajor]
+                            fprintf(pf,"# bone idx name parent  off(mx.x..mz.z,v)  world(mx.x..mz.z,v)  palette[16]\n");
+                            for (int b=0;b<nbp;b++){
+                                RndTransformable* bt = owner->BoneTransAt(b);
+                                int parent = -1;
+                                if (bt) { RndTransformable* par = bt->TransParent();
+                                    if (par) for (int q=0;q<nbp;q++){ if (owner->BoneTransAt(q)==par){ parent=q; break; } } }
+                                const Transform& off = owner->BoneOffsetAt(b);
+                                Transform w = bt ? bt->WorldXfm() : Transform();
+                                const float* pal = bones.bones[b];
+                                fprintf(pf,"bone %d %s %d", b, (bt&&bt->Name())?bt->Name():"?", parent);
+                                fprintf(pf," %.7g %.7g %.7g %.7g %.7g %.7g %.7g %.7g %.7g %.7g %.7g %.7g",
+                                    off.m.x.x,off.m.x.y,off.m.x.z, off.m.y.x,off.m.y.y,off.m.y.z,
+                                    off.m.z.x,off.m.z.y,off.m.z.z, off.v.x,off.v.y,off.v.z);
+                                fprintf(pf," %.7g %.7g %.7g %.7g %.7g %.7g %.7g %.7g %.7g %.7g %.7g %.7g",
+                                    w.m.x.x,w.m.x.y,w.m.x.z, w.m.y.x,w.m.y.y,w.m.y.z,
+                                    w.m.z.x,w.m.z.y,w.m.z.z, w.v.x,w.v.y,w.v.z);
+                                for (int t=0;t<16;t++) fprintf(pf," %.7g", pal[t]);
+                                fprintf(pf,"\n");
+                            }
+                            // Vertex block: full dump (no sampling — sampling hid the W9 confound)
+                            fprintf(pf,"# vert  pos.x pos.y pos.z  idx0 idx1 idx2 idx3  w0 w1 w2 w3\n");
+                            fprintf(pf,"nv %d\n", n);
+                            for (int i=0;i<n;i++){
+                                const GpuVertexSkinned& g = skinnedView[i];
+                                fprintf(pf,"v %.7g %.7g %.7g %d %d %d %d %.7g %.7g %.7g %.7g\n",
+                                    g.pos[0],g.pos[1],g.pos[2],
+                                    (int)g.boneIndices[0],(int)g.boneIndices[1],(int)g.boneIndices[2],(int)g.boneIndices[3],
+                                    g.boneWeights[0],g.boneWeights[1],g.boneWeights[2],g.boneWeights[3]);
+                            }
+                            fclose(pf);
+                            fprintf(stderr,"[PALETTE_DUMP] wrote %s (nb=%d nv=%d frame=%d arm=%s)\n",
+                                    path, nbp, n, mFrameCount, pdTag?pdTag:"?");
+                        } else {
+                            fprintf(stderr,"[PALETTE_DUMP] FAILED to open %s\n", path);
+                        }
+                    }
+                }
+            }
             // RATIO test (blended-extent / bind-extent). Measuring every skinned
             // mesh over the song shows a roughly bimodal split: correctly-posed
             // meshes (crowd bodies, extras bodies, hair, mic stand, animated
