@@ -42,6 +42,16 @@
 // EndDrawTarget suspend/resume machinery (no new GPU plumbing).
 // ===========================================================================
 void BandRnd::FlushPostProcMidFrame() {
+    // Wave-13 Lane G: consume the menu-flush latch UNCONDITIONALLY, before the
+    // early-returns. The game-side menu trigger (PanelDir::DrawShowing) sets it
+    // then calls ClearDepthForOverlay -> here; if this flush no-ops (no
+    // active postproc, venue not yet in the intermediate, already flushed) the
+    // latch must NOT dangle into a later frame / the next gameplay flush (which
+    // would wrongly composite with venueGrade=false). Consuming here bounds it to
+    // exactly this call. Gameplay never sets the latch (setter is only called from
+    // the menu venue->UI boundary), so this reads false and venueGrade stays true
+    // below — byte-identical to the old hardcode.
+    const bool menuBoundary = RB3ConsumeMenuUIFlushPending();
     if (!mGpuReady || mPostProcFlushed || !mRenderedToIntermediate) return;
     if (RB3PostProcDisabled() || !RndPostProc::Current() || !mIntermediateView) return;
     if (!mFrameView) return;                 // frame already torn down (defensive)
@@ -57,8 +67,8 @@ void BandRnd::FlushPostProcMidFrame() {
     //    with venueGrade=FALSE — the Tier-1 menu semantic — so the default-ON
     //    chroma-preserve (gated on venueGrade>0.5) stays OFF and the authored B+W
     //    menu look is untouched (A5 trap). Unset (gameplay Tier-2) -> venueGrade
-    //    stays true, byte-identical to before.
-    const bool menuBoundary = RB3ConsumeMenuUIFlushPending();
+    //    stays true, byte-identical to before. (menuBoundary was consumed at the
+    //    top of this function so a no-op flush can't leave the latch dangling.)
     RunPostProcComposite(mFrameView, /*venueGrade=*/!menuBoundary);
     mPostProcFlushed = true;
 
