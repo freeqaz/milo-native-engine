@@ -132,6 +132,26 @@ RB3MaterialBindResult RB3BuildMaterialUniforms(
     if (mat) {
         const Hmx::Color& c = mat->GetColor();
         mu.color[0] = c.red; mu.color[1] = c.green; mu.color[2] = c.blue; mu.color[3] = c.alpha;
+        // W12 C1 (focused-text contrast). The focused hub highlight bar
+        // (highlight_main/pattern, isUiHighlightOverlay) has its material alpha
+        // driven >1 by the focus pulse animation — measured 3.56 (RB3_C1_ORDER
+        // draw-order probe, main_hub_screen). With kBlendSrcAlpha that
+        // over-brightens the framebuffer to near-white-yellow (bar reads luma
+        // ~231 vs retail's moderate gold ~188). The focused item's authored
+        // DARK glyphs (0.118,0.122,0.035) draw ON TOP but their anti-aliased
+        // atlas cores are only ~0.7 opaque, so the over-bright bar BLEEDS
+        // THROUGH the text, washing dark-on-gold to a low-contrast pale olive
+        // (focused glyph luma ~113, contrast p60/p5 ~1.95 < the 2.0 gate). On
+        // Wii the fixed-function blender clamps src alpha to [0,1], so the bar
+        // stays at its authored gold and the dark text reads. Clamp the overlay
+        // alpha to match hardware. Flag-gated default-OFF; flag-ON restores the
+        // clamp. Text-class colours are untouched (this only bounds the bar's
+        // src-alpha), so the Wave-7-rescued labels are unaffected.
+        static int sHubTextContrast = -1;
+        if (sHubTextContrast < 0)
+            sHubTextContrast = std::getenv("RB3_HUB_TEXT_CONTRAST") ? 1 : 0;
+        if (isUiHighlightOverlay && sHubTextContrast && mu.color[3] > 1.0f)
+            mu.color[3] = 1.0f;
         // W7 Phase 3 Tier 1 — colour floor for UI-text-class meshes.
         // The Phase 3 static trace established that for some screens the
         // shipping .milo data drives the font material's GetColor() to

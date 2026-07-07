@@ -5140,24 +5140,6 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     MaterialUniforms& mu = matRes.mu;
     bool isTextMeshHeur = matRes.isTextMeshHeur;
     bool gemForce = matRes.gemForce;
-    if (getenv("RB3_C1_ORDER")) {
-        static uint64_t sOrderCtr = 0;
-        static uint64_t sOrderFrame = 0;
-        if (sOrderFrame != sFrameSeq) { sOrderFrame = sFrameSeq; sOrderCtr = 0; }
-        uint64_t seq = sOrderCtr++;
-        const char* mn = mesh->Name();
-        const Vector3& wp = mesh->WorldXfm().v;
-        bool hl = mn && (strstr(mn, "highlight") != nullptr);
-        bool pnTxt = (mn && mn[0] == '\0' && wp.z > 95.f && wp.z < 115.f && wp.x < -300.f);
-        if ((hl || pnTxt) && sFrameSeq == 450) {
-            const char* matn = (mat && mat->Name()) ? mat->Name() : "?";
-            fprintf(stderr, "[c1order] seq=%llu mesh='%s' mat='%s' pos=(%.1f,%.1f,%.1f) col=(%.3f,%.3f,%.3f,a=%.3f) blend=%d zmode=%d\n",
-                    (unsigned long long)seq,
-                    mn ? (mn[0] ? mn : "<empty>") : "<null>", matn, wp.x, wp.y, wp.z,
-                    mu.color[0], mu.color[1], mu.color[2], mu.color[3],
-                    mat ? (int)mat->GetBlend() : -1, mat ? (int)mat->GetZMode() : -1);
-        }
-    }
     // Per-(mesh,instance) persistent material uniform buffer + cached bind group.
     // The material uniforms (mu: animated colour/emissive/etc.) change per frame
     // AND per instance (the same shared mesh tints differently per list row) so we
