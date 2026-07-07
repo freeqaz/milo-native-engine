@@ -1408,6 +1408,13 @@
   "default": "off",
   "read": "presence"
  },
+ "RB3_ROWFIX": {
+  "class": "workaround",
+  "owner": "ui/song_select",
+  "faithfulStatus": "not-live INCOMPLETE (default-OFF, W4.4-ROWFIX): approximates the song_select focused-row selection BAR. Target = solid bright bar with DARK text; native shows only the yellow FRAME (highlight_main.mesh, zmode=0 so NOT depth-occluded — REFUTES the Wave-15 depth-occlusion prime suspect) over a dark navy fill + WHITE text. Root cause: the solid FILL comes from the list highlight focus anim/trigger (list_song_select_browser.milo highlight_bar.grp / highlight_light.trig / highlight_yellow.mesh + highlight_bar_color.tex) that does not run natively; the drawn full-row quad ml_highlight_glasstopp is only its near-invisible additive sheen (white a0.08). Part A (WORKS, proven): repaint the glasstopp quad as an opaque fill in the highlight authored color (from highlight_main.mat) -> bright bar (focused FILL p60 94->179; SETLISTS red-band 0% both arms; drawlog 792 flag-OFF). Part B (BLOCKED): darken the highlighted-row text via the label color override — UILabel::Draw sets fontMat->SetColor(dark) but the native RndText glyph shader ignores font-material color (measured: darkened applied yet text luma stays 167, with and without restore) = a native text-color gap OUTSIDE the RB3PostProc grant. Flag MUST stay OFF until Part B lands (bright fill + white text alone worsens legibility). Not a depth fix: the menu-flush LoadOp::Load SETLISTS red-band fix is untouched. flag-OFF byte-identical (getenv-gated, #ifdef HX_NATIVE) [rb3 UIListHighlight.cpp + UIListSlot.cpp + UIList.cpp + UIListWidget.cpp/.h].",
+  "default": "off",
+  "read": "presence"
+ },
  "RB3_HUB_TICKER_YFIX_OFF": {
   "class": "workaround",
   "owner": "ui/hub",

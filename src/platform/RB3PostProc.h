@@ -78,7 +78,8 @@ bool RB3ConsumeMenuUIFlushPending();
 // depth+stencil per subsequent menu UI dir (the note-highway fallback), which on
 // song_select produced a visible red band on the SETLISTS row; driving the flush
 // directly removes it while keeping the hub grade-exemption win. Gated on
-// RB3_UI_POST_GRADE (default-OFF): a no-op when the flag is unset or rnd is null.
+// RB3_UI_POST_GRADE (default-ON as of the Wave-14 flip, opt out via
+// RB3_UI_POST_GRADE_OFF): a no-op when the flag is off or rnd is null.
 // The flush is idempotent per frame (mPostProcFlushed) and early-returns when no
 // graded venue is pending, so extra menu dirs are safe. `rnd` is TheRnd, always a
 // BandRnd on the native backend. Declared with a forward Rnd (defined in Rnd.h).
