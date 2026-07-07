@@ -582,3 +582,101 @@ TEST_F(SkinGolden, BrokenSkinDivergesFromGolden) {
         << "corrupted invBind basis should fling a hand vert by many units — "
            "the oracle has lost sensitivity";
 }
+
+// ============================================================================
+// ShellInvariantAxisOracle (W2.8g B-S1) — composition oracle for Instrument B's
+// rest-free axis discriminator. Validates the SPACE-vs-DECODE truth table that
+// the in-engine [INSTR_B] instrument (Rnd_Wgpu_RB3.cpp) uses to classify the
+// hands smear, on REAL hand-region bind verts (pulled from the loaded char; a
+// finger-scale synthetic fallback keeps it self-contained). Three skin modes on
+// one dominant bone:
+//   COHERENT : skin = liveW                         (off == inv(rest), rest = I)
+//   SPACE    : skin = R87 * liveW                   (offset basis 87deg off own rest)
+//   DECODE   : each vert skinned by a DIFFERENT rigid xf (vert bound to wrong bone)
+// Predicted (and asserted): a SPACE conjugation is a single RIGID rotation ->
+// isoDistort ~0 (isometry preserved) yet displaces the shell by R*2sin(theta/2)
+// (large shellErr); a DECODE corruption tears the sub-shell -> isoDistort >> 0.
+// Therefore the in-engine hands reading (isoDistort ~0 AND large shell error) is
+// the SPACE signature, NOT decode. This is the oracle that makes the axis call
+// trustworthy (composition; DC3 source = corroboration only).
+// ============================================================================
+TEST_F(SkinGolden, ShellInvariantAxisOracle) {
+    // Real hand-region bind verts (radius from bone origin drives R*sin(theta)).
+    std::vector<Vector3> bind;
+    if (sDir) {
+        for (ObjDirItr<RndMesh> it(sDir, true); it && bind.size() < 24; ++it) {
+            RndMesh *m = it;
+            if (!m->IsSkinned() || m->GetGeomOwner() != m) continue;
+            std::vector<RndMesh::Vert> verts = UnpackMeshVerts(m);
+            for (const auto &v : verts) {
+                if (!VertUsable(m, v)) continue;
+                if (!NameIsHand(DominantBoneName(m, v))) continue;
+                bind.push_back(v.pos);
+                if (bind.size() >= 24) break;
+            }
+        }
+    }
+    bool real = bind.size() >= 4;
+    if (!real) { // finger-scale synthetic fallback (radii ~10-30u, like the fingers)
+        bind.clear();
+        for (int i = 0; i < 12; i++) {
+            float a = i * 0.5f;
+            bind.push_back(Vector3(8.f + i * 1.7f, 5.f * std::sin(a), 5.f * std::cos(a)));
+        }
+    }
+    const int N = (int)bind.size();
+
+    Hmx::Matrix3 I3(Vector3(1,0,0), Vector3(0,1,0), Vector3(0,0,1));
+    // liveW: a nontrivial live bone rotation (the pose). rest == I (off == inv(rest) == I).
+    Transform live; live.v.Set(0,0,0); RotateAboutY(I3, 0.7f, live.m);
+    // R87: the 87deg own-rest conjugation baked into the offset (== A.S1/Tier-1 signal).
+    const float theta = 1.518f; // ~87 deg
+    Transform r87; r87.v.Set(0,0,0); RotateAboutZ(I3, theta, r87.m);
+
+    auto skinBy = [](const Vector3 &p, const Transform &t) {
+        Vector3 o; Multiply(p, t, o); return o; };
+    auto isoDistort = [&](const std::vector<Vector3> &s) {
+        double sum = 0; int np = 0;
+        for (int a = 0; a < N; a++) for (int c = a + 1; c < N; c++) {
+            float db = Length(bind[a] - bind[c]); if (db < 1e-3f) continue;
+            float ds = Length(s[a] - s[c]);
+            sum += std::fabs(ds - db) / db; np++;
+        }
+        return np ? (float)(sum / np) : -1.f; };
+
+    // COHERENT: single rigid map (liveW).
+    Transform spaceT; Multiply(r87, live, spaceT); // v * r87 * liveW
+    std::vector<Vector3> sCoh(N), sSpace(N), sDec(N);
+    double shellSum = 0; float meanR = 0;
+    for (int i = 0; i < N; i++) {
+        sCoh[i]   = skinBy(bind[i], live);
+        sSpace[i] = skinBy(bind[i], spaceT);
+        // DECODE: vert i skinned by a DIFFERENT rigid xf (models a per-vert wrong-bone bind).
+        Transform di; di.v.Set(0,0,0);
+        RotateAboutZ(I3, 0.20f + 0.13f * i, di.m);
+        Transform decT; Multiply(di, live, decT);
+        sDec[i] = skinBy(bind[i], decT);
+        shellSum += Length(sSpace[i] - sCoh[i]);
+        meanR += Length(bind[i]);
+    }
+    meanR /= N;
+    float shellErr = (float)(shellSum / N);
+    float isoCoh = isoDistort(sCoh), isoSpace = isoDistort(sSpace), isoDec = isoDistort(sDec);
+
+    printf("  ShellInvariantAxisOracle: source=%s N=%d meanR=%.1fu\n",
+           real ? "REAL-hand-verts" : "synthetic-finger", N, meanR);
+    printf("    isoDistort  coherent=%.5f  SPACE=%.5f  DECODE=%.5f\n", isoCoh, isoSpace, isoDec);
+    printf("    shellErr(SPACE vs coherent) mean=%.1fu  R*2sin(th/2)=%.1fu\n",
+           shellErr, meanR * 2.f * std::sin(theta * 0.5f));
+
+    // Truth table:
+    // (1) coherent is isometric.
+    EXPECT_LT(isoCoh, 1e-3f) << "coherent single-bone skin must be isometric";
+    // (2) a SPACE conjugation stays RIGID (isoDistort ~0) -> iso cannot see it...
+    EXPECT_LT(isoSpace, 1e-3f) << "SPACE conjugation is a rigid rotation -> isometry preserved";
+    // (3) ...but DISPLACES the shell by ~R*2sin(theta/2) (this is what wext/shellMax read).
+    EXPECT_GT(shellErr, 0.5f * meanR) << "SPACE conjugation must fling the shell (R*sin theta)";
+    // (4) a DECODE (per-vert wrong bone) TEARS the sub-shell -> isoDistort >> 0.
+    EXPECT_GT(isoDec, 0.05f) << "DECODE corruption must break isometry (torn sub-shell)";
+    // => in-engine hands (isoDistort ~0 + large shellErr) == SPACE, not DECODE.
+}

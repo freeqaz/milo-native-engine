@@ -4860,6 +4860,130 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
                           t1Worst, t1WorstBone, (wb1&&wb1->Name())?wb1->Name():"?", t1Count, t1Recap, t1XWorst, t1XWorstBone,
                           t2Worst, t2WB, (wb2&&wb2->Name())?wb2->Name():"?", t2WP, t2WR, t2WExact, t2Pairs, t2ExactWorst);
                     }
+                    // ---- Instrument B (W2.8g B-S1): per-vertex shell invariant ||s(v)-shat(v)|| ----
+                    // s(v)    = as-drawn CPU 4-bone blend (bones.bones[bi]=off_b*liveW_b) — the wext blend.
+                    // shat(v) = authored shell transported by ONLY coherent bone motion:
+                    //           sum_k w_k * v * inverse(restW_bk) * liveW_bk (Tier-1 freshness-validated rest).
+                    // Coherent bake (off_b==inverse(restW_b)) => s==shat at EVERY pose (GREEN). A per-bone
+                    // SPACE/composition error (off ~87deg off own-rest) grows s-shat = R*sin(theta) transported
+                    // by liveW => co-varies with wext (RED). A per-vertex WEIGHT/INDEX/DECODE error is INVISIBLE
+                    // (shat shares the same corrupt indices/weights) => s-shat ~0 while wext stays RED. That
+                    // RED/GREEN split is the A6 axis discriminator. Opt-in RB3_HANDS_INSTR_B, render-inert.
+                    if (getenv("RB3_HANDS_INSTR_B")) {
+                        // Coherent-motion reference palette per bone (col-major), reusing Tier-1's rest.
+                        static std::vector<float> refPal; // nb*16, reused
+                        if ((int)refPal.size() < nb*16) refPal.resize(nb*16);
+                        for (int b=0;b<nb;b++){
+                            float* rp=&refPal[b*16];
+                            RndTransformable* bt=owner->BoneTransAt(b);
+                            if (!bt){ for(int t=0;t<16;t++) rp[t]=(t%5==0)?1.f:0.f; continue; }
+                            Transform invRest; Invert(haRest[b], invRest);
+                            Transform ref; Multiply(invRest, bt->WorldXfm(), ref); // inverse(restW)*liveW
+                            MiloXfmToColMajor(ref, rp);
+                        }
+                        auto domOf=[&](const GpuVertexSkinned& g, float* wOut)->int{
+                            int di=g.boneIndices[0]; float dw=g.boneWeights[0];
+                            for(int k=1;k<4;k++) if(g.boneWeights[k]>dw){dw=g.boneWeights[k];di=g.boneIndices[k];}
+                            if(wOut)*wOut=dw; return di; };
+                        // Pass 1: shell invariant ||s-shat|| (design mandate; NOTE confounded by rest
+                        // capture if no clean-rest frame exists — reported anyway for the A7 record) and
+                        // the worst-flung dominant bone (dominant bone of the max-shell-error vertex).
+                        double bSum=0.0; float bMax=0.f; int bN=0,bMaxDom=-1;
+                        float bMaxV[3]={0,0,0};
+                        for (int i=0;i<n;i+=step){
+                            const GpuVertexSkinned& g=skinnedView[i];
+                            float lx=g.pos[0],ly=g.pos[1],lz=g.pos[2];
+                            float s[3]={0,0,0}, sh[3]={0,0,0};
+                            for(int k=0;k<4;k++){
+                                int bi=g.boneIndices[k]; if(bi<0||bi>=kMaxBones)bi=0;
+                                float w=g.boneWeights[k];
+                                const float* ms=bones.bones[bi];
+                                s[0]+=w*(ms[0]*lx+ms[4]*ly+ms[8]*lz+ms[12]);
+                                s[1]+=w*(ms[1]*lx+ms[5]*ly+ms[9]*lz+ms[13]);
+                                s[2]+=w*(ms[2]*lx+ms[6]*ly+ms[10]*lz+ms[14]);
+                                const float* mr=(bi<nb)?&refPal[bi*16]:ms;
+                                sh[0]+=w*(mr[0]*lx+mr[4]*ly+mr[8]*lz+mr[12]);
+                                sh[1]+=w*(mr[1]*lx+mr[5]*ly+mr[9]*lz+mr[13]);
+                                sh[2]+=w*(mr[2]*lx+mr[6]*ly+mr[10]*lz+mr[14]);
+                            }
+                            float dx=s[0]-sh[0],dy=s[1]-sh[1],dz=s[2]-sh[2];
+                            float dd=sqrtf(dx*dx+dy*dy+dz*dz);
+                            bSum+=dd; bN++; if(dd>bMax){bMax=dd; bMaxDom=domOf(g,nullptr); bMaxV[0]=lx;bMaxV[1]=ly;bMaxV[2]=lz;}
+                        }
+                        float bMean=bN?(float)(bSum/bN):0.f;
+                        // ---- REST-FREE index-sanity (closes the A6 space-vs-consistent-index-swap gap):
+                        // is the worst-flung vert's DOMINANT bone its SPATIALLY-NEAREST bone? Bone bind
+                        // origin in mesh space = inverse(off_b).v (exact, rest-free). SPACE error (correct
+                        // index, wrong offset basis) => domBone IS the nearest bone AND R_exact is limb-scale.
+                        // INDEX/DECODE error (vert skinned by a far/wrong bone) => domBone != nearest, or
+                        // R_exact absurdly large (vert lives far from the bone it is bound to).
+                        float rExact=-1.f; int nearestBone=-1; float nearestD=1e30f;
+                        if (bMaxDom>=0 && bMaxDom<nb){
+                            for (int b=0;b<nb;b++){
+                                const Transform& ob = owner->BoneOffsetAt(b);
+                                Transform iob; Invert(ob, iob);
+                                float dxx=bMaxV[0]-iob.v.x, dyy=bMaxV[1]-iob.v.y, dzz=bMaxV[2]-iob.v.z;
+                                float d=sqrtf(dxx*dxx+dyy*dyy+dzz*dzz);
+                                if(d<nearestD){nearestD=d;nearestBone=b;}
+                                if(b==bMaxDom) rExact=d;
+                            }
+                        }
+                        // ---- REST-FREE axis discriminator (task 4): is the worst-flung dominant-bone
+                        // sub-shell RIGIDLY transported (isometry preserved => SPACE rotation, R*sin theta)
+                        // or DISTORTED (=> DECODE/weight tear)?  Two rest-free measures on worstBone=bMaxDom:
+                        //  (1) orthoResid = ||R^T R - I||_F of the composed palette 3x3 (bones.bones[worstBone]).
+                        //      ~0 => the palette is a clean rigid rotation => single-bone verts move
+                        //      isometrically => the smear is a rigid SPACE rotation, NOT a decode scale/shear.
+                        //  (2) isoDistort = mean |  ||s(vi)-s(vj)|| - ||vi-vj||  | / ||vi-vj||  over pairs of
+                        //      w>0.9 worstBone verts. SPACE (rigid) => ~0; DECODE (verts on wrong bones,
+                        //      mixed weights) => the skinned sub-shell tears => large.
+                        int worstBone = bMaxDom;
+                        float orthoResid = -1.f;
+                        if (worstBone>=0 && worstBone<kMaxBones){
+                            const float* m=bones.bones[worstBone];
+                            float c0[3]={m[0],m[1],m[2]}, c1[3]={m[4],m[5],m[6]}, c2[3]={m[8],m[9],m[10]};
+                            float g00=c0[0]*c0[0]+c0[1]*c0[1]+c0[2]*c0[2]-1.f;
+                            float g11=c1[0]*c1[0]+c1[1]*c1[1]+c1[2]*c1[2]-1.f;
+                            float g22=c2[0]*c2[0]+c2[1]*c2[1]+c2[2]*c2[2]-1.f;
+                            float g01=c0[0]*c1[0]+c0[1]*c1[1]+c0[2]*c1[2];
+                            float g02=c0[0]*c2[0]+c0[1]*c2[1]+c0[2]*c2[2];
+                            float g12=c1[0]*c2[0]+c1[1]*c2[1]+c1[2]*c2[2];
+                            orthoResid=sqrtf(g00*g00+g11*g11+g22*g22+2.f*(g01*g01+g02*g02+g12*g12));
+                        }
+                        float gb[64][3], gs[64][3]; int gN=0;
+                        for (int i=0;i<n&&gN<64;i+=step){
+                            const GpuVertexSkinned& g=skinnedView[i]; float dw;
+                            if(domOf(g,&dw)!=worstBone||dw<0.9f) continue;
+                            float lx=g.pos[0],ly=g.pos[1],lz=g.pos[2];
+                            const float* m=bones.bones[(worstBone<kMaxBones)?worstBone:0];
+                            gb[gN][0]=lx; gb[gN][1]=ly; gb[gN][2]=lz;
+                            gs[gN][0]=m[0]*lx+m[4]*ly+m[8]*lz+m[12];
+                            gs[gN][1]=m[1]*lx+m[5]*ly+m[9]*lz+m[13];
+                            gs[gN][2]=m[2]*lx+m[6]*ly+m[10]*lz+m[14];
+                            gN++;
+                        }
+                        double isoSum=0.0; int isoP=0;
+                        for (int a=0;a<gN;a++) for (int c=a+1;c<gN;c++){
+                            float db=sqrtf((gb[a][0]-gb[c][0])*(gb[a][0]-gb[c][0])+(gb[a][1]-gb[c][1])*(gb[a][1]-gb[c][1])+(gb[a][2]-gb[c][2])*(gb[a][2]-gb[c][2]));
+                            if(db<1e-3f) continue;
+                            float ds=sqrtf((gs[a][0]-gs[c][0])*(gs[a][0]-gs[c][0])+(gs[a][1]-gs[c][1])*(gs[a][1]-gs[c][1])+(gs[a][2]-gs[c][2])*(gs[a][2]-gs[c][2]));
+                            isoSum+=fabs(ds-db)/db; isoP++;
+                        }
+                        float isoDistort = isoP?(float)(isoSum/isoP):-1.f;
+                        static std::unordered_map<std::string,int> sBlog;
+                        if (sBlog[hk]++ % 20 == 0){
+                            RndTransformable* mb=(bMaxDom>=0&&bMaxDom<nb)?owner->BoneTransAt(bMaxDom):nullptr;
+                            RndTransformable* nbn=(nearestBone>=0&&nearestBone<nb)?owner->BoneTransAt(nearestBone):nullptr;
+                            fprintf(stderr,
+                              "[INSTR_B] mesh='%s' owner='%s' frame=%d wext=%.1f shellMax=%.1fu shellMean=%.1fu worstDom='%s' n=%d\n"
+                              "  AXIS(rest-free) worstBone='%s' orthoResid=%.4f isoDistort=%.4f grpN=%d rExact=%.1fu nearest='%s' idxOK=%d\n"
+                              "  (orthoResid~0 & isoDistort~0 & idxOK=1 => SPACE rigid-rotation; large iso / idxOK=0 => DECODE/index)\n",
+                              mnH, owner->Name()?owner->Name():"?", mFrameCount, wext, bMax, bMean,
+                              (mb&&mb->Name())?mb->Name():"?", bN,
+                              (mb&&mb->Name())?mb->Name():"?", orthoResid, isoDistort, gN,
+                              rExact, (nbn&&nbn->Name())?nbn->Name():"?", (nearestBone==bMaxDom)?1:0);
+                        }
+                    }
                 }
             }
             // RATIO test (blended-extent / bind-extent). Measuring every skinned
@@ -5016,6 +5140,24 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     MaterialUniforms& mu = matRes.mu;
     bool isTextMeshHeur = matRes.isTextMeshHeur;
     bool gemForce = matRes.gemForce;
+    if (getenv("RB3_C1_ORDER")) {
+        static uint64_t sOrderCtr = 0;
+        static uint64_t sOrderFrame = 0;
+        if (sOrderFrame != sFrameSeq) { sOrderFrame = sFrameSeq; sOrderCtr = 0; }
+        uint64_t seq = sOrderCtr++;
+        const char* mn = mesh->Name();
+        const Vector3& wp = mesh->WorldXfm().v;
+        bool hl = mn && (strstr(mn, "highlight") != nullptr);
+        bool pnTxt = (mn && mn[0] == '\0' && wp.z > 95.f && wp.z < 115.f && wp.x < -300.f);
+        if ((hl || pnTxt) && sFrameSeq == 450) {
+            const char* matn = (mat && mat->Name()) ? mat->Name() : "?";
+            fprintf(stderr, "[c1order] seq=%llu mesh='%s' mat='%s' pos=(%.1f,%.1f,%.1f) col=(%.3f,%.3f,%.3f,a=%.3f) blend=%d zmode=%d\n",
+                    (unsigned long long)seq,
+                    mn ? (mn[0] ? mn : "<empty>") : "<null>", matn, wp.x, wp.y, wp.z,
+                    mu.color[0], mu.color[1], mu.color[2], mu.color[3],
+                    mat ? (int)mat->GetBlend() : -1, mat ? (int)mat->GetZMode() : -1);
+        }
+    }
     // Per-(mesh,instance) persistent material uniform buffer + cached bind group.
     // The material uniforms (mu: animated colour/emissive/etc.) change per frame
     // AND per instance (the same shared mesh tints differently per list row) so we
