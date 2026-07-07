@@ -21,6 +21,61 @@
 #ifndef __EMSCRIPTEN__
 #include <pthread.h>
 #include <semaphore.h>
+#include <cstdlib>
+#include <ctime>
+
+namespace {
+// W0.3d-b (Wave 12, A-S2): TEST-ONLY worker-latency jitter for the load-
+// determinism fail-red. Env-gated (RB3_LOADDET_JITTER), default-OFF: a normal
+// build never sleeps (getenv parsed once; 0/unset => no-op). When set to a
+// positive integer N it sleeps a pseudo-random 0..N microseconds on the worker
+// thread before each job dispatch, amplifying the worker<->main allocation-order
+// race A-S1 traced so the OFF-arm gRand spread reproduces reliably under
+// contention (and the seam-ON arm must still collapse). Worker-thread only; the
+// main thread is untouched, so this only perturbs completion timing.
+int gJitterUs = -1;  // -1 unchecked; 0 = off; >0 = max microseconds
+unsigned int gJitterState = 0x1234567u;
+inline void LoadDetWorkerJitter() {
+    if (gJitterUs < 0) {
+        const char *v = std::getenv("RB3_LOADDET_JITTER");
+        long n = (v && *v) ? std::strtol(v, nullptr, 10) : 0;
+        gJitterUs = (n > 0) ? (int)n : 0;
+    }
+    if (gJitterUs == 0)
+        return;
+    gJitterState = gJitterState * 1103515245u + 12345u;
+    long us = (long)((gJitterState >> 16) % (unsigned)gJitterUs);
+    struct timespec ts;
+    ts.tv_sec = 0;
+    ts.tv_nsec = us * 1000L;
+    nanosleep(&ts, nullptr);
+}
+
+// W0.3d-b (Wave 12, A-S2): the H-RESEED seam's COMPLEMENTARY root lever. A-S1
+// traced the boot-to-boot gRand divergence to the worker<->main glibc-arena
+// allocation RACE: the ThreadCall worker parses milo DTA on its own arena
+// concurrently with main-thread allocs, so object addresses shuffle per boot ->
+// the unsorted address-ordered mAnims walk visits variable-count rejection
+// samplers in a different ORDER -> per-frame gRand COUNT diverges. Reseeding at
+// the anchor resets the TABLE but NOT that order, so the post-anchor COUNT still
+// diverges (A-S2 measured ON deltaSpread != 0). Removing the race AT SOURCE —
+// draining ThreadCall jobs synchronously on the main thread (the proven
+// __EMSCRIPTEN__ path) — makes the allocation order deterministic so the
+// post-anchor stream actually collapses. Scoped to RB3_FIXED_CLOCK &&
+// RB3_LOAD_DETERMINISM (same opt-in as the reseed), parsed once; default-OFF, so
+// a normal build keeps the async worker (byte-identical).
+int gSerialize = -1;  // -1 unchecked; 0 = worker (default); 1 = synchronous drain
+inline bool LoadDetSerialize() {
+    if (gSerialize < 0) {
+        const char *fc = std::getenv("RB3_FIXED_CLOCK");
+        const char *ld = std::getenv("RB3_LOAD_DETERMINISM");
+        bool fcOn = fc && *fc && std::strcmp(fc, "0") != 0;
+        bool ldOn = ld && *ld && std::strcmp(ld, "0") != 0;
+        gSerialize = (fcOn && ldOn) ? 1 : 0;
+    }
+    return gSerialize == 1;
+}
+}  // namespace
 #endif
 
 namespace {
@@ -41,6 +96,7 @@ namespace {
         // immediately on the semaphore until the main thread posts work.
         sem_wait(&gWorkerSem);
         while (!gTerminate) {
+            LoadDetWorkerJitter();  // W0.3d-b: env-gated fail-red jitter (default no-op)
             switch (gData[gCurCall].mType) {
             case kTCDT_Func:
                 gData[gCurCall].mArg = gData[gCurCall].mFunc();
@@ -139,6 +195,40 @@ void ThreadCallPoll() {
         }
     }
 #else
+    // W0.3d-b (Wave 12, A-S2): determinism seam's synchronous-drain lever. When
+    // RB3_FIXED_CLOCK && RB3_LOAD_DETERMINISM, run the pending job inline on the
+    // main thread (no worker sem_post) so the worker<->main alloc race that
+    // shuffles object addresses — and thus the mAnims consumer order feeding the
+    // per-frame rejection samplers — is removed at source. Mirrors the proven
+    // __EMSCRIPTEN__ single-threaded drain above. Default-OFF: the async worker
+    // path below is byte-identical when the flag is off.
+    if (LoadDetSerialize()) {
+        ThreadCallData &data = gData[gCurCall];
+        if (data.mType != kTCDT_None) {
+            LoadDetWorkerJitter();  // keep the fail-red jitter meaningful here too
+            ThreadCallDataType type = data.mType;
+            int result = 0;
+            switch (type) {
+            case kTCDT_Func:
+                result = data.mFunc();
+                data.mType = kTCDT_None;
+                gCurCall = (gCurCall + 1) % 12;
+                data.mCallback(result);
+                break;
+            case kTCDT_Class: {
+                ThreadCallback *cls = data.mClass;
+                result = cls->ThreadStart();
+                data.mType = kTCDT_None;
+                gCurCall = (gCurCall + 1) % 12;
+                cls->ThreadDone(result);
+                break;
+            }
+            default:
+                break;
+            }
+        }
+        return;
+    }
     if (gCallDone) {
         ThreadCallData &data = gData[gCurCall];
         ThreadCallDataType oldType = data.mType;
