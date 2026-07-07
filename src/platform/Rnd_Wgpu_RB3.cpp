@@ -1188,6 +1188,17 @@ static bool sVenuePointFalloffGx() {
     return v != 0;
 }
 
+// WHITE-fix (Wave 9): luminance-preserving venue highlight compression (keeps hot venue
+// moments colored instead of clipping white). Sets SceneUniforms.venueHighlightLumaMode on
+// the engaged world.cam venue upload so the standard fragment shader takes the luma-preserving
+// compressHighlights branch for venue draws only (DC3 / menus / game.cam leave the field 0 ->
+// per-channel branch, byte-identical). Default-OFF; opt-in RB3_VENUE_WHITE_GUARD.
+static bool sVenueWhiteGuard() {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("RB3_VENUE_WHITE_GUARD"); v = (e && e[0] && e[0] != '0') ? 1 : 0; }
+    return v != 0;
+}
+
 // WASH-fix (Wave 8 A.S2) FIX-H1: RB3_VENUE_FALLBACK_FIX=1 -> a DIM, exposure-safe
 // key for the broken/unlit VENUE fallback. The flat-default else branch (:1578)
 // floods `1.0 white dir + 0.45 grey ambient`, which over-exposes the venue through
@@ -1458,6 +1469,9 @@ RB3SceneBinding BandRnd::WriteSceneUniforms(RndCam* cam) {
         // venue path so tight range-55 silhouette spots reach the band (default 0 =
         // legacy squared-cutoff everywhere else; DC3 + game.cam never set this).
         s.pointFalloffMode = sVenuePointFalloffGx() ? 1.0f : 0.0f;
+        // WHITE-fix (Wave 9): opt-in luminance-preserving highlight compression for this
+        // engaged venue draw (default-OFF; DC3/menus/game.cam leave the field 0).
+        s.venueHighlightLumaMode = sVenueWhiteGuard() ? 1.0f : 0.0f;
         // Ambient: a near-white ambient is the engine's degenerate default (not an
         // authored flood), so pull it down — the point/dir lights provide the real
         // illumination and a low ambient keeps the dark-venue contrast. Floor so

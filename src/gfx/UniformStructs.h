@@ -38,7 +38,11 @@ struct SceneUniforms {
     float pointFalloffMode;       // f32 — 0 (default/DC3) = legacy saturate(1-d/r)^2
                                   //       hard cutoff; 1 = GX 1/(1+d/r) inverse-linear
                                   //       (set ONLY by RB3's venue-light upload)
-    float _padPL[2];
+    // WHITE-fix (Wave 9): 0 (default/DC3/game.cam/menus) = per-channel compressHighlights
+    // (byte-identical); 1 = luminance-preserving highlight compression (chroma survives the
+    // rolloff) — set ONLY by RB3's world.cam venue-light upload. Mirrors pointFalloffMode.
+    float venueHighlightLumaMode; // f32
+    float _padPL1;                // f32
     // Shadow mapping
     float lightViewProj[16];      // mat4x4f — light's VP for shadow lookup
     float shadowEnabled;           // f32 — 1.0 when shadow map valid

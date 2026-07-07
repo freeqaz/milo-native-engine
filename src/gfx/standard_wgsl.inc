@@ -78,7 +78,7 @@ struct SceneUniforms {
     // matching Wii GXInitLightAttn(k0=1,k1=1/range,k2=0) — set ONLY by RB3's
     // venue-light upload so arena range-55 spots reach the band 70-100u away.
     pointFalloffMode: f32,
-    _padPL2: f32,
+    venueHighlightLumaMode: f32,
     _padPL3: f32,
     // Shadow mapping
     lightViewProj: mat4x4f,
@@ -627,6 +627,19 @@ fn compressHighlights(color: vec3f) -> vec3f {
     );
 }
 
+// WHITE-fix (Wave 9): luminance-preserving highlight compression for the VENUE path.
+// Compress the LUMINANCE with the same tanh shoulder, then scale RGB uniformly so
+// hue/saturation survive — a hot venue moment stays bright-but-colored instead of the
+// per-channel path flattening every channel to 1.0 (white). Identity below the knee, so
+// correctly-exposed venue frames are unchanged.
+fn compressHighlightsLuma(color: vec3f) -> vec3f {
+    let luma = dot(color, vec3f(0.2126, 0.7152, 0.0722));
+    if (luma <= kHighlightCompressionKnee) { return color; }
+    let k = kHighlightCompressionKnee;
+    let rolled = k + (1.0 - k) * tanh((luma - k) / (1.0 - k));
+    return color * (rolled / max(luma, 1e-4));
+}
+
 // sRGB OETF (linear -> sRGB). The web canvas surface is configured as a
 // NON-sRGB format (RGBA8Unorm / BGRA8Unorm — caps.formats[0] on
 // Chrome/ANGLE), so the browser presents whatever bytes we write WITHOUT
@@ -875,7 +888,11 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
         finalColor = mix(scene.fogColor, finalColor, fogFactor);
     }
 
-    finalColor = compressHighlights(finalColor);
+    if (scene.venueHighlightLumaMode > 0.5) {
+        finalColor = compressHighlightsLuma(finalColor);
+    } else {
+        finalColor = compressHighlights(finalColor);
+    }
 
     // Fade RGB down with alpha for nearly transparent texels to suppress fringes.
     if (baseColor.a < kAlphaFringeFadeStart) {
