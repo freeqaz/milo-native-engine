@@ -4372,6 +4372,175 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
                     }
                 }
             }
+            // ================= RB3_DUALSKIN_PROBE (W2.8d bone-level factor attribution) ==========
+            // Diagnosis-first instrument for the finger/hand rotation-basis shard.
+            // For ONE worst-flung far vertex of a selected mesh (default hands_naked),
+            // dump the per-bone FACTORS the GPU palette composes — authored offset
+            // (owner->BoneOffsetAt), live boneWorld (WorldXfm), weight, composed skin
+            // (=offset*boneWorld) — plus determinants/orthonormality of each factor
+            // (candidate-a: is the LIVE bone world a clean rigid transform, or is the
+            // pose pipeline emitting a corrupt/non-rigid basis?) and the rest-basis
+            // conjugation delta (candidate-b: inverse(offset) bake-basis vs the
+            // per-member bone's own captured rest world -> DeltaR -> predicted R*sin(theta)
+            // fling checked against the measured far-vert deviation).
+            //
+            // It ALSO writes goldens/w2.8-farvert/live_pose.txt (asDrawn vs a coherent
+            // per-member-own-rest reference, per far vert) so the BL-A2 RealPathFixture
+            // gtest stops SKIPping and becomes the lane's hard instrument. Additive-only,
+            // gated, render-inert. Opt-in: RB3_DUALSKIN_PROBE=<name-substr|1|*>.
+            if (getenv("RB3_DUALSKIN_PROBE") && wext > 60.f && owner) {
+                static const char* dsSel = getenv("RB3_DUALSKIN_PROBE");
+                const char* mn0 = mesh->Name() ? mesh->Name() : "?";
+                bool dsMatch;
+                if (dsSel[0]==0 || (dsSel[0]=='1'&&dsSel[1]==0) || (dsSel[0]=='*'&&dsSel[1]==0))
+                    dsMatch = std::strstr(mn0, "hands_naked") != nullptr;
+                else { dsMatch=false; char b2[256]; std::strncpy(b2,dsSel,255); b2[255]=0;
+                    for(char*t=std::strtok(b2,",");t;t=std::strtok(nullptr,","))
+                        if(std::strstr(mn0,t)){dsMatch=true;break;} }
+                // Per-(mesh) capture of each bone's WorldXfm at first encounter = the
+                // per-member's OWN rest basis (the coherent reference frame). Caveat:
+                // "rest" == the first steady frame this mesh is drawn (recorded below).
+                static std::unordered_map<std::string, std::vector<Transform>> sBindWorld;
+                static std::unordered_map<std::string, int> sBindFrame;
+                static std::unordered_map<std::string, float> sWorstSeen; // dump only on a new worst frame
+                auto det3m = [](const Hmx::Matrix3& m){
+                    return m.x.x*(m.y.y*m.z.z-m.y.z*m.z.y)-m.x.y*(m.y.x*m.z.z-m.y.z*m.z.x)
+                         + m.x.z*(m.y.x*m.z.y-m.y.y*m.z.x); };
+                auto rowlen = [](const Vector3& v){ return sqrtf(v.x*v.x+v.y*v.y+v.z*v.z); };
+                auto dotv = [](const Vector3& a,const Vector3& b){ return a.x*b.x+a.y*b.y+a.z*b.z; };
+                // angle (deg) between two rotation bases A,B: R = A^T*B (rotations),
+                // theta = acos((trace-1)/2). Uses transpose as inverse (assumes ~ortho).
+                auto angleDeg = [&](const Hmx::Matrix3& A,const Hmx::Matrix3& B){
+                    // At = transpose(A)
+                    Hmx::Matrix3 At; At.x=Vector3(A.x.x,A.y.x,A.z.x); At.y=Vector3(A.x.y,A.y.y,A.z.y); At.z=Vector3(A.x.z,A.y.z,A.z.z);
+                    Hmx::Matrix3 R; Multiply(At,B,R);
+                    float tr=R.x.x+R.y.y+R.z.z; float c=(tr-1.f)*0.5f; if(c>1.f)c=1.f; if(c<-1.f)c=-1.f;
+                    return acosf(c)*57.29578f; };
+                if (dsMatch && owner->NumBones() > 0) {
+                    int nb = owner->NumBones();
+                    // Key rest capture by owner POINTER + name: distinct band members
+                    // share the mesh name 'hands_naked.mesh' but have distinct skeletons
+                    // (different NumBones) -> a name-only key would size bw to the wrong
+                    // member and index OOB.
+                    char okey[96]; snprintf(okey,sizeof(okey),"%s@%p", mn0, (void*)owner);
+                    std::string mkey = okey;
+                    // Capture per-member rest bases once (first frame this owner draws it).
+                    auto& bw = sBindWorld[mkey];
+                    if ((int)bw.size() != nb) {
+                        bw.assign(nb, Transform());
+                        for (int b=0;b<nb;b++){ RndTransformable* bt=owner->BoneTransAt(b);
+                            bw[b] = bt ? bt->WorldXfm() : Transform(); }
+                        sBindFrame[mkey] = mFrameCount;
+                    }
+                    // Worst far vert + collect far verts (dev>20u) with asDrawn/coherent.
+                    float wcx=0.5f*(wmn[0]+wmx[0]),wcy=0.5f*(wmn[1]+wmx[1]),wcz=0.5f*(wmn[2]+wmx[2]);
+                    int worstI=-1,worstBone=-1; float worstD=0.f,worstW=0.f; float wlx=0,wly=0,wlz=0;
+                    struct FV{float ax,ay,az,rx,ry,rz,R;};
+                    std::vector<FV> fvs;
+                    for (int i=0;i<n;i+=step){
+                        const GpuVertexSkinned& g=skinnedView[i];
+                        float lx=g.pos[0],ly=g.pos[1],lz=g.pos[2];
+                        // asDrawn world = the exact GPU palette blend (bones.bones[bi]).
+                        float ax=0,ay=0,az=0,wsum=0; int dom=-1; float domW=0;
+                        // coherent world = per-member-own-rest rigid delta blend.
+                        float rx=0,ry=0,rz=0;
+                        for(int k=0;k<4;k++){int bi=g.boneIndices[k]; if(bi<0||bi>=kMaxBones)bi=0;
+                            float w=g.boneWeights[k]; if(w<=0.f) continue; wsum+=w; if(w>domW){domW=w;dom=bi;}
+                            const float* m=bones.bones[bi];
+                            ax+=w*(m[0]*lx+m[4]*ly+m[8]*lz+m[12]);
+                            ay+=w*(m[1]*lx+m[5]*ly+m[9]*lz+m[13]);
+                            az+=w*(m[2]*lx+m[6]*ly+m[10]*lz+m[14]);
+                            // coherent: inverse(restWorld_bi) * liveWorld_bi, row-vector v*skin.
+                            if (bi < (int)bw.size()) {
+                                RndTransformable* bt=owner->BoneTransAt(bi);
+                                if (bt){ Transform invRest; Invert(bw[bi],invRest);
+                                    Transform cs; Multiply(invRest, bt->WorldXfm(), cs);
+                                    Vector3 vp(lx,ly,lz), cw; Multiply(vp, cs, cw);
+                                    rx+=w*cw.x; ry+=w*cw.y; rz+=w*cw.z; }
+                            }
+                        }
+                        if (placementContractArm) {
+                            float x=obj.world[0]*ax+obj.world[4]*ay+obj.world[8]*az+obj.world[12];
+                            float y=obj.world[1]*ax+obj.world[5]*ay+obj.world[9]*az+obj.world[13];
+                            float z=obj.world[2]*ax+obj.world[6]*ay+obj.world[10]*az+obj.world[14];
+                            ax=x;ay=y;az=z;
+                        }
+                        float dx=ax-wcx,dy=ay-wcy,dz=az-wcz; float d=sqrtf(dx*dx+dy*dy+dz*dz);
+                        // radius from dominant bone bind origin (~ -off.v), for the record.
+                        float R=0.f;
+                        if (dom>=0 && dom<nb){ const Transform& od=owner->BoneOffsetAt(dom);
+                            float rdx=lx-(-od.v.x),rdy=ly-(-od.v.y),rdz=lz-(-od.v.z);
+                            R=sqrtf(rdx*rdx+rdy*rdy+rdz*rdz); }
+                        // far verts: asDrawn-vs-coherent divergence is the shard the
+                        // oracle reads (BL-A2 metric). Pick the WORST-sep vertex as
+                        // the attribution target so the factor table + fixture reflect
+                        // the genuinely worst shard bone (not the coarse centroid dev).
+                        float sep=sqrtf((ax-rx)*(ax-rx)+(ay-ry)*(ay-ry)+(az-rz)*(az-rz));
+                        if (sep>worstD){worstD=sep;worstI=i;worstBone=dom;worstW=domW;wlx=lx;wly=ly;wlz=lz;}
+                        if (sep>15.f) fvs.push_back(FV{ax,ay,az,rx,ry,rz,R});
+                        (void)d;
+                    }
+                    // Factor table + fixture written on each NEW worst-separation frame
+                    // (final fixture = worst-shard pose) OR periodically (every 600
+                    // frames per member) so the log samples DEEP-animation poses and
+                    // demonstrates ΔR pose-INDEPENDENCE (constant offset-basis error
+                    // while pose deviation grows -> candidate (b), not (a)).
+                    static std::unordered_map<std::string,int> sPeriodic;
+                    bool periodic = (mFrameCount - sPeriodic[mkey]) >= 600;
+                    if (periodic) sPeriodic[mkey] = mFrameCount;
+                    bool newWorst = worstD > sWorstSeen[mkey] + 1.f;
+                    if (newWorst) sWorstSeen[mkey] = worstD;
+                    if (worstBone>=0 && worstBone<(int)bw.size() && (newWorst || periodic)) {
+                        RndTransformable* wb=owner->BoneTransAt(worstBone);
+                        const Transform& off=owner->BoneOffsetAt(worstBone);
+                        Transform W = wb?wb->WorldXfm():off;
+                        Transform L = wb?wb->LocalXfm():Transform();
+                        Transform skin; Multiply(off, W, skin);
+                        Transform invOff; Invert(off, invOff); // bake basis ~= restWorld_bake
+                        const Transform& restW = bw[worstBone];
+                        float thetaOffRest = angleDeg(invOff.m, restW.m);   // cand-b: off-basis vs per-member rest
+                        float thetaAnim    = angleDeg(restW.m, W.m);        // pose deviation rest->now
+                        float thetaSkin    = angleDeg(Hmx::Matrix3(Vector3(1,0,0),Vector3(0,1,0),Vector3(0,0,1)), skin.m);
+                        float R=0.f;{float rdx=wlx-(-off.v.x),rdy=wly-(-off.v.y),rdz=wlz-(-off.v.z);R=sqrtf(rdx*rdx+rdy*rdy+rdz*rdz);}
+                        float predOffRest = 2.f*R*sinf(thetaOffRest*0.008726646f); // R*2sin(theta/2)
+                        fprintf(stderr,
+                          "\n[DUALSKIN] mesh='%s' frame=%d restFrame=%d bones=%d worstVtx=%d worstSep=%.1fu domBone[%d]='%s' w=%.2f R=%.1f\n"
+                          "  FACTOR off(BoneOffsetAt): det=%.4f rowlen=(%.3f,%.3f,%.3f) ortho.xy=%.3f off.v=(%.1f,%.1f,%.1f)\n"
+                          "  FACTOR W(liveWorld):      det=%.4f rowlen=(%.3f,%.3f,%.3f) ortho.xy=%.3f  W.v=(%.1f,%.1f,%.1f)\n"
+                          "  FACTOR L(liveLocal):      det=%.4f rowlen=(%.3f,%.3f,%.3f) ortho.xy=%.3f  L.v=(%.2f,%.2f,%.2f) parent='%s'\n"
+                          "  COMPOSED skin(off*W):     det=%.4f rowlen=(%.3f,%.3f,%.3f) ortho.xy=%.3f skin.v=(%.1f,%.1f,%.1f) angleVsI=%.1fdeg\n"
+                          "  DELTA-R offBasis-vs-perMemberRest = %.1f deg  (cand-b conjugation error)\n"
+                          "  DELTA-R rest-vs-now (pose deviation) = %.1f deg\n"
+                          "  PREDICT R*2sin(DeltaR_offRest/2) = %.1fu   MEASURED worstSep = %.1fu   ratio=%.2f\n",
+                          mn0, mFrameCount, sBindFrame[mkey], nb, worstI, worstD, worstBone,
+                          (wb&&wb->Name())?wb->Name():"?", worstW, R,
+                          det3m(off.m), rowlen(off.m.x),rowlen(off.m.y),rowlen(off.m.z), dotv(off.m.x,off.m.y), off.v.x,off.v.y,off.v.z,
+                          det3m(W.m), rowlen(W.m.x),rowlen(W.m.y),rowlen(W.m.z), dotv(W.m.x,W.m.y), W.v.x,W.v.y,W.v.z,
+                          det3m(L.m), rowlen(L.m.x),rowlen(L.m.y),rowlen(L.m.z), dotv(L.m.x,L.m.y), L.v.x,L.v.y,L.v.z,
+                          (wb&&wb->TransParent()&&wb->TransParent()->Name())?wb->TransParent()->Name():"-",
+                          det3m(skin.m), rowlen(skin.m.x),rowlen(skin.m.y),rowlen(skin.m.z), dotv(skin.m.x,skin.m.y), skin.v.x,skin.v.y,skin.v.z, thetaSkin,
+                          thetaOffRest, thetaAnim, predOffRest, worstD, (worstD>0.01f)?predOffRest/worstD:0.f);
+                        // Write live_pose.txt for the BL-A2 RealPathFixture (asDrawn refX R)
+                        // ONLY on a new worst-shard frame (periodic samples are stderr-only,
+                        // so the committed fixture always holds the worst capture).
+                        const char* fxpath = newWorst ? (getenv("RB3_DUALSKIN_FIXTURE")
+                                                         ? getenv("RB3_DUALSKIN_FIXTURE") : "native/tests/goldens/w2.8-farvert/live_pose.txt")
+                                                       : nullptr;
+                        if (fxpath) {
+                            FILE* fp = fopen(fxpath, "w");
+                            if (fp) {
+                                fprintf(fp, "# W2.8d dual-skin capture: mesh='%s' frame=%d restFrame=%d domBone='%s' worstSep=%.1fu\n",
+                                        mn0, mFrameCount, sBindFrame[mkey], (wb&&wb->Name())?wb->Name():"?", worstD);
+                                fprintf(fp, "# cols: asDrawnX asDrawnY asDrawnZ  refX refY refZ  R   (ref = per-member-own-rest coherent skin)\n");
+                                for (const FV& v : fvs)
+                                    fprintf(fp, "%.4f %.4f %.4f  %.4f %.4f %.4f  %.2f\n", v.ax,v.ay,v.az, v.rx,v.ry,v.rz, v.R);
+                                fclose(fp);
+                                fprintf(stderr, "[DUALSKIN] wrote %zu far-vert records to %s\n", fvs.size(), fxpath);
+                            } else fprintf(stderr, "[DUALSKIN] could NOT open %s for write\n", fxpath);
+                        }
+                    }
+                }
+            }
             // RATIO test (blended-extent / bind-extent). Measuring every skinned
             // mesh over the song shows a roughly bimodal split: correctly-posed
             // meshes (crowd bodies, extras bodies, hair, mic stand, animated
