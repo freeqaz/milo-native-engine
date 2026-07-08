@@ -158,6 +158,61 @@ static void MatMul4(const float* A, const float* B, float* out) {
 }
 
 // ===========================================================================
+// RB3_HANDS_MITTEN (Wave-18 Lane M) helpers.
+// Render-side, hands-scoped mitten-fallback WORKAROUND for the closed
+// R5-hands family (docs .../R5-HANDS-ENDGAME/CLOSURE.md item 1). NOT an
+// offset bake: no anchor capture, no authored-data mutation — a per-frame
+// palette blend of a finger bone toward its side's wrist-rigid transform.
+// Both helpers are pure math; they only ever run when RB3_HANDS_MITTEN is set.
+// ---------------------------------------------------------------------------
+// angle(deg) between two rotation bases A,B via R = A^T*B (assumes ~ortho) —
+// identical math to the RB3_HANDS_ATTACH probe's `haAng`.
+static float MittenMatAngleDeg(const Hmx::Matrix3& A, const Hmx::Matrix3& B) {
+    Hmx::Matrix3 At;
+    At.x = Vector3(A.x.x, A.y.x, A.z.x);
+    At.y = Vector3(A.x.y, A.y.y, A.z.y);
+    At.z = Vector3(A.x.z, A.y.z, A.z.z);
+    Hmx::Matrix3 R;
+    Multiply(At, B, R);
+    float tr = R.x.x + R.y.y + R.z.z;
+    float c = (tr - 1.f) * 0.5f;
+    if (c > 1.f) c = 1.f;
+    if (c < -1.f) c = -1.f;
+    return acosf(c) * 57.29578f;
+}
+// Blend rigid transform a -> b by t in [0,1]: translation lerps; the rotation
+// basis nlerps then is Gram-Schmidt orthonormalized (right-handed) so the
+// result is a valid rigid transform. `out` may alias `a` (all reads of a/b are
+// pulled into locals before any write).
+static void MittenBlendXfm(const Transform& a, const Transform& b, float t,
+                           Transform& out) {
+    float tv[3] = { a.v.x + (b.v.x - a.v.x) * t,
+                    a.v.y + (b.v.y - a.v.y) * t,
+                    a.v.z + (b.v.z - a.v.z) * t };
+    float rx[3] = { a.m.x.x + (b.m.x.x - a.m.x.x) * t,
+                    a.m.x.y + (b.m.x.y - a.m.x.y) * t,
+                    a.m.x.z + (b.m.x.z - a.m.x.z) * t };
+    float ry[3] = { a.m.y.x + (b.m.y.x - a.m.y.x) * t,
+                    a.m.y.y + (b.m.y.y - a.m.y.y) * t,
+                    a.m.y.z + (b.m.y.z - a.m.y.z) * t };
+    float lx = sqrtf(rx[0]*rx[0] + rx[1]*rx[1] + rx[2]*rx[2]);
+    if (lx < 1e-8f) lx = 1.f;
+    rx[0] /= lx; rx[1] /= lx; rx[2] /= lx;
+    float d = rx[0]*ry[0] + rx[1]*ry[1] + rx[2]*ry[2];
+    ry[0] -= d*rx[0]; ry[1] -= d*rx[1]; ry[2] -= d*rx[2];
+    float ly = sqrtf(ry[0]*ry[0] + ry[1]*ry[1] + ry[2]*ry[2]);
+    if (ly < 1e-8f) ly = 1.f;
+    ry[0] /= ly; ry[1] /= ly; ry[2] /= ly;
+    float rz[3] = { rx[1]*ry[2] - rx[2]*ry[1],
+                    rx[2]*ry[0] - rx[0]*ry[2],
+                    rx[0]*ry[1] - rx[1]*ry[0] };
+    out.v = Vector3(tv[0], tv[1], tv[2]);
+    out.m.x = Vector3(rx[0], rx[1], rx[2]);
+    out.m.y = Vector3(ry[0], ry[1], ry[2]);
+    out.m.z = Vector3(rz[0], rz[1], rz[2]);
+}
+
+// ===========================================================================
 // BandRnd
 // ===========================================================================
 
@@ -3649,6 +3704,70 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
                          std::fabs(cmw.m.z.y) < 1e-6f;
             if (!ident) { Invert(cmw, contractInvMeshWorld); contractReorg = true; }
         }
+        // ===== RB3_HANDS_MITTEN pre-pass (Wave-18 Lane M) =====
+        // WORKAROUND for the closed R5-hands residual (the coherent displaced
+        // "ceiling hand" + wrist spike-webbing, i.e. the 87.2 deg seed-R rebake
+        // mechanism — HANDS-ADJUDICATION/VERDICT.md §2). Render-side, hands-scoped,
+        // BAND-only (crowd untouched). Flag-first RB3_HANDS_MITTEN, DEFAULT-OFF —
+        // the default is E1-decided by the campaign coordinator, never here. When
+        // the flag is unset the whole block is inert: the palette is byte-identical.
+        //
+        // Mechanism: for a finger bone, compare its composed skin (A_i*O_i(t)) to
+        // its side's WRIST bone's rigid composed skin (A_w*O_w(t)) in the wrist
+        // frame; past a rotation threshold (the displacement/tear signature) blend
+        // that finger's palette entry toward the wrist-rigid transform. Because the
+        // wrist offset A_w preserves the finger's authored bind geometry while the
+        // wrist (D4: Wii-faithful, <=0.06 deg) drives its motion rigidly, a fully-
+        // blended finger degrades to a rigid extension of the wrist: fingers stop
+        // articulating at exactly the poses that tear/displace; the hand stays
+        // attached and moving. Explicitly NOT an offset bake (no anchor capture, no
+        // authored-data mutation) — a per-frame palette lerp only.
+        static int sMittenOn = -1;
+        if (sMittenOn < 0) sMittenOn = getenv("RB3_HANDS_MITTEN") ? 1 : 0;
+        static int sMittenProbe = -1;
+        if (sMittenProbe < 0) sMittenProbe = getenv("RB3_HANDS_MITTEN_PROBE") ? 1 : 0;
+        // Rotation-vs-wrist ramp (deg): below LO no blend (coherent frames stay
+        // untouched); above HI full mitten. Calibrated from the Wave-16 burst_08/12
+        // evidence protocol; overridable for calibration sweeps.
+        // Default 45->90 deg: calibrated from the Wave-16 burst_08/12 evidence
+        // (docs .../HANDS-FIX/evidence/) against the live relAng-to-wrist
+        // distribution (p50~17 deg, p90~54 deg, tail to 135 deg). Below 45 deg the
+        // finger sits near its rest basis (coherent — never blended); the 45..90
+        // ramp catches the extreme-pose tail where the seed-R displacement/tear
+        // becomes visible (the spike-fan / ceiling-hand), collapsing those fingers
+        // to wrist-rigid. Overridable for calibration sweeps.
+        static float sMittenLo = -1.f, sMittenHi = -1.f;
+        if (sMittenLo < 0.f) { const char* e = getenv("RB3_HANDS_MITTEN_TH_LO");
+            sMittenLo = e ? (float)atof(e) : 45.f; }
+        if (sMittenHi < 0.f) { const char* e = getenv("RB3_HANDS_MITTEN_TH_HI");
+            sMittenHi = e ? (float)atof(e) : 90.f; }
+        Transform mitWrist[2];               // [0]=Left, [1]=Right
+        bool mitWristOK[2] = { false, false };
+        bool mittenMesh = false;
+        if (sMittenOn && numBones >= 8 && mesh->Name() && geomHook &&
+            geomHook->IsBandHandMesh(mesh->Name())) {
+            for (int b = 0; b < numBones; b++) {
+                RndTransformable* bt = owner->BoneTransAt(b);
+                if (!bt || !bt->Name()) continue;
+                if (geomHook->HandBoneRole(bt->Name()) != 1) continue; // wrist only
+                int side = geomHook->HandBoneSide(bt->Name());
+                int si = (side < 0) ? 0 : 1;
+                const Transform& wt = bt->WorldXfm();
+                if (!(std::fabs(wt.v.x) < 1e5f && std::fabs(wt.v.y) < 1e5f &&
+                      std::fabs(wt.v.z) < 1e5f)) continue;
+                Transform ws; Multiply(owner->BoneOffsetAt(b), wt, ws);
+                mitWrist[si] = ws; mitWristOK[si] = true; mittenMesh = true;
+                if (sMittenProbe) {
+                    ObjectDir* bd = bt->Dir();
+                    fprintf(stderr,
+                        "[MITTEN_WRIST] mesh='%s' bone='%s' side=%c dir='%s' "
+                        "rebound=%d\n",
+                        mesh->Name(), bt->Name(), side < 0 ? 'L' : 'R',
+                        (bd && !bd->mStoredFile.empty()) ? bd->mStoredFile.c_str() : "-",
+                        mesh->mNativeBonesRebound ? 1 : 0);
+                }
+            }
+        }
         for (int b = 0; b < numBones; b++) {
             RndTransformable* bt = owner->BoneTransAt(b);
             // Identity fallback for a null/garbage bone.
@@ -3859,6 +3978,55 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
                             mesh->Name()?mesh->Name():"?", b, bt->Name()?bt->Name():"?",
                             skin.v.x,skin.v.y,skin.v.z, sp,
                             bt->TransParent()&&bt->TransParent()->Name()?bt->TransParent()->Name():"-");
+                }
+            }
+            // ===== RB3_HANDS_MITTEN blend (Wave-18 Lane M) =====
+            // For a triggered finger bone, blend its composed skin toward its
+            // side's wrist-rigid transform. `skin` is final here (past the finite
+            // /clamp guards; band hand meshes are reboundSkip so the SKIN_CLAMP is
+            // skipped for them). Blending in place feeds the existing write below.
+            if (mittenMesh && bt->Name() &&
+                geomHook->HandBoneRole(bt->Name()) == 2) {   // finger bones only
+                int side = geomHook->HandBoneSide(bt->Name());
+                int si = (side < 0) ? 0 : 1;
+                if (mitWristOK[si]) {
+                    // Rotation of the finger's composed skin relative to the wrist's
+                    // rigid transform, in the wrist frame — the "extreme animated
+                    // pose" signal that co-occurs with the seed-R displacement/tear.
+                    float relAng = MittenMatAngleDeg(mitWrist[si].m, skin.m);
+                    float alpha = (sMittenHi > sMittenLo)
+                        ? (relAng - sMittenLo) / (sMittenHi - sMittenLo)
+                        : (relAng >= sMittenLo ? 1.f : 0.f);
+                    if (alpha < 0.f) alpha = 0.f;
+                    if (alpha > 1.f) alpha = 1.f;
+                    if (alpha > 0.f) {
+                        Transform blended;
+                        MittenBlendXfm(skin, mitWrist[si], alpha, blended);
+                        skin = blended;
+                    }
+                    // Trigger-rate accounting + per-bone calibration dump.
+                    static long sMitFired = 0, sMitTotal = 0;
+                    sMitTotal++;
+                    if (alpha > 0.f) sMitFired++;
+                    if (sMittenProbe) {
+                        float dtx = skin.v.x - mitWrist[si].v.x;
+                        float dty = skin.v.y - mitWrist[si].v.y;
+                        float dtz = skin.v.z - mitWrist[si].v.z;
+                        float relTr = std::sqrt(dtx*dtx + dty*dty + dtz*dtz);
+                        static std::unordered_map<std::string,int> sMitSeen;
+                        std::string mk = std::string(mesh->Name()) + "@" + bt->Name();
+                        if (sMitSeen[mk]++ % 60 == 0)
+                            fprintf(stderr,
+                                "[MITTEN] mesh='%s' bone='%s' relAngToWrist=%.1fdeg "
+                                "relTr=%.1fu alpha=%.2f (lo=%.0f hi=%.0f)\n",
+                                mesh->Name(), bt->Name(), relAng, relTr, alpha,
+                                sMittenLo, sMittenHi);
+                        if (sMitTotal % 240 == 0)
+                            fprintf(stderr,
+                                "[MITTEN_RATE] fingerDraws=%ld triggered=%ld "
+                                "rate=%.1f%%\n", sMitTotal, sMitFired,
+                                100.0 * (double)sMitFired / (double)sMitTotal);
+                    }
                 }
             }
             // W2.1 SYS-1 placement contract — Half B: strip the mesh world so

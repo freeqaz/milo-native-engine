@@ -233,6 +233,29 @@ public:
         return false;
     }
 
+    // RB3_HANDS_MITTEN (Wave-18 Lane M): band-only, hands-scoped mitten-fallback
+    // classifiers. The engine owns all mitten math (wrist skin capture + per-finger
+    // palette blend in Rnd_Wgpu_RB3.cpp); the hook answers only the RB3 asset-name
+    // questions. Base defaults return "not a hand asset" so a decomp with no hook
+    // registered never triggers the mitten (matching the flag-default-OFF behavior).
+    //
+    // Is this a BAND hand/glove/fingernail mesh (the mitten mesh scope)? MUST
+    // exclude crowd/extras meshes — the 24x crowd rebind is load-bearing.
+    virtual bool IsBandHandMesh(const char* /*meshName*/) {
+        return false;
+    }
+    // Role of a hand-region bone: 0 = not a hand bone, 1 = wrist (the rigid
+    // reference), 2 = finger (blend candidate). Prop-attachment bones under the
+    // hand (mic/fret/pegs/...) must return 0.
+    virtual int HandBoneRole(const char* /*boneName*/) {
+        return 0;
+    }
+    // Side of a hand bone: -1 = left, +1 = right, 0 = unknown. Used to blend each
+    // finger toward ITS OWN side's wrist (never the opposite hand).
+    virtual int HandBoneSide(const char* /*boneName*/) {
+        return 0;
+    }
+
     // B12: crowd/extras material-path classifiers. The engine keeps the owner-bone
     // loop + the `world.cam` scene-scope gate (Bucket C, inline) and asks the hook
     // only the NAME questions. `IsCrowdExtraMeshName` seeds the crowd/extras flag
