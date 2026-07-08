@@ -522,6 +522,13 @@
   "default": "off",
   "read": "presence"
  },
+ "RB3_PROV_SKIN_SPHERE": {
+  "class": "probe",
+  "owner": "render/ui-forensics",
+  "faithfulStatus": "n/a: Wave-19 T2-WORLDROI A/B control \u2014 forces skinned draws back to the legacy rectKind=1 sphere fallback (the R3 v1 world-cam blindness) so the new rectKind=3 skinned-pose bbox can be diffed against it (gate G1). Test-only; default preserves the rectKind=3 skinned-pose bbox + boneRects. Implies/requires RB3_DRAWLOG_PROV. SPATIAL provenance axis, not the frame-assignment timing axis.",
+  "default": "off",
+  "read": "presence"
+ },
  "RB3_MENU_DEPTH_CLEAR": {
   "class": "probe",
   "owner": "render/ui-forensics",
