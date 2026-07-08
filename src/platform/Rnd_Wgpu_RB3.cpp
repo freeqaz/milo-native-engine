@@ -3708,9 +3708,11 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
         // WORKAROUND for the closed R5-hands residual (the coherent displaced
         // "ceiling hand" + wrist spike-webbing, i.e. the 87.2 deg seed-R rebake
         // mechanism — HANDS-ADJUDICATION/VERDICT.md §2). Render-side, hands-scoped,
-        // BAND-only (crowd untouched). Flag-first RB3_HANDS_MITTEN, DEFAULT-OFF —
-        // the default is E1-decided by the campaign coordinator, never here. When
-        // the flag is unset the whole block is inert: the palette is byte-identical.
+        // BAND-only (crowd untouched). DEFAULT-ON since the Wave-18 close-out E1
+        // (burst_08/12/45 OFF/ON pairs: finger spike-fans collapse, coherent frames
+        // untouched by construction). Opt-out RB3_HANDS_MITTEN_OFF wins; legacy
+        // RB3_HANDS_MITTEN=0 also disables. When disabled the whole block is inert:
+        // the palette is byte-identical.
         //
         // Mechanism: for a finger bone, compare its composed skin (A_i*O_i(t)) to
         // its side's WRIST bone's rigid composed skin (A_w*O_w(t)) in the wrist
@@ -3723,7 +3725,10 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
         // attached and moving. Explicitly NOT an offset bake (no anchor capture, no
         // authored-data mutation) — a per-frame palette lerp only.
         static int sMittenOn = -1;
-        if (sMittenOn < 0) sMittenOn = getenv("RB3_HANDS_MITTEN") ? 1 : 0;
+        if (sMittenOn < 0) {
+            if (getenv("RB3_HANDS_MITTEN_OFF")) sMittenOn = 0;
+            else { const char* e = getenv("RB3_HANDS_MITTEN"); sMittenOn = (e && e[0] == '0') ? 0 : 1; }
+        }
         static int sMittenProbe = -1;
         if (sMittenProbe < 0) sMittenProbe = getenv("RB3_HANDS_MITTEN_PROBE") ? 1 : 0;
         // Rotation-vs-wrist ramp (deg): below LO no blend (coherent frames stay
