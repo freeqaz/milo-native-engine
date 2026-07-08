@@ -1616,5 +1616,26 @@
   "faithfulStatus": "probe: Wave-22 star-meter fill trace (SetNumStars f + per-star fill state) — proved the star meter fills correctly (false-alarm refutation)",
   "default": "off",
   "read": "presence"
+ },
+ "BAND_ANIM_YTHRESH": {
+  "class": "probe",
+  "owner": "skinning/char",
+  "faithfulStatus": "probe: Wave-23 FOREARM discovery — world-y threshold (default 50) for the event-triggered BAND_ANIM_PROBE emit; inert unless BAND_ANIM_PROBE set",
+  "default": "off",
+  "read": "value"
+ },
+ "CROWD_CENSUS_MESHES": {
+  "class": "probe",
+  "owner": "world/crowd",
+  "faithfulStatus": "probe: Wave-23 CROWD recon — verbosity/scope for the read-only rb3_crowd_census DTA func (sv3_a vignette crowd actor census)",
+  "default": "off",
+  "read": "presence"
+ },
+ "CROWD_CENSUS_VERBOSE": {
+  "class": "probe",
+  "owner": "world/crowd",
+  "faithfulStatus": "probe: Wave-23 CROWD recon — verbose per-mesh census output (read-only)",
+  "default": "off",
+  "read": "presence"
  }
 }

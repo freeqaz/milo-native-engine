@@ -4,6 +4,7 @@
 
 { "BAND_ANIM_BONE", "off", FlagClass::Probe, FlagRead::Value, "char/anim", "n/a: names the bone BAND_ANIM_PROBE samples (defaults to bone_R-upperArm.mesh); only read when BAND_ANIM_PROBE is active, never alters Poll() [BandCharacter.cpp:507]", "BAND_ANIM_BONE" },
 { "BAND_ANIM_PROBE", "off", FlagClass::Probe, FlagRead::Value, "char/anim", "n/a: per-frame trace of the band animation chain (driver presence, playing clip, named bone worldPos pre/post Character::Poll) to localize why the on-stage skeleton fails to move; substring-matches a member's dir name or '*' [BandCharacter.cpp:497]", "BAND_ANIM_PROBE" },
+{ "BAND_ANIM_YTHRESH", "off", FlagClass::Probe, FlagRead::Value, "skinning/char", "probe: Wave-23 FOREARM discovery — world-y threshold (default 50) for the event-triggered BAND_ANIM_PROBE emit; inert unless BAND_ANIM_PROBE set", "BAND_ANIM_YTHRESH" },
 { "BONE_CLEAR_DBG", "off", FlagClass::Probe, FlagRead::Presence, "skinning", "n/a: logs any CopyBones(0) that wipes a non-empty bone list off a mesh, to catch post-load bone clears [Mesh.cpp:1156]", "BONE_CLEAR_DBG" },
 { "BONE_LOAD_DBG", "off", FlagClass::Probe, FlagRead::Presence, "skinning", "n/a: reports how many bones a mesh loaded from the file vs. how many resolved null, before RemoveInvalidBones strips them [Mesh.cpp:1000]", "BONE_LOAD_DBG" },
 { "BONE_PROBE", "off", FlagClass::Probe, FlagRead::Truthy, "skinning", "n/a: archaeological debug probe", "BONE_PROBE" },
@@ -25,6 +26,8 @@
 { "CHAR_DBG", "off", FlagClass::Probe, FlagRead::Presence, "render/char-material", "n/a: two independent print sites sharing a name — engine RB3MaterialBinder.cpp reports whether a skinned outfit mesh resolved a diffuse texture (untextured-because-unbound vs RTT-composite-never-painted); game BandDirector.cpp logs the re-run LoadCharacters() call (aliases VENUE_DBG) [RB3MaterialBinder.cpp:292; BandDirector.cpp:713]", "CHAR_DBG" },
 { "CHAR_PROBE_DUMP", "off", FlagClass::Unknown, FlagRead::Presence, "unclassified", "n/a", "CHAR_PROBE_DUMP" },
 { "CLOCK_DBG", "off", FlagClass::Probe, FlagRead::Presence, "ui/hud", "n/a: logs TrackDir::DrawShowing's real-time delta and y-per-second scroll multiplier for a track-panel HUD overlay [TrackDir.cpp:302]", "CLOCK_DBG" },
+{ "CROWD_CENSUS_MESHES", "off", FlagClass::Probe, FlagRead::Presence, "world/crowd", "probe: Wave-23 CROWD recon — verbosity/scope for the read-only rb3_crowd_census DTA func (sv3_a vignette crowd actor census)", "CROWD_CENSUS_MESHES" },
+{ "CROWD_CENSUS_VERBOSE", "off", FlagClass::Probe, FlagRead::Presence, "world/crowd", "probe: Wave-23 CROWD recon — verbose per-mesh census output (read-only)", "CROWD_CENSUS_VERBOSE" },
 { "CROWD_REBIND_PROBE", "off", FlagClass::Probe, FlagRead::Presence, "render/crowd", "n/a: verbose companion to RebindCrowdCharBonesToOwnSkeleton (the default-ON RB3_NO_CROWD_REBIND workaround) — read-only diagnostic flag, does not itself change the rebind [Crowd.cpp:936]", "CROWD_REBIND_PROBE" },
 { "DC3_AUDIO_GAIN", "unknown", FlagClass::Unknown, FlagRead::Value, "unclassified", "n/a", "DC3_AUDIO_GAIN" },
 { "DC3_DUMP_AUDIO", "unknown", FlagClass::Unknown, FlagRead::Truthy, "unclassified", "n/a", "DC3_DUMP_AUDIO" },
