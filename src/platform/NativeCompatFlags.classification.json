@@ -543,6 +543,13 @@
   "default": "off",
   "read": "presence"
  },
+ "RB3_LOADDET_TIMELINE": {
+  "class": "probe",
+  "owner": "render/determinism",
+  "faithfulStatus": "n/a: Wave-19 T1 frame-timeline tracer (attribution mode) \u2014 gates the NEW per-frame filearrive + songms markers so existing RB3_LOADDET_PROBE consumers (R4 ledger/order axis, white_regrade, wash v1) keep a byte-identical marker stream; read rb3-side (Loader/http_handlers/loaddet probe taps). Default-OFF, presence-read; ATTRIBUTION-only, no pinning (that is T3)",
+  "default": "off",
+  "read": "presence"
+ },
  "RB3_DRAWSORT_DETERMINISTIC_OFF": {
   "class": "feature",
   "owner": "render/determinism",
