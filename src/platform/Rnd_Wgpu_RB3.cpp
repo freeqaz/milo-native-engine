@@ -5626,8 +5626,15 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     // implies DrawLogOn(), so the push order is: RecordDrawLog then RecordDrawProv).
     // boundColor = the effective post-binder material color (UI text floor applied)
     // that was just written to this draw's material uniform buffer (mu.color).
-    if (ProvOn())
-        RecordDrawProv(mesh, mat, mu.color, skinned, ctx.world);
+    if (ProvOn()) {
+        // T2-WORLDROI (Wave 19): exclude the name-scoped UI placement arms
+        // (scrollbarThumb/hubBarPlacement) — their bone worlds sit near origin while
+        // rendered geometry = placement ∘ skin(v), so a bone-world bbox would mislocate
+        // them; they keep the positioned sphere fallback. sFallbackBones = bones that
+        // render at BIND (null+nonfinite+clamped) so the skinned bbox over-approximates.
+        bool skinnedPoseValid = skinned && !scrollbarThumb && !hubBarPlacement;
+        RecordDrawProv(mesh, mat, mu.color, skinned, ctx.world, skinnedPoseValid, sFallbackBones);
+    }
 }
 
 // ===========================================================================
@@ -5744,8 +5751,19 @@ static bool RB3ProvProjectToScreen(const float world[16], const float vp[16],
     return true;
 }
 
+// T2-WORLDROI (Wave 19) A/B RED-baseline control (default OFF, env-cached — presence
+// read at first call). When set, skinned draws fall back to the legacy rectKind==1
+// sphere (the R3 v1 world-cam blindness) so the new rectKind==3 skinned-pose bbox can
+// be diffed against it (gate G1). Two boots of the SAME binary suffice to A/B it.
+static bool RB3ProvSkinSphere() {
+    static int s = -1;
+    if (s < 0) { const char* e = getenv("RB3_PROV_SKIN_SPHERE"); s = (e && e[0] && e[0] != '0') ? 1 : 0; }
+    return s != 0;
+}
+
 void BandRnd::RecordDrawProv(RndMesh* mesh, RndMat* mat, const float boundColor[4],
-                             bool skinned, const float world[16]) {
+                             bool skinned, const float world[16],
+                             bool skinnedPoseValid, int boneFallback) {
     if (mDrawProv.capacity() == 0) mDrawProv.reserve(512);
     RB3DrawProv p;
     p.meshName    = (mesh && mesh->Name()) ? mesh->Name() : "";
@@ -5773,6 +5791,82 @@ void BandRnd::RecordDrawProv(RndMesh* mesh, RndMat* mat, const float boundColor[
     float minx=1e30f, miny=1e30f, maxx=-1e30f, maxy=-1e30f;
     bool anyBehind = false, gotAny = false;
     uint8_t kind = 2;
+    p.boneFallback = skinned ? boneFallback : 0;
+    // T2-WORLDROI (Wave 19): skinned-pose bbox from BONE WORLDS. The palette composes
+    // world-space skin (worldPos = skin*v is contract-invariant, see the SYS-1 doc at
+    // Rnd_Wgpu_RB3.cpp:3683-3687), so bone WorldXfm().v is already a WORLD point —
+    // project it DIRECTLY through the world-cam viewProj with an IDENTITY model, NEVER
+    // ctx.world (which is obj.world = meshWorld for crowd/prop draws and would double-
+    // transform). skinnedPoseValid already excludes the name-scoped placement arms.
+    // SPATIAL axis (which bone drew a pixel) — NOT the T1 frame-assignment timing axis.
+    static const float kProvIdentity[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+    if (skinned && skinnedPoseValid && !RB3ProvSkinSphere()) {
+        RndMesh* owner = mesh ? mesh->GeomOwner() : nullptr;
+        if (!owner) owner = mesh;
+        int nb = owner ? owner->NumBones() : 0;
+        if (nb > kMaxBones) nb = kMaxBones;
+        // Palette-member set (B6): a bone's parent endpoint is only a valid limb
+        // segment if the parent is ALSO one of this mesh's bones; a dir/proxy/stage
+        // parent at the origin would smear a giant spurious sub-rect across every ROI.
+        RndTransformable* members[kMaxBones];
+        for (int b = 0; b < nb; ++b) members[b] = owner->BoneTransAt(b);
+        for (int b = 0; b < nb; ++b) {
+            RndTransformable* bt = members[b];
+            if (!bt) continue;
+            const Transform& wt = bt->WorldXfm();
+            if (!(std::fabs(wt.v.x) < 1e5f && std::fabs(wt.v.y) < 1e5f &&
+                  std::fabs(wt.v.z) < 1e5f)) continue;      // runaway/NaN bone world: skip
+            float bx, by;
+            if (!RB3ProvProjectToScreen(kProvIdentity, mActiveViewProjCpu,
+                                        wt.v.x, wt.v.y, wt.v.z, vpW, vpH, bx, by)) continue;
+            if (bx<minx)minx=bx; if(by<miny)miny=by; if(bx>maxx)maxx=bx; if(by>maxy)maxy=by;
+            gotAny = true;
+            // Per-bone sub-rect = bone -> (palette-member) parent screen segment.
+            float sminx=bx, sminy=by, smaxx=bx, smaxy=by;
+            RndTransformable* par = bt->TransParent();
+            bool parIsMember = false;
+            if (par) for (int k = 0; k < nb; ++k) if (members[k] == par) { parIsMember = true; break; }
+            if (par && parIsMember) {
+                const Transform& pw = par->WorldXfm();
+                float px2, py2;
+                if (std::fabs(pw.v.x)<1e5f && std::fabs(pw.v.y)<1e5f && std::fabs(pw.v.z)<1e5f &&
+                    RB3ProvProjectToScreen(kProvIdentity, mActiveViewProjCpu,
+                                           pw.v.x, pw.v.y, pw.v.z, vpW, vpH, px2, py2)) {
+                    if(px2<sminx)sminx=px2; if(py2<sminy)sminy=py2;
+                    if(px2>smaxx)smaxx=px2; if(py2>smaxy)smaxy=py2;
+                }
+            }
+            RB3ProvBoneRect br;
+            br.bone = bt->Name() ? bt->Name() : "";
+            br.rect[0] = std::max(0.f, sminx);
+            br.rect[1] = std::max(0.f, sminy);
+            br.rect[2] = std::min(vpW, smaxx) - br.rect[0];
+            br.rect[3] = std::min(vpH, smaxy) - br.rect[1];
+            p.boneRects.push_back(std::move(br));
+        }
+        if (gotAny) {
+            kind = 3;
+            // B2: clamped/null/nonfinite bones render at BIND (not at the bone world),
+            // so when any exist UNION the legacy bind-pose sphere extent (projected the
+            // same way the kind==1 fallback does, through `world`) to over-approximate —
+            // the rect must not MISS the bind-pose-rendered geometry the M5 triage targets.
+            if (boneFallback > 0 && mesh) {
+                const Sphere& sp = mesh->GetSphere();
+                float r = sp.radius > 0.f ? sp.radius : 1.f;
+                for (int c = 0; c < 8; ++c) {
+                    float ox=(c&1)?r:-r, oy=(c&2)?r:-r, oz=(c&4)?r:-r;
+                    float sx, sy;
+                    if (RB3ProvProjectToScreen(world, mActiveViewProjCpu,
+                                               sp.center.x+ox, sp.center.y+oy, sp.center.z+oz,
+                                               vpW, vpH, sx, sy)) {
+                        if(sx<minx)minx=sx; if(sy<miny)miny=sy; if(sx>maxx)maxx=sx; if(sy>maxy)maxy=sy;
+                    }
+                }
+            }
+        } else {
+            p.boneRects.clear();   // no finite bone -> disclosed sphere fallback below
+        }
+    }
     RndMesh::VertVector* vv = (mesh && !skinned) ? &mesh->Verts() : nullptr;
     if (vv && !vv->empty() && vv->size() <= 4096) {
         kind = 0;
@@ -5786,8 +5880,11 @@ void BandRnd::RecordDrawProv(RndMesh* mesh, RndMat* mat, const float boundColor[
                 gotAny = true;
             } else anyBehind = true;
         }
-    } else if (mesh) {
+    } else if (mesh && kind != 3) {
         // Sphere-fallback (static RB3 meshes retain no CPU verts past GPU upload).
+        // Also the DISCLOSED skinned bypass: a skinned draw that formed no finite bone
+        // point (or RB3_PROV_SKIN_SPHERE / a name-scoped placement arm) lands here as
+        // rectKind==1 + skinned:true — never a silent sphere.
         // Project the 8 corners of the local center+-radius box and accumulate the
         // bbox over the corners IN FRONT of the camera. This preserves aspect (a
         // wide-short bar reads wide-short, not square) — unlike a center+radius

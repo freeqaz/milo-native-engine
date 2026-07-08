@@ -501,8 +501,15 @@ public:
     // Capture one provenance sidecar entry for the draw RecordDrawLog just pushed.
     // Reads mesh/mat names + RndCam::sCurrent, projects the mesh bbox to screen px
     // via mActiveViewProjCpu, and snapshots the current pass + scope-stack state.
+    // T2-WORLDROI (Wave 19): skinnedPoseValid excludes the name-scoped UI placement
+    // arms (scrollbarThumb/hubBarPlacement) whose bone worlds sit near origin; when
+    // true the skinned branch projects bone worlds (identity world) for a rectKind==3
+    // bbox + per-bone sub-rects. boneFallback = DrawMesh's per-draw sFallbackBones
+    // (bones rendering at BIND: null+nonfinite+clamped) — unions the bind-pose sphere
+    // extent into the bbox when >0.
     void RecordDrawProv(RndMesh* mesh, RndMat* mat, const float boundColor[4],
-                        bool skinned, const float world[16]);
+                        bool skinned, const float world[16],
+                        bool skinnedPoseValid = false, int boneFallback = 0);
     // CPU copy of the last WriteSceneUniforms viewProj (column-major) + cam name,
     // for RecordDrawProv's screen-rect projection. Written only when ProvOn().
     float       mActiveViewProjCpu[16] = {0};

@@ -58,6 +58,17 @@ struct RB3DrawRecord {
 // (which also forces the ring on, so the two vectors stay index-aligned). When
 // prov is off the vector stays empty and the drawlog JSON is byte-identical.
 // ---------------------------------------------------------------------------
+// T2-WORLDROI (Wave 19): one on-screen bone SEGMENT sub-rect. `bone`=bone Name();
+// `rect`=x,y,w,h px bbox of the bone-world point (and its palette-member parent
+// endpoint) projected through the world-cam viewProj. Only present on rectKind==3
+// (skinned-pose) rows. Localizes which BONE a pixel ROI hit. This axis is SPATIAL
+// (which mesh/bone/owner drew a pixel) — NOT the frame-assignment TIMING axis (T1)
+// nor R4's ledger `order` axis; never conflate them.
+struct RB3ProvBoneRect {
+    std::string bone;
+    float       rect[4];
+};
+
 struct RB3DrawProv {
     std::string meshName;        // mesh->Name()      ("" for internal glyph meshes)
     std::string matName;         // mat->Name()       ("" if no material)
@@ -68,9 +79,13 @@ struct RB3DrawProv {
     float       matColor[4];     // authored mat->GetColor() at draw time
     float       boundColor[4];   // effective post-binder mu.color (UI floor applied)
     float       rect[4];         // projected screen bbox x,y,w,h in px; w<0 => degenerate
-    uint8_t     rectKind;        // 0 exact-verts, 1 sphere-fallback, 2 unavailable
+    uint8_t     rectKind;        // 0 exact-verts, 1 sphere-fallback, 2 unavailable, 3 skinned-pose bbox
     uint16_t    passIdx;         // frame-monotonic render-pass sequence number
     uint8_t     passDepthLoadOp; // 0=Clear,1=Load,2=none  at THIS pass's open
+    // T2-WORLDROI: skinned-pose provenance (rectKind==3 only; empty/0 otherwise).
+    int         boneFallback = 0;            // # bones rendering at BIND (null+nonfinite+clamped);
+                                             // when >0 the rect unions the bind-pose sphere extent.
+    std::vector<RB3ProvBoneRect> boneRects;  // per-bone screen sub-rects (rectKind==3 only)
 };
 
 // Current frame's provenance sidecar (index-aligned with RB3DebugGetDrawLog()).
