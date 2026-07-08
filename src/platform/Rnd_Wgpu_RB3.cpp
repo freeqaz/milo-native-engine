@@ -5041,6 +5041,30 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
                     static std::unordered_map<std::string,int> sPdSeen;
                     static std::unordered_map<std::string,int> sPdDumped;
                     int seen = sPdSeen[pdk]++;
+                    // ---- Tier-1 rest-coherence field (engine-emitted; R2 Wave-18 Lane N) ----
+                    // Reproduce the RB3_HANDS_ATTACH_PROBE Tier-1 xcheck quantity
+                    // angle(off_b * FIRST-SEEN cached rest world, I) — NOT off_b * current
+                    // WorldXfm(). The offline analog M_Tier1RestCoherence (test side) composes
+                    // off against the dump's CURRENT `world` field, which reads ~180deg at a
+                    // gameplay frame (a bone-WORLD-basis-flip artifact) and never reproduces the
+                    // Wave-15 verdict table. The engine number is pose-STABLE because it composes
+                    // the constant bind offset against a rest world cached at FIRST-SEEN pointer
+                    // identity (mirrors :4820-4841: repoint bound->own IS a ptr change =>
+                    // recapture). This cache is populated on EVERY matched draw (first-seen ==
+                    // first matched draw == bind-ish), so a later articulated dump reads the
+                    // same coherence residual as the bind pose. Render-inert (analysis-only).
+                    static std::unordered_map<std::string,std::vector<Transform> > sPdRest;
+                    static std::unordered_map<std::string,std::vector<const void*> > sPdRestPtr;
+                    int nbr = owner->NumBones(); if (nbr > kMaxBones) nbr = kMaxBones;
+                    std::vector<Transform>& pdRest = sPdRest[pdk];
+                    std::vector<const void*>& pdRestPtr = sPdRestPtr[pdk];
+                    if ((int)pdRest.size()!=nbr){ pdRest.assign(nbr,Transform()); pdRestPtr.assign(nbr,nullptr); }
+                    int pdT1Recap=0;   // bones (re)captured THIS frame (== nbr => cold cache)
+                    for (int b=0;b<nbr;b++){
+                        RndTransformable* bt = owner->BoneTransAt(b);
+                        const void* cur=(const void*)bt;
+                        if (cur!=pdRestPtr[b]){ pdRestPtr[b]=cur; pdRest[b]= bt?bt->WorldXfm():Transform(); pdT1Recap++; }
+                    }
                     if ((pdEvery<=0 || (seen % pdEvery)==0) && sPdDumped[pdk] < pdMaxF) {
                         int dumpIdx = sPdDumped[pdk]++;
                         int nbp = owner->NumBones(); if (nbp > kMaxBones) nbp = kMaxBones;
@@ -5065,6 +5089,29 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
                             fprintf(pf,"nb %d\n", nbp);
                             fprintf(pf,"arm %s\n", pdTag?pdTag:"?");
                             fprintf(pf,"rebound %d\n", owner->mNativeBonesRebound?1:0);
+                            // Engine-emitted Tier-1 rest-coherence field (NEW header key, R2
+                            // Wave-18 Lane N). off_b * FIRST-SEEN cached rest (:4820-4841 xcheck),
+                            // NOT off_b * current world. A NEW header-key line only — the strict
+                            // sscanf loader ignores unknown keys, so committed goldens still load.
+                            // `cold=1` marks a dump whose cache was fully recaptured THIS frame
+                            // (pdT1Recap==nb): rest==current world, so the value is the bind
+                            // residual rather than a pose-stable articulated xcheck (LOUD per A4).
+                            {
+                                float t1Worst=0.f; int t1Count5=0, t1WorstBone=-1;
+                                for (int b=0;b<nbp && b<(int)pdRest.size();b++){
+                                    const Transform& off = owner->BoneOffsetAt(b);
+                                    Transform sk; Multiply(off, pdRest[b], sk); // off*restW; coherent bake => ~I
+                                    float tr=sk.m.x.x+sk.m.y.y+sk.m.z.z; float c=(tr-1.f)*0.5f;
+                                    if(c>1.f)c=1.f; if(c<-1.f)c=-1.f;
+                                    float a=acosf(c)*57.29578f;
+                                    if (a>5.f) t1Count5++;
+                                    if (a>t1Worst){ t1Worst=a; t1WorstBone=b; }
+                                }
+                                int cold = (pdT1Recap>=nbp && nbp>0) ? 1 : 0;
+                                // tier1 <worstDeg> <count(>5deg)> <recapThisFrame> <worstBone> <cold>
+                                fprintf(pf,"tier1 %.7g %d %d %d %d\n",
+                                        t1Worst, t1Count5, pdT1Recap, t1WorstBone, cold);
+                            }
                             // Per-bone: idx name parent | off[9m+3v] | world[9m+3v] | palette[16 colmajor]
                             fprintf(pf,"# bone idx name parent  off(mx.x..mz.z,v)  world(mx.x..mz.z,v)  palette[16]\n");
                             for (int b=0;b<nbp;b++){
