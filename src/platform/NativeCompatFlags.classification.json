@@ -1481,8 +1481,8 @@
  "RB3_HANDS_MITTEN": {
   "class": "workaround",
   "owner": "skinning/hands",
-  "faithfulStatus": "LIVE default-ON (Wave-18 close-out E1 flip; opt-out RB3_HANDS_MITTEN_OFF wins, legacy =0 disables): default-OFF WORKAROUND (Wave-18 Lane M, R5-MITTEN; execution/R5-HANDS-ENDGAME/CLOSURE.md item 1). Render-side, hands-scoped, BAND-only mitten fallback for the closed R5-hands residual (the coherent displaced 'ceiling hand' + wrist spike-webbing = the 87.2deg seed-R rebake mechanism, HANDS-ADJUDICATION/VERDICT.md par.2). Explicitly NOT an offset bake: no anchor capture, no authored-data mutation - a per-frame palette lerp only. In Rnd_Wgpu_RB3.cpp skinned palette compose: for each BAND hand-mesh (hands_naked/gloves/fingernails, crowd excluded by name) finger bone, compare its composed skin A_i*O_i(t) to its side's WRIST bone rigid composed skin A_w*O_w(t); when rotation-to-wrist exceeds a ramp (default TH_LO=45 TH_HI=90 deg; RB3_HANDS_MITTEN_TH_LO/HI override) blend that finger palette toward wrist-rigid, degrading finger articulation at exactly the poses that tear/displace so the hand stays attached and moving. Calibrated from live relAng-to-wrist distribution (p50~17 p90~54 tail~135) + Wave-16 burst_08/12 evidence; measured trigger rate ~17.7pct of finger-draws. E1 VISUAL evidence (execution/R5-MITTEN/evidence/): flag-ON collapses the spike-fan/ceiling-hand at extreme poses, both genders. No-regression: blend is a mathematical no-op when relAng<TH_LO (alpha=0) so coherent frames are byte-identical by construction (trigger rate 0 there). flag-OFF (unset) byte-identical: drawlog-golden 792 PASS. Default is E1-DECIDED by the coordinator, NOT this lane. rb3-tests green, R2 skinning fixtures unaffected. [engine Rnd_Wgpu_RB3.cpp DrawMesh palette + GameRenderHook IsBandHandMesh/HandBoneRole/HandBoneSide; rb3 native/src/rb3_render_hook.cpp]",
-  "default": "off",
+  "faithfulStatus": "LIVE default-ON (Wave-18 close-out E1 flip; opt-out RB3_HANDS_MITTEN_OFF wins, legacy =0 disables): WORKAROUND (was default-OFF at landing) (Wave-18 Lane M, R5-MITTEN; execution/R5-HANDS-ENDGAME/CLOSURE.md item 1). Render-side, hands-scoped, BAND-only mitten fallback for the closed R5-hands residual (the coherent displaced 'ceiling hand' + wrist spike-webbing = the 87.2deg seed-R rebake mechanism, HANDS-ADJUDICATION/VERDICT.md par.2). Explicitly NOT an offset bake: no anchor capture, no authored-data mutation - a per-frame palette lerp only. In Rnd_Wgpu_RB3.cpp skinned palette compose: for each BAND hand-mesh (hands_naked/gloves/fingernails, crowd excluded by name) finger bone, compare its composed skin A_i*O_i(t) to its side's WRIST bone rigid composed skin A_w*O_w(t); when rotation-to-wrist exceeds a ramp (default TH_LO=45 TH_HI=90 deg; RB3_HANDS_MITTEN_TH_LO/HI override) blend that finger palette toward wrist-rigid, degrading finger articulation at exactly the poses that tear/displace so the hand stays attached and moving. Calibrated from live relAng-to-wrist distribution (p50=21.8 p90~54 tail~135) + Wave-16 burst_08/12 evidence; measured trigger rate ~17.7pct of finger-draws. E1 VISUAL evidence (execution/R5-MITTEN/evidence/): flag-ON collapses the spike-fan/ceiling-hand at extreme poses, both genders. No-regression: blend is a mathematical no-op when relAng<TH_LO (alpha=0) so coherent frames are byte-identical by construction (trigger rate 0 there). flag-OFF (unset) byte-identical: drawlog-golden 792 PASS. Default is E1-DECIDED by the coordinator, NOT this lane. rb3-tests green, R2 skinning fixtures unaffected. [engine Rnd_Wgpu_RB3.cpp DrawMesh palette + GameRenderHook IsBandHandMesh/HandBoneRole/HandBoneSide; rb3 native/src/rb3_render_hook.cpp]",
+  "default": "on",
   "read": "presence"
  },
  "RB3_HANDS_RESKIN": {
@@ -1526,5 +1526,25 @@
   "faithfulStatus": "live opt-out for the focused-row polarity fix (default-ON as of Wave 16); setting this restores the dim-fill white-text focused row",
   "default": "off",
   "read": "presence"
+ },
+ "RB3_HANDS_MITTEN_OFF": {
+  "class": "workaround",
+  "owner": "skinning/hands",
+  "faithfulStatus": "opt-out for the LIVE default-ON RB3_HANDS_MITTEN (Wave-18 close-out E1 flip). Setting it restores the pre-mitten shipped state (seed-R rebake residual: displaced ceiling-hand + spike-webbing at extreme poses)."
+ },
+ "RB3_HANDS_MITTEN_PROBE": {
+  "class": "diagnostic",
+  "owner": "skinning/hands",
+  "faithfulStatus": "not-live diagnostic: per-draw mitten trigger-rate/relAng probe used for Lane-M calibration (execution/R5-MITTEN/)."
+ },
+ "RB3_HANDS_MITTEN_TH_LO": {
+  "class": "tuning",
+  "owner": "skinning/hands",
+  "faithfulStatus": "tuning knob: mitten rotation-ramp low threshold, default 45 deg (below it no blend \u2014 coherent frames untouched). Calibrated Wave-18 (relAng p50=21.8, p90=62, tail 134)."
+ },
+ "RB3_HANDS_MITTEN_TH_HI": {
+  "class": "tuning",
+  "owner": "skinning/hands",
+  "faithfulStatus": "tuning knob: mitten rotation-ramp high threshold, default 90 deg (full wrist-rigid blend past it)."
  }
 }
