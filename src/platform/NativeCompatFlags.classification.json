@@ -742,7 +742,7 @@
  "RB3_APPLY_HANDLER_FIX_OFF": {
   "class": "workaround",
   "owner": "bandobj/trackpanel",
-  "faithfulStatus": "not-live: single-player scoreboard/applause right/left.grp x-translation neutralization (K9 apply-handler fix) default-ON; =1 reverts to raw V22",
+  "faithfulStatus": "not-live: single-player scoreboard/applause right/left.grp x-translation neutralization (K9 apply-handler fix) default-ON; =1 reverts to raw V22 [W22 re-scope d15484f1: the SCOREBOARD-anchor neutralization leg was GT-refuted (retail single-player = top-RIGHT, not top-center) and is now gated by RB3_HUD_SCOREBOARD_TOPRIGHT (default-ON); applause/mtv legs unchanged.]",
   "default": "on",
   "read": "presence"
  },
@@ -1593,6 +1593,27 @@
   "class": "probe",
   "owner": "skinning/loader",
   "faithfulStatus": "probe: Wave-20 Lane N load-bind trace logging (branch hit-counts, FilterSubdir action log, OnInstallFilter dir dump, pristine-binding slot dump)",
+  "default": "off",
+  "read": "presence"
+ },
+ "RB3_HUD_SCOREBOARD_TOPRIGHT": {
+  "class": "workaround",
+  "owner": "ui/hud",
+  "faithfulStatus": "live DEFAULT-ON (Wave-22 close-out, opt-out RB3_HUD_SCOREBOARD_TOPRIGHT_OFF): makes K9 (RB3_APPLY_HANDLER_FIX_OFF) SKIP the scoreboard-anchor neutralization so the score plate keeps its authored TOP-RIGHT position, matching the Wii GT (yt_qRagnZCIMzk_gameplay_*). K9's top-center premise was config-reasoning never GT-backed. nPlayers==1-gated so no multiplayer regression; ConfigureTracks objdiff 100% (HX_NATIVE-only). E1-confirmed (score pill 88% width). [TrackPanelDir.cpp:344]",
+  "default": "on",
+  "read": "opt-out"
+ },
+ "RB3_HUD_SCOREBOARD_TOPRIGHT_OFF": {
+  "class": "workaround",
+  "owner": "ui/hud",
+  "faithfulStatus": "live opt-out for RB3_HUD_SCOREBOARD_TOPRIGHT — restores K9's mid-screen scoreboard neutralization",
+  "default": "off",
+  "read": "presence"
+ },
+ "RB3_HUD_STAR_DBG": {
+  "class": "probe",
+  "owner": "ui/hud",
+  "faithfulStatus": "probe: Wave-22 star-meter fill trace (SetNumStars f + per-star fill state) — proved the star meter fills correctly (false-alarm refutation)",
   "default": "off",
   "read": "presence"
  }
