@@ -5577,6 +5577,38 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
     key.alphaWrite = rtPass ? true : false;
 
     wgpu::RenderPipeline pipe = mPipelines.GetPipeline(key);
+    // W24-RECON CROWD probe (inert unless CROWD_SUBMIT_DBG). Confirms whether a
+    // crowd_* body mesh reaches the submit point and what cam/pipe/showing state
+    // it has when it does — the last gate before RecordDrawLog. Throttled per
+    // name so it does not flood. Read-only; Wii-inert (native file only).
+    if (getenv("CROWD_SUBMIT_DBG") && mesh && mesh->Name() &&
+        std::strstr(mesh->Name(), "crowd_body")) {
+        static std::unordered_map<std::string,int> sCS;
+        const char* mn = mesh->Name();
+        if (sCS[mn]++ % 120 == 0) {
+            RndCam* cur = RndCam::sCurrent;
+            // Project mesh origin to NDC to see WHERE the crowd body lands on
+            // screen (|ndc|<1 = on-screen; depth>0 = in front of cam).
+            const Transform& wx = mesh->WorldXfm();
+            float ndcx = 99, ndcy = 99, depth = -1;
+            if (cur) {
+                const Transform& cw = cur->WorldXfm();
+                Vector3 d(wx.v.x - cw.v.x, wx.v.y - cw.v.y, wx.v.z - cw.v.z);
+                float rx = cw.m.x.x*d.x + cw.m.x.y*d.y + cw.m.x.z*d.z;
+                float fy = cw.m.y.x*d.x + cw.m.y.y*d.y + cw.m.y.z*d.z;
+                float uz = cw.m.z.x*d.x + cw.m.z.y*d.y + cw.m.z.z*d.z;
+                depth = fy;
+                float yfov = cur->YFov() > 0.0001f ? cur->YFov() : 0.9f;
+                float aspect = (float)mGpu.WindowWidth() / (float)mGpu.WindowHeight();
+                float th = tanf(yfov * 0.5f);
+                if (fy > 0.001f) { ndcx = (rx/(th*aspect))/fy; ndcy = (uz/th)/fy; }
+            }
+            fprintf(stderr, "[CROWD_SUBMIT] mesh='%s' pipe=%d cam='%s' nf=%d skinned=%d f=%d "
+                    "meshPos=(%.1f,%.1f,%.1f) depth=%.1f ndc=(%.2f,%.2f)\n",
+                    mn, pipe ? 1 : 0, (cur && cur->Name()) ? cur->Name() : "<none>",
+                    nf, skinned ? 1 : 0, mFrameCount, wx.v.x, wx.v.y, wx.v.z, depth, ndcx, ndcy);
+        }
+    }
     if (!pipe) return;
 
     // W1.6 (SYS-3): bundle this draw's inputs into an explicit RB3DrawContext.
