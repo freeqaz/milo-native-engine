@@ -1637,5 +1637,33 @@
   "faithfulStatus": "probe: Wave-23 CROWD recon — verbose per-mesh census output (read-only)",
   "default": "off",
   "read": "presence"
+ },
+ "CROWD_CENSUS_DRAWS": {
+  "class": "probe",
+  "owner": "world/crowd",
+  "faithfulStatus": "probe: W24-RECON crowd census draw-count reporting (read-only)",
+  "default": "off",
+  "read": "presence"
+ },
+ "CROWD_DRAW_DBG": {
+  "class": "probe",
+  "owner": "world/crowd",
+  "faithfulStatus": "probe: W24-RECON crowd draw-path trace (mDraws → DrawMesh)",
+  "default": "off",
+  "read": "presence"
+ },
+ "CROWD_POSCTRL": {
+  "class": "probe",
+  "owner": "world/crowd",
+  "faithfulStatus": "probe: W24-RECON positive-control arm (band-mesh vert-field comparison vs crowd meshes)",
+  "default": "off",
+  "read": "presence"
+ },
+ "CROWD_SUBMIT_DBG": {
+  "class": "probe",
+  "owner": "world/crowd",
+  "faithfulStatus": "probe: W24-RECON engine SubmitDraw trace for crowd meshes (Rnd_Wgpu_RB3, inert unless env set)",
+  "default": "off",
+  "read": "presence"
  }
 }
