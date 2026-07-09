@@ -1665,5 +1665,47 @@
   "faithfulStatus": "probe: W24-RECON engine SubmitDraw trace for crowd meshes (Rnd_Wgpu_RB3, inert unless env set)",
   "default": "off",
   "read": "presence"
+ },
+ "RB3_IK_REACH_CLAMP": {
+  "class": "workaround",
+  "owner": "char/ik",
+  "faithfulStatus": "live DEFAULT-ON (Wave-25 close-out, opt-out RB3_IK_REACH_CLAMP_OFF): graduated IK reach-guard in CharIKHand::Poll — when the instrument-tip IK target sits beyond the arm's measured reach (mAAPlusBB), clamp mWorldDst onto the shoulder reach-sphere (reach<d<=k*reach) or neutralize IK to the clip pose (d>k*reach), instead of over-rotating the upperArm into a spike-fan. Fixes the exploded band arm/hand fan on closeup frames. 20u arm reach VERIFIED correct (leg-reach cross-check); the far targets are mis-posed instrument-prop bones (Wave-26 tail). Wii byte-identical (HX_NATIVE); batch_objdiff==baseline all 20 CharIKHand fns. E1-confirmed. [CharIKHand.cpp:233]",
+  "default": "on",
+  "read": "opt-out"
+ },
+ "RB3_IK_REACH_CLAMP_OFF": {
+  "class": "workaround",
+  "owner": "char/ik",
+  "faithfulStatus": "live opt-out for RB3_IK_REACH_CLAMP — restores raw over-reach IK (spike-fan)",
+  "default": "off",
+  "read": "presence"
+ },
+ "RB3_IK_REACH_K": {
+  "class": "tuning",
+  "owner": "char/ik",
+  "faithfulStatus": "tuning: reach-clamp k multiplier (default 2.0) — d>k*reach neutralizes IK to clip pose",
+  "default": "off",
+  "read": "value"
+ },
+ "RB3_CROWD_CLIP_KEEP": {
+  "class": "workaround",
+  "owner": "world/crowd",
+  "faithfulStatus": "not-live DEFAULT-OFF partial (Wave-25): re-plays the snapshotted crowd walk clip on starvation after the sv3_a async load-merge destroys it. Recovers bank-intact drivers only (ZERO of 8 as-observed — female04 never Played) → PROPHYLACTIC scaffolding for the W26 engine load-merge fix; clipType=='crowd'-scoped + byte-identical #else (WorldCrowd oracle untouched). Removal criterion: delete if W26 lands the engine fix and this adds nothing. [CharDriver.cpp]",
+  "default": "off",
+  "read": "presence"
+ },
+ "IK_ROOTCMP": {
+  "class": "probe",
+  "owner": "char/ik",
+  "faithfulStatus": "probe: Wave-25 FOREARM discriminator — walks the TransParent chain-to-root for IK hand + target bones (H-A/H-C refutation)",
+  "default": "off",
+  "read": "presence"
+ },
+ "RB3_IK_CLAMP_DBG": {
+  "class": "probe",
+  "owner": "char/ik",
+  "faithfulStatus": "probe: Wave-25 reach-clamp fire/skip counters + preDist distribution",
+  "default": "off",
+  "read": "presence"
  }
 }
