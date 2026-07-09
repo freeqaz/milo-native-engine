@@ -1707,5 +1707,47 @@
   "faithfulStatus": "probe: Wave-25 reach-clamp fire/skip counters + preDist distribution",
   "default": "off",
   "read": "presence"
+ },
+ "RB3_PROP_POSE": {
+  "class": "workaround",
+  "owner": "char/ik",
+  "faithfulStatus": "not-live DEFAULT-OFF partial (Wave-26): redirects an out-of-reach instrument IK tip target to its correctly-posed bone_target_* parent frame (clip-binding gap — the prop-bone clip track is unbound natively so the tip stays at its rest offset). Drops raw target distance -44..-64% but does NOT make RB3_IK_REACH_CLAMP dormant (engine mFinger re-projection, W27) and produces no visible arm change (clamp already clip-poses). Kept as pinned discriminator + first-half scaffolding; HX_NATIVE, byte-identical #else. [CharIKHand.cpp:49 sPropPoseRedirect]",
+  "default": "off",
+  "read": "presence"
+ },
+ "RB3_PROP_POSE_DBG": {
+  "class": "probe",
+  "owner": "char/ik",
+  "faithfulStatus": "probe: Wave-26 PROP redirect trace (tgt->parent, dTip/dPar)",
+  "default": "off",
+  "read": "presence"
+ },
+ "IK_PROP_DBG": {
+  "class": "probe",
+  "owner": "char/ik",
+  "faithfulStatus": "probe: Wave-26 PROP discriminator — far-target LocalXfm + parent world + parent-to-hand distance (clip-binding vs attach/proxy)",
+  "default": "off",
+  "read": "presence"
+ },
+ "RB3_PROP_DST_DBG": {
+  "class": "probe",
+  "owner": "char/ik",
+  "faithfulStatus": "probe: Wave-26 PROP per-ikhand pre/post target-distance histogram (A5-i regression gate)",
+  "default": "off",
+  "read": "presence"
+ },
+ "FMERGE_PROBE": {
+  "class": "probe",
+  "owner": "char/loader",
+  "faithfulStatus": "probe: Wave-26 CROWD discriminator — FileMerger merge/clear event log (proved zero crowd merges → refuted the load-merge theory)",
+  "default": "off",
+  "read": "presence"
+ },
+ "CHARDRV_BT": {
+  "class": "probe",
+  "owner": "char/loader",
+  "faithfulStatus": "probe: Wave-26 CROWD discriminator — symbolized backtrace at CharDriver::Replace (pinned the UI panel-unload teardown as the clip-kill)",
+  "default": "off",
+  "read": "presence"
  }
 }
