@@ -1687,13 +1687,6 @@
     "default": "off",
     "read": "value"
   },
-  "RB3_CROWD_CLIP_KEEP": {
-    "class": "workaround",
-    "owner": "world/crowd",
-    "faithfulStatus": "not-live DEFAULT-OFF partial (Wave-25): re-plays the snapshotted crowd walk clip on starvation after the sv3_a async load-merge destroys it. Recovers bank-intact drivers only (ZERO of 8 as-observed \u2014 female04 never Played) \u2192 PROPHYLACTIC scaffolding for the W26 engine load-merge fix; clipType=='crowd'-scoped + byte-identical #else (WorldCrowd oracle untouched). Removal criterion: delete if W26 lands the engine fix and this adds nothing. [CharDriver.cpp]",
-    "default": "off",
-    "read": "presence"
-  },
   "IK_ROOTCMP": {
     "class": "probe",
     "owner": "char/ik",

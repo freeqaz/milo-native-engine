@@ -138,7 +138,6 @@
 { "RB3_CLEAR_COLOR", "unknown", FlagClass::Unknown, FlagRead::Truthy, "unclassified", "n/a", "RB3_CLEAR_COLOR" },
 { "RB3_COMPOSE_MULT_OFF", "on", FlagClass::Workaround, FlagRead::Presence, "render/compose", "not-live: composite-blend multiply-fallback default-ON (see project_c8_faces memory)", "RB3_COMPOSE_MULT_OFF" },
 { "RB3_CROWD_BONE_PROBE", "off", FlagClass::Probe, FlagRead::Presence, "render/crowd", "n/a: W2.3.S1 crowd bone-source seam characterization (owner vs own-bone SKIN_CLAMP extent; SHARED/SELF+POISON decision)", "RB3_CROWD_BONE_PROBE" },
-{ "RB3_CROWD_CLIP_KEEP", "off", FlagClass::Workaround, FlagRead::Presence, "world/crowd", "not-live DEFAULT-OFF partial (Wave-25): re-plays the snapshotted crowd walk clip on starvation after the sv3_a async load-merge destroys it. Recovers bank-intact drivers only (ZERO of 8 as-observed — female04 never Played) → PROPHYLACTIC scaffolding for the W26 engine load-merge fix; clipType=='crowd'-scoped + byte-identical #else (WorldCrowd oracle untouched). Removal criterion: delete if W26 lands the engine fix and this adds nothing. [CharDriver.cpp]", "RB3_CROWD_CLIP_KEEP" },
 { "RB3_CROWD_DIM", "unknown", FlagClass::Unknown, FlagRead::Value, "unclassified", "n/a", "RB3_CROWD_DIM" },
 { "RB3_CROWD_DIM_OFF", "on", FlagClass::Workaround, FlagRead::Truthy, "render/crowd", "not-live: crowd-dim heuristic default-ON", "RB3_CROWD_DIM_OFF" },
 { "RB3_CROWD_IMPOSTER_OFF", "on", FlagClass::Workaround, FlagRead::Truthy, "render/crowd", "not-live: crowd impostor rendering default-ON", "RB3_CROWD_IMPOSTER_OFF" },
