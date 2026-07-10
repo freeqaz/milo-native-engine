@@ -1,1753 +1,1767 @@
 {
- "_comment": "Curated classification sidecar for the NativeCompat flag registry. Hand-authored — NOT generated. Joined against scripts/analysis/native_compat_census.py's `scan` output by `gen` to produce NativeCompatFlags.gen.inc + NATIVE_COMPAT_LEDGER.md. Seeded verbatim from docs/native/engine-arch-review-2026-07-05/06-arch-crosscut.md §3.1 (a)/(b) and execution/W0.6/PLAN.md's 'Authoritative flag classification' section. Every flag not listed here that the scanner finds gets class=unknown (a NEEDS-CLASSIFICATION row in the ledger) — do not invent entries for flags that don't exist in source.",
- "_schema": "{ \"FLAG_NAME\": { \"class\": \"probe|workaround|feature|perf|unknown\", \"owner\": \"subsystem tag\", \"faithfulStatus\": \"n/a | not-live: <reason> | live | probe\", \"default\": \"on|off|unknown (optional, overrides the scanner's naming-based guess)\" } }",
- "BONE_PROBE": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "n/a: archaeological debug probe"
- },
- "RB3_CROWD_BONE_PROBE": {
-  "class": "probe",
-  "owner": "render/crowd",
-  "faithfulStatus": "n/a: W2.3.S1 crowd bone-source seam characterization (owner vs own-bone SKIN_CLAMP extent; SHARED/SELF+POISON decision)"
- },
- "BONE_PROBE_MINFRAME": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "n/a: archaeological debug probe (cadence knob for BONE_PROBE)"
- },
- "BONE_PROBE_NAME": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "n/a: archaeological debug probe"
- },
- "SHARD_DBG": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "n/a: archaeological debug probe (mesh-shard investigation)"
- },
- "SHARD_BONE_DBG": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "n/a: archaeological debug probe (mesh-shard investigation)"
- },
- "SHARD_CATCH": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "n/a: archaeological debug probe"
- },
- "SHARD_RATIO_DBG": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "n/a: archaeological debug probe"
- },
- "CHAIN_PROBE": {
-  "class": "probe",
-  "owner": "skinning/chain",
-  "faithfulStatus": "n/a: archaeological debug probe (chain sim investigation)"
- },
- "CHAIN_MTX": {
-  "class": "probe",
-  "owner": "skinning/chain",
-  "faithfulStatus": "n/a: archaeological debug probe"
- },
- "CHAIN_FORCE": {
-  "class": "probe",
-  "owner": "skinning/chain",
-  "faithfulStatus": "n/a: archaeological debug probe"
- },
- "CHAIN_COMPOSE": {
-  "class": "probe",
-  "owner": "skinning/chain",
-  "faithfulStatus": "n/a: archaeological debug probe"
- },
- "CHAIN_PROPTEST": {
-  "class": "probe",
-  "owner": "skinning/chain",
-  "faithfulStatus": "n/a: archaeological debug probe"
- },
- "MILO_DEBUG_ARM_CHAIN_DIR": {
-  "class": "probe",
-  "owner": "skinning/chain",
-  "faithfulStatus": "n/a: archaeological debug probe"
- },
- "MILO_DEBUG_ARM_CHAIN_FRAME": {
-  "class": "probe",
-  "owner": "skinning/chain",
-  "faithfulStatus": "n/a: archaeological debug probe"
- },
- "XBONE": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "n/a: archaeological debug probe"
- },
- "XBONE_TRACK": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "n/a: archaeological debug probe"
- },
- "C8_PROBE": {
-  "class": "probe",
-  "owner": "render/c8-faces",
-  "faithfulStatus": "n/a: archaeological debug probe (see project_c8_faces memory)"
- },
- "C8_EVERY": {
-  "class": "probe",
-  "owner": "render/c8-faces",
-  "faithfulStatus": "n/a: archaeological debug probe cadence knob"
- },
- "SKIN_PROBE": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "n/a: archaeological debug probe"
- },
- "SKIN_CLAMP_PROBE": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "n/a: archaeological debug probe"
- },
- "SKEW_PROBE": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "n/a: archaeological debug probe"
- },
- "SKEL_REBAKE_PROBE": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "n/a: archaeological debug probe"
- },
- "VERT_PROBE": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "n/a: archaeological debug probe"
- },
- "SLOT_PROBE": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "n/a: archaeological debug probe"
- },
- "GEM_VTX": {
-  "class": "probe",
-  "owner": "render/highway",
-  "faithfulStatus": "n/a: archaeological debug probe"
- },
- "GEM_FORCE": {
-  "class": "probe",
-  "owner": "render/highway",
-  "faithfulStatus": "n/a: archaeological debug probe"
- },
- "SMASH_DBG": {
-  "class": "probe",
-  "owner": "render/particles",
-  "faithfulStatus": "n/a: archaeological debug probe"
- },
- "RB3_SMASHER_HALO": {
-  "class": "probe",
-  "owner": "render/particles",
-  "faithfulStatus": "n/a: archaeological debug probe"
- },
- "HUB_BAR_PROBE": {
-  "class": "probe",
-  "owner": "ui/hub",
-  "faithfulStatus": "n/a: archaeological debug probe"
- },
- "IK_SHARD_VERT": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "n/a: archaeological debug probe"
- },
- "RB3_LIGHT_PROBE": {
-  "class": "probe",
-  "owner": "render/lighting",
-  "faithfulStatus": "n/a: archaeological debug probe"
- },
- "RB3_VENUE_PROBE": {
-  "class": "probe",
-  "owner": "render/lighting",
-  "faithfulStatus": "n/a: archaeological debug probe"
- },
- "RB3_WASH_PROBE": {
-  "class": "probe",
-  "owner": "render/lighting",
-  "faithfulStatus": "n/a: Wave 8 WASH-fix A.S1 two-hypothesis venue-wash root-cause probe (SCENE engagement/miss digest + PP unorm-intermediate fact + env-staleness rewrite path)"
- },
- "RB3_GAMEWARM_PROBE": {
-  "class": "probe",
-  "owner": "load/perf",
-  "faithfulStatus": "n/a: archaeological debug probe"
- },
- "REBIND_DRAW_FLING": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "n/a: archaeological debug probe"
- },
- "REBIND_DRAW_SKINPOS": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "n/a: archaeological debug probe"
- },
- "RB3_TRACK_LIGHT_OFF": {
-  "class": "workaround",
-  "owner": "render/lighting",
-  "faithfulStatus": "not-live: gameplay-highway synthetic re-lit stack default-ON (see project_a234_emissive_glow memory)",
-  "default": "on"
- },
- "RB3_VENUE_LIGHT_OFF": {
-  "class": "workaround",
-  "owner": "render/lighting",
-  "faithfulStatus": "not-live: per-environ synthetic venue lighting default-ON (see project_a4_scene_lighting_env_empty memory)",
-  "default": "on"
- },
- "RB3_BLOOM_OFF": {
-  "class": "workaround",
-  "owner": "render/bloom",
-  "faithfulStatus": "not-live: synthetic bloom pass default-ON",
-  "default": "on"
- },
- "RB3_HIGHWAY_BLOOM_OFF": {
-  "class": "workaround",
-  "owner": "render/bloom",
-  "faithfulStatus": "not-live: gem/now-bar additive bloom-halo capture-and-replay default-ON (see project_a234_emissive_glow memory)",
-  "default": "on"
- },
- "RB3_HIGHWAY_WATERMARK_OFF": {
-  "class": "workaround",
-  "owner": "render/highway",
-  "faithfulStatus": "not-live: highway watermark dim workaround default-ON",
-  "default": "on"
- },
- "RB3_CHAR_REAL_LIGHT_OFF": {
-  "class": "workaround",
-  "owner": "render/lighting",
-  "faithfulStatus": "not-live: real-key character lighting approximation default-ON (see project_c8_faces memory)",
-  "default": "on"
- },
- "RB3_CROWD_DIM_OFF": {
-  "class": "workaround",
-  "owner": "render/crowd",
-  "faithfulStatus": "not-live: crowd-dim heuristic default-ON",
-  "default": "on"
- },
- "RB3_COMPOSE_MULT_OFF": {
-  "class": "workaround",
-  "owner": "render/compose",
-  "faithfulStatus": "not-live: composite-blend multiply-fallback default-ON (see project_c8_faces memory)",
-  "default": "on"
- },
- "RB3_FRET_GLOW_OFF": {
-  "class": "workaround",
-  "owner": "render/highway",
-  "faithfulStatus": "not-live: fret-held glow workaround default-ON",
-  "default": "on"
- },
- "RB3_PART_HAZE_OFF": {
-  "class": "workaround",
-  "owner": "render/particles",
-  "faithfulStatus": "not-live: particle haze approximation default-ON",
-  "default": "on"
- },
- "RB3_PART_MATCOLOR_OFF": {
-  "class": "workaround",
-  "owner": "render/particles",
-  "faithfulStatus": "not-live: particle material-color workaround default-ON",
-  "default": "on"
- },
- "RB3_PART_NEARFADE_OFF": {
-  "class": "workaround",
-  "owner": "render/particles",
-  "faithfulStatus": "not-live: particle near-camera fade workaround default-ON",
-  "default": "on"
- },
- "RB3_NOISE_OFF": {
-  "class": "workaround",
-  "owner": "render/post",
-  "faithfulStatus": "not-live: post-process noise approximation default-ON",
-  "default": "on"
- },
- "RB3_PP_OFF": {
-  "class": "workaround",
-  "owner": "render/post",
-  "faithfulStatus": "not-live: post-process stack default-ON",
-  "default": "on"
- },
- "RB3_RTT_OFF": {
-  "class": "workaround",
-  "owner": "render/rtt",
-  "faithfulStatus": "not-live: render-to-texture (e.g. skin composite) workaround default-ON (see project_c8_faces memory)",
-  "default": "on"
- },
- "RB3_BC_TEX_OFF": {
-  "class": "workaround",
-  "owner": "render/texture",
-  "faithfulStatus": "not-live: block-compressed texture path default-ON",
-  "default": "on"
- },
- "RB3_SCREENMASK_FALLBACK_OFF": {
-  "class": "workaround",
-  "owner": "render/ui",
-  "faithfulStatus": "not-live: screenmask fallback default-ON",
-  "default": "on"
- },
- "RB3_SCROLLBAR_THUMB_FIX_OFF": {
-  "class": "workaround",
-  "owner": "ui/scrollbar",
-  "faithfulStatus": "not-live: scrollbar thumb-position fix default-ON",
-  "default": "on"
- },
- "RB3_UNPACK_CACHE_OFF": {
-  "class": "workaround",
-  "owner": "load/perf",
-  "faithfulStatus": "not-live: asset-unpack cache default-ON (see project_incremental_load_perf memory)",
-  "default": "on"
- },
- "RB3_PIPELINE_PREWARM_OFF": {
-  "class": "workaround",
-  "owner": "load/perf",
-  "faithfulStatus": "not-live: GPU pipeline prewarm default-ON (see project_incremental_load_perf memory)",
-  "default": "on"
- },
- "SHARD_GUARD_OFF": {
-  "class": "workaround",
-  "owner": "skinning",
-  "faithfulStatus": "not-live: mesh-shard guard/clamp default-ON",
-  "default": "on"
- },
- "RB3_NO_SKEL_REBAKE": {
-  "class": "workaround",
-  "owner": "skinning",
-  "faithfulStatus": "not-live: skeleton rebake workaround default-ON (opt-out name; ON means workaround active)",
-  "default": "on"
- },
- "RB3_NO_SKEL_WORLDFIX": {
-  "class": "workaround",
-  "owner": "skinning",
-  "faithfulStatus": "not-live: skeleton world-xfm fix default-ON",
-  "default": "on"
- },
- "RB3_NO_SKIN_CLAMP": {
-  "class": "workaround",
-  "owner": "skinning",
-  "faithfulStatus": "not-live: skin-position clamp default-ON",
-  "default": "on"
- },
- "RB3_NO_STEM_ANCHOR": {
-  "class": "workaround",
-  "owner": "skinning",
-  "faithfulStatus": "not-live: stem-anchor workaround default-ON",
-  "default": "on"
- },
- "RB3_NO_MESH_CACHE": {
-  "class": "workaround",
-  "owner": "render/mesh-cache",
-  "faithfulStatus": "not-live: mesh cache default-ON (see project_songlib_web_crash_charpreview memory)",
-  "default": "on"
- },
- "RB3_NO_PRECLEAR": {
-  "class": "workaround",
-  "owner": "render/mesh-cache",
-  "faithfulStatus": "not-live: pre-clear-before-draw workaround default-ON",
-  "default": "on"
- },
- "RB3_NO_HUB_BAR_PLACEMENT_FIX": {
-  "class": "workaround",
-  "owner": "ui/hub",
-  "faithfulStatus": "not-live: hub bar placement fix default-ON (see project_walkon_countin_pose family)",
-  "default": "on"
- },
- "RB3_NO_HUB_HIGHLIGHT_FIX": {
-  "class": "workaround",
-  "owner": "ui/hub",
-  "faithfulStatus": "not-live: hub highlight fix default-ON",
-  "default": "on"
- },
- "RB3_NO_HUB_BAR_SHARD_EXEMPT": {
-  "class": "workaround",
-  "owner": "ui/hub",
-  "faithfulStatus": "not-live: hub bar shard-guard exemption default-ON",
-  "default": "on"
- },
- "RB3_GAMEWARM_OFF": {
-  "class": "workaround",
-  "owner": "load/perf",
-  "faithfulStatus": "not-live: gameplay warm-up prefetch default-ON",
-  "default": "on",
-  "read": "presence"
- },
- "RB3_HEAP_TRIM_OFF": {
-  "class": "workaround",
-  "owner": "load/perf",
-  "faithfulStatus": "not-live: periodic heap trim default-ON",
-  "default": "on",
-  "read": "truthy"
- },
- "RB3_MOGG_RANGE_OFF": {
-  "class": "workaround",
-  "owner": "load/audio",
-  "faithfulStatus": "not-live: Range-backed mogg streaming default-ON (see project_incremental_load_perf memory)",
-  "default": "on"
- },
- "RB3_MOGG_READAHEAD_OFF": {
-  "class": "workaround",
-  "owner": "load/audio",
-  "faithfulStatus": "not-live: mogg read-ahead default-ON",
-  "default": "on"
- },
- "RB3_SCREEN_BUNDLES_OFF": {
-  "class": "workaround",
-  "owner": "load/perf",
-  "faithfulStatus": "not-live: per-screen asset bundling default-ON (see project_incremental_load_perf memory)",
-  "default": "on"
- },
- "RB3_SFX_CACHE_OFF": {
-  "class": "workaround",
-  "owner": "audio/sfx",
-  "faithfulStatus": "not-live: SFX decode cache default-ON",
-  "default": "on"
- },
- "RB3_SFX_OGG_OFF": {
-  "class": "workaround",
-  "owner": "audio/sfx",
-  "faithfulStatus": "not-live: ogg-first SFX sidecar default-ON (see project_web_loadperf_findings memory)",
-  "default": "on"
- },
- "RB3_TEX_PREWARM_OFF": {
-  "class": "workaround",
-  "owner": "load/perf",
-  "faithfulStatus": "not-live: texture prewarm default-ON",
-  "default": "on",
-  "read": "presence"
- },
- "RB3_XMA_PREFETCH_OFF": {
-  "class": "workaround",
-  "owner": "load/audio",
-  "faithfulStatus": "not-live: XMA prefetch default-ON",
-  "default": "on"
- },
- "RB3_PREVIEW_PREFETCH_OFF": {
-  "class": "workaround",
-  "owner": "load/perf",
-  "faithfulStatus": "not-live: song-preview prefetch default-ON",
-  "default": "on",
-  "read": "truthy"
- },
- "RB3_ASYNC_OPEN_OFF": {
-  "class": "workaround",
-  "owner": "load/io",
-  "faithfulStatus": "not-live: async file-open default-ON",
-  "default": "on"
- },
- "RB3_BOOT_BUNDLE_OFF": {
-  "class": "workaround",
-  "owner": "load/perf",
-  "faithfulStatus": "not-live: boot asset bundle default-ON (see project_web_loadperf_findings memory)",
-  "default": "on"
- },
- "RB3_CROWD_IMPOSTER_OFF": {
-  "class": "workaround",
-  "owner": "render/crowd",
-  "faithfulStatus": "not-live: crowd impostor rendering default-ON",
-  "default": "on"
- },
- "RB3_NO_SFX": {
-  "class": "workaround",
-  "owner": "audio",
-  "faithfulStatus": "not-live: retail-disabled-SFX-payload compat default-OFF (truthy opt-in disables SFX; see PLAN.md Key-facts-4)",
-  "default": "off",
-  "read": "truthy"
- },
- "RB3_NO_SETLIST_FIX": {
-  "class": "workaround",
-  "owner": "ui/setlist",
-  "faithfulStatus": "not-live: setlist fix default-ON (opt-out name)",
-  "default": "on"
- },
- "RB3_NO_GUEST_PROFILE": {
-  "class": "workaround",
-  "owner": "profile",
-  "faithfulStatus": "not-live: guest profile workaround default-ON",
-  "default": "on"
- },
- "RB3_NO_AV_CALIBRATION": {
-  "class": "workaround",
-  "owner": "av/calibration",
-  "faithfulStatus": "not-live: A/V calibration bypass default-ON",
-  "default": "on"
- },
- "RB3_PLACEMENT_CONTRACT": {
-  "class": "feature",
-  "owner": "render/placement",
-  "faithfulStatus": "live: SYS-1 skinned-placement contract (obj.world=meshWorld + bind-relative palette), default-ON as of Wave 6 flip (2026-07-06); opt out via RB3_PLACEMENT_CONTRACT_OFF",
-  "default": "on",
-  "read": "presence"
- },
- "RB3_PLACEMENT_CONTRACT_OFF": {
-  "class": "feature",
-  "owner": "render/placement",
-  "faithfulStatus": "now the live opt-out: the SYS-1 placement contract is default-ON as of the Wave 6 flip; setting this disables it (takes precedence over the opt-in)",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_FIXED_CLOCK": {
-  "class": "feature",
-  "owner": "session-telemetry/determinism",
-  "faithfulStatus": "n/a: headless-determinism harness flag (off in shipping runs) — trace-free fixed sim clock",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_FIXED_CLOCK_DT_MS": {
-  "class": "feature",
-  "owner": "session-telemetry/determinism",
-  "faithfulStatus": "n/a: headless-determinism harness value knob (fixed per-frame sim dt in ms; off = built-in 1/60s default)",
-  "default": "off",
-  "read": "value"
- },
- "RB3_DRAWLOG": {
-  "class": "probe",
-  "owner": "render/determinism",
-  "faithfulStatus": "n/a: per-draw state-log ring capture (W0.3 draw-log golden harness)",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_DRAWLOG_DUMP": {
-  "class": "probe",
-  "owner": "render/determinism",
-  "faithfulStatus": "n/a: draw-log JSON dump path (W0.3 draw-log golden harness)",
-  "default": "off",
-  "read": "value"
- },
- "RB3_DRAWLOG_PROV": {
-  "class": "probe",
-  "owner": "render/ui-forensics",
-  "faithfulStatus": "n/a: W17 R3-UIDUMP provenance sidecar for the draw-log ring (mesh/mat/cam names, screen rect, render-pass idx + depth LoadOp, game-fed panel/owner scope). Implies RB3_DRAWLOG on; render output byte-identical.",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_PROV_SKIN_SPHERE": {
-  "class": "probe",
-  "owner": "render/ui-forensics",
-  "faithfulStatus": "n/a: Wave-19 T2-WORLDROI A/B control — forces skinned draws back to the legacy rectKind=1 sphere fallback (the R3 v1 world-cam blindness) so the new rectKind=3 skinned-pose bbox can be diffed against it (gate G1). Test-only; default preserves the rectKind=3 skinned-pose bbox + boneRects. Implies/requires RB3_DRAWLOG_PROV. SPATIAL provenance axis, not the frame-assignment timing axis.",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_MENU_DEPTH_CLEAR": {
-  "class": "probe",
-  "owner": "render/ui-forensics",
-  "faithfulStatus": "n/a: W17 R3-UIDUMP G4 test knob — forces the Wave-14 menu-boundary re-open depth LoadOp back to Clear to re-manifest the SETLISTS red band on demand (RB3PostProc). Test-only; shipped default preserves LoadOp::Load.",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_DRAWORDER_TRACE": {
-  "class": "probe",
-  "owner": "render/determinism",
-  "faithfulStatus": "n/a: transparent/text queue pre/post-sort submission-order trace (W0.3c.S1 order-flake attribution)",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_LOADDET_PROBE": {
-  "class": "probe",
-  "owner": "render/determinism",
-  "faithfulStatus": "n/a: Wave-12 W0.3d-b A-S1 attribution instrument — per-frame gRand draw-count + per-dir load-completion frame streams (H-TIMING vs H-ORDER vs H-RESEED); read rb3-side (Rand/DirLoader/DataFile/RunOneFrame taps)",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_LOADDET_TIMELINE": {
-  "class": "probe",
-  "owner": "render/determinism",
-  "faithfulStatus": "n/a: Wave-19 T1 frame-timeline tracer (attribution mode) — gates the NEW per-frame filearrive + songms markers so existing RB3_LOADDET_PROBE consumers (R4 ledger/order axis, white_regrade, wash v1) keep a byte-identical marker stream; read rb3-side (Loader/http_handlers/loaddet probe taps). Default-OFF, presence-read; ATTRIBUTION-only, no pinning (that is T3)",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_DRAWSORT_DETERMINISTIC_OFF": {
-  "class": "feature",
-  "owner": "render/determinism",
-  "faithfulStatus": "n/a: deterministic SortDraws material-name tie-break, active under RB3_FIXED_CLOCK, default-ON; opt-out restores Wii mat-pointer order (draw-order flake) for W0.3d-fix fail-red",
-  "default": "on"
- },
- "_w06b_section": "W0.6b: 91 game-root flags classified probe|workaround|feature|perf (S1=char/skinning behavior, S2=ui/render/audio/loader/synth/world behavior+perf, S3=probes); see docs/native/engine-arch-review-2026-07-05/execution/W0.6b/STATUS.md",
- "RB3_BOUND_REBAKE": {
-  "class": "workaround",
-  "owner": "skinning",
-  "faithfulStatus": "not-live: opt-in bound-mesh bind-side rebake, default-OFF (those meshes stay on the engine clamp/V24 guard; C8 pose-pipeline root-cause is the faithful fix) [BandCharacter.cpp:1245]",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_HANDS_BIND_FIX": {
-  "class": "workaround",
-  "owner": "skinning",
-  "faithfulStatus": "not-live: experimental hands/fingers rest-basis bind fix, default-OFF (W2.2 measured no benefit, NOT flipped; see char-skinning-deform memory) [BandCharacter.cpp:1385]",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_INST_STRINGS_MODE": {
-  "class": "workaround",
-  "owner": "skinning",
-  "faithfulStatus": "not-live: selects instrument-strings native rebind mode (rigid=default / rebake=A/B); the inst-strings rebind itself is a native stand-in [BandCharacter.cpp:1548]",
-  "default": "off",
-  "read": "value"
- },
- "RB3_MESH_FREE": {
-  "class": "workaround",
-  "owner": "render/mesh",
-  "faithfulStatus": "not-live: native keeps the mesh CPU copy by default (prevents rigid eyes/teeth vanishing); opt-out RB3_MESH_FREE=1 restores the faithful free for A/B [Mesh.cpp:1449]",
-  "default": "on",
-  "read": "presence"
- },
- "RB3_NO_CLIP": {
-  "class": "probe",
-  "owner": "char",
-  "faithfulStatus": "n/a: debug bisection disable of CharDriver::Poll (clip driving); default-OFF, Poll runs normally when absent [CharDriver.cpp:341]",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_NO_CROWD_REBIND": {
-  "class": "workaround",
-  "owner": "render/crowd",
-  "faithfulStatus": "not-live: crowd char-bone rebind-to-own-skeleton default-ON (W2.3 retained/load-bearing, ~24x shard-drop when disabled) [Crowd.cpp:932]",
-  "default": "on",
-  "read": "presence"
- },
- "RB3_NO_DEFORM": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "n/a: debug bisection disable of BandCharacter::SetDeformation; default-OFF, runs when absent [BandCharacter.cpp:2335]",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_NO_DEFORM_LOAD": {
-  "class": "workaround",
-  "owner": "char/deform",
-  "faithfulStatus": "live: native loads gender deforms by default (blocker fixed; converges to original); opt-out RB3_NO_DEFORM_LOAD reverts to the deferred-load hack [BandCharDesc.cpp:112]",
-  "default": "on",
-  "read": "presence"
- },
- "RB3_NO_FACE": {
-  "class": "probe",
-  "owner": "char",
-  "faithfulStatus": "n/a: debug bisection disable of CharFaceServo::Poll + CharHair::Poll; default-OFF, both run when absent [CharFaceServo.cpp:60, CharHair.cpp:465]",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_NO_HEAD_REBIND": {
-  "class": "workaround",
-  "owner": "skinning",
-  "faithfulStatus": "not-live: head/hands rest-capture rebind (NativeCaptureRestPoseAfterDeform + RebindHeadHandsAtRest) default-ON (W2.2 net win; rebake-OFF head guard-DROPs 9.59x) [BandCharacter.cpp:936,1216]",
-  "default": "on",
-  "read": "presence"
- },
- "RB3_NO_HEAD_SHAPER": {
-  "class": "workaround",
-  "owner": "char/headshaper",
-  "faithfulStatus": "live: head shapes load by default on native (byte-correct LE serialization, CharLoad5b gtest); opt-out RB3_NO_HEAD_SHAPER=1 reverts to disabled [BandHeadShaper.cpp:136,156]",
-  "default": "on",
-  "read": "presence"
- },
- "RB3_NO_IK": {
-  "class": "probe",
-  "owner": "char",
-  "faithfulStatus": "n/a: debug bisection disable of all Char IK Poll (hand/foot/head/fore-twist/neck/upper-twist/lookat/fingers/midi/slider); default-OFF, IK runs when absent [CharIKHand.cpp:27 +9 sites]",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_NO_INST_REBIND": {
-  "class": "workaround",
-  "owner": "skinning",
-  "faithfulStatus": "not-live: instrument-strings rest-basis rebind (RebindInstStringsToRestBasis) default-ON [BandCharacter.cpp:1540]",
-  "default": "on",
-  "read": "presence"
- },
- "RB3_NO_POSEMESHES": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "n/a: Q1 decisive-test disable of CharBonesMeshes::PoseMeshes (channel->LocalXfm writeback); default-OFF [CharBonesMeshes.cpp:103]",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_NO_SKEL_REBIND": {
-  "class": "workaround",
-  "owner": "skinning",
-  "faithfulStatus": "not-live: outfit-bone rebind-to-own-skeleton (RebindOutfitBonesToOwnSkeleton) default-ON (char-skinning-deform fix acd9c19a; W0.5 fail-red control) [BandCharacter.cpp:1064]",
-  "default": "on",
-  "read": "presence"
- },
- "RB3_SKEL_REBIND_CALCOFF": {
-  "class": "workaround",
-  "owner": "skinning",
-  "faithfulStatus": "not-live: A/B variant of the outfit rebind (SetBone calcOffset=true); shipped default is calcOffset=false [BandCharacter.cpp:1110]",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_SKEL_REBIND_FULL": {
-  "class": "workaround",
-  "owner": "skinning",
-  "faithfulStatus": "not-live: KNOWN-BROKEN full-body rebind (shards thin geo), default-OFF study/W0.1 fail-red control; shipped rebind is torso-only [BandCharacter.cpp:1084]",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_SKIN_FIX_OFF": {
-  "class": "workaround",
-  "owner": "render/c8-faces",
-  "faithfulStatus": "not-live: skin RT-recolor compose rebind (only active when RB3_SKIN_RTT is also set); opt-out RB3_SKIN_FIX_OFF=1 (see project_c8_faces memory) [OutfitConfig.cpp:566]",
-  "default": "on",
-  "read": "presence"
- },
- "RB3_BLACK_HEAD_FIX_OFF": {
-  "class": "workaround",
-  "owner": "render/c8-faces",
-  "faithfulStatus": "not-live: band head_naked.mat gets a null diffuse on native because <gender>_head_diff.tex + head_naked.mat live in a nested head subdir unreachable by the non-recursive dir1->Find (the Wii milo flat-merges them); unlike torso/feet (dummy_* fallback) the head has no fallback -> flat-black head in dim venues / pink in warm. Default-ON recursively binds the head detail texture to the drawn head.mesh material; opt-out RB3_BLACK_HEAD_FIX_OFF=1 (W2.7, see project_c8_faces memory) [OutfitConfig.cpp:564]",
-  "default": "on",
-  "read": "presence"
- },
- "RB3_SKIN_NOCACHE": {
-  "class": "perf",
-  "owner": "skinning",
-  "faithfulStatus": "n/a: A/B disable of the per-member skinned-mesh cache (measurement only; default cached path is a perf optimization, see incremental-load-perf memory) [BandCharacter.cpp:851]",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_SKIN_RTT": {
-  "class": "feature",
-  "owner": "render/c8-faces",
-  "faithfulStatus": "not-live: gates the engine skin-RTT composite path (broken on web); default-OFF ships the direct-bind diff x skin-tone bypass (see project_c8_faces memory 266ffb1b) [OutfitConfig.cpp:508,572]",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_SKIN_TIMING": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "n/a: timing print summing skinned-mesh cache rebuild vs cache-hit cost [BandCharacter.cpp:846]",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_WALKON_SNAP_OFF": {
-  "class": "workaround",
-  "owner": "bandobj/walkon",
-  "faithfulStatus": "not-live: walk-on count-in pose snap default-ON (avoids frozen stale-vignette pose; see walkon-countin-pose memory 67e87ae1) [BandCharacter.cpp:59]",
-  "default": "on",
-  "read": "presence"
- },
- "SET_SKEL_REBIND": {
-  "class": "workaround",
-  "owner": "skinning",
-  "faithfulStatus": "not-live: superseded experimental whole-subtree rebind (SetBone), study-only default-OFF; shipped fix is the renderer-side SKEL_REBAKE static-pose offset [BandCharacter.cpp:1788]",
-  "default": "off",
-  "read": "presence"
- },
- "MILO_HEADLESS": {
-  "class": "feature",
-  "owner": "platform/headless",
-  "faithfulStatus": "n/a: headless runtime mode (skips window/audio/GPU device init; UI.cpp fakes a fixed 1/30s UI clock). Real port toggle, not a fidelity stand-in.",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_APPLY_HANDLER_FIX_OFF": {
-  "class": "workaround",
-  "owner": "bandobj/trackpanel",
-  "faithfulStatus": "not-live: single-player scoreboard/applause right/left.grp x-translation neutralization (K9 apply-handler fix) default-ON; =1 reverts to raw V22 [W22 re-scope d15484f1: the SCOREBOARD-anchor neutralization leg was GT-refuted (retail single-player = top-RIGHT, not top-center) and is now gated by RB3_HUD_SCOREBOARD_TOPRIGHT (default-ON); applause/mtv legs unchanged.]",
-  "default": "on",
-  "read": "presence"
- },
- "RB3_BILLBOARD_OFF": {
-  "class": "workaround",
-  "owner": "render/billboard",
-  "faithfulStatus": "not-live: native RndMultiMesh::DrawShowing kFastBillboardXYZ branch default-ON; opt-out disables the native billboard branch",
-  "default": "on",
-  "read": "truthy"
- },
- "RB3_CAM_FALLBACK_OFF": {
-  "class": "workaround",
-  "owner": "camera/voidcut",
-  "faithfulStatus": "not-live: BandDirector voidcut last-good-cam fallback (avoids dropping to void) default-ON; =1 reverts to raw V22 follow",
-  "default": "on",
-  "read": "presence"
- },
- "RB3_LOADER_BUDGET_MS": {
-  "class": "perf",
-  "owner": "load/perf",
-  "faithfulStatus": "n/a: Loader frame-drain budget in ms (default 8; huge value restores unbudgeted drain-to-completion). See project_incremental_load_perf memory.",
-  "default": "off",
-  "read": "value"
- },
- "RB3_LOADER_MIN_YIELD_MS": {
-  "class": "perf",
-  "owner": "load/perf",
-  "faithfulStatus": "n/a: min yield interval for synchronous loader/stream drain in ms (default 16; 0 restores per-slice yield). See project_incremental_load_perf memory.",
-  "default": "off",
-  "read": "value"
- },
- "RB3_LOADER_READAHEAD": {
-  "class": "perf",
-  "owner": "load/perf",
-  "faithfulStatus": "n/a: loader pipeline read-ahead depth (default 6; 0 disables). HX_NATIVE-only. See project_incremental_load_perf memory.",
-  "default": "off",
-  "read": "value"
- },
- "RB3_LOADER_YIELD_MS": {
-  "class": "perf",
-  "owner": "load/perf",
-  "faithfulStatus": "n/a: loader spin yield interval in ms (default 16, clamped >= budget). Boot-time-neutral tunable. See project_incremental_load_perf memory.",
-  "default": "off",
-  "read": "value"
- },
- "RB3_MENU_VOID_FIX_OFF": {
-  "class": "workaround",
-  "owner": "render/menu-void",
-  "faithfulStatus": "not-live: menu-void mesh cull fix default-ON; =set reverts to baseline draw",
-  "default": "on",
-  "read": "presence"
- },
- "RB3_METAMUSIC_SYNC": {
-  "class": "workaround",
-  "owner": "synth/metamusic",
-  "faithfulStatus": "not-live: native async MetaMusic PostLoad default; =1 opt-in restores the original eager (blocking) PostLoad+wiring path",
-  "default": "off",
-  "read": "truthy"
- },
- "RB3_NO_CROWD_INTRO": {
-  "class": "workaround",
-  "owner": "audio/crowd",
-  "faithfulStatus": "not-live: native crowd_intro/venue_intro BinkClip mogg bridge default-ON; =set disables the intro synth bridge",
-  "default": "on",
-  "read": "presence"
- },
- "RB3_PREWARM_NEXT": {
-  "class": "perf",
-  "owner": "load/perf",
-  "faithfulStatus": "n/a: from:to screen prewarm-pair spec string (default main_hub_screen:song_select_screen). Asset prewarm scheduling, no draw/logic change. See project_incremental_load_perf memory.",
-  "default": "off",
-  "read": "value"
- },
- "RB3_PREWARM_SCREENS": {
-  "class": "perf",
-  "owner": "load/perf",
-  "faithfulStatus": "n/a: UI screen/panel asset prewarm+adopt (web default-ON opt-out via '0'; native default-OFF opt-in). No correctness dependency at the adopt site. See project_incremental_load_perf memory.",
-  "default": "off",
-  "read": "truthy"
- },
- "RB3_REFRACTION_FIX_OFF": {
-  "class": "workaround",
-  "owner": "render/refraction",
-  "faithfulStatus": "not-live: song_select bottom_square_refraction cull fix default-ON; =set restores baseline draw",
-  "default": "on",
-  "read": "presence"
- },
- "RB3_RESYNC_YIELD_OFF": {
-  "class": "workaround",
-  "owner": "synth/stream",
-  "faithfulStatus": "not-live: StandardStream resync yield default-ON; opt-out disables the resync yield",
-  "default": "on",
-  "read": "truthy"
- },
- "RB3_REVIEW_LIGHTER_FIX_OFF": {
-  "class": "workaround",
-  "owner": "ui/review",
-  "faithfulStatus": "not-live: ReviewDisplay lighter-slot show fix (hide slots on zero score) default-ON; =1 restores baseline",
-  "default": "on",
-  "read": "presence"
- },
- "RB3_SCROLLBAR_FIX_OFF": {
-  "class": "workaround",
-  "owner": "ui/scrollbar",
-  "faithfulStatus": "not-live: ScrollbarDisplay content-aware draw gate default-ON; =1 restores the exact Wii over-draw gate",
-  "default": "on",
-  "read": "presence"
- },
- "RB3_STREAM_BUF_SECS": {
-  "class": "perf",
-  "owner": "synth/stream",
-  "faithfulStatus": "n/a: StandardStream min buffer depth in seconds (default 4, capped by 16-chunk ~9.1s ring). Anti-underrun value knob.",
-  "default": "off",
-  "read": "value"
- },
- "RB3_STREAM_PREPLAY_CAP_OFF": {
-  "class": "workaround",
-  "owner": "synth/stream",
-  "faithfulStatus": "not-live: StreamReceiver pre-play write cap (fill ring before Play, clock reads 0) default-ON; =1 opts out",
-  "default": "on",
-  "read": "truthy"
- },
- "RB3_TV3_PLAY_OFF": {
-  "class": "workaround",
-  "owner": "world/transition",
-  "faithfulStatus": "not-live: vignette_transition (tv3) WorldDir force-play default-ON (bounds sequencer to authored sub-shot durations); =set escapes",
-  "default": "on",
-  "read": "presence"
- },
- "RB3_VENUE_FRUSTUM_CULL": {
-  "class": "perf",
-  "owner": "render/cull",
-  "faithfulStatus": "n/a: opt-in world.cam venue frustum sphere cull (default-OFF); pure draw-skip optimization, confirmed Draw.cpp:201",
-  "default": "off",
-  "read": "truthy"
- },
- "RB3_VENUE_SYNC": {
-  "class": "workaround",
-  "owner": "load/venue",
-  "faithfulStatus": "not-live: native forces synchronous venue load (correct ordering) default-ON; =0 opts into experimental async (unsafe until Enter() is split into a multi-frame poll)",
-  "default": "on",
-  "read": "truthy"
- },
- "RB3_WEB_OFFMAIN_MIX": {
-  "class": "feature",
-  "owner": "audio/web",
-  "faithfulStatus": "n/a: off-main-thread audio decode/mix mode (web survives main-thread freezes; native uses it to size the decode-ahead ring deeper) default-ON; =0 keeps the prior main-thread-mix path. Port audio-architecture toggle, not a Wii-fidelity stand-in.",
-  "default": "on",
-  "read": "truthy"
- },
- "VENUE_CAM_LOCK": {
-  "class": "workaround",
-  "owner": "camera/venue",
-  "faithfulStatus": "not-live: native bridge points the venue WorldDir mCam at the director's active shot cam each frame default-ON; =1 reverts to the static cam",
-  "default": "on",
-  "read": "presence"
- },
- "BAND_ANIM_BONE": {
-  "class": "probe",
-  "owner": "char/anim",
-  "faithfulStatus": "n/a: names the bone BAND_ANIM_PROBE samples (defaults to bone_R-upperArm.mesh); only read when BAND_ANIM_PROBE is active, never alters Poll() [BandCharacter.cpp:507]",
-  "default": "off",
-  "read": "value"
- },
- "BAND_ANIM_PROBE": {
-  "class": "probe",
-  "owner": "char/anim",
-  "faithfulStatus": "n/a: per-frame trace of the band animation chain (driver presence, playing clip, named bone worldPos pre/post Character::Poll) to localize why the on-stage skeleton fails to move; substring-matches a member's dir name or '*' [BandCharacter.cpp:497]",
-  "default": "off",
-  "read": "value"
- },
- "BONE_CLEAR_DBG": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "n/a: logs any CopyBones(0) that wipes a non-empty bone list off a mesh, to catch post-load bone clears [Mesh.cpp:1156]",
-  "default": "off",
-  "read": "presence"
- },
- "BONE_LOAD_DBG": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "n/a: reports how many bones a mesh loaded from the file vs. how many resolved null, before RemoveInvalidBones strips them [Mesh.cpp:1000]",
-  "default": "off",
-  "read": "presence"
- },
- "CAMDIR_DBG": {
-  "class": "probe",
-  "owner": "render/camera",
-  "faithfulStatus": "n/a: logs the re-run HarvestDircuts() call once venue+song.anim are both live (propAnim/venueDir pointers); render-inert, aliases VENUE_DBG's same line [BandDirector.cpp:744]",
-  "default": "off",
-  "read": "presence"
- },
- "CAM_DBG": {
-  "class": "probe",
-  "owner": "render/camera",
-  "faithfulStatus": "n/a: dumps game.cam pose (pos/fwd/up/fov/near/far) during highway draw at TrackDir.cpp:280 (game.cam is only current at this scope point); also gates a separate pipeline-prewarm timing print at engine Rnd_Wgpu_RB3.cpp:2146 (no shared state, coincidental name reuse) [TrackDir.cpp:280; Rnd_Wgpu_RB3.cpp:2146]",
-  "default": "off",
-  "read": "presence"
- },
- "CBM_DBG": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "n/a: V38 instrumentation — dumps decoded SCALE channel + pre-divide matrix row lengths per scale-bone, localizing the crowd/extras 0.53-det Y-squash [CharBonesMeshes.cpp:176]",
-  "default": "off",
-  "read": "presence"
- },
- "CBM_DBG2": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "n/a: V38 probe — dumps quat magnitude pre-Normalize and post-QUAT/ROT LocalXfm determinant for a substring-matched bone name (or '*') [CharBonesMeshes.cpp:117,119,146,147]",
-  "default": "off",
-  "read": "value"
- },
- "CBS_DBG": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "n/a: dumps the cached packed-buffer layout (offsets, sizes, compression) vs bytes actually consumed, to verify against the DC3 Save contiguous layout [CharBonesSamples.cpp:591]",
-  "default": "off",
-  "read": "presence"
- },
- "CHARDRV_PROBE": {
-  "class": "probe",
-  "owner": "char/anim",
-  "faithfulStatus": "n/a: confirms CharDriver::Poll runs and whether a clip is playing/applying, substring-matched by ClipType (or '*'); two sites (pre- and post-apply) [CharDriver.cpp:346,424]",
-  "default": "off",
-  "read": "value"
- },
- "CHAR_DBG": {
-  "class": "probe",
-  "owner": "render/char-material",
-  "faithfulStatus": "n/a: two independent print sites sharing a name — engine RB3MaterialBinder.cpp reports whether a skinned outfit mesh resolved a diffuse texture (untextured-because-unbound vs RTT-composite-never-painted); game BandDirector.cpp logs the re-run LoadCharacters() call (aliases VENUE_DBG) [RB3MaterialBinder.cpp:292; BandDirector.cpp:713]",
-  "default": "off",
-  "read": "presence"
- },
- "CLOCK_DBG": {
-  "class": "probe",
-  "owner": "ui/hud",
-  "faithfulStatus": "n/a: logs TrackDir::DrawShowing's real-time delta and y-per-second scroll multiplier for a track-panel HUD overlay [TrackDir.cpp:302]",
-  "default": "off",
-  "read": "presence"
- },
- "CROWD_REBIND_PROBE": {
-  "class": "probe",
-  "owner": "render/crowd",
-  "faithfulStatus": "n/a: verbose companion to RebindCrowdCharBonesToOwnSkeleton (the default-ON RB3_NO_CROWD_REBIND workaround) — read-only diagnostic flag, does not itself change the rebind [Crowd.cpp:936]",
-  "default": "off",
-  "read": "presence"
- },
- "GAME_DBG": {
-  "class": "probe",
-  "owner": "bandobj/flow",
-  "faithfulStatus": "n/a: logs BandDirector::OnFileLoaded's sym/dir args and ReadyForMidiParsers' native venue-deferred gate inputs/result; the gate's own cond is computed independent of the getenv call [BandDirector.cpp:1265,834]",
-  "default": "off",
-  "read": "presence"
- },
- "GEM_DBG": {
-  "class": "probe",
-  "owner": "render/highway",
-  "faithfulStatus": "n/a: dumps GemTrackDir::UpdateSurfaceTexture's mesh/mat/tex name state after the (unconditional) SetDiffuseTex call [GemTrackDir.cpp:393]",
-  "default": "off",
-  "read": "presence"
- },
- "HEAD_REBIND_PROBE": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "n/a: verbose companion to RebindHeadHandsAtRest (the default-ON RB3_NO_HEAD_REBIND-gated rest-capture rebind); read-only, does not alter the rebind [BandCharacter.cpp:1219]",
-  "default": "off",
-  "read": "presence"
- },
- "IK_TGT_DBG": {
-  "class": "probe",
-  "owner": "char/ik",
-  "faithfulStatus": "n/a: reports IK hand world position + each target's name/pos/distance/parent chain for far (>50u) targets; investigative tool for the residual crowd hand-IK pose error, render-inert [CharIKHand.cpp:45]",
-  "default": "off",
-  "read": "presence"
- },
- "INST_REBIND_PROBE": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "n/a: verbose companion to the instrument-strings rebind (RB3_NO_INST_REBIND/RB3_INST_STRINGS_MODE); read-only [BandCharacter.cpp:1551]",
-  "default": "off",
-  "read": "presence"
- },
- "K9_APPLY_DBG": {
-  "class": "probe",
-  "owner": "ui/hud",
-  "faithfulStatus": "n/a: dumps the milo 'apply' handler dispatch state (config object name/class/typedef apply-array, objects/visibles/xfms arrays) on TrackPanelDirBase::SetConfiguration/ReapplyConfiguration, plus a compact scoreboard-anchor world-pos trace in TrackPanelDir [TrackPanelDirBase.cpp:95,163,185; TrackPanelDir.cpp:334]",
-  "default": "off",
-  "read": "presence"
- },
- "MENU_VOID_DBG2": {
-  "class": "probe",
-  "owner": "render/ui",
-  "faithfulStatus": "n/a: render-inert one-shot-per-name material dump for hub-backdrop drawables (sky/dome/moon/cloud/star/night/bgbuilding/fog-keyed by default, or every mesh when =2); reports showing/mat/color/blend/zmode/diffuse-tex/vert-extent, always returns false (never skips a draw) [Draw.cpp:68,124]",
-  "default": "off",
-  "read": "value"
- },
- "MENU_VOID_SKIP": {
-  "class": "probe",
-  "owner": "render/ui",
-  "faithfulStatus": "n/a: comma/space-separated substring skip-draw list — an opt-in A/B research tool for isolating which drawable paints a given hub-backdrop screen region (not a shipped fix; distinct from the always-on worldcenter-occluder/refraction fixes in the same function, which are unconditional) [Draw.cpp:69]",
-  "default": "off",
-  "read": "value"
- },
- "MESH_BONE_DBG": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "n/a: dumps each loaded RndBone's bind-offset determinant + row lengths for substring-matched mesh names, checking whether the crowd-body det-0.53 squash is an authored bind offset or a mis-read [Mesh.cpp:1066]",
-  "default": "off",
-  "read": "value"
- },
- "MILO_LOCALE_DBG": {
-  "class": "probe",
-  "owner": "utl/locale",
-  "faithfulStatus": "n/a: traces Localize() token/format resolution for diagnosing format-string/token leaks [Locale.cpp:296]",
-  "default": "off",
-  "read": "presence"
- },
- "MILO_SETTOKEN_DBG": {
-  "class": "probe",
-  "owner": "ui/label",
-  "faithfulStatus": "n/a: traces UILabel::SetTokenFmtImp — symbol, localized format string, and final SetDisplayText input [UILabel.cpp:805]",
-  "default": "off",
-  "read": "presence"
- },
- "PART_INIT_DBG": {
-  "class": "probe",
-  "owner": "render/particles",
-  "faithfulStatus": "n/a: dumps InitParticle's emit branch, raw direction and mesh state before speed scale for substring-matched particle systems, diagnosing runaway street-fog particles [Part.cpp:670]",
-  "default": "off",
-  "read": "value"
- },
- "PART_MOVE_DBG": {
-  "class": "probe",
-  "owner": "render/particles",
-  "faithfulStatus": "n/a: per-call MoveParticles trace (dt/frameSpan, relative-frame force rows, relative xfm state, first particle velocity) for substring-matched systems, pinpointing runaway fog velocity origin [Part.cpp:1338]",
-  "default": "off",
-  "read": "value"
- },
- "RB3_DUMP_STEMS": {
-  "class": "probe",
-  "owner": "audio/stems",
-  "faithfulStatus": "n/a: opt-in raw PCM stem dump to disk (one .s16 file per channel under the given directory); purely a side-channel file write, does not alter the audio mix/playback path [StandardStream.cpp:68]",
-  "default": "off",
-  "read": "value"
- },
- "RB3_HAIR_DBG": {
-  "class": "probe",
-  "owner": "char/hair",
-  "faithfulStatus": "n/a: reports per-strand collide-hookup counts (points hooked, CharCollides reachable) to quantify free-hanging strands passing through the skull/shoulders under motion [CharHair.cpp:833]",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_METAMUSIC_DBG": {
-  "class": "probe",
-  "owner": "synth/metamusic",
-  "faithfulStatus": "n/a: logs completion of the deferred stream-FX wiring (6 eq.send dirs) after RB3_METAMUSIC_SYNC's async PostLoad path drains [MetaMusic.cpp:415]",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_NOTIFY_ALL": {
-  "class": "probe",
-  "owner": "os/debug",
-  "faithfulStatus": "n/a: console-verbosity toggle — restores every repeat of an engine NOTIFY diagnostic instead of the default per-message dedup; affects only diagnostic console output, not app logic/rendering [Debug.cpp:66]",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_PLACEMENT_PROBE": {
-  "class": "probe",
-  "owner": "render/placement",
-  "faithfulStatus": "n/a: dumps each crowd instance's spXfm translation used by the W2.1 RB3_PLACEMENT_CONTRACT placement oracle; Wii-compile-inert, no behavior change [Crowd.cpp:421]",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_PP_PROBE": {
-  "class": "probe",
-  "owner": "bandobj/patchmesh",
-  "faithfulStatus": "n/a: dumps BandPatchMesh::WorkVerts::SetMeshVerts entry state (vert/face counts, max face index, OOB check) added while triaging the C8 head-invisible regression [BandPatchMesh.cpp:324]",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_PREWARM_DBG": {
-  "class": "probe",
-  "owner": "load/perf",
-  "faithfulStatus": "n/a: two independent print sites sharing a name — game UIScreen.cpp logs the song_select-prewarm screen-pair schedule/CheckIsLoaded gate; engine Rnd_Wgpu_RB3.cpp times the A5 GPU pipeline pre-warm compile. Neither changes whether prewarm/pipeline-warm runs, only whether it's logged [UIScreen.cpp:298,392; Rnd_Wgpu_RB3.cpp:1472]",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_READAHEAD_DEBUG": {
-  "class": "probe",
-  "owner": "load/perf",
-  "faithfulStatus": "n/a: reports loader queueDepth/kicked counts to show whether dependency milos enqueue deep enough for read-ahead to matter; zero cost when off, does not change scheduling [Loader.cpp:540]",
-  "default": "off",
-  "read": "truthy"
- },
- "RB3_SKINFIX_DBG": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "n/a: logs every MatSwap touched by the outfit skin-diffuse rebind loop and what it rebinds, added while triaging the C8 head-invisible regression [OutfitConfig.cpp:600]",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_STATS_DBG": {
-  "class": "probe",
-  "owner": "debug/stomp-watch",
-  "faithfulStatus": "n/a: two independent stomp-watch bisection sites sharing a name — File.cpp checks MetaPerformer integrity on every file open (web song-end wedge diagnosis); Mesh.cpp records a ring of VertVector alloc/free events for stomp tracing. Both are read-only integrity checks/recorders, no behavior change [File.cpp:168; Mesh.cpp:408]",
-  "default": "off",
-  "read": "presence"
- },
- "RELOAD_PROBE": {
-  "class": "probe",
-  "owner": "bandobj/flow",
-  "faithfulStatus": "n/a: answers 'what reloads the band mid-song' by logging every RecomposePatches/MiloReload/start_load-DTA/in_closet-propsync/CharCache/BandWardrobe reload call site, correlated by a monotonic Poll serial [BandCharacter.cpp:50]",
-  "default": "off",
-  "read": "presence"
- },
- "SERVO_PROBE": {
-  "class": "probe",
-  "owner": "char/anim",
-  "faithfulStatus": "n/a: confirms CharServoBone::Poll runs and reports a mid-chain bone's LocalXfm before/after PoseMeshes, substring-matched by ClipType (or '*') [CharServoBone.cpp:45]",
-  "default": "off",
-  "read": "value"
- },
- "SKEL_REBIND_PROBE": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "n/a: verbose companion to RebindOutfitBonesToOwnSkeleton (RB3_NO_SKEL_REBIND) and the SET_SKEL_REBIND study variant — counts rebound/same/null-own bones; read-only, gates only its own print block alongside sRebind [BandCharacter.cpp:1068,1789]",
-  "default": "off",
-  "read": "presence"
- },
- "SKEL_REBIND_SKINPOS": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "n/a: post-rebind verification metric — reports the worst |skinWorld-boneWorld| bone-relative delta after RebindOutfitBonesToOwnSkeleton, the correctness measure used throughout the W2.2/skel-rebind investigation [BandCharacter.cpp:1140]",
-  "default": "off",
-  "read": "presence"
- },
- "STRIDE_PROBE": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "n/a: dumps mesh name/vert count/per-vert size/version/skinned-flag when reading the platform-compressed vertex blob, verifying the native compressed-vert read against the loaded stride [Mesh.cpp:678]",
-  "default": "off",
-  "read": "presence"
- },
- "UISCREEN_DBG": {
-  "class": "probe",
-  "owner": "ui/hub",
-  "faithfulStatus": "n/a: logs UI transition-state changes (UI.cpp) and screen/panel Exiting()/CheckIsLoaded() blocked-panel state (UIScreen.cpp, UIPanel.cpp), dedup'd per state/panel change [UI.cpp:537; UIPanel.cpp:273; UIScreen.cpp:116,582]",
-  "default": "off",
-  "read": "presence"
- },
- "VENUE_DBG": {
-  "class": "probe",
-  "owner": "bandobj/venue",
-  "faithfulStatus": "n/a: logs the native venue force-load bridge in BandDirector::EnterVenue (override symbol, chosen venue, sync/async mode, wardrobe/venueDir/venueName state, HarvestDircuts re-run — shares its last two log lines with CAMDIR_DBG/CHAR_DBG); the force-load itself (LoadVenue, RB3_VENUE_SYNC-gated sync mode) runs independent of this flag [BandDirector.cpp:654,666,690,713,744]",
-  "default": "off",
-  "read": "presence"
- },
- "VOIDCUT_DBG": {
-  "class": "probe",
-  "owner": "render/camera",
-  "faithfulStatus": "n/a: logs each shot's void-vs-keep verdict for the RB3_CAM_FALLBACK_OFF-gated sticky last-good-cam fallback (voidcut avoidance); read-only, does not affect the fallback decision [BandDirector.cpp:387]",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_ENV_FOG": {
-  "class": "feature",
-  "owner": "render/lighting",
-  "faithfulStatus": "not-live: faithful RndEnviron fog fill (FogEnable/GetFogStart/GetFogEnd/FogColor -> SceneUniforms fog + RndMat::mFog -> materialFogEnabled), default-OFF (W3.1a)",
-  "default": "off"
- },
- "RB3_BOX_AMBIENT": {
-  "class": "feature",
-  "owner": "render/lighting",
-  "faithfulStatus": "not-live: SYS-4 faithful 6-axis box-ambient cube (BoxMapLighting over RndEnviron::mLightsApprox -> boxAmbient[6] uniform, sampled per-normal), replaces the scalar-ambient + approx-as-Lambert-key inversion in the venue path; W3.2 PROTOTYPE, worktree-only (branch wave6-boxmap-proto), lands Wave 7 after Lane A settles WriteSceneUniforms/UniformStructs.h/standard_wgsl.inc",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_ENV_PROJLIGHT": {
-  "class": "feature",
-  "owner": "render/lighting",
-  "faithfulStatus": "not-live: faithful RndEnviron kFakeSpot projected-light fill (mLightsReal gobo -> projLight* SceneUniforms fields + local RndLight::Projection port + slot-3 gobo bind), default-OFF (W3.1b)",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_ENV_PROJLIGHT_FORCE": {
-  "class": "probe",
-  "owner": "render/lighting",
-  "faithfulStatus": "probe: synthesizes a projected light from the first showing RndEnviron light (relaxes the kFakeSpot/gobo gates) so RB3_ENV_PROJLIGHT renders a screenshot A/B on a real venue when none authors one; requires RB3_ENV_PROJLIGHT, default-OFF (W3.1b)",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_ENV_FOG_FORCE": {
-  "class": "probe",
-  "owner": "render/lighting",
-  "faithfulStatus": "probe: synthesizes authored fog params onto the current environ at the fill site so RB3_ENV_FOG renders on a real venue for screenshot A/B (no in-repo asset authors fog); requires RB3_ENV_FOG, default-OFF (W3.1b)",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_HUB_MENU_QUAD_HIDE": {
-  "class": "workaround",
-  "owner": "ui/hub",
-  "faithfulStatus": "live: hides playnow.lsw (a LabelShrinkWrapper child of mb_playnow.grp/menu_buttons.grp in ui/main/main_hub.milo) that draws an opaque grey capsule quad mid-screen on main_hub with no retail counterpart (SYS-5 family); default-ON as of Wave 7 flip; legacy opt-in name kept, opt out via RB3_HUB_MENU_QUAD_OFF",
-  "default": "on"
- },
- "RB3_HUB_MENU_QUAD_OFF": {
-  "class": "workaround",
-  "owner": "ui/hub",
-  "faithfulStatus": "live opt-out for the main_hub grey-quad hide (RB3_HUB_MENU_QUAD_HIDE, default-ON as of Wave 7); setting this restores the quad",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_PP_LUMA_CEILING": {
-  "class": "workaround",
-  "owner": "render/post",
-  "faithfulStatus": "not-live: switches the postproc composite highlight-ceiling guard (rb3_postproc.wgsl.inc fs_postproc) from a per-channel Reinhard rolloff to a luminance-preserving one, so a hot saturated moment (the song-start stage-light reveal, songMs ~2000-6000) reads bright-but-colored instead of desaturating to grey; identity below the ceiling knee either way, default-OFF (W3.3-fix)",
-  "default": "off"
- },
- "RB3_VENUE_FALLBACK_FIX": {
-  "class": "workaround",
-  "owner": "render/lighting",
-  "faithfulStatus": "not-live: WASH-fix (Wave 8 A.S2) FIX-H1 — dim, exposure-safe key for the broken/unlit VENUE fallback (Rnd_Wgpu_RB3.cpp flat-default else at world.cam: venue_off/no_env/fogowner_null). The `1.0 white dir + 0.45 ambient` flood over-exposes the venue through the Stage-2 composite -> the deterministic RB3_VENUE_LIGHT_OFF PINK wash (S1 8/8); ON writes a dim neutral key (0.50 dir + 0.10 ambient) scoped to world.cam so menus + game.cam are untouched; default-OFF, flag-OFF byte-identical",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_PP_CHROMA_PRESERVE": {
-  "class": "workaround",
-  "owner": "render/postproc",
-  "faithfulStatus": "live: venue-scoped chroma-preserving composite grade (WASH FIX-H2) — reconstructs graded output from ungraded scene chroma at graded luminance so hot venue moments keep authored hue/sat instead of desaturating to grey; default-ON as of Wave 8 flip (2026-07-07); opt out via RB3_PP_CHROMA_PRESERVE_OFF or legacy =0",
-  "default": "on",
-  "read": "presence"
- },
- "RB3_PP_CHROMA_PRESERVE_OFF": {
-  "class": "workaround",
-  "owner": "render/postproc",
-  "faithfulStatus": "live opt-out for the chroma-preserving venue composite grade (RB3_PP_CHROMA_PRESERVE, default-ON as of Wave 8)",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_UI_TEXT_FLOOR_RELAXED": {
-  "class": "workaround",
-  "owner": "ui/text",
-  "faithfulStatus": "not-live: relaxes the unconditional UI-text colour floor (RB3MaterialBinder.cpp isLikelyUiText path, std::max(0.6, c)) that clobbers authored per-focus-state UILabel colours (focused hub items author near-black text meant to read on the bright gold highlight bar; unfocused siblings author dimmed grey) -> only lifts colours whose channels are ALL below 0.06 (true near-invisible, e.g. a genuinely (0,0,0)-authored label) to 0.25, passing the measured live hub range (0.118-0.247) through unchanged; flag-OFF is byte-identical to the pre-existing unconditional 0.6 clamp; default-ON as of Wave 7 flip; opt out via RB3_UI_TEXT_FLOOR_STRICT",
-  "default": "on",
-  "read": "presence"
- },
- "RB3_UI_TEXT_FLOOR_STRICT": {
-  "class": "workaround",
-  "owner": "ui/text",
-  "faithfulStatus": "live opt-out for the relaxed UI-text colour floor (RB3_UI_TEXT_FLOOR_RELAXED, default-ON as of Wave 7); setting this restores the legacy unconditional 0.6 floor",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_HUB_TEXT_CONTRAST": {
-  "class": "workaround",
-  "owner": "ui/hub",
-  "faithfulStatus": "not-live: W12 C1 focused-text contrast — clamps the focused hub highlight-bar material alpha (isUiHighlightOverlay, highlight_main/pattern) to hardware [0,1] in RB3MaterialBinder.cpp (Wii fixed-function blender clamps src alpha; native pulse anim drives it to ~3.56, over-brightening the bar under kBlendSrcAlpha). FAITHFUL correctness fix for the >1 alpha bug, but does NOT by itself pass the C1 focused-bar contrast gate (p60/p5>=2.0): the dominant wash is the postproc GRADE lifting the authored-dark focused glyphs (0.118) more than the bar (RB3_PP_OFF -> gate 2.20 PASS vs 1.95 graded) compounded by the bright bar compositing through the ~semi-transparent anti-aliased text; those live in the render/postproc path (escalated). flag-OFF byte-identical (getenv-cached) [RB3MaterialBinder.cpp]",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_HANDS_POSEAWARE": {
-  "class": "feature",
-  "owner": "skinning",
-  "faithfulStatus": "not-live: W2.8 BL-A1 rigid-anchor hands/fingers fix — collapses the pose-varying multi-bone rotation-basis divergence that flings distal finger verts into sheets (the 'missing hands' shard) by repointing every hand/finger/glove bone per L/R side to that side's wrist bone (bone_L-hand/bone_R-hand) and rebaking offset=meshWorld*inv(wristWorld) so each hand rides its wrist as one rigid body (mirrors the proven RebindInstStringsToRestBasis rigid path). TRADEOFF: fingers no longer articulate (rigid hand) — trades shard for a static-but-coherent hand; the faithful finger-articulating fix is the CharBones pose-pipeline basis (engine, out of lane fence). flag-OFF byte-identical (getenv-cached early return in BandCharacter::NativeRepinHandsRigid) [BandCharacter.cpp]",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_HANDS_PERFRAME_CONJ": {
-  "class": "feature",
-  "owner": "skinning",
-  "faithfulStatus": "not-live: W2.8c per-frame pose-aware appendage (hands/fingers) basis correction — the one remaining fix class after the two static approaches (RB3_HANDS_BIND_FIX seed, RB3_HANDS_POSEAWARE rigid wrist-collapse) were empirically killed. Keeps every hand/finger bone bound to its OWN live per-member bone (articulation preserved, anti-rigid-collapse) and each Poll rewrites its palette offset so the live bone's rotation is applied ABOUT the authored magnet frame: offset_b(t)=inv(A_b)*inv(L_b(t0))*L_b(t)*A_b*inv(L_b(t)), cancelling the growing R*sin(theta) twist per bone instead of collapsing the hand rigidly. A_b/L_b(t0) captured once per mesh at latch, only L_b(t) re-sampled per Poll (unlatched apply, no bind re-bake drift). Mutually exclusive with RB3_HANDS_POSEAWARE (only one runs) and with RebindHeadHandsAtRest (skips hand/finger/glove meshes when ON so A_b stays pristine). flag-OFF byte-identical (getenv-cached early return in BandCharacter::NativeConjHandsPerFrame) [BandCharacter.cpp]",
-  "default": "off",
-  "read": "presence"
- },
- "HANDS_CONJ_PROBE": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "probe: per-mesh/per-bone log for the W2.8c per-frame hands conjugation (RB3_HANDS_PERFRAME_CONJ) — prints CLAIM (owner mesh, per-bone slot count proving per-bone NOT wrist-collapsed) and APPLY (worst skin-to-bone extent vs the 200-460u rigid-anchor dead end); print-only, gates only its own fprintf, default-OFF [BandCharacter.cpp]",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_DUALSKIN_PROBE": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "probe: W2.8d bone-level factor attribution for the finger/hand rotation-basis shard. For one worst-flung far vertex of a selected mesh (default hands_naked) dumps per-bone offset(BoneOffsetAt)/liveWorld(WorldXfm)/liveLocal(LocalXfm)/weight/composed-skin with determinants+orthonormality (candidate-a: is the live bone world a clean rigid transform?) and the rest-basis conjugation delta inverse(offset)-vs-per-member-captured-rest -> DeltaR -> predicted R*2sin(theta/2) vs measured (candidate-b). Also writes goldens/w2.8-farvert/live_pose.txt (asDrawn vs coherent per-member-own-rest ref, per far vert) so the BL-A2 RealPathFixture gtest stops SKIPping. Additive-only, gated on wext>60, render-inert; value is a name-substr / 1 / *; override output path via RB3_DUALSKIN_FIXTURE [Rnd_Wgpu_RB3.cpp]",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_DUALSKIN_FIXTURE": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "probe: optional output path override for the RB3_DUALSKIN_PROBE live_pose.txt capture (default native/tests/goldens/w2.8-farvert/live_pose.txt); path-valued, gates only that fopen [Rnd_Wgpu_RB3.cpp]",
-  "default": "off",
-  "read": "value"
- },
- "RB3_DUALSKIN_MINWEXT": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "probe: W2.8e (Wave 10) capture-gate parameter for RB3_DUALSKIN_PROBE. Lowers the default wext>60u entry cutoff so a flag-ON capture (a fix that DROPS the mesh world-extent below 60u) is mechanically possible (otherwise success suppresses the instrument, WAVE10_REVIEW A2). Float-valued; inert unless RB3_DUALSKIN_PROBE is set; default 60u preserves prior byte-identical behavior [Rnd_Wgpu_RB3.cpp]",
-  "default": "off",
-  "read": "value"
- },
- "RB3_APPENDAGE_REST_ROT": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "not-live: W2.8d Wave-9 Lane-A REFUTED experiment, default-OFF do-NOT-flip. Tested whether the finger shard is a rest-bake SPACE error by baking appendage (hand/finger/nail/glove) offset=meshWorld*inv(WORLD-space rest of the palette-sampled bone) instead of the default CHAR-space rest (NativeCharSpaceRestXfm). MEASURED a REGRESSION on the independent IK_SHARD_VERT wext metric (hands_naked mean 73.1->79.9u, p90 83->92u); dual-skin worstSep only partially/inconsistently moved (one member 36.9->21.4u still >20u gate, other unchanged) — reproduces the scout-c8 2026-06-11 world-space lever-arm R*sin smear. Genuine residual is a rest-CAPTURE basis/pose problem needing the authored skeleton_unshared.milo bind pose (Wave 10). flag-OFF byte-identical (drawlog 792, getenv-cached, HX_NATIVE) [BandCharacter.cpp]",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_APPENDAGE_ASSET_REBAKE": {
-  "class": "workaround",
-  "owner": "skinning",
-  "faithfulStatus": "not-live: W2.8e Wave-10 Lane-A REFUTED experiment (the 5th and FINAL hands fix class), default-OFF do-NOT-flip. The 'only unrefuted path' asset-derived char-space static rebake: for appendage (hand/finger/nail/glove) meshes keep the mesh bound to its OWN per-member bone (mesh->BoneTransAt, char-space rest ~129deg == dual-skin restW) with NO repoint, and rebake off=meshWorld*inv(that bone's settled clip-free char-space rest) so at rest skin=inv(restW)*restW=I (coherent by construction, one space end-to-end). MEASURED A/B this wave: dual-skin worstSep collapses 37.4->0.0u (the S1 target) BUT the hands FREEZE (hands_naked worldExt pinned to 56/80u, 2 discrete values, vs a CONTINUOUS animating 91.8-106.6u sweep flag-OFF; IK_SHARD wext constant 80u on the same vert every frame), and hands_bind_characterize DEGRADES MARGINAL-GRAZE->HARD-SHARD. ROOT CAUSE: `bound` (mesh->BoneTransAt) is a STATIC embedded bind-pose copy; the per-member ANIMATION lives in the `own=Find(name)` instance the default distinct rebind repoints to, and that default is ALREADY coherent w.r.t. the drawn animating bone. The dual-skin worstSep is a STALE-BONE artifact (probe rest ref `bw` captured from the PRE-repoint static bound 129deg while asDrawn uses the POST-repoint animating own 106deg) — a confound A.S1 ruled out for placement but not for bound-vs-drawn-bone; the metric is unsatisfiable without freezing. flag-OFF byte-identical (drawlog 792, getenv-cached, HX_NATIVE) [BandCharacter.cpp]",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_APD_DIAG": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "probe: W2.8e (Wave 10) appendage rest-basis PROVENANCE diagnostic in RebindHeadHandsAtRest. For hand/finger/nail/glove meshes, logs per resolved bone the baked rest angle vs identity, the Find-result `own` current rest, the authored `bound` (mesh->BoneTransAt) rest, and the own/bound pointers — the instrument that revealed the default distinct rebind REPOINTS the mesh from its own per-member bone (~129deg) to the Find/shared-magnet instance (~106deg) and named the dual-skin STALE-BONE confound. Render-inert, throttled, gated; flag-OFF byte-identical [BandCharacter.cpp]",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_VENUE_WHITE_GUARD": {
-  "class": "workaround",
-  "owner": "render/lighting",
-  "faithfulStatus": "not-live: WHITE-fix (Wave 9/10 STEP-0) scene-side luminance-preserving venue highlight compression. The engaged-venue WHITE over-exposure is baked into the scene render (standard_wgsl.inc per-channel softClipLighting + compressHighlights drive hot pale surfaces to zero-chroma white before the Stage-2 composite samples them), so the Wave-8 chroma-preserve composite fix cannot recover it. ON sets SceneUniforms.venueHighlightLumaMode=1 on the engaged world.cam venue upload -> the standard fragment shader compresses LUMINANCE (not per-channel) and scales RGB uniformly, so a hot venue moment stays bright-but-colored (retail/GX look) instead of clipping white. Identity below the highlight knee; scoped to the venue path (DC3/menus/game.cam leave the field 0 -> per-channel branch, byte-identical). Repurposes the SceneUniforms _padPL[0] pad (size stays 656, static_assert intact); default-OFF, flag-OFF byte-identical (drawlog 792) [Rnd_Wgpu_RB3.cpp + standard_wgsl.inc + UniformStructs.h]",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_HANDS_ATTACH_PROBE": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "probe: W2.8f (Wave 11) the TRUSTWORTHY rest-capture-free hands instrument. Two palette-INTERNAL invariants on the UPLOADED palette (bones.bones[]) at the DrawMesh dualskin site, NOT gated on wext so it co-samples the full 61-106u smear trajectory. TIER1 (secondary, amplitude): full-palette per-bone rest-coherence sweep with POINTER-IDENTITY freshness validation (repoint bound->own IS a ptr change -> recapture, killing the W2.8e stale-bone confound) reporting angle(off_b*restW_b,I) + pose-indep xcheck angle(inv(off_b),restW_b). TIER2 (PRIMARY, pose-tracking, rest-FREE): parent/child joint-attachment ||j_b*P[parent]-j_b*P[child]|| with j_b=-off_b.v AND exact inverse(off_b).v. FINDING: exact-joint TIER2 reads ~0 (<=0.33u over 2214 hand samples, == clean control) => the hands palette is inter-bone COHERENT (joints attached, matching A.S3 wrist-attached); the visible 106u smear is a mesh-shell/offset conjugation (TIER1 87deg == A.S1) NOT a joint dislocation, so joint-attachment is the WRONG Wave-12 gate. A5 -off.v approximate joint is CONFOUNDED (false-positive 90u on the clean greaserjacket control); the exact inverse(off).v joint is required. Value name-substr/1/*; render-inert, getenv-gated, flag-OFF byte-identical (drawlog 792) [Rnd_Wgpu_RB3.cpp]",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_PALETTE_DUMP": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "probe: R2 (Wave 17) skinning-fixture dump. Writes one PaletteFrame text file per (mesh,ownerPtr,dumpIdx) capturing the exact (verts,weights,uploaded palette bones.bones[], per-bone off/world/palette-parent) triple the skinned shader blends, so the R2 oracle-validation harness (native/tests/skinning_oracle.h) grades a palette against committed known-good/known-bad fixtures OFFLINE. Value=comma-substrs|*|1 (mesh selector, env-driven NOT hardcoded to hands). Assembled from ingredients already read by RB3_HANDS_ATTACH_PROBE/INSTR_B within 150 lines. Render-inert, getenv-gated, flag-OFF byte-identical (drawlog 792) [Rnd_Wgpu_RB3.cpp]",
-  "default": "off",
-  "read": "value"
- },
- "RB3_PALETTE_DUMP_DIR": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "probe: R2 output dir for RB3_PALETTE_DUMP (default \".\"). Inert unless RB3_PALETTE_DUMP set [Rnd_Wgpu_RB3.cpp]",
-  "default": "off",
-  "read": "value"
- },
- "RB3_PALETTE_DUMP_EVERY": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "probe: R2 dump-every-Nth-matched-draw for RB3_PALETTE_DUMP (default 60). Inert unless RB3_PALETTE_DUMP set [Rnd_Wgpu_RB3.cpp]",
-  "default": "off",
-  "read": "value"
- },
- "RB3_PALETTE_DUMP_MAXFRAMES": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "probe: R2 stop-after-K-dumps-per-mesh for RB3_PALETTE_DUMP (default 6). Inert unless RB3_PALETTE_DUMP set [Rnd_Wgpu_RB3.cpp]",
-  "default": "off",
-  "read": "value"
- },
- "RB3_PALETTE_DUMP_TAG": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "probe: R2 arm-label written into the PaletteFrame header for RB3_PALETTE_DUMP. Inert unless RB3_PALETTE_DUMP set [Rnd_Wgpu_RB3.cpp]",
-  "default": "off",
-  "read": "value"
- },
- "RB3_HANDS_ATTACH_PERTURB": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "probe: W2.8f (Wave 11) fail-red control for RB3_HANDS_ATTACH_PROBE. Rotates ONE palette entry basis ~0.15 rad about Z in a LOCAL copy used only by the probe (render untouched) so the perturbed bone children joints jump ~boneLen*0.15 in TIER2 — proving the joint-attach metric CAN read RED (baseline exact-joint 0.33u -> perturb bone0 5.53u, 17x). Integer bone index; inert unless RB3_HANDS_ATTACH_PROBE set; flag-OFF byte-identical [Rnd_Wgpu_RB3.cpp]",
-  "default": "off",
-  "read": "value"
- },
- "RB3_HANDS_INSTR_B": {
-  "class": "probe",
-  "owner": "skinning",
-  "faithfulStatus": "probe: W2.8g (Wave 12) Instrument B — the per-vertex shell invariant ||s(v)-shat(v)|| at the DrawMesh dualskin site, the A5/A6/A7-mandated Wave-12 fix gate + axis discriminator. s(v)=as-drawn CPU 4-bone blend (bones.bones[]=off_b*liveW_b, the wext blend); shat(v)=authored shell transported by ONLY coherent bone motion sum_k w_k*v*inverse(restW_bk)*liveW_bk using Tier-1's freshness-validated rest. A coherent bake (off==inv(restW)) => s==shat every pose (GREEN); a per-bone SPACE/composition error grows R*sin(theta) transported by liveW => co-varies with wext (RED, A7); a per-vertex WEIGHT/INDEX/DECODE error is INVISIBLE (shat shares the corrupt decode) => ~0 while wext RED. RED/GREEN is the A6 axis split. Also reports the task-4 cheap discriminator: within the most-populated single-dominant-bone group, Pearson corr(bind-radius, residual) — SPACE=>one rigid rotation=>corr->1/positive slope, DECODE=>scatter=>~0. Render-inert, getenv-gated, inert unless RB3_HANDS_ATTACH_PROBE also set (shares its haMatch/rest scope), flag-OFF byte-identical (drawlog 792) [Rnd_Wgpu_RB3.cpp]",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_HANDS_SHELL_FIX": {
-  "class": "workaround",
-  "owner": "skinning",
-  "faithfulStatus": "not-live: W2.8g (Wave 12 Lane B, B-S2) DIAGNOSTIC of the ONE untried SPACE-axis reconciliation cell, default-OFF. B-S1 named the axis SPACE/composition (per-bone rigid conjugation of the finger sub-shell by ~87deg, isoDistort~0 + orthoResid~0, the authored-vertex-to-offset composition). Two prior single-bone cells failed: DEFAULT own-live(magnet 106deg)+own-rest => coherent-at-rest but R*sin(theta) fling SHARD; RB3_APPENDAGE_ASSET_REBAKE bound-live(per-member 129deg)+bound-rest => correct basis but bound is a STATIC copy => FREEZE (5th dead class). This cell = own-live (ANIMATES, no freeze) + bound-rest (per-member 129deg authored basis): bind appendage meshes to the animating magnet bone but bake off=meshWorld*inv(NativeCharSpaceRestXfm(bound)). PREDICTION from the W2.8e pose-INDEPENDENT 87.3deg/68.8deg magnet-vs-per-member gap: at own-rest skin=meshWorld*inv(129deg)*106deg=meshWorld*R_87 => shard-AT-rest, i.e. the 87deg is irreducible with any single live bone (only conjugation W2.8c[dead] or a per-member ANIMATING instance carrying skeleton_unshared.milo authored rest closes it, the latter a loader/skeleton-merge fix OUT of Lane B renderer/composition scope). Settle-guarded (pre-Character::Poll clip-free capture). flag-OFF byte-identical (drawlog 792, getenv-cached, HX_NATIVE) [BandCharacter.cpp RebindHeadHandsAtRest]",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_HANDS_AUTHORED_REPOINT": {
-  "class": "workaround",
-  "owner": "skinning/hands",
-  "faithfulStatus": "not-live REFUTED-BY-VISUAL, do-NOT default-flip (Wave-16 Lane F, HANDS-FIX): the adjudicated NEVER-MEASURED cell (HANDS-ADJUDICATION/VERDICT.md §4-5) — the 8th and final offset-bake dead cell. For appendage (hand/finger/nail/glove) meshes in RebindHeadHandsAtRest, KEEP each mesh's OWN authored offset (inv(its-own-authored world bind)) and REPOINT only to the per-member animating bone own=Find(name) via SetBone(b,own,false), with NO rebake (skips the default meshWorld*inv(seed R) overwrite) — the Wii composition v*inv(bindWorld)*own_live(t). Distinct from all 7 prior dead cells (every prior REBAKED off) and from RB3_HANDS_SHELL_FIX (which forced the SHARED male-bind onto every mesh: right for male hands_naked only, 28.9deg wrong for the female, 60-69deg gloves, ~170deg nails). MEASURED gender-split (arm-C control reproduces the adjudication 87.3deg male / 42.6deg female): Tier-1 palette rest-coherence count(>5deg)==0 PASSES BOTH genders (87.3->3.1deg male on 992 blocks, 42.6->3.1deg female on 502 blocks — strictly better than SHELL_FIX's 28.9deg female), gloves 60-69->1-3deg (improved), nails Tier-2 R-radius 0.0u (non-regressing), Tier-2 EXACT <=1u, A4 provenance clean (off*own_rest=87.2deg = pristine un-baked signature; mesh flagged mNativeBonesRebound by frame 3 so SKEL_REBAKE skips), drawlog-792 flag-OFF byte-identical. BUT the pre-registered VISUAL E1 gate FAILS: at MATCHED fixed-clock frames flag-ON TEARS the multi-bone finger blends into spike-fans at ANIMATED poses (worse than the flag-OFF coherent 'ceiling hand'). ROOT CAUSE: Tier-1 is a STATIC per-bone check (own~=B at the repoint frame); it does NOT capture that the authored verts encode the SHARED-bind INTER-bone geometry, so repointing to per-member own (different ANIMATED inter-bone poses, APD mixed-sign +/-6-35deg per-bone gaps) tears the knuckle blends — vindicating SKEL/STATUS.md seam-B. The band-side offset-bake fix class is now EXHAUSTED (7 prior + this 8th); the next step is NOT pre-committed to a reskin (Wave-17 R5-HANDS-ENDGAME/VERDICT.md fd2f83ac, verdict C + par.8 corrections BINDING): external Wii ground truth (R1-DOLPHIN D2-D4) exonerates native skeleton STATICS on all cleanly comparable channels (<=0.65deg); fix path = the pre-registered branch table (GT-A palette forensics / GT-B anim-basis / GT-C channel decode / GT-D closure) pending Lane D5's articulated capture. Wave-17 UPDATE: the Dolphin ground-truth path IS executable (D2 patched-disc apploader boot, map-valid; the older 'milo-trace is a stub' claim is obsolete). Kept in-tree default-OFF as the definitive measured dead cell so it is not re-attempted. NOTE (VERDICT par.8.3): RB3_NO_SKIN_CLAMP does NOT touch band hands - it is not a hands mitigation. flag-OFF byte-identical (getenv-cached, #ifdef HX_NATIVE) [rb3 BandCharacter.cpp RebindHeadHandsAtRest] | GT-D CLOSURE (Wave 18, execution/R5-HANDS-ENDGAME/CLOSURE.md): hands family CLOSED without articulated ground truth (D5+VISCAP exhausted: nav solved, substrate never animates band CharBones). Accepted residual: hands may articulate wrongly/appear displaced at extreme animated poses, most visible close-up, no mesh tearing (RB3_NO_SKIN_CLAMP is NOT a hands mitigation - rebound-skip). Reopen condition pre-registered in CLOSURE.md; do not re-attempt dead cells.",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_LOAD_DETERMINISM": {
-  "class": "feature",
-  "owner": "load/determinism",
-  "faithfulStatus": "not-live PASS-PRIMARY (Wave 17 Lane L, rb3 65c5092e merge): opt-in fixed-clock load-determinism seam (RB3FixedClockActive() AND this flag, both default-OFF). W12's PRIMARY-FAIL superseded: RB3LoadDetStream per-tag isolated streams for the 4 attributed divergent gRand consumers (RndParticleSys::InitParticle dominant + CamShot::Shake + CreateParticles + CharEyes::NextLook + RandomGroupSeq boot-window) -> postAnchorDelta spread 0, 10/10 boots under contention+jitter=200 (OFF-arm fail-red spread 7179). Ledger axes stream/count/order/clock 10/10 (callerOrder informational). G2 flag-OFF inert (0 probe lines, splash golden 792 intact); G3 batch_objdiff==baseline on all touched units. STAYS OPT-IN (harness flag, not a gameplay default); flag-ON gameplay-scene drawlog re-golden required before any gate adopts the ON-arm as its baseline. Harness: scripts/native/loaddet_gate.py (--attrib/--ledger). Evidence: rb3 execution/R4-DETERMINISM/.",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_LOADDET_JITTER": {
-  "class": "probe",
-  "owner": "load/determinism",
-  "faithfulStatus": "n/a: TEST-ONLY worker-latency jitter for the A-S2 load-determinism fail-red, default-OFF. When set to a positive integer N, the engine ThreadCall worker thread sleeps a pseudo-random 0..N microseconds before each job dispatch, amplifying the worker<->main allocation-order race so the OFF-arm gRand spread reproduces reliably under contention (and the seam-ON arm must still collapse 10/10). Worker-thread only; main thread untouched, so it only perturbs completion timing. getenv parsed once, 0/unset => no-op, flag-OFF byte-identical [ThreadCall_Native.cpp WorkerMain]",
-  "default": "off",
-  "read": "value"
- },
- "RB3_UI_POST_GRADE": {
-  "class": "feature",
-  "owner": "render/postproc",
-  "faithfulStatus": "live: menu grade-exempt UI compositing (Wave-13/14 UIGRADE), default-ON as of the Wave-14 coordinator E1 flip — hub focused-text contrast 1.95->2.20, song_select red-band fixed via menu-boundary depth LoadOp::Load; legacy opt-in name retired, opt out via RB3_UI_POST_GRADE_OFF (legacy =0 disable kept). not-live (default-OFF; trigger WIRED W13 G-TRIGGER): W13 Lane G (UIGRADE) grade-exempt menu UI. Menus render the whole frame (venue backdrop + UI) into the postproc intermediate and grade it ONCE at BandRnd::EndFrame, washing focused-item text (hub focused p60/p5 1.95 default vs 2.20 with grade off / RB3_PP_OFF). ON flushes the venue grade at the MENU venue->UI boundary so UI draws UNGRADED on top. G-S1 premise was WRONG: menu dirs have mCanEndWorld=1 (not 0) and already call Rnd::EndWorld(), but on native BandRnd::BeginDrawing bypasses base Rnd::BeginDrawing and never resets mWorldEnded, so EndWorld() is a PERMANENT NO-OP -> the proposed EndWorld-reuse trigger never flushes. WIRED trigger (PanelDir::DrawShowing, HX_NATIVE): when RB3UIPostGradeActive() && NOT in gameplay (TheGamePanel->GetGameState()!=kGamePlaying), set the menu-flush latch (RB3SetMenuUIFlushPending) then drive the flush via the existing public TheRnd->ClearDepthForOverlay() seam (the only game-side path to FlushPostProcMidFrame w/o an engine-header grant), which composites the venue with venueGrade=FALSE (chroma-preserve stays off, authored B+W look untouched, A5 trap) and reopens the pass so UI draws ungraded. Latch now consumed at the TOP of FlushPostProcMidFrame (bounds it per-flush; can't dangle into a gameplay flush). Gameplay gate is REQUIRED (gameplay already flushes ~1/frame via TrackPanel; firing the menu trigger there breaks pixel-invariance). VERIFIED default-OFF: hub 1.954->2.204 (>=2.0 win, ==PP_OFF target), partdiff 1.409->1.417 (in-band), A5 hub-backdrop chroma unchanged (Δ<0.6), gameplay kGamePlaying flush counts equal ON/OFF, flag-OFF drawlog 792 canonical PASS + Wii byte-identical (#ifdef HX_NATIVE). CAVEAT: song_select 1.110->1.049 (below [1.06,1.17] parity band) = ClearDepthForOverlay else-branch depth-clears (renders fully, fully legible); a clean flush-ONLY seam needs FlushPostProcMidFrame made public in ungranted Rnd_Wgpu_RB3.h -> ESCALATE followup. [RB3PostProc.cpp/.h + rb3 PanelDir.cpp]",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_HUB_TICKER_YFIX": {
-  "class": "workaround",
-  "owner": "ui/hub",
-  "faithfulStatus": "live: W4.3-C2b4 (Wave 13, C4) main-hub ticker fix, default-ON as of the Wave-13 coordinator E1 flip (retail-matching label/message stacking); legacy opt-in name retired, opt out via RB3_HUB_TICKER_YFIX_OFF. message.lbl (the ticker body text under expand_message_area.ihp's \"NEXT MESSAGE (n/n)\" header) sits only ~6.0u below the header on the authored world Z axis, vs ~20.8u for a confirmed-correctly-stacked pair on the same screen (fan_total.lbl/level.lbl); native draws the two labels close enough to visually collide/overlap. REFUTES two prior hypotheses from this lane: (1) an earlier pass claimed nudging message.lbl down z-fights with BandCharacter heads and hides the text -- re-measured at +8/+14/+20/+30u, text stayed fully visible/legible at every offset, did not reproduce; (2) the Wave-12 C34 side-agent's font-scale/wrap-width gap theory -- message.lbl already renders at a real smaller runtime size (16.2 vs header 18.0) with a real nonzero wrap_width (750u vs header 0u), so scale/wrap is not the gap. ON nudges message.lbl's local Z by -15.0f in MainHubPanel::UpdateHeader(), restoring a same-order-of-magnitude stacking gap. Verified via before/after screenshot diff (clean stacked separation vs clear text collision) and a nudge sweep (no occlusion/disappearance at 8/14/20/30u). flag-OFF byte-identical (drawlog 792, getenv-cached, HX_NATIVE) [MainHubPanel.cpp UpdateHeader]",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_SS_ART_YFIX": {
-  "class": "workaround",
-  "owner": "ui/song_select",
-  "faithfulStatus": "live: song-select album-art whole-assembly move (W4.3-C2b-ASM), default-ON as of the Wave-14 coordinator E1 flip — art below the header aligned with album_frame01.mesh, retail-matching; the Wave-13 HOLD (revealed bezel + left-column overlap) is RESOLVED by the assembly fix; legacy opt-in name retired, opt out via RB3_SS_ART_YFIX_OFF.",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_ROWFIX": {
-  "class": "workaround",
-  "owner": "ui/song_select",
-  "faithfulStatus": "live: song_select focused-row polarity fix (Parts A opaque fill repaint + B focus-color to main+alt font mats incl. null-provider rows), default-ON as of the Wave-16 coordinator E1 flip (dark-on-bright bar, contrast 2.41, retail polarity); legacy opt-in name retired, opt out via RB3_ROWFIX_OFF.",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_HUB_TICKER_YFIX_OFF": {
-  "class": "workaround",
-  "owner": "ui/hub",
-  "faithfulStatus": "live opt-out for the main-hub ticker stacking fix (default-ON as of Wave 13); setting this restores the overlapping one-line ticker",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_HANDS_MITTEN": {
-  "class": "workaround",
-  "owner": "skinning/hands",
-  "faithfulStatus": "LIVE default-ON (Wave-18 close-out E1 flip; opt-out RB3_HANDS_MITTEN_OFF wins, legacy =0 disables): WORKAROUND (was default-OFF at landing) (Wave-18 Lane M, R5-MITTEN; execution/R5-HANDS-ENDGAME/CLOSURE.md item 1). Render-side, hands-scoped, BAND-only mitten fallback for the closed R5-hands residual (the coherent displaced 'ceiling hand' + wrist spike-webbing = the 87.2deg seed-R rebake mechanism, HANDS-ADJUDICATION/VERDICT.md par.2). Explicitly NOT an offset bake: no anchor capture, no authored-data mutation - a per-frame palette lerp only. In Rnd_Wgpu_RB3.cpp skinned palette compose: for each BAND hand-mesh (hands_naked/gloves/fingernails, crowd excluded by name) finger bone, compare its composed skin A_i*O_i(t) to its side's WRIST bone rigid composed skin A_w*O_w(t); when rotation-to-wrist exceeds a ramp (default TH_LO=45 TH_HI=90 deg; RB3_HANDS_MITTEN_TH_LO/HI override) blend that finger palette toward wrist-rigid, degrading finger articulation at exactly the poses that tear/displace so the hand stays attached and moving. Calibrated from live relAng-to-wrist distribution (p50=21.8 p90~54 tail~135) + Wave-16 burst_08/12 evidence; measured trigger rate ~17.7pct of finger-draws. E1 VISUAL evidence (execution/R5-MITTEN/evidence/): flag-ON collapses the spike-fan/ceiling-hand at extreme poses, both genders. No-regression: blend is a mathematical no-op when relAng<TH_LO (alpha=0) so coherent frames are byte-identical by construction (trigger rate 0 there). flag-OFF (unset) byte-identical: drawlog-golden 792 PASS. Default is E1-DECIDED by the coordinator, NOT this lane. rb3-tests green, R2 skinning fixtures unaffected. [engine Rnd_Wgpu_RB3.cpp DrawMesh palette + GameRenderHook IsBandHandMesh/HandBoneRole/HandBoneSide; rb3 native/src/rb3_render_hook.cpp]",
-  "default": "on",
-  "read": "presence"
- },
- "RB3_HANDS_RESKIN": {
-  "class": "workaround",
-  "owner": "skinning/hands",
-  "faithfulStatus": "not-live REFUTED, do-NOT default-flip (Wave 14 Lane RESKIN R2): the R1-headline per-member hands reskin. Synthesized per-vertex weighted multi-bone blend (RndMeshDeform::Reskin LBS primitive, computed directly in BandCharacter native code) that re-poses hands_naked verts from the authored bind basis onto the member's OWN gender-posed rest, wired at SyncObjects rest time (post-SetDeformation, authored offsets intact), once-per-mesh-pointer latched, composing with the default-ON RebindHeadHandsAtRest rebake. Fires correctly (all bones resolved, gender-distinct: female 40 bones/1256v vs male 38 bones/1876v, per-member in-place mutate, zero engine TU edits). MEASURED a REGRESSION on the pre-registered IK_SHARD_VERT wext gate (gameplay burst, N~1000 draws/arm): hands_naked wext flag-OFF 60-106u mean 74.8 (39 distinct=animating) -> flag-ON 60-105u mean 87.7 (WORSE); reskin-alone (RB3_NO_HEAD_REBIND) 75-187u mean 136 (much worse). E1 band screenshots corroborate (flag-ON = LARGER hand shards, both genders). ROOT CAUSE (refutes R1's rest-shape thesis): the hands shard is an ANIMATION-BASIS problem (own_rest vs own_live rotation, R*sin(theta) far-vert smear), NOT a rest-shape/bind-basis one; a one-time vertex re-pose leaves the animation delta identical by construction and amplifies the shard (re-posed verts sit at larger radius). Same dead-end class as the refuted RB3_APPENDAGE_REST_ROT / RB3_APPENDAGE_ASSET_REBAKE; the genuine fix is asset/skeleton-basis (skeleton_unshared.milo per-member bind), not any vert/offset bake. Kept in-tree default-OFF as the definitive measured artifact so the per-member-reskin lever is not re-attempted. flag-OFF inert (early-return) / Wii byte-identical (#ifdef HX_NATIVE) [rb3 BandCharacter.cpp NativeReskinHandsAtRest + SyncObjects] | GT-D CLOSURE (Wave 18, execution/R5-HANDS-ENDGAME/CLOSURE.md): hands family CLOSED without articulated ground truth (D5+VISCAP exhausted: nav solved, substrate never animates band CharBones). Accepted residual: hands may articulate wrongly/appear displaced at extreme animated poses, most visible close-up, no mesh tearing (RB3_NO_SKIN_CLAMP is NOT a hands mitigation - rebound-skip). Reopen condition pre-registered in CLOSURE.md; do not re-attempt dead cells.",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_UI_POST_GRADE_OFF": {
-  "class": "workaround",
-  "owner": "ui/postproc",
-  "faithfulStatus": "live opt-out for the menu grade-exempt UI flush (RB3_UI_POST_GRADE, default-ON as of Wave 14); setting this restores the graded (washed) menu UI",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_SS_ART_YFIX_OFF": {
-  "class": "workaround",
-  "owner": "ui/song_select",
-  "faithfulStatus": "live opt-out for the song-select album-art assembly move (default-ON as of Wave 14); setting this restores the header-overlapping art",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_PLAYER_NAME_FALLBACK": {
-  "class": "feature",
-  "owner": "ui/profile",
-  "faithfulStatus": "live: Wii-faithful \"Player N\" name fallback (ports PlatformMgr_Wii.cpp:489-496; strong override of the weak GetName NULL stub), default-ON as of the Wave-15 coordinator E1 flip — fixes the \"(null)\" text in the song_select header + overshell plate + all GetName consumers; legacy opt-in name retired, opt out via RB3_PLAYER_NAME_FALLBACK_OFF.",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_PLAYER_NAME_FALLBACK_OFF": {
-  "class": "workaround",
-  "owner": "platform/profile",
-  "faithfulStatus": "live opt-out for the Player-N name fallback (default-ON as of Wave 15); setting this restores the null-stub \"(null)\" text",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_ROWFIX_OFF": {
-  "class": "workaround",
-  "owner": "ui/song_select",
-  "faithfulStatus": "live opt-out for the focused-row polarity fix (default-ON as of Wave 16); setting this restores the dim-fill white-text focused row",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_HANDS_MITTEN_OFF": {
-  "class": "workaround",
-  "owner": "skinning/hands",
-  "faithfulStatus": "opt-out for the LIVE default-ON RB3_HANDS_MITTEN (Wave-18 close-out E1 flip). Setting it restores the pre-mitten shipped state (seed-R rebake residual: displaced ceiling-hand + spike-webbing at extreme poses)."
- },
- "RB3_HANDS_MITTEN_PROBE": {
-  "class": "diagnostic",
-  "owner": "skinning/hands",
-  "faithfulStatus": "not-live diagnostic: per-draw mitten trigger-rate/relAng probe used for Lane-M calibration (execution/R5-MITTEN/)."
- },
- "RB3_HANDS_MITTEN_TH_LO": {
-  "class": "tuning",
-  "owner": "skinning/hands",
-  "faithfulStatus": "tuning knob: mitten rotation-ramp low threshold, default 45 deg (below it no blend — coherent frames untouched). Calibrated Wave-18 (relAng p50=21.8, p90=62, tail 134)."
- },
- "RB3_HANDS_MITTEN_TH_HI": {
-  "class": "tuning",
-  "owner": "skinning/hands",
-  "faithfulStatus": "tuning knob: mitten rotation-ramp high threshold, default 90 deg (full wrist-rigid blend past it)."
- },
- "RB3_HANDS_BINDFIX": {
-  "class": "workaround",
-  "owner": "skinning/hands",
-  "faithfulStatus": "not-live NO-VISUAL-EFFECT, do-NOT default-flip (Wave-21 Lane FIX): faithful Layer-1 load-topology restore — scopes the white-texture FilterSubdir shim so char_shared.milo + outfit resources take retail kMerge (restoring the sBoneMergeDir remap, br2=31,488/member) while colorpalettes.milo keeps kReplace (white-texture fix intact, 0 dummy misses, 0 crashes, all 4 members boot). BUT hand meshes bind their bones at PARSE (upstream of the merge remap) so BINDFIX draw output == flag-OFF byte-for-byte (seed-R 87.3°); zero hand-visual benefit. Kept default-OFF as documented partial + substrate for any future parse-time un-share. Hands are L2-b R5-walled (see W21-DISCRIM). [BandCharacter.cpp :107 IsSharedPaletteSubdir/FilterSubdir]",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_BINDFIX_DUMP": {
-  "class": "probe",
-  "owner": "skinning/hands",
-  "faithfulStatus": "probe: per-slot draw-time composition dump for RB3_HANDS_BINDFIX (Wave-21 A2 — offsets + mNativeBonesRebound flag + regime naming)",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_BINDFIX_KEEPCS": {
-  "class": "probe",
-  "owner": "skinning/hands",
-  "faithfulStatus": "probe: A/B knob keeping char_shared.milo on kReplace (DISABLES the remap, br2=0) — re-demonstrates the counted Wave-21 mechanism only",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_LOADBIND_NOSHIM": {
-  "class": "probe",
-  "owner": "skinning/loader",
-  "faithfulStatus": "probe: full FilterSubdir shim bypass (every subdir retail kMerge → white textures) — Wave-20 Lane N binding-measurement substrate only, NOT a fix",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_LOADBIND_PROBE": {
-  "class": "probe",
-  "owner": "skinning/loader",
-  "faithfulStatus": "probe: Wave-20 Lane N load-bind trace logging (branch hit-counts, FilterSubdir action log, OnInstallFilter dir dump, pristine-binding slot dump)",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_HUD_SCOREBOARD_TOPRIGHT": {
-  "class": "workaround",
-  "owner": "ui/hud",
-  "faithfulStatus": "live DEFAULT-ON (Wave-22 close-out, opt-out RB3_HUD_SCOREBOARD_TOPRIGHT_OFF): makes K9 (RB3_APPLY_HANDLER_FIX_OFF) SKIP the scoreboard-anchor neutralization so the score plate keeps its authored TOP-RIGHT position, matching the Wii GT (yt_qRagnZCIMzk_gameplay_*). K9's top-center premise was config-reasoning never GT-backed. nPlayers==1-gated so no multiplayer regression; ConfigureTracks objdiff 100% (HX_NATIVE-only). E1-confirmed (score pill 88% width). [TrackPanelDir.cpp:344]",
-  "default": "on",
-  "read": "opt-out"
- },
- "RB3_HUD_SCOREBOARD_TOPRIGHT_OFF": {
-  "class": "workaround",
-  "owner": "ui/hud",
-  "faithfulStatus": "live opt-out for RB3_HUD_SCOREBOARD_TOPRIGHT — restores K9's mid-screen scoreboard neutralization",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_HUD_STAR_DBG": {
-  "class": "probe",
-  "owner": "ui/hud",
-  "faithfulStatus": "probe: Wave-22 star-meter fill trace (SetNumStars f + per-star fill state) — proved the star meter fills correctly (false-alarm refutation)",
-  "default": "off",
-  "read": "presence"
- },
- "BAND_ANIM_YTHRESH": {
-  "class": "probe",
-  "owner": "skinning/char",
-  "faithfulStatus": "probe: Wave-23 FOREARM discovery — world-y threshold (default 50) for the event-triggered BAND_ANIM_PROBE emit; inert unless BAND_ANIM_PROBE set",
-  "default": "off",
-  "read": "value"
- },
- "CROWD_CENSUS_MESHES": {
-  "class": "probe",
-  "owner": "world/crowd",
-  "faithfulStatus": "probe: Wave-23 CROWD recon — verbosity/scope for the read-only rb3_crowd_census DTA func (sv3_a vignette crowd actor census)",
-  "default": "off",
-  "read": "presence"
- },
- "CROWD_CENSUS_VERBOSE": {
-  "class": "probe",
-  "owner": "world/crowd",
-  "faithfulStatus": "probe: Wave-23 CROWD recon — verbose per-mesh census output (read-only)",
-  "default": "off",
-  "read": "presence"
- },
- "CROWD_CENSUS_DRAWS": {
-  "class": "probe",
-  "owner": "world/crowd",
-  "faithfulStatus": "probe: W24-RECON crowd census draw-count reporting (read-only)",
-  "default": "off",
-  "read": "presence"
- },
- "CROWD_DRAW_DBG": {
-  "class": "probe",
-  "owner": "world/crowd",
-  "faithfulStatus": "probe: W24-RECON crowd draw-path trace (mDraws → DrawMesh)",
-  "default": "off",
-  "read": "presence"
- },
- "CROWD_POSCTRL": {
-  "class": "probe",
-  "owner": "world/crowd",
-  "faithfulStatus": "probe: W24-RECON positive-control arm (band-mesh vert-field comparison vs crowd meshes)",
-  "default": "off",
-  "read": "presence"
- },
- "CROWD_SUBMIT_DBG": {
-  "class": "probe",
-  "owner": "world/crowd",
-  "faithfulStatus": "probe: W24-RECON engine SubmitDraw trace for crowd meshes (Rnd_Wgpu_RB3, inert unless env set)",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_IK_REACH_CLAMP": {
-  "class": "workaround",
-  "owner": "char/ik",
-  "faithfulStatus": "live DEFAULT-ON (Wave-25 close-out, opt-out RB3_IK_REACH_CLAMP_OFF): graduated IK reach-guard in CharIKHand::Poll — when the instrument-tip IK target sits beyond the arm's measured reach (mAAPlusBB), clamp mWorldDst onto the shoulder reach-sphere (reach<d<=k*reach) or neutralize IK to the clip pose (d>k*reach), instead of over-rotating the upperArm into a spike-fan. Fixes the exploded band arm/hand fan on closeup frames. 20u arm reach VERIFIED correct (leg-reach cross-check); the far targets are mis-posed instrument-prop bones (Wave-26 tail). Wii byte-identical (HX_NATIVE); batch_objdiff==baseline all 20 CharIKHand fns. E1-confirmed. [CharIKHand.cpp:233]",
-  "default": "on",
-  "read": "opt-out"
- },
- "RB3_IK_REACH_CLAMP_OFF": {
-  "class": "workaround",
-  "owner": "char/ik",
-  "faithfulStatus": "live opt-out for RB3_IK_REACH_CLAMP — restores raw over-reach IK (spike-fan)",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_IK_REACH_K": {
-  "class": "tuning",
-  "owner": "char/ik",
-  "faithfulStatus": "tuning: reach-clamp k multiplier (default 2.0) — d>k*reach neutralizes IK to clip pose",
-  "default": "off",
-  "read": "value"
- },
- "RB3_CROWD_CLIP_KEEP": {
-  "class": "workaround",
-  "owner": "world/crowd",
-  "faithfulStatus": "not-live DEFAULT-OFF partial (Wave-25): re-plays the snapshotted crowd walk clip on starvation after the sv3_a async load-merge destroys it. Recovers bank-intact drivers only (ZERO of 8 as-observed — female04 never Played) → PROPHYLACTIC scaffolding for the W26 engine load-merge fix; clipType=='crowd'-scoped + byte-identical #else (WorldCrowd oracle untouched). Removal criterion: delete if W26 lands the engine fix and this adds nothing. [CharDriver.cpp]",
-  "default": "off",
-  "read": "presence"
- },
- "IK_ROOTCMP": {
-  "class": "probe",
-  "owner": "char/ik",
-  "faithfulStatus": "probe: Wave-25 FOREARM discriminator — walks the TransParent chain-to-root for IK hand + target bones (H-A/H-C refutation)",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_IK_CLAMP_DBG": {
-  "class": "probe",
-  "owner": "char/ik",
-  "faithfulStatus": "probe: Wave-25 reach-clamp fire/skip counters + preDist distribution",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_PROP_POSE": {
-  "class": "workaround",
-  "owner": "char/ik",
-  "faithfulStatus": "not-live DEFAULT-OFF partial (Wave-26): redirects an out-of-reach instrument IK tip target to its correctly-posed bone_target_* parent frame (clip-binding gap — the prop-bone clip track is unbound natively so the tip stays at its rest offset). Drops raw target distance -44..-64% but does NOT make RB3_IK_REACH_CLAMP dormant (engine mFinger re-projection, W27) and produces no visible arm change (clamp already clip-poses). Kept as pinned discriminator + first-half scaffolding; HX_NATIVE, byte-identical #else. [CharIKHand.cpp:49 sPropPoseRedirect]",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_PROP_POSE_DBG": {
-  "class": "probe",
-  "owner": "char/ik",
-  "faithfulStatus": "probe: Wave-26 PROP redirect trace (tgt->parent, dTip/dPar)",
-  "default": "off",
-  "read": "presence"
- },
- "IK_PROP_DBG": {
-  "class": "probe",
-  "owner": "char/ik",
-  "faithfulStatus": "probe: Wave-26 PROP discriminator — far-target LocalXfm + parent world + parent-to-hand distance (clip-binding vs attach/proxy)",
-  "default": "off",
-  "read": "presence"
- },
- "RB3_PROP_DST_DBG": {
-  "class": "probe",
-  "owner": "char/ik",
-  "faithfulStatus": "probe: Wave-26 PROP per-ikhand pre/post target-distance histogram (A5-i regression gate)",
-  "default": "off",
-  "read": "presence"
- },
- "FMERGE_PROBE": {
-  "class": "probe",
-  "owner": "char/loader",
-  "faithfulStatus": "probe: Wave-26 CROWD discriminator — FileMerger merge/clear event log (proved zero crowd merges → refuted the load-merge theory)",
-  "default": "off",
-  "read": "presence"
- },
- "CHARDRV_BT": {
-  "class": "probe",
-  "owner": "char/loader",
-  "faithfulStatus": "probe: Wave-26 CROWD discriminator — symbolized backtrace at CharDriver::Replace (pinned the UI panel-unload teardown as the clip-kill)",
-  "default": "off",
-  "read": "presence"
- }
+  "_comment": "Curated classification sidecar for the NativeCompat flag registry. Hand-authored — NOT generated. Joined against scripts/analysis/native_compat_census.py's `scan` output by `gen` to produce NativeCompatFlags.gen.inc + NATIVE_COMPAT_LEDGER.md. Seeded verbatim from docs/native/engine-arch-review-2026-07-05/06-arch-crosscut.md §3.1 (a)/(b) and execution/W0.6/PLAN.md's 'Authoritative flag classification' section. Every flag not listed here that the scanner finds gets class=unknown (a NEEDS-CLASSIFICATION row in the ledger) — do not invent entries for flags that don't exist in source.",
+  "_schema": "{ \"FLAG_NAME\": { \"class\": \"probe|workaround|feature|perf|unknown\", \"owner\": \"subsystem tag\", \"faithfulStatus\": \"n/a | not-live: <reason> | live | probe\", \"default\": \"on|off|unknown (optional, overrides the scanner's naming-based guess)\" } }",
+  "BONE_PROBE": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "n/a: archaeological debug probe"
+  },
+  "RB3_CROWD_BONE_PROBE": {
+    "class": "probe",
+    "owner": "render/crowd",
+    "faithfulStatus": "n/a: W2.3.S1 crowd bone-source seam characterization (owner vs own-bone SKIN_CLAMP extent; SHARED/SELF+POISON decision)"
+  },
+  "BONE_PROBE_MINFRAME": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "n/a: archaeological debug probe (cadence knob for BONE_PROBE)"
+  },
+  "BONE_PROBE_NAME": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "n/a: archaeological debug probe"
+  },
+  "SHARD_DBG": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "n/a: archaeological debug probe (mesh-shard investigation)"
+  },
+  "SHARD_BONE_DBG": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "n/a: archaeological debug probe (mesh-shard investigation)"
+  },
+  "SHARD_CATCH": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "n/a: archaeological debug probe"
+  },
+  "SHARD_RATIO_DBG": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "n/a: archaeological debug probe"
+  },
+  "CHAIN_PROBE": {
+    "class": "probe",
+    "owner": "skinning/chain",
+    "faithfulStatus": "n/a: archaeological debug probe (chain sim investigation)"
+  },
+  "CHAIN_MTX": {
+    "class": "probe",
+    "owner": "skinning/chain",
+    "faithfulStatus": "n/a: archaeological debug probe"
+  },
+  "CHAIN_FORCE": {
+    "class": "probe",
+    "owner": "skinning/chain",
+    "faithfulStatus": "n/a: archaeological debug probe"
+  },
+  "CHAIN_COMPOSE": {
+    "class": "probe",
+    "owner": "skinning/chain",
+    "faithfulStatus": "n/a: archaeological debug probe"
+  },
+  "CHAIN_PROPTEST": {
+    "class": "probe",
+    "owner": "skinning/chain",
+    "faithfulStatus": "n/a: archaeological debug probe"
+  },
+  "MILO_DEBUG_ARM_CHAIN_DIR": {
+    "class": "probe",
+    "owner": "skinning/chain",
+    "faithfulStatus": "n/a: archaeological debug probe"
+  },
+  "MILO_DEBUG_ARM_CHAIN_FRAME": {
+    "class": "probe",
+    "owner": "skinning/chain",
+    "faithfulStatus": "n/a: archaeological debug probe"
+  },
+  "XBONE": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "n/a: archaeological debug probe"
+  },
+  "XBONE_TRACK": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "n/a: archaeological debug probe"
+  },
+  "C8_PROBE": {
+    "class": "probe",
+    "owner": "render/c8-faces",
+    "faithfulStatus": "n/a: archaeological debug probe (see project_c8_faces memory)"
+  },
+  "C8_EVERY": {
+    "class": "probe",
+    "owner": "render/c8-faces",
+    "faithfulStatus": "n/a: archaeological debug probe cadence knob"
+  },
+  "SKIN_PROBE": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "n/a: archaeological debug probe"
+  },
+  "SKIN_CLAMP_PROBE": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "n/a: archaeological debug probe"
+  },
+  "SKEW_PROBE": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "n/a: archaeological debug probe"
+  },
+  "SKEL_REBAKE_PROBE": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "n/a: archaeological debug probe"
+  },
+  "VERT_PROBE": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "n/a: archaeological debug probe"
+  },
+  "SLOT_PROBE": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "n/a: archaeological debug probe"
+  },
+  "GEM_VTX": {
+    "class": "probe",
+    "owner": "render/highway",
+    "faithfulStatus": "n/a: archaeological debug probe"
+  },
+  "GEM_FORCE": {
+    "class": "probe",
+    "owner": "render/highway",
+    "faithfulStatus": "n/a: archaeological debug probe"
+  },
+  "SMASH_DBG": {
+    "class": "probe",
+    "owner": "render/particles",
+    "faithfulStatus": "n/a: archaeological debug probe"
+  },
+  "RB3_SMASHER_HALO": {
+    "class": "probe",
+    "owner": "render/particles",
+    "faithfulStatus": "n/a: archaeological debug probe"
+  },
+  "HUB_BAR_PROBE": {
+    "class": "probe",
+    "owner": "ui/hub",
+    "faithfulStatus": "n/a: archaeological debug probe"
+  },
+  "IK_SHARD_VERT": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "n/a: archaeological debug probe"
+  },
+  "RB3_LIGHT_PROBE": {
+    "class": "probe",
+    "owner": "render/lighting",
+    "faithfulStatus": "n/a: archaeological debug probe"
+  },
+  "RB3_VENUE_PROBE": {
+    "class": "probe",
+    "owner": "render/lighting",
+    "faithfulStatus": "n/a: archaeological debug probe"
+  },
+  "RB3_WASH_PROBE": {
+    "class": "probe",
+    "owner": "render/lighting",
+    "faithfulStatus": "n/a: Wave 8 WASH-fix A.S1 two-hypothesis venue-wash root-cause probe (SCENE engagement/miss digest + PP unorm-intermediate fact + env-staleness rewrite path)"
+  },
+  "RB3_GAMEWARM_PROBE": {
+    "class": "probe",
+    "owner": "load/perf",
+    "faithfulStatus": "n/a: archaeological debug probe"
+  },
+  "REBIND_DRAW_FLING": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "n/a: archaeological debug probe"
+  },
+  "REBIND_DRAW_SKINPOS": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "n/a: archaeological debug probe"
+  },
+  "RB3_TRACK_LIGHT_OFF": {
+    "class": "workaround",
+    "owner": "render/lighting",
+    "faithfulStatus": "not-live: gameplay-highway synthetic re-lit stack default-ON (see project_a234_emissive_glow memory)",
+    "default": "on"
+  },
+  "RB3_VENUE_LIGHT_OFF": {
+    "class": "workaround",
+    "owner": "render/lighting",
+    "faithfulStatus": "not-live: per-environ synthetic venue lighting default-ON (see project_a4_scene_lighting_env_empty memory)",
+    "default": "on"
+  },
+  "RB3_BLOOM_OFF": {
+    "class": "workaround",
+    "owner": "render/bloom",
+    "faithfulStatus": "not-live: synthetic bloom pass default-ON",
+    "default": "on"
+  },
+  "RB3_HIGHWAY_BLOOM_OFF": {
+    "class": "workaround",
+    "owner": "render/bloom",
+    "faithfulStatus": "not-live: gem/now-bar additive bloom-halo capture-and-replay default-ON (see project_a234_emissive_glow memory)",
+    "default": "on"
+  },
+  "RB3_HIGHWAY_WATERMARK_OFF": {
+    "class": "workaround",
+    "owner": "render/highway",
+    "faithfulStatus": "not-live: highway watermark dim workaround default-ON",
+    "default": "on"
+  },
+  "RB3_CHAR_REAL_LIGHT_OFF": {
+    "class": "workaround",
+    "owner": "render/lighting",
+    "faithfulStatus": "not-live: real-key character lighting approximation default-ON (see project_c8_faces memory)",
+    "default": "on"
+  },
+  "RB3_CROWD_DIM_OFF": {
+    "class": "workaround",
+    "owner": "render/crowd",
+    "faithfulStatus": "not-live: crowd-dim heuristic default-ON",
+    "default": "on"
+  },
+  "RB3_COMPOSE_MULT_OFF": {
+    "class": "workaround",
+    "owner": "render/compose",
+    "faithfulStatus": "not-live: composite-blend multiply-fallback default-ON (see project_c8_faces memory)",
+    "default": "on"
+  },
+  "RB3_FRET_GLOW_OFF": {
+    "class": "workaround",
+    "owner": "render/highway",
+    "faithfulStatus": "not-live: fret-held glow workaround default-ON",
+    "default": "on"
+  },
+  "RB3_PART_HAZE_OFF": {
+    "class": "workaround",
+    "owner": "render/particles",
+    "faithfulStatus": "not-live: particle haze approximation default-ON",
+    "default": "on"
+  },
+  "RB3_PART_MATCOLOR_OFF": {
+    "class": "workaround",
+    "owner": "render/particles",
+    "faithfulStatus": "not-live: particle material-color workaround default-ON",
+    "default": "on"
+  },
+  "RB3_PART_NEARFADE_OFF": {
+    "class": "workaround",
+    "owner": "render/particles",
+    "faithfulStatus": "not-live: particle near-camera fade workaround default-ON",
+    "default": "on"
+  },
+  "RB3_NOISE_OFF": {
+    "class": "workaround",
+    "owner": "render/post",
+    "faithfulStatus": "not-live: post-process noise approximation default-ON",
+    "default": "on"
+  },
+  "RB3_PP_OFF": {
+    "class": "workaround",
+    "owner": "render/post",
+    "faithfulStatus": "not-live: post-process stack default-ON",
+    "default": "on"
+  },
+  "RB3_RTT_OFF": {
+    "class": "workaround",
+    "owner": "render/rtt",
+    "faithfulStatus": "not-live: render-to-texture (e.g. skin composite) workaround default-ON (see project_c8_faces memory)",
+    "default": "on"
+  },
+  "RB3_BC_TEX_OFF": {
+    "class": "workaround",
+    "owner": "render/texture",
+    "faithfulStatus": "not-live: block-compressed texture path default-ON",
+    "default": "on"
+  },
+  "RB3_SCREENMASK_FALLBACK_OFF": {
+    "class": "workaround",
+    "owner": "render/ui",
+    "faithfulStatus": "not-live: screenmask fallback default-ON",
+    "default": "on"
+  },
+  "RB3_SCROLLBAR_THUMB_FIX_OFF": {
+    "class": "workaround",
+    "owner": "ui/scrollbar",
+    "faithfulStatus": "not-live: scrollbar thumb-position fix default-ON",
+    "default": "on"
+  },
+  "RB3_UNPACK_CACHE_OFF": {
+    "class": "workaround",
+    "owner": "load/perf",
+    "faithfulStatus": "not-live: asset-unpack cache default-ON (see project_incremental_load_perf memory)",
+    "default": "on"
+  },
+  "RB3_PIPELINE_PREWARM_OFF": {
+    "class": "workaround",
+    "owner": "load/perf",
+    "faithfulStatus": "not-live: GPU pipeline prewarm default-ON (see project_incremental_load_perf memory)",
+    "default": "on"
+  },
+  "SHARD_GUARD_OFF": {
+    "class": "workaround",
+    "owner": "skinning",
+    "faithfulStatus": "not-live: mesh-shard guard/clamp default-ON",
+    "default": "on"
+  },
+  "RB3_NO_SKEL_REBAKE": {
+    "class": "workaround",
+    "owner": "skinning",
+    "faithfulStatus": "not-live: skeleton rebake workaround default-ON (opt-out name; ON means workaround active)",
+    "default": "on"
+  },
+  "RB3_NO_SKEL_WORLDFIX": {
+    "class": "workaround",
+    "owner": "skinning",
+    "faithfulStatus": "not-live: skeleton world-xfm fix default-ON",
+    "default": "on"
+  },
+  "RB3_NO_SKIN_CLAMP": {
+    "class": "workaround",
+    "owner": "skinning",
+    "faithfulStatus": "not-live: skin-position clamp default-ON",
+    "default": "on"
+  },
+  "RB3_NO_STEM_ANCHOR": {
+    "class": "workaround",
+    "owner": "skinning",
+    "faithfulStatus": "not-live: stem-anchor workaround default-ON",
+    "default": "on"
+  },
+  "RB3_NO_MESH_CACHE": {
+    "class": "workaround",
+    "owner": "render/mesh-cache",
+    "faithfulStatus": "not-live: mesh cache default-ON (see project_songlib_web_crash_charpreview memory)",
+    "default": "on"
+  },
+  "RB3_NO_PRECLEAR": {
+    "class": "workaround",
+    "owner": "render/mesh-cache",
+    "faithfulStatus": "not-live: pre-clear-before-draw workaround default-ON",
+    "default": "on"
+  },
+  "RB3_NO_HUB_BAR_PLACEMENT_FIX": {
+    "class": "workaround",
+    "owner": "ui/hub",
+    "faithfulStatus": "not-live: hub bar placement fix default-ON (see project_walkon_countin_pose family)",
+    "default": "on"
+  },
+  "RB3_NO_HUB_HIGHLIGHT_FIX": {
+    "class": "workaround",
+    "owner": "ui/hub",
+    "faithfulStatus": "not-live: hub highlight fix default-ON",
+    "default": "on"
+  },
+  "RB3_NO_HUB_BAR_SHARD_EXEMPT": {
+    "class": "workaround",
+    "owner": "ui/hub",
+    "faithfulStatus": "not-live: hub bar shard-guard exemption default-ON",
+    "default": "on"
+  },
+  "RB3_GAMEWARM_OFF": {
+    "class": "workaround",
+    "owner": "load/perf",
+    "faithfulStatus": "not-live: gameplay warm-up prefetch default-ON",
+    "default": "on",
+    "read": "presence"
+  },
+  "RB3_HEAP_TRIM_OFF": {
+    "class": "workaround",
+    "owner": "load/perf",
+    "faithfulStatus": "not-live: periodic heap trim default-ON",
+    "default": "on",
+    "read": "truthy"
+  },
+  "RB3_MOGG_RANGE_OFF": {
+    "class": "workaround",
+    "owner": "load/audio",
+    "faithfulStatus": "not-live: Range-backed mogg streaming default-ON (see project_incremental_load_perf memory)",
+    "default": "on"
+  },
+  "RB3_MOGG_READAHEAD_OFF": {
+    "class": "workaround",
+    "owner": "load/audio",
+    "faithfulStatus": "not-live: mogg read-ahead default-ON",
+    "default": "on"
+  },
+  "RB3_SCREEN_BUNDLES_OFF": {
+    "class": "workaround",
+    "owner": "load/perf",
+    "faithfulStatus": "not-live: per-screen asset bundling default-ON (see project_incremental_load_perf memory)",
+    "default": "on"
+  },
+  "RB3_SFX_CACHE_OFF": {
+    "class": "workaround",
+    "owner": "audio/sfx",
+    "faithfulStatus": "not-live: SFX decode cache default-ON",
+    "default": "on"
+  },
+  "RB3_SFX_OGG_OFF": {
+    "class": "workaround",
+    "owner": "audio/sfx",
+    "faithfulStatus": "not-live: ogg-first SFX sidecar default-ON (see project_web_loadperf_findings memory)",
+    "default": "on"
+  },
+  "RB3_TEX_PREWARM_OFF": {
+    "class": "workaround",
+    "owner": "load/perf",
+    "faithfulStatus": "not-live: texture prewarm default-ON",
+    "default": "on",
+    "read": "presence"
+  },
+  "RB3_XMA_PREFETCH_OFF": {
+    "class": "workaround",
+    "owner": "load/audio",
+    "faithfulStatus": "not-live: XMA prefetch default-ON",
+    "default": "on"
+  },
+  "RB3_PREVIEW_PREFETCH_OFF": {
+    "class": "workaround",
+    "owner": "load/perf",
+    "faithfulStatus": "not-live: song-preview prefetch default-ON",
+    "default": "on",
+    "read": "truthy"
+  },
+  "RB3_ASYNC_OPEN_OFF": {
+    "class": "workaround",
+    "owner": "load/io",
+    "faithfulStatus": "not-live: async file-open default-ON",
+    "default": "on"
+  },
+  "RB3_BOOT_BUNDLE_OFF": {
+    "class": "workaround",
+    "owner": "load/perf",
+    "faithfulStatus": "not-live: boot asset bundle default-ON (see project_web_loadperf_findings memory)",
+    "default": "on"
+  },
+  "RB3_CROWD_IMPOSTER_OFF": {
+    "class": "workaround",
+    "owner": "render/crowd",
+    "faithfulStatus": "not-live: crowd impostor rendering default-ON",
+    "default": "on"
+  },
+  "RB3_NO_SFX": {
+    "class": "workaround",
+    "owner": "audio",
+    "faithfulStatus": "not-live: retail-disabled-SFX-payload compat default-OFF (truthy opt-in disables SFX; see PLAN.md Key-facts-4)",
+    "default": "off",
+    "read": "truthy"
+  },
+  "RB3_NO_SETLIST_FIX": {
+    "class": "workaround",
+    "owner": "ui/setlist",
+    "faithfulStatus": "not-live: setlist fix default-ON (opt-out name)",
+    "default": "on"
+  },
+  "RB3_NO_GUEST_PROFILE": {
+    "class": "workaround",
+    "owner": "profile",
+    "faithfulStatus": "not-live: guest profile workaround default-ON",
+    "default": "on"
+  },
+  "RB3_NO_AV_CALIBRATION": {
+    "class": "workaround",
+    "owner": "av/calibration",
+    "faithfulStatus": "not-live: A/V calibration bypass default-ON",
+    "default": "on"
+  },
+  "RB3_PLACEMENT_CONTRACT": {
+    "class": "feature",
+    "owner": "render/placement",
+    "faithfulStatus": "live: SYS-1 skinned-placement contract (obj.world=meshWorld + bind-relative palette), default-ON as of Wave 6 flip (2026-07-06); opt out via RB3_PLACEMENT_CONTRACT_OFF",
+    "default": "on",
+    "read": "presence"
+  },
+  "RB3_PLACEMENT_CONTRACT_OFF": {
+    "class": "feature",
+    "owner": "render/placement",
+    "faithfulStatus": "now the live opt-out: the SYS-1 placement contract is default-ON as of the Wave 6 flip; setting this disables it (takes precedence over the opt-in)",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_FIXED_CLOCK": {
+    "class": "feature",
+    "owner": "session-telemetry/determinism",
+    "faithfulStatus": "n/a: headless-determinism harness flag (off in shipping runs) — trace-free fixed sim clock",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_FIXED_CLOCK_DT_MS": {
+    "class": "feature",
+    "owner": "session-telemetry/determinism",
+    "faithfulStatus": "n/a: headless-determinism harness value knob (fixed per-frame sim dt in ms; off = built-in 1/60s default)",
+    "default": "off",
+    "read": "value"
+  },
+  "RB3_DRAWLOG": {
+    "class": "probe",
+    "owner": "render/determinism",
+    "faithfulStatus": "n/a: per-draw state-log ring capture (W0.3 draw-log golden harness)",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_DRAWLOG_DUMP": {
+    "class": "probe",
+    "owner": "render/determinism",
+    "faithfulStatus": "n/a: draw-log JSON dump path (W0.3 draw-log golden harness)",
+    "default": "off",
+    "read": "value"
+  },
+  "RB3_DRAWLOG_PROV": {
+    "class": "probe",
+    "owner": "render/ui-forensics",
+    "faithfulStatus": "n/a: W17 R3-UIDUMP provenance sidecar for the draw-log ring (mesh/mat/cam names, screen rect, render-pass idx + depth LoadOp, game-fed panel/owner scope). Implies RB3_DRAWLOG on; render output byte-identical.",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_PROV_SKIN_SPHERE": {
+    "class": "probe",
+    "owner": "render/ui-forensics",
+    "faithfulStatus": "n/a: Wave-19 T2-WORLDROI A/B control — forces skinned draws back to the legacy rectKind=1 sphere fallback (the R3 v1 world-cam blindness) so the new rectKind=3 skinned-pose bbox can be diffed against it (gate G1). Test-only; default preserves the rectKind=3 skinned-pose bbox + boneRects. Implies/requires RB3_DRAWLOG_PROV. SPATIAL provenance axis, not the frame-assignment timing axis.",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_MENU_DEPTH_CLEAR": {
+    "class": "probe",
+    "owner": "render/ui-forensics",
+    "faithfulStatus": "n/a: W17 R3-UIDUMP G4 test knob — forces the Wave-14 menu-boundary re-open depth LoadOp back to Clear to re-manifest the SETLISTS red band on demand (RB3PostProc). Test-only; shipped default preserves LoadOp::Load.",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_DRAWORDER_TRACE": {
+    "class": "probe",
+    "owner": "render/determinism",
+    "faithfulStatus": "n/a: transparent/text queue pre/post-sort submission-order trace (W0.3c.S1 order-flake attribution)",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_LOADDET_PROBE": {
+    "class": "probe",
+    "owner": "render/determinism",
+    "faithfulStatus": "n/a: Wave-12 W0.3d-b A-S1 attribution instrument — per-frame gRand draw-count + per-dir load-completion frame streams (H-TIMING vs H-ORDER vs H-RESEED); read rb3-side (Rand/DirLoader/DataFile/RunOneFrame taps)",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_LOADDET_TIMELINE": {
+    "class": "probe",
+    "owner": "render/determinism",
+    "faithfulStatus": "n/a: Wave-19 T1 frame-timeline tracer (attribution mode) — gates the NEW per-frame filearrive + songms markers so existing RB3_LOADDET_PROBE consumers (R4 ledger/order axis, white_regrade, wash v1) keep a byte-identical marker stream; read rb3-side (Loader/http_handlers/loaddet probe taps). Default-OFF, presence-read; ATTRIBUTION-only, no pinning (that is T3)",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_DRAWSORT_DETERMINISTIC_OFF": {
+    "class": "feature",
+    "owner": "render/determinism",
+    "faithfulStatus": "n/a: deterministic SortDraws material-name tie-break, active under RB3_FIXED_CLOCK, default-ON; opt-out restores Wii mat-pointer order (draw-order flake) for W0.3d-fix fail-red",
+    "default": "on"
+  },
+  "_w06b_section": "W0.6b: 91 game-root flags classified probe|workaround|feature|perf (S1=char/skinning behavior, S2=ui/render/audio/loader/synth/world behavior+perf, S3=probes); see docs/native/engine-arch-review-2026-07-05/execution/W0.6b/STATUS.md",
+  "RB3_BOUND_REBAKE": {
+    "class": "workaround",
+    "owner": "skinning",
+    "faithfulStatus": "not-live: opt-in bound-mesh bind-side rebake, default-OFF (those meshes stay on the engine clamp/V24 guard; C8 pose-pipeline root-cause is the faithful fix) [BandCharacter.cpp:1245]",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_HANDS_BIND_FIX": {
+    "class": "workaround",
+    "owner": "skinning",
+    "faithfulStatus": "not-live: experimental hands/fingers rest-basis bind fix, default-OFF (W2.2 measured no benefit, NOT flipped; see char-skinning-deform memory) [BandCharacter.cpp:1385]",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_INST_STRINGS_MODE": {
+    "class": "workaround",
+    "owner": "skinning",
+    "faithfulStatus": "not-live: selects instrument-strings native rebind mode (rigid=default / rebake=A/B); the inst-strings rebind itself is a native stand-in [BandCharacter.cpp:1548]",
+    "default": "off",
+    "read": "value"
+  },
+  "RB3_MESH_FREE": {
+    "class": "workaround",
+    "owner": "render/mesh",
+    "faithfulStatus": "not-live: native keeps the mesh CPU copy by default (prevents rigid eyes/teeth vanishing); opt-out RB3_MESH_FREE=1 restores the faithful free for A/B [Mesh.cpp:1449]",
+    "default": "on",
+    "read": "presence"
+  },
+  "RB3_NO_CLIP": {
+    "class": "probe",
+    "owner": "char",
+    "faithfulStatus": "n/a: debug bisection disable of CharDriver::Poll (clip driving); default-OFF, Poll runs normally when absent [CharDriver.cpp:341]",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_NO_CROWD_REBIND": {
+    "class": "workaround",
+    "owner": "render/crowd",
+    "faithfulStatus": "not-live: crowd char-bone rebind-to-own-skeleton default-ON (W2.3 retained/load-bearing, ~24x shard-drop when disabled) [Crowd.cpp:932]",
+    "default": "on",
+    "read": "presence"
+  },
+  "RB3_NO_DEFORM": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "n/a: debug bisection disable of BandCharacter::SetDeformation; default-OFF, runs when absent [BandCharacter.cpp:2335]",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_NO_DEFORM_LOAD": {
+    "class": "workaround",
+    "owner": "char/deform",
+    "faithfulStatus": "live: native loads gender deforms by default (blocker fixed; converges to original); opt-out RB3_NO_DEFORM_LOAD reverts to the deferred-load hack [BandCharDesc.cpp:112]",
+    "default": "on",
+    "read": "presence"
+  },
+  "RB3_NO_FACE": {
+    "class": "probe",
+    "owner": "char",
+    "faithfulStatus": "n/a: debug bisection disable of CharFaceServo::Poll + CharHair::Poll; default-OFF, both run when absent [CharFaceServo.cpp:60, CharHair.cpp:465]",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_NO_HEAD_REBIND": {
+    "class": "workaround",
+    "owner": "skinning",
+    "faithfulStatus": "not-live: head/hands rest-capture rebind (NativeCaptureRestPoseAfterDeform + RebindHeadHandsAtRest) default-ON (W2.2 net win; rebake-OFF head guard-DROPs 9.59x) [BandCharacter.cpp:936,1216]",
+    "default": "on",
+    "read": "presence"
+  },
+  "RB3_NO_HEAD_SHAPER": {
+    "class": "workaround",
+    "owner": "char/headshaper",
+    "faithfulStatus": "live: head shapes load by default on native (byte-correct LE serialization, CharLoad5b gtest); opt-out RB3_NO_HEAD_SHAPER=1 reverts to disabled [BandHeadShaper.cpp:136,156]",
+    "default": "on",
+    "read": "presence"
+  },
+  "RB3_NO_IK": {
+    "class": "probe",
+    "owner": "char",
+    "faithfulStatus": "n/a: debug bisection disable of all Char IK Poll (hand/foot/head/fore-twist/neck/upper-twist/lookat/fingers/midi/slider); default-OFF, IK runs when absent [CharIKHand.cpp:27 +9 sites]",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_NO_INST_REBIND": {
+    "class": "workaround",
+    "owner": "skinning",
+    "faithfulStatus": "not-live: instrument-strings rest-basis rebind (RebindInstStringsToRestBasis) default-ON [BandCharacter.cpp:1540]",
+    "default": "on",
+    "read": "presence"
+  },
+  "RB3_NO_POSEMESHES": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "n/a: Q1 decisive-test disable of CharBonesMeshes::PoseMeshes (channel->LocalXfm writeback); default-OFF [CharBonesMeshes.cpp:103]",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_NO_SKEL_REBIND": {
+    "class": "workaround",
+    "owner": "skinning",
+    "faithfulStatus": "not-live: outfit-bone rebind-to-own-skeleton (RebindOutfitBonesToOwnSkeleton) default-ON (char-skinning-deform fix acd9c19a; W0.5 fail-red control) [BandCharacter.cpp:1064]",
+    "default": "on",
+    "read": "presence"
+  },
+  "RB3_SKEL_REBIND_CALCOFF": {
+    "class": "workaround",
+    "owner": "skinning",
+    "faithfulStatus": "not-live: A/B variant of the outfit rebind (SetBone calcOffset=true); shipped default is calcOffset=false [BandCharacter.cpp:1110]",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_SKEL_REBIND_FULL": {
+    "class": "workaround",
+    "owner": "skinning",
+    "faithfulStatus": "not-live: KNOWN-BROKEN full-body rebind (shards thin geo), default-OFF study/W0.1 fail-red control; shipped rebind is torso-only [BandCharacter.cpp:1084]",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_SKIN_FIX_OFF": {
+    "class": "workaround",
+    "owner": "render/c8-faces",
+    "faithfulStatus": "not-live: skin RT-recolor compose rebind (only active when RB3_SKIN_RTT is also set); opt-out RB3_SKIN_FIX_OFF=1 (see project_c8_faces memory) [OutfitConfig.cpp:566]",
+    "default": "on",
+    "read": "presence"
+  },
+  "RB3_BLACK_HEAD_FIX_OFF": {
+    "class": "workaround",
+    "owner": "render/c8-faces",
+    "faithfulStatus": "not-live: band head_naked.mat gets a null diffuse on native because <gender>_head_diff.tex + head_naked.mat live in a nested head subdir unreachable by the non-recursive dir1->Find (the Wii milo flat-merges them); unlike torso/feet (dummy_* fallback) the head has no fallback -> flat-black head in dim venues / pink in warm. Default-ON recursively binds the head detail texture to the drawn head.mesh material; opt-out RB3_BLACK_HEAD_FIX_OFF=1 (W2.7, see project_c8_faces memory) [OutfitConfig.cpp:564]",
+    "default": "on",
+    "read": "presence"
+  },
+  "RB3_SKIN_NOCACHE": {
+    "class": "perf",
+    "owner": "skinning",
+    "faithfulStatus": "n/a: A/B disable of the per-member skinned-mesh cache (measurement only; default cached path is a perf optimization, see incremental-load-perf memory) [BandCharacter.cpp:851]",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_SKIN_RTT": {
+    "class": "feature",
+    "owner": "render/c8-faces",
+    "faithfulStatus": "not-live: gates the engine skin-RTT composite path (broken on web); default-OFF ships the direct-bind diff x skin-tone bypass (see project_c8_faces memory 266ffb1b) [OutfitConfig.cpp:508,572]",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_SKIN_TIMING": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "n/a: timing print summing skinned-mesh cache rebuild vs cache-hit cost [BandCharacter.cpp:846]",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_WALKON_SNAP_OFF": {
+    "class": "workaround",
+    "owner": "bandobj/walkon",
+    "faithfulStatus": "not-live: walk-on count-in pose snap default-ON (avoids frozen stale-vignette pose; see walkon-countin-pose memory 67e87ae1) [BandCharacter.cpp:59]",
+    "default": "on",
+    "read": "presence"
+  },
+  "SET_SKEL_REBIND": {
+    "class": "workaround",
+    "owner": "skinning",
+    "faithfulStatus": "not-live: superseded experimental whole-subtree rebind (SetBone), study-only default-OFF; shipped fix is the renderer-side SKEL_REBAKE static-pose offset [BandCharacter.cpp:1788]",
+    "default": "off",
+    "read": "presence"
+  },
+  "MILO_HEADLESS": {
+    "class": "feature",
+    "owner": "platform/headless",
+    "faithfulStatus": "n/a: headless runtime mode (skips window/audio/GPU device init; UI.cpp fakes a fixed 1/30s UI clock). Real port toggle, not a fidelity stand-in.",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_APPLY_HANDLER_FIX_OFF": {
+    "class": "workaround",
+    "owner": "bandobj/trackpanel",
+    "faithfulStatus": "not-live: single-player scoreboard/applause right/left.grp x-translation neutralization (K9 apply-handler fix) default-ON; =1 reverts to raw V22 [W22 re-scope d15484f1: the SCOREBOARD-anchor neutralization leg was GT-refuted (retail single-player = top-RIGHT, not top-center) and is now gated by RB3_HUD_SCOREBOARD_TOPRIGHT (default-ON); applause/mtv legs unchanged.]",
+    "default": "on",
+    "read": "presence"
+  },
+  "RB3_BILLBOARD_OFF": {
+    "class": "workaround",
+    "owner": "render/billboard",
+    "faithfulStatus": "not-live: native RndMultiMesh::DrawShowing kFastBillboardXYZ branch default-ON; opt-out disables the native billboard branch",
+    "default": "on",
+    "read": "truthy"
+  },
+  "RB3_CAM_FALLBACK_OFF": {
+    "class": "workaround",
+    "owner": "camera/voidcut",
+    "faithfulStatus": "not-live: BandDirector voidcut last-good-cam fallback (avoids dropping to void) default-ON; =1 reverts to raw V22 follow",
+    "default": "on",
+    "read": "presence"
+  },
+  "RB3_LOADER_BUDGET_MS": {
+    "class": "perf",
+    "owner": "load/perf",
+    "faithfulStatus": "n/a: Loader frame-drain budget in ms (default 8; huge value restores unbudgeted drain-to-completion). See project_incremental_load_perf memory.",
+    "default": "off",
+    "read": "value"
+  },
+  "RB3_LOADER_MIN_YIELD_MS": {
+    "class": "perf",
+    "owner": "load/perf",
+    "faithfulStatus": "n/a: min yield interval for synchronous loader/stream drain in ms (default 16; 0 restores per-slice yield). See project_incremental_load_perf memory.",
+    "default": "off",
+    "read": "value"
+  },
+  "RB3_LOADER_READAHEAD": {
+    "class": "perf",
+    "owner": "load/perf",
+    "faithfulStatus": "n/a: loader pipeline read-ahead depth (default 6; 0 disables). HX_NATIVE-only. See project_incremental_load_perf memory.",
+    "default": "off",
+    "read": "value"
+  },
+  "RB3_LOADER_YIELD_MS": {
+    "class": "perf",
+    "owner": "load/perf",
+    "faithfulStatus": "n/a: loader spin yield interval in ms (default 16, clamped >= budget). Boot-time-neutral tunable. See project_incremental_load_perf memory.",
+    "default": "off",
+    "read": "value"
+  },
+  "RB3_MENU_VOID_FIX_OFF": {
+    "class": "workaround",
+    "owner": "render/menu-void",
+    "faithfulStatus": "not-live: menu-void mesh cull fix default-ON; =set reverts to baseline draw",
+    "default": "on",
+    "read": "presence"
+  },
+  "RB3_METAMUSIC_SYNC": {
+    "class": "workaround",
+    "owner": "synth/metamusic",
+    "faithfulStatus": "not-live: native async MetaMusic PostLoad default; =1 opt-in restores the original eager (blocking) PostLoad+wiring path",
+    "default": "off",
+    "read": "truthy"
+  },
+  "RB3_NO_CROWD_INTRO": {
+    "class": "workaround",
+    "owner": "audio/crowd",
+    "faithfulStatus": "not-live: native crowd_intro/venue_intro BinkClip mogg bridge default-ON; =set disables the intro synth bridge",
+    "default": "on",
+    "read": "presence"
+  },
+  "RB3_PREWARM_NEXT": {
+    "class": "perf",
+    "owner": "load/perf",
+    "faithfulStatus": "n/a: from:to screen prewarm-pair spec string (default main_hub_screen:song_select_screen). Asset prewarm scheduling, no draw/logic change. See project_incremental_load_perf memory.",
+    "default": "off",
+    "read": "value"
+  },
+  "RB3_PREWARM_SCREENS": {
+    "class": "perf",
+    "owner": "load/perf",
+    "faithfulStatus": "n/a: UI screen/panel asset prewarm+adopt (web default-ON opt-out via '0'; native default-OFF opt-in). No correctness dependency at the adopt site. See project_incremental_load_perf memory.",
+    "default": "off",
+    "read": "truthy"
+  },
+  "RB3_REFRACTION_FIX_OFF": {
+    "class": "workaround",
+    "owner": "render/refraction",
+    "faithfulStatus": "not-live: song_select bottom_square_refraction cull fix default-ON; =set restores baseline draw",
+    "default": "on",
+    "read": "presence"
+  },
+  "RB3_RESYNC_YIELD_OFF": {
+    "class": "workaround",
+    "owner": "synth/stream",
+    "faithfulStatus": "not-live: StandardStream resync yield default-ON; opt-out disables the resync yield",
+    "default": "on",
+    "read": "truthy"
+  },
+  "RB3_REVIEW_LIGHTER_FIX_OFF": {
+    "class": "workaround",
+    "owner": "ui/review",
+    "faithfulStatus": "not-live: ReviewDisplay lighter-slot show fix (hide slots on zero score) default-ON; =1 restores baseline",
+    "default": "on",
+    "read": "presence"
+  },
+  "RB3_SCROLLBAR_FIX_OFF": {
+    "class": "workaround",
+    "owner": "ui/scrollbar",
+    "faithfulStatus": "not-live: ScrollbarDisplay content-aware draw gate default-ON; =1 restores the exact Wii over-draw gate",
+    "default": "on",
+    "read": "presence"
+  },
+  "RB3_STREAM_BUF_SECS": {
+    "class": "perf",
+    "owner": "synth/stream",
+    "faithfulStatus": "n/a: StandardStream min buffer depth in seconds (default 4, capped by 16-chunk ~9.1s ring). Anti-underrun value knob.",
+    "default": "off",
+    "read": "value"
+  },
+  "RB3_STREAM_PREPLAY_CAP_OFF": {
+    "class": "workaround",
+    "owner": "synth/stream",
+    "faithfulStatus": "not-live: StreamReceiver pre-play write cap (fill ring before Play, clock reads 0) default-ON; =1 opts out",
+    "default": "on",
+    "read": "truthy"
+  },
+  "RB3_TV3_PLAY_OFF": {
+    "class": "workaround",
+    "owner": "world/transition",
+    "faithfulStatus": "not-live: vignette_transition (tv3) WorldDir force-play default-ON (bounds sequencer to authored sub-shot durations); =set escapes",
+    "default": "on",
+    "read": "presence"
+  },
+  "RB3_VENUE_FRUSTUM_CULL": {
+    "class": "perf",
+    "owner": "render/cull",
+    "faithfulStatus": "n/a: opt-in world.cam venue frustum sphere cull (default-OFF); pure draw-skip optimization, confirmed Draw.cpp:201",
+    "default": "off",
+    "read": "truthy"
+  },
+  "RB3_VENUE_SYNC": {
+    "class": "workaround",
+    "owner": "load/venue",
+    "faithfulStatus": "not-live: native forces synchronous venue load (correct ordering) default-ON; =0 opts into experimental async (unsafe until Enter() is split into a multi-frame poll)",
+    "default": "on",
+    "read": "truthy"
+  },
+  "RB3_WEB_OFFMAIN_MIX": {
+    "class": "feature",
+    "owner": "audio/web",
+    "faithfulStatus": "n/a: off-main-thread audio decode/mix mode (web survives main-thread freezes; native uses it to size the decode-ahead ring deeper) default-ON; =0 keeps the prior main-thread-mix path. Port audio-architecture toggle, not a Wii-fidelity stand-in.",
+    "default": "on",
+    "read": "truthy"
+  },
+  "VENUE_CAM_LOCK": {
+    "class": "workaround",
+    "owner": "camera/venue",
+    "faithfulStatus": "not-live: native bridge points the venue WorldDir mCam at the director's active shot cam each frame default-ON; =1 reverts to the static cam",
+    "default": "on",
+    "read": "presence"
+  },
+  "BAND_ANIM_BONE": {
+    "class": "probe",
+    "owner": "char/anim",
+    "faithfulStatus": "n/a: names the bone BAND_ANIM_PROBE samples (defaults to bone_R-upperArm.mesh); only read when BAND_ANIM_PROBE is active, never alters Poll() [BandCharacter.cpp:507]",
+    "default": "off",
+    "read": "value"
+  },
+  "BAND_ANIM_PROBE": {
+    "class": "probe",
+    "owner": "char/anim",
+    "faithfulStatus": "n/a: per-frame trace of the band animation chain (driver presence, playing clip, named bone worldPos pre/post Character::Poll) to localize why the on-stage skeleton fails to move; substring-matches a member's dir name or '*' [BandCharacter.cpp:497]",
+    "default": "off",
+    "read": "value"
+  },
+  "BONE_CLEAR_DBG": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "n/a: logs any CopyBones(0) that wipes a non-empty bone list off a mesh, to catch post-load bone clears [Mesh.cpp:1156]",
+    "default": "off",
+    "read": "presence"
+  },
+  "BONE_LOAD_DBG": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "n/a: reports how many bones a mesh loaded from the file vs. how many resolved null, before RemoveInvalidBones strips them [Mesh.cpp:1000]",
+    "default": "off",
+    "read": "presence"
+  },
+  "CAMDIR_DBG": {
+    "class": "probe",
+    "owner": "render/camera",
+    "faithfulStatus": "n/a: logs the re-run HarvestDircuts() call once venue+song.anim are both live (propAnim/venueDir pointers); render-inert, aliases VENUE_DBG's same line [BandDirector.cpp:744]",
+    "default": "off",
+    "read": "presence"
+  },
+  "CAM_DBG": {
+    "class": "probe",
+    "owner": "render/camera",
+    "faithfulStatus": "n/a: dumps game.cam pose (pos/fwd/up/fov/near/far) during highway draw at TrackDir.cpp:280 (game.cam is only current at this scope point); also gates a separate pipeline-prewarm timing print at engine Rnd_Wgpu_RB3.cpp:2146 (no shared state, coincidental name reuse) [TrackDir.cpp:280; Rnd_Wgpu_RB3.cpp:2146]",
+    "default": "off",
+    "read": "presence"
+  },
+  "CBM_DBG": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "n/a: V38 instrumentation — dumps decoded SCALE channel + pre-divide matrix row lengths per scale-bone, localizing the crowd/extras 0.53-det Y-squash [CharBonesMeshes.cpp:176]",
+    "default": "off",
+    "read": "presence"
+  },
+  "CBM_DBG2": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "n/a: V38 probe — dumps quat magnitude pre-Normalize and post-QUAT/ROT LocalXfm determinant for a substring-matched bone name (or '*') [CharBonesMeshes.cpp:117,119,146,147]",
+    "default": "off",
+    "read": "value"
+  },
+  "CBS_DBG": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "n/a: dumps the cached packed-buffer layout (offsets, sizes, compression) vs bytes actually consumed, to verify against the DC3 Save contiguous layout [CharBonesSamples.cpp:591]",
+    "default": "off",
+    "read": "presence"
+  },
+  "CHARDRV_PROBE": {
+    "class": "probe",
+    "owner": "char/anim",
+    "faithfulStatus": "n/a: confirms CharDriver::Poll runs and whether a clip is playing/applying, substring-matched by ClipType (or '*'); two sites (pre- and post-apply) [CharDriver.cpp:346,424]",
+    "default": "off",
+    "read": "value"
+  },
+  "CHAR_DBG": {
+    "class": "probe",
+    "owner": "render/char-material",
+    "faithfulStatus": "n/a: two independent print sites sharing a name — engine RB3MaterialBinder.cpp reports whether a skinned outfit mesh resolved a diffuse texture (untextured-because-unbound vs RTT-composite-never-painted); game BandDirector.cpp logs the re-run LoadCharacters() call (aliases VENUE_DBG) [RB3MaterialBinder.cpp:292; BandDirector.cpp:713]",
+    "default": "off",
+    "read": "presence"
+  },
+  "CLOCK_DBG": {
+    "class": "probe",
+    "owner": "ui/hud",
+    "faithfulStatus": "n/a: logs TrackDir::DrawShowing's real-time delta and y-per-second scroll multiplier for a track-panel HUD overlay [TrackDir.cpp:302]",
+    "default": "off",
+    "read": "presence"
+  },
+  "CROWD_REBIND_PROBE": {
+    "class": "probe",
+    "owner": "render/crowd",
+    "faithfulStatus": "n/a: verbose companion to RebindCrowdCharBonesToOwnSkeleton (the default-ON RB3_NO_CROWD_REBIND workaround) — read-only diagnostic flag, does not itself change the rebind [Crowd.cpp:936]",
+    "default": "off",
+    "read": "presence"
+  },
+  "GAME_DBG": {
+    "class": "probe",
+    "owner": "bandobj/flow",
+    "faithfulStatus": "n/a: logs BandDirector::OnFileLoaded's sym/dir args and ReadyForMidiParsers' native venue-deferred gate inputs/result; the gate's own cond is computed independent of the getenv call [BandDirector.cpp:1265,834]",
+    "default": "off",
+    "read": "presence"
+  },
+  "GEM_DBG": {
+    "class": "probe",
+    "owner": "render/highway",
+    "faithfulStatus": "n/a: dumps GemTrackDir::UpdateSurfaceTexture's mesh/mat/tex name state after the (unconditional) SetDiffuseTex call [GemTrackDir.cpp:393]",
+    "default": "off",
+    "read": "presence"
+  },
+  "HEAD_REBIND_PROBE": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "n/a: verbose companion to RebindHeadHandsAtRest (the default-ON RB3_NO_HEAD_REBIND-gated rest-capture rebind); read-only, does not alter the rebind [BandCharacter.cpp:1219]",
+    "default": "off",
+    "read": "presence"
+  },
+  "IK_TGT_DBG": {
+    "class": "probe",
+    "owner": "char/ik",
+    "faithfulStatus": "n/a: reports IK hand world position + each target's name/pos/distance/parent chain for far (>50u) targets; investigative tool for the residual crowd hand-IK pose error, render-inert [CharIKHand.cpp:45]",
+    "default": "off",
+    "read": "presence"
+  },
+  "INST_REBIND_PROBE": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "n/a: verbose companion to the instrument-strings rebind (RB3_NO_INST_REBIND/RB3_INST_STRINGS_MODE); read-only [BandCharacter.cpp:1551]",
+    "default": "off",
+    "read": "presence"
+  },
+  "K9_APPLY_DBG": {
+    "class": "probe",
+    "owner": "ui/hud",
+    "faithfulStatus": "n/a: dumps the milo 'apply' handler dispatch state (config object name/class/typedef apply-array, objects/visibles/xfms arrays) on TrackPanelDirBase::SetConfiguration/ReapplyConfiguration, plus a compact scoreboard-anchor world-pos trace in TrackPanelDir [TrackPanelDirBase.cpp:95,163,185; TrackPanelDir.cpp:334]",
+    "default": "off",
+    "read": "presence"
+  },
+  "MENU_VOID_DBG2": {
+    "class": "probe",
+    "owner": "render/ui",
+    "faithfulStatus": "n/a: render-inert one-shot-per-name material dump for hub-backdrop drawables (sky/dome/moon/cloud/star/night/bgbuilding/fog-keyed by default, or every mesh when =2); reports showing/mat/color/blend/zmode/diffuse-tex/vert-extent, always returns false (never skips a draw) [Draw.cpp:68,124]",
+    "default": "off",
+    "read": "value"
+  },
+  "MENU_VOID_SKIP": {
+    "class": "probe",
+    "owner": "render/ui",
+    "faithfulStatus": "n/a: comma/space-separated substring skip-draw list — an opt-in A/B research tool for isolating which drawable paints a given hub-backdrop screen region (not a shipped fix; distinct from the always-on worldcenter-occluder/refraction fixes in the same function, which are unconditional) [Draw.cpp:69]",
+    "default": "off",
+    "read": "value"
+  },
+  "MESH_BONE_DBG": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "n/a: dumps each loaded RndBone's bind-offset determinant + row lengths for substring-matched mesh names, checking whether the crowd-body det-0.53 squash is an authored bind offset or a mis-read [Mesh.cpp:1066]",
+    "default": "off",
+    "read": "value"
+  },
+  "MILO_LOCALE_DBG": {
+    "class": "probe",
+    "owner": "utl/locale",
+    "faithfulStatus": "n/a: traces Localize() token/format resolution for diagnosing format-string/token leaks [Locale.cpp:296]",
+    "default": "off",
+    "read": "presence"
+  },
+  "MILO_SETTOKEN_DBG": {
+    "class": "probe",
+    "owner": "ui/label",
+    "faithfulStatus": "n/a: traces UILabel::SetTokenFmtImp — symbol, localized format string, and final SetDisplayText input [UILabel.cpp:805]",
+    "default": "off",
+    "read": "presence"
+  },
+  "PART_INIT_DBG": {
+    "class": "probe",
+    "owner": "render/particles",
+    "faithfulStatus": "n/a: dumps InitParticle's emit branch, raw direction and mesh state before speed scale for substring-matched particle systems, diagnosing runaway street-fog particles [Part.cpp:670]",
+    "default": "off",
+    "read": "value"
+  },
+  "PART_MOVE_DBG": {
+    "class": "probe",
+    "owner": "render/particles",
+    "faithfulStatus": "n/a: per-call MoveParticles trace (dt/frameSpan, relative-frame force rows, relative xfm state, first particle velocity) for substring-matched systems, pinpointing runaway fog velocity origin [Part.cpp:1338]",
+    "default": "off",
+    "read": "value"
+  },
+  "RB3_DUMP_STEMS": {
+    "class": "probe",
+    "owner": "audio/stems",
+    "faithfulStatus": "n/a: opt-in raw PCM stem dump to disk (one .s16 file per channel under the given directory); purely a side-channel file write, does not alter the audio mix/playback path [StandardStream.cpp:68]",
+    "default": "off",
+    "read": "value"
+  },
+  "RB3_HAIR_DBG": {
+    "class": "probe",
+    "owner": "char/hair",
+    "faithfulStatus": "n/a: reports per-strand collide-hookup counts (points hooked, CharCollides reachable) to quantify free-hanging strands passing through the skull/shoulders under motion [CharHair.cpp:833]",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_METAMUSIC_DBG": {
+    "class": "probe",
+    "owner": "synth/metamusic",
+    "faithfulStatus": "n/a: logs completion of the deferred stream-FX wiring (6 eq.send dirs) after RB3_METAMUSIC_SYNC's async PostLoad path drains [MetaMusic.cpp:415]",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_NOTIFY_ALL": {
+    "class": "probe",
+    "owner": "os/debug",
+    "faithfulStatus": "n/a: console-verbosity toggle — restores every repeat of an engine NOTIFY diagnostic instead of the default per-message dedup; affects only diagnostic console output, not app logic/rendering [Debug.cpp:66]",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_PLACEMENT_PROBE": {
+    "class": "probe",
+    "owner": "render/placement",
+    "faithfulStatus": "n/a: dumps each crowd instance's spXfm translation used by the W2.1 RB3_PLACEMENT_CONTRACT placement oracle; Wii-compile-inert, no behavior change [Crowd.cpp:421]",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_PP_PROBE": {
+    "class": "probe",
+    "owner": "bandobj/patchmesh",
+    "faithfulStatus": "n/a: dumps BandPatchMesh::WorkVerts::SetMeshVerts entry state (vert/face counts, max face index, OOB check) added while triaging the C8 head-invisible regression [BandPatchMesh.cpp:324]",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_PREWARM_DBG": {
+    "class": "probe",
+    "owner": "load/perf",
+    "faithfulStatus": "n/a: two independent print sites sharing a name — game UIScreen.cpp logs the song_select-prewarm screen-pair schedule/CheckIsLoaded gate; engine Rnd_Wgpu_RB3.cpp times the A5 GPU pipeline pre-warm compile. Neither changes whether prewarm/pipeline-warm runs, only whether it's logged [UIScreen.cpp:298,392; Rnd_Wgpu_RB3.cpp:1472]",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_READAHEAD_DEBUG": {
+    "class": "probe",
+    "owner": "load/perf",
+    "faithfulStatus": "n/a: reports loader queueDepth/kicked counts to show whether dependency milos enqueue deep enough for read-ahead to matter; zero cost when off, does not change scheduling [Loader.cpp:540]",
+    "default": "off",
+    "read": "truthy"
+  },
+  "RB3_SKINFIX_DBG": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "n/a: logs every MatSwap touched by the outfit skin-diffuse rebind loop and what it rebinds, added while triaging the C8 head-invisible regression [OutfitConfig.cpp:600]",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_STATS_DBG": {
+    "class": "probe",
+    "owner": "debug/stomp-watch",
+    "faithfulStatus": "n/a: two independent stomp-watch bisection sites sharing a name — File.cpp checks MetaPerformer integrity on every file open (web song-end wedge diagnosis); Mesh.cpp records a ring of VertVector alloc/free events for stomp tracing. Both are read-only integrity checks/recorders, no behavior change [File.cpp:168; Mesh.cpp:408]",
+    "default": "off",
+    "read": "presence"
+  },
+  "RELOAD_PROBE": {
+    "class": "probe",
+    "owner": "bandobj/flow",
+    "faithfulStatus": "n/a: answers 'what reloads the band mid-song' by logging every RecomposePatches/MiloReload/start_load-DTA/in_closet-propsync/CharCache/BandWardrobe reload call site, correlated by a monotonic Poll serial [BandCharacter.cpp:50]",
+    "default": "off",
+    "read": "presence"
+  },
+  "SERVO_PROBE": {
+    "class": "probe",
+    "owner": "char/anim",
+    "faithfulStatus": "n/a: confirms CharServoBone::Poll runs and reports a mid-chain bone's LocalXfm before/after PoseMeshes, substring-matched by ClipType (or '*') [CharServoBone.cpp:45]",
+    "default": "off",
+    "read": "value"
+  },
+  "SKEL_REBIND_PROBE": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "n/a: verbose companion to RebindOutfitBonesToOwnSkeleton (RB3_NO_SKEL_REBIND) and the SET_SKEL_REBIND study variant — counts rebound/same/null-own bones; read-only, gates only its own print block alongside sRebind [BandCharacter.cpp:1068,1789]",
+    "default": "off",
+    "read": "presence"
+  },
+  "SKEL_REBIND_SKINPOS": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "n/a: post-rebind verification metric — reports the worst |skinWorld-boneWorld| bone-relative delta after RebindOutfitBonesToOwnSkeleton, the correctness measure used throughout the W2.2/skel-rebind investigation [BandCharacter.cpp:1140]",
+    "default": "off",
+    "read": "presence"
+  },
+  "STRIDE_PROBE": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "n/a: dumps mesh name/vert count/per-vert size/version/skinned-flag when reading the platform-compressed vertex blob, verifying the native compressed-vert read against the loaded stride [Mesh.cpp:678]",
+    "default": "off",
+    "read": "presence"
+  },
+  "UISCREEN_DBG": {
+    "class": "probe",
+    "owner": "ui/hub",
+    "faithfulStatus": "n/a: logs UI transition-state changes (UI.cpp) and screen/panel Exiting()/CheckIsLoaded() blocked-panel state (UIScreen.cpp, UIPanel.cpp), dedup'd per state/panel change [UI.cpp:537; UIPanel.cpp:273; UIScreen.cpp:116,582]",
+    "default": "off",
+    "read": "presence"
+  },
+  "VENUE_DBG": {
+    "class": "probe",
+    "owner": "bandobj/venue",
+    "faithfulStatus": "n/a: logs the native venue force-load bridge in BandDirector::EnterVenue (override symbol, chosen venue, sync/async mode, wardrobe/venueDir/venueName state, HarvestDircuts re-run — shares its last two log lines with CAMDIR_DBG/CHAR_DBG); the force-load itself (LoadVenue, RB3_VENUE_SYNC-gated sync mode) runs independent of this flag [BandDirector.cpp:654,666,690,713,744]",
+    "default": "off",
+    "read": "presence"
+  },
+  "VOIDCUT_DBG": {
+    "class": "probe",
+    "owner": "render/camera",
+    "faithfulStatus": "n/a: logs each shot's void-vs-keep verdict for the RB3_CAM_FALLBACK_OFF-gated sticky last-good-cam fallback (voidcut avoidance); read-only, does not affect the fallback decision [BandDirector.cpp:387]",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_ENV_FOG": {
+    "class": "feature",
+    "owner": "render/lighting",
+    "faithfulStatus": "not-live: faithful RndEnviron fog fill (FogEnable/GetFogStart/GetFogEnd/FogColor -> SceneUniforms fog + RndMat::mFog -> materialFogEnabled), default-OFF (W3.1a)",
+    "default": "off"
+  },
+  "RB3_BOX_AMBIENT": {
+    "class": "feature",
+    "owner": "render/lighting",
+    "faithfulStatus": "not-live: SYS-4 faithful 6-axis box-ambient cube (BoxMapLighting over RndEnviron::mLightsApprox -> boxAmbient[6] uniform, sampled per-normal), replaces the scalar-ambient + approx-as-Lambert-key inversion in the venue path; W3.2 PROTOTYPE, worktree-only (branch wave6-boxmap-proto), lands Wave 7 after Lane A settles WriteSceneUniforms/UniformStructs.h/standard_wgsl.inc",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_ENV_PROJLIGHT": {
+    "class": "feature",
+    "owner": "render/lighting",
+    "faithfulStatus": "not-live: faithful RndEnviron kFakeSpot projected-light fill (mLightsReal gobo -> projLight* SceneUniforms fields + local RndLight::Projection port + slot-3 gobo bind), default-OFF (W3.1b)",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_ENV_PROJLIGHT_FORCE": {
+    "class": "probe",
+    "owner": "render/lighting",
+    "faithfulStatus": "probe: synthesizes a projected light from the first showing RndEnviron light (relaxes the kFakeSpot/gobo gates) so RB3_ENV_PROJLIGHT renders a screenshot A/B on a real venue when none authors one; requires RB3_ENV_PROJLIGHT, default-OFF (W3.1b)",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_ENV_FOG_FORCE": {
+    "class": "probe",
+    "owner": "render/lighting",
+    "faithfulStatus": "probe: synthesizes authored fog params onto the current environ at the fill site so RB3_ENV_FOG renders on a real venue for screenshot A/B (no in-repo asset authors fog); requires RB3_ENV_FOG, default-OFF (W3.1b)",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_HUB_MENU_QUAD_HIDE": {
+    "class": "workaround",
+    "owner": "ui/hub",
+    "faithfulStatus": "live: hides playnow.lsw (a LabelShrinkWrapper child of mb_playnow.grp/menu_buttons.grp in ui/main/main_hub.milo) that draws an opaque grey capsule quad mid-screen on main_hub with no retail counterpart (SYS-5 family); default-ON as of Wave 7 flip; legacy opt-in name kept, opt out via RB3_HUB_MENU_QUAD_OFF",
+    "default": "on"
+  },
+  "RB3_HUB_MENU_QUAD_OFF": {
+    "class": "workaround",
+    "owner": "ui/hub",
+    "faithfulStatus": "live opt-out for the main_hub grey-quad hide (RB3_HUB_MENU_QUAD_HIDE, default-ON as of Wave 7); setting this restores the quad",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_PP_LUMA_CEILING": {
+    "class": "workaround",
+    "owner": "render/post",
+    "faithfulStatus": "not-live: switches the postproc composite highlight-ceiling guard (rb3_postproc.wgsl.inc fs_postproc) from a per-channel Reinhard rolloff to a luminance-preserving one, so a hot saturated moment (the song-start stage-light reveal, songMs ~2000-6000) reads bright-but-colored instead of desaturating to grey; identity below the ceiling knee either way, default-OFF (W3.3-fix)",
+    "default": "off"
+  },
+  "RB3_VENUE_FALLBACK_FIX": {
+    "class": "workaround",
+    "owner": "render/lighting",
+    "faithfulStatus": "not-live: WASH-fix (Wave 8 A.S2) FIX-H1 — dim, exposure-safe key for the broken/unlit VENUE fallback (Rnd_Wgpu_RB3.cpp flat-default else at world.cam: venue_off/no_env/fogowner_null). The `1.0 white dir + 0.45 ambient` flood over-exposes the venue through the Stage-2 composite -> the deterministic RB3_VENUE_LIGHT_OFF PINK wash (S1 8/8); ON writes a dim neutral key (0.50 dir + 0.10 ambient) scoped to world.cam so menus + game.cam are untouched; default-OFF, flag-OFF byte-identical",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_PP_CHROMA_PRESERVE": {
+    "class": "workaround",
+    "owner": "render/postproc",
+    "faithfulStatus": "live: venue-scoped chroma-preserving composite grade (WASH FIX-H2) — reconstructs graded output from ungraded scene chroma at graded luminance so hot venue moments keep authored hue/sat instead of desaturating to grey; default-ON as of Wave 8 flip (2026-07-07); opt out via RB3_PP_CHROMA_PRESERVE_OFF or legacy =0",
+    "default": "on",
+    "read": "presence"
+  },
+  "RB3_PP_CHROMA_PRESERVE_OFF": {
+    "class": "workaround",
+    "owner": "render/postproc",
+    "faithfulStatus": "live opt-out for the chroma-preserving venue composite grade (RB3_PP_CHROMA_PRESERVE, default-ON as of Wave 8)",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_UI_TEXT_FLOOR_RELAXED": {
+    "class": "workaround",
+    "owner": "ui/text",
+    "faithfulStatus": "not-live: relaxes the unconditional UI-text colour floor (RB3MaterialBinder.cpp isLikelyUiText path, std::max(0.6, c)) that clobbers authored per-focus-state UILabel colours (focused hub items author near-black text meant to read on the bright gold highlight bar; unfocused siblings author dimmed grey) -> only lifts colours whose channels are ALL below 0.06 (true near-invisible, e.g. a genuinely (0,0,0)-authored label) to 0.25, passing the measured live hub range (0.118-0.247) through unchanged; flag-OFF is byte-identical to the pre-existing unconditional 0.6 clamp; default-ON as of Wave 7 flip; opt out via RB3_UI_TEXT_FLOOR_STRICT",
+    "default": "on",
+    "read": "presence"
+  },
+  "RB3_UI_TEXT_FLOOR_STRICT": {
+    "class": "workaround",
+    "owner": "ui/text",
+    "faithfulStatus": "live opt-out for the relaxed UI-text colour floor (RB3_UI_TEXT_FLOOR_RELAXED, default-ON as of Wave 7); setting this restores the legacy unconditional 0.6 floor",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_HUB_TEXT_CONTRAST": {
+    "class": "workaround",
+    "owner": "ui/hub",
+    "faithfulStatus": "not-live: W12 C1 focused-text contrast — clamps the focused hub highlight-bar material alpha (isUiHighlightOverlay, highlight_main/pattern) to hardware [0,1] in RB3MaterialBinder.cpp (Wii fixed-function blender clamps src alpha; native pulse anim drives it to ~3.56, over-brightening the bar under kBlendSrcAlpha). FAITHFUL correctness fix for the >1 alpha bug, but does NOT by itself pass the C1 focused-bar contrast gate (p60/p5>=2.0): the dominant wash is the postproc GRADE lifting the authored-dark focused glyphs (0.118) more than the bar (RB3_PP_OFF -> gate 2.20 PASS vs 1.95 graded) compounded by the bright bar compositing through the ~semi-transparent anti-aliased text; those live in the render/postproc path (escalated). flag-OFF byte-identical (getenv-cached) [RB3MaterialBinder.cpp]",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_HANDS_POSEAWARE": {
+    "class": "feature",
+    "owner": "skinning",
+    "faithfulStatus": "not-live: W2.8 BL-A1 rigid-anchor hands/fingers fix — collapses the pose-varying multi-bone rotation-basis divergence that flings distal finger verts into sheets (the 'missing hands' shard) by repointing every hand/finger/glove bone per L/R side to that side's wrist bone (bone_L-hand/bone_R-hand) and rebaking offset=meshWorld*inv(wristWorld) so each hand rides its wrist as one rigid body (mirrors the proven RebindInstStringsToRestBasis rigid path). TRADEOFF: fingers no longer articulate (rigid hand) — trades shard for a static-but-coherent hand; the faithful finger-articulating fix is the CharBones pose-pipeline basis (engine, out of lane fence). flag-OFF byte-identical (getenv-cached early return in BandCharacter::NativeRepinHandsRigid) [BandCharacter.cpp]",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_HANDS_PERFRAME_CONJ": {
+    "class": "feature",
+    "owner": "skinning",
+    "faithfulStatus": "not-live: W2.8c per-frame pose-aware appendage (hands/fingers) basis correction — the one remaining fix class after the two static approaches (RB3_HANDS_BIND_FIX seed, RB3_HANDS_POSEAWARE rigid wrist-collapse) were empirically killed. Keeps every hand/finger bone bound to its OWN live per-member bone (articulation preserved, anti-rigid-collapse) and each Poll rewrites its palette offset so the live bone's rotation is applied ABOUT the authored magnet frame: offset_b(t)=inv(A_b)*inv(L_b(t0))*L_b(t)*A_b*inv(L_b(t)), cancelling the growing R*sin(theta) twist per bone instead of collapsing the hand rigidly. A_b/L_b(t0) captured once per mesh at latch, only L_b(t) re-sampled per Poll (unlatched apply, no bind re-bake drift). Mutually exclusive with RB3_HANDS_POSEAWARE (only one runs) and with RebindHeadHandsAtRest (skips hand/finger/glove meshes when ON so A_b stays pristine). flag-OFF byte-identical (getenv-cached early return in BandCharacter::NativeConjHandsPerFrame) [BandCharacter.cpp]",
+    "default": "off",
+    "read": "presence"
+  },
+  "HANDS_CONJ_PROBE": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "probe: per-mesh/per-bone log for the W2.8c per-frame hands conjugation (RB3_HANDS_PERFRAME_CONJ) — prints CLAIM (owner mesh, per-bone slot count proving per-bone NOT wrist-collapsed) and APPLY (worst skin-to-bone extent vs the 200-460u rigid-anchor dead end); print-only, gates only its own fprintf, default-OFF [BandCharacter.cpp]",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_DUALSKIN_PROBE": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "probe: W2.8d bone-level factor attribution for the finger/hand rotation-basis shard. For one worst-flung far vertex of a selected mesh (default hands_naked) dumps per-bone offset(BoneOffsetAt)/liveWorld(WorldXfm)/liveLocal(LocalXfm)/weight/composed-skin with determinants+orthonormality (candidate-a: is the live bone world a clean rigid transform?) and the rest-basis conjugation delta inverse(offset)-vs-per-member-captured-rest -> DeltaR -> predicted R*2sin(theta/2) vs measured (candidate-b). Also writes goldens/w2.8-farvert/live_pose.txt (asDrawn vs coherent per-member-own-rest ref, per far vert) so the BL-A2 RealPathFixture gtest stops SKIPping. Additive-only, gated on wext>60, render-inert; value is a name-substr / 1 / *; override output path via RB3_DUALSKIN_FIXTURE [Rnd_Wgpu_RB3.cpp]",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_DUALSKIN_FIXTURE": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "probe: optional output path override for the RB3_DUALSKIN_PROBE live_pose.txt capture (default native/tests/goldens/w2.8-farvert/live_pose.txt); path-valued, gates only that fopen [Rnd_Wgpu_RB3.cpp]",
+    "default": "off",
+    "read": "value"
+  },
+  "RB3_DUALSKIN_MINWEXT": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "probe: W2.8e (Wave 10) capture-gate parameter for RB3_DUALSKIN_PROBE. Lowers the default wext>60u entry cutoff so a flag-ON capture (a fix that DROPS the mesh world-extent below 60u) is mechanically possible (otherwise success suppresses the instrument, WAVE10_REVIEW A2). Float-valued; inert unless RB3_DUALSKIN_PROBE is set; default 60u preserves prior byte-identical behavior [Rnd_Wgpu_RB3.cpp]",
+    "default": "off",
+    "read": "value"
+  },
+  "RB3_APPENDAGE_REST_ROT": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "not-live: W2.8d Wave-9 Lane-A REFUTED experiment, default-OFF do-NOT-flip. Tested whether the finger shard is a rest-bake SPACE error by baking appendage (hand/finger/nail/glove) offset=meshWorld*inv(WORLD-space rest of the palette-sampled bone) instead of the default CHAR-space rest (NativeCharSpaceRestXfm). MEASURED a REGRESSION on the independent IK_SHARD_VERT wext metric (hands_naked mean 73.1->79.9u, p90 83->92u); dual-skin worstSep only partially/inconsistently moved (one member 36.9->21.4u still >20u gate, other unchanged) — reproduces the scout-c8 2026-06-11 world-space lever-arm R*sin smear. Genuine residual is a rest-CAPTURE basis/pose problem needing the authored skeleton_unshared.milo bind pose (Wave 10). flag-OFF byte-identical (drawlog 792, getenv-cached, HX_NATIVE) [BandCharacter.cpp]",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_APPENDAGE_ASSET_REBAKE": {
+    "class": "workaround",
+    "owner": "skinning",
+    "faithfulStatus": "not-live: W2.8e Wave-10 Lane-A REFUTED experiment (the 5th and FINAL hands fix class), default-OFF do-NOT-flip. The 'only unrefuted path' asset-derived char-space static rebake: for appendage (hand/finger/nail/glove) meshes keep the mesh bound to its OWN per-member bone (mesh->BoneTransAt, char-space rest ~129deg == dual-skin restW) with NO repoint, and rebake off=meshWorld*inv(that bone's settled clip-free char-space rest) so at rest skin=inv(restW)*restW=I (coherent by construction, one space end-to-end). MEASURED A/B this wave: dual-skin worstSep collapses 37.4->0.0u (the S1 target) BUT the hands FREEZE (hands_naked worldExt pinned to 56/80u, 2 discrete values, vs a CONTINUOUS animating 91.8-106.6u sweep flag-OFF; IK_SHARD wext constant 80u on the same vert every frame), and hands_bind_characterize DEGRADES MARGINAL-GRAZE->HARD-SHARD. ROOT CAUSE: `bound` (mesh->BoneTransAt) is a STATIC embedded bind-pose copy; the per-member ANIMATION lives in the `own=Find(name)` instance the default distinct rebind repoints to, and that default is ALREADY coherent w.r.t. the drawn animating bone. The dual-skin worstSep is a STALE-BONE artifact (probe rest ref `bw` captured from the PRE-repoint static bound 129deg while asDrawn uses the POST-repoint animating own 106deg) — a confound A.S1 ruled out for placement but not for bound-vs-drawn-bone; the metric is unsatisfiable without freezing. flag-OFF byte-identical (drawlog 792, getenv-cached, HX_NATIVE) [BandCharacter.cpp]",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_APD_DIAG": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "probe: W2.8e (Wave 10) appendage rest-basis PROVENANCE diagnostic in RebindHeadHandsAtRest. For hand/finger/nail/glove meshes, logs per resolved bone the baked rest angle vs identity, the Find-result `own` current rest, the authored `bound` (mesh->BoneTransAt) rest, and the own/bound pointers — the instrument that revealed the default distinct rebind REPOINTS the mesh from its own per-member bone (~129deg) to the Find/shared-magnet instance (~106deg) and named the dual-skin STALE-BONE confound. Render-inert, throttled, gated; flag-OFF byte-identical [BandCharacter.cpp]",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_VENUE_WHITE_GUARD": {
+    "class": "workaround",
+    "owner": "render/lighting",
+    "faithfulStatus": "not-live: WHITE-fix (Wave 9/10 STEP-0) scene-side luminance-preserving venue highlight compression. The engaged-venue WHITE over-exposure is baked into the scene render (standard_wgsl.inc per-channel softClipLighting + compressHighlights drive hot pale surfaces to zero-chroma white before the Stage-2 composite samples them), so the Wave-8 chroma-preserve composite fix cannot recover it. ON sets SceneUniforms.venueHighlightLumaMode=1 on the engaged world.cam venue upload -> the standard fragment shader compresses LUMINANCE (not per-channel) and scales RGB uniformly, so a hot venue moment stays bright-but-colored (retail/GX look) instead of clipping white. Identity below the highlight knee; scoped to the venue path (DC3/menus/game.cam leave the field 0 -> per-channel branch, byte-identical). Repurposes the SceneUniforms _padPL[0] pad (size stays 656, static_assert intact); default-OFF, flag-OFF byte-identical (drawlog 792) [Rnd_Wgpu_RB3.cpp + standard_wgsl.inc + UniformStructs.h]",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_HANDS_ATTACH_PROBE": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "probe: W2.8f (Wave 11) the TRUSTWORTHY rest-capture-free hands instrument. Two palette-INTERNAL invariants on the UPLOADED palette (bones.bones[]) at the DrawMesh dualskin site, NOT gated on wext so it co-samples the full 61-106u smear trajectory. TIER1 (secondary, amplitude): full-palette per-bone rest-coherence sweep with POINTER-IDENTITY freshness validation (repoint bound->own IS a ptr change -> recapture, killing the W2.8e stale-bone confound) reporting angle(off_b*restW_b,I) + pose-indep xcheck angle(inv(off_b),restW_b). TIER2 (PRIMARY, pose-tracking, rest-FREE): parent/child joint-attachment ||j_b*P[parent]-j_b*P[child]|| with j_b=-off_b.v AND exact inverse(off_b).v. FINDING: exact-joint TIER2 reads ~0 (<=0.33u over 2214 hand samples, == clean control) => the hands palette is inter-bone COHERENT (joints attached, matching A.S3 wrist-attached); the visible 106u smear is a mesh-shell/offset conjugation (TIER1 87deg == A.S1) NOT a joint dislocation, so joint-attachment is the WRONG Wave-12 gate. A5 -off.v approximate joint is CONFOUNDED (false-positive 90u on the clean greaserjacket control); the exact inverse(off).v joint is required. Value name-substr/1/*; render-inert, getenv-gated, flag-OFF byte-identical (drawlog 792) [Rnd_Wgpu_RB3.cpp]",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_PALETTE_DUMP": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "probe: R2 (Wave 17) skinning-fixture dump. Writes one PaletteFrame text file per (mesh,ownerPtr,dumpIdx) capturing the exact (verts,weights,uploaded palette bones.bones[], per-bone off/world/palette-parent) triple the skinned shader blends, so the R2 oracle-validation harness (native/tests/skinning_oracle.h) grades a palette against committed known-good/known-bad fixtures OFFLINE. Value=comma-substrs|*|1 (mesh selector, env-driven NOT hardcoded to hands). Assembled from ingredients already read by RB3_HANDS_ATTACH_PROBE/INSTR_B within 150 lines. Render-inert, getenv-gated, flag-OFF byte-identical (drawlog 792) [Rnd_Wgpu_RB3.cpp]",
+    "default": "off",
+    "read": "value"
+  },
+  "RB3_PALETTE_DUMP_DIR": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "probe: R2 output dir for RB3_PALETTE_DUMP (default \".\"). Inert unless RB3_PALETTE_DUMP set [Rnd_Wgpu_RB3.cpp]",
+    "default": "off",
+    "read": "value"
+  },
+  "RB3_PALETTE_DUMP_EVERY": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "probe: R2 dump-every-Nth-matched-draw for RB3_PALETTE_DUMP (default 60). Inert unless RB3_PALETTE_DUMP set [Rnd_Wgpu_RB3.cpp]",
+    "default": "off",
+    "read": "value"
+  },
+  "RB3_PALETTE_DUMP_MAXFRAMES": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "probe: R2 stop-after-K-dumps-per-mesh for RB3_PALETTE_DUMP (default 6). Inert unless RB3_PALETTE_DUMP set [Rnd_Wgpu_RB3.cpp]",
+    "default": "off",
+    "read": "value"
+  },
+  "RB3_PALETTE_DUMP_TAG": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "probe: R2 arm-label written into the PaletteFrame header for RB3_PALETTE_DUMP. Inert unless RB3_PALETTE_DUMP set [Rnd_Wgpu_RB3.cpp]",
+    "default": "off",
+    "read": "value"
+  },
+  "RB3_HANDS_ATTACH_PERTURB": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "probe: W2.8f (Wave 11) fail-red control for RB3_HANDS_ATTACH_PROBE. Rotates ONE palette entry basis ~0.15 rad about Z in a LOCAL copy used only by the probe (render untouched) so the perturbed bone children joints jump ~boneLen*0.15 in TIER2 — proving the joint-attach metric CAN read RED (baseline exact-joint 0.33u -> perturb bone0 5.53u, 17x). Integer bone index; inert unless RB3_HANDS_ATTACH_PROBE set; flag-OFF byte-identical [Rnd_Wgpu_RB3.cpp]",
+    "default": "off",
+    "read": "value"
+  },
+  "RB3_HANDS_INSTR_B": {
+    "class": "probe",
+    "owner": "skinning",
+    "faithfulStatus": "probe: W2.8g (Wave 12) Instrument B — the per-vertex shell invariant ||s(v)-shat(v)|| at the DrawMesh dualskin site, the A5/A6/A7-mandated Wave-12 fix gate + axis discriminator. s(v)=as-drawn CPU 4-bone blend (bones.bones[]=off_b*liveW_b, the wext blend); shat(v)=authored shell transported by ONLY coherent bone motion sum_k w_k*v*inverse(restW_bk)*liveW_bk using Tier-1's freshness-validated rest. A coherent bake (off==inv(restW)) => s==shat every pose (GREEN); a per-bone SPACE/composition error grows R*sin(theta) transported by liveW => co-varies with wext (RED, A7); a per-vertex WEIGHT/INDEX/DECODE error is INVISIBLE (shat shares the corrupt decode) => ~0 while wext RED. RED/GREEN is the A6 axis split. Also reports the task-4 cheap discriminator: within the most-populated single-dominant-bone group, Pearson corr(bind-radius, residual) — SPACE=>one rigid rotation=>corr->1/positive slope, DECODE=>scatter=>~0. Render-inert, getenv-gated, inert unless RB3_HANDS_ATTACH_PROBE also set (shares its haMatch/rest scope), flag-OFF byte-identical (drawlog 792) [Rnd_Wgpu_RB3.cpp]",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_HANDS_SHELL_FIX": {
+    "class": "workaround",
+    "owner": "skinning",
+    "faithfulStatus": "not-live: W2.8g (Wave 12 Lane B, B-S2) DIAGNOSTIC of the ONE untried SPACE-axis reconciliation cell, default-OFF. B-S1 named the axis SPACE/composition (per-bone rigid conjugation of the finger sub-shell by ~87deg, isoDistort~0 + orthoResid~0, the authored-vertex-to-offset composition). Two prior single-bone cells failed: DEFAULT own-live(magnet 106deg)+own-rest => coherent-at-rest but R*sin(theta) fling SHARD; RB3_APPENDAGE_ASSET_REBAKE bound-live(per-member 129deg)+bound-rest => correct basis but bound is a STATIC copy => FREEZE (5th dead class). This cell = own-live (ANIMATES, no freeze) + bound-rest (per-member 129deg authored basis): bind appendage meshes to the animating magnet bone but bake off=meshWorld*inv(NativeCharSpaceRestXfm(bound)). PREDICTION from the W2.8e pose-INDEPENDENT 87.3deg/68.8deg magnet-vs-per-member gap: at own-rest skin=meshWorld*inv(129deg)*106deg=meshWorld*R_87 => shard-AT-rest, i.e. the 87deg is irreducible with any single live bone (only conjugation W2.8c[dead] or a per-member ANIMATING instance carrying skeleton_unshared.milo authored rest closes it, the latter a loader/skeleton-merge fix OUT of Lane B renderer/composition scope). Settle-guarded (pre-Character::Poll clip-free capture). flag-OFF byte-identical (drawlog 792, getenv-cached, HX_NATIVE) [BandCharacter.cpp RebindHeadHandsAtRest]",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_HANDS_AUTHORED_REPOINT": {
+    "class": "workaround",
+    "owner": "skinning/hands",
+    "faithfulStatus": "not-live REFUTED-BY-VISUAL, do-NOT default-flip (Wave-16 Lane F, HANDS-FIX): the adjudicated NEVER-MEASURED cell (HANDS-ADJUDICATION/VERDICT.md §4-5) — the 8th and final offset-bake dead cell. For appendage (hand/finger/nail/glove) meshes in RebindHeadHandsAtRest, KEEP each mesh's OWN authored offset (inv(its-own-authored world bind)) and REPOINT only to the per-member animating bone own=Find(name) via SetBone(b,own,false), with NO rebake (skips the default meshWorld*inv(seed R) overwrite) — the Wii composition v*inv(bindWorld)*own_live(t). Distinct from all 7 prior dead cells (every prior REBAKED off) and from RB3_HANDS_SHELL_FIX (which forced the SHARED male-bind onto every mesh: right for male hands_naked only, 28.9deg wrong for the female, 60-69deg gloves, ~170deg nails). MEASURED gender-split (arm-C control reproduces the adjudication 87.3deg male / 42.6deg female): Tier-1 palette rest-coherence count(>5deg)==0 PASSES BOTH genders (87.3->3.1deg male on 992 blocks, 42.6->3.1deg female on 502 blocks — strictly better than SHELL_FIX's 28.9deg female), gloves 60-69->1-3deg (improved), nails Tier-2 R-radius 0.0u (non-regressing), Tier-2 EXACT <=1u, A4 provenance clean (off*own_rest=87.2deg = pristine un-baked signature; mesh flagged mNativeBonesRebound by frame 3 so SKEL_REBAKE skips), drawlog-792 flag-OFF byte-identical. BUT the pre-registered VISUAL E1 gate FAILS: at MATCHED fixed-clock frames flag-ON TEARS the multi-bone finger blends into spike-fans at ANIMATED poses (worse than the flag-OFF coherent 'ceiling hand'). ROOT CAUSE: Tier-1 is a STATIC per-bone check (own~=B at the repoint frame); it does NOT capture that the authored verts encode the SHARED-bind INTER-bone geometry, so repointing to per-member own (different ANIMATED inter-bone poses, APD mixed-sign +/-6-35deg per-bone gaps) tears the knuckle blends — vindicating SKEL/STATUS.md seam-B. The band-side offset-bake fix class is now EXHAUSTED (7 prior + this 8th); the next step is NOT pre-committed to a reskin (Wave-17 R5-HANDS-ENDGAME/VERDICT.md fd2f83ac, verdict C + par.8 corrections BINDING): external Wii ground truth (R1-DOLPHIN D2-D4) exonerates native skeleton STATICS on all cleanly comparable channels (<=0.65deg); fix path = the pre-registered branch table (GT-A palette forensics / GT-B anim-basis / GT-C channel decode / GT-D closure) pending Lane D5's articulated capture. Wave-17 UPDATE: the Dolphin ground-truth path IS executable (D2 patched-disc apploader boot, map-valid; the older 'milo-trace is a stub' claim is obsolete). Kept in-tree default-OFF as the definitive measured dead cell so it is not re-attempted. NOTE (VERDICT par.8.3): RB3_NO_SKIN_CLAMP does NOT touch band hands - it is not a hands mitigation. flag-OFF byte-identical (getenv-cached, #ifdef HX_NATIVE) [rb3 BandCharacter.cpp RebindHeadHandsAtRest] | GT-D CLOSURE (Wave 18, execution/R5-HANDS-ENDGAME/CLOSURE.md): hands family CLOSED without articulated ground truth (D5+VISCAP exhausted: nav solved, substrate never animates band CharBones). Accepted residual: hands may articulate wrongly/appear displaced at extreme animated poses, most visible close-up, no mesh tearing (RB3_NO_SKIN_CLAMP is NOT a hands mitigation - rebound-skip). Reopen condition pre-registered in CLOSURE.md; do not re-attempt dead cells.",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_LOAD_DETERMINISM": {
+    "class": "feature",
+    "owner": "load/determinism",
+    "faithfulStatus": "not-live PASS-PRIMARY (Wave 17 Lane L, rb3 65c5092e merge): opt-in fixed-clock load-determinism seam (RB3FixedClockActive() AND this flag, both default-OFF). W12's PRIMARY-FAIL superseded: RB3LoadDetStream per-tag isolated streams for the 4 attributed divergent gRand consumers (RndParticleSys::InitParticle dominant + CamShot::Shake + CreateParticles + CharEyes::NextLook + RandomGroupSeq boot-window) -> postAnchorDelta spread 0, 10/10 boots under contention+jitter=200 (OFF-arm fail-red spread 7179). Ledger axes stream/count/order/clock 10/10 (callerOrder informational). G2 flag-OFF inert (0 probe lines, splash golden 792 intact); G3 batch_objdiff==baseline on all touched units. STAYS OPT-IN (harness flag, not a gameplay default); flag-ON gameplay-scene drawlog re-golden required before any gate adopts the ON-arm as its baseline. Harness: scripts/native/loaddet_gate.py (--attrib/--ledger). Evidence: rb3 execution/R4-DETERMINISM/.",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_LOADDET_JITTER": {
+    "class": "probe",
+    "owner": "load/determinism",
+    "faithfulStatus": "n/a: TEST-ONLY worker-latency jitter for the A-S2 load-determinism fail-red, default-OFF. When set to a positive integer N, the engine ThreadCall worker thread sleeps a pseudo-random 0..N microseconds before each job dispatch, amplifying the worker<->main allocation-order race so the OFF-arm gRand spread reproduces reliably under contention (and the seam-ON arm must still collapse 10/10). Worker-thread only; main thread untouched, so it only perturbs completion timing. getenv parsed once, 0/unset => no-op, flag-OFF byte-identical [ThreadCall_Native.cpp WorkerMain]",
+    "default": "off",
+    "read": "value"
+  },
+  "RB3_UI_POST_GRADE": {
+    "class": "feature",
+    "owner": "render/postproc",
+    "faithfulStatus": "live: menu grade-exempt UI compositing (Wave-13/14 UIGRADE), default-ON as of the Wave-14 coordinator E1 flip — hub focused-text contrast 1.95->2.20, song_select red-band fixed via menu-boundary depth LoadOp::Load; legacy opt-in name retired, opt out via RB3_UI_POST_GRADE_OFF (legacy =0 disable kept). not-live (default-OFF; trigger WIRED W13 G-TRIGGER): W13 Lane G (UIGRADE) grade-exempt menu UI. Menus render the whole frame (venue backdrop + UI) into the postproc intermediate and grade it ONCE at BandRnd::EndFrame, washing focused-item text (hub focused p60/p5 1.95 default vs 2.20 with grade off / RB3_PP_OFF). ON flushes the venue grade at the MENU venue->UI boundary so UI draws UNGRADED on top. G-S1 premise was WRONG: menu dirs have mCanEndWorld=1 (not 0) and already call Rnd::EndWorld(), but on native BandRnd::BeginDrawing bypasses base Rnd::BeginDrawing and never resets mWorldEnded, so EndWorld() is a PERMANENT NO-OP -> the proposed EndWorld-reuse trigger never flushes. WIRED trigger (PanelDir::DrawShowing, HX_NATIVE): when RB3UIPostGradeActive() && NOT in gameplay (TheGamePanel->GetGameState()!=kGamePlaying), set the menu-flush latch (RB3SetMenuUIFlushPending) then drive the flush via the existing public TheRnd->ClearDepthForOverlay() seam (the only game-side path to FlushPostProcMidFrame w/o an engine-header grant), which composites the venue with venueGrade=FALSE (chroma-preserve stays off, authored B+W look untouched, A5 trap) and reopens the pass so UI draws ungraded. Latch now consumed at the TOP of FlushPostProcMidFrame (bounds it per-flush; can't dangle into a gameplay flush). Gameplay gate is REQUIRED (gameplay already flushes ~1/frame via TrackPanel; firing the menu trigger there breaks pixel-invariance). VERIFIED default-OFF: hub 1.954->2.204 (>=2.0 win, ==PP_OFF target), partdiff 1.409->1.417 (in-band), A5 hub-backdrop chroma unchanged (Δ<0.6), gameplay kGamePlaying flush counts equal ON/OFF, flag-OFF drawlog 792 canonical PASS + Wii byte-identical (#ifdef HX_NATIVE). CAVEAT: song_select 1.110->1.049 (below [1.06,1.17] parity band) = ClearDepthForOverlay else-branch depth-clears (renders fully, fully legible); a clean flush-ONLY seam needs FlushPostProcMidFrame made public in ungranted Rnd_Wgpu_RB3.h -> ESCALATE followup. [RB3PostProc.cpp/.h + rb3 PanelDir.cpp]",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_HUB_TICKER_YFIX": {
+    "class": "workaround",
+    "owner": "ui/hub",
+    "faithfulStatus": "live: W4.3-C2b4 (Wave 13, C4) main-hub ticker fix, default-ON as of the Wave-13 coordinator E1 flip (retail-matching label/message stacking); legacy opt-in name retired, opt out via RB3_HUB_TICKER_YFIX_OFF. message.lbl (the ticker body text under expand_message_area.ihp's \"NEXT MESSAGE (n/n)\" header) sits only ~6.0u below the header on the authored world Z axis, vs ~20.8u for a confirmed-correctly-stacked pair on the same screen (fan_total.lbl/level.lbl); native draws the two labels close enough to visually collide/overlap. REFUTES two prior hypotheses from this lane: (1) an earlier pass claimed nudging message.lbl down z-fights with BandCharacter heads and hides the text -- re-measured at +8/+14/+20/+30u, text stayed fully visible/legible at every offset, did not reproduce; (2) the Wave-12 C34 side-agent's font-scale/wrap-width gap theory -- message.lbl already renders at a real smaller runtime size (16.2 vs header 18.0) with a real nonzero wrap_width (750u vs header 0u), so scale/wrap is not the gap. ON nudges message.lbl's local Z by -15.0f in MainHubPanel::UpdateHeader(), restoring a same-order-of-magnitude stacking gap. Verified via before/after screenshot diff (clean stacked separation vs clear text collision) and a nudge sweep (no occlusion/disappearance at 8/14/20/30u). flag-OFF byte-identical (drawlog 792, getenv-cached, HX_NATIVE) [MainHubPanel.cpp UpdateHeader]",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_SS_ART_YFIX": {
+    "class": "workaround",
+    "owner": "ui/song_select",
+    "faithfulStatus": "live: song-select album-art whole-assembly move (W4.3-C2b-ASM), default-ON as of the Wave-14 coordinator E1 flip — art below the header aligned with album_frame01.mesh, retail-matching; the Wave-13 HOLD (revealed bezel + left-column overlap) is RESOLVED by the assembly fix; legacy opt-in name retired, opt out via RB3_SS_ART_YFIX_OFF.",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_ROWFIX": {
+    "class": "workaround",
+    "owner": "ui/song_select",
+    "faithfulStatus": "live: song_select focused-row polarity fix (Parts A opaque fill repaint + B focus-color to main+alt font mats incl. null-provider rows), default-ON as of the Wave-16 coordinator E1 flip (dark-on-bright bar, contrast 2.41, retail polarity); legacy opt-in name retired, opt out via RB3_ROWFIX_OFF.",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_HUB_TICKER_YFIX_OFF": {
+    "class": "workaround",
+    "owner": "ui/hub",
+    "faithfulStatus": "live opt-out for the main-hub ticker stacking fix (default-ON as of Wave 13); setting this restores the overlapping one-line ticker",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_HANDS_MITTEN": {
+    "class": "workaround",
+    "owner": "skinning/hands",
+    "faithfulStatus": "LIVE default-ON (Wave-18 close-out E1 flip; opt-out RB3_HANDS_MITTEN_OFF wins, legacy =0 disables): WORKAROUND (was default-OFF at landing) (Wave-18 Lane M, R5-MITTEN; execution/R5-HANDS-ENDGAME/CLOSURE.md item 1). Render-side, hands-scoped, BAND-only mitten fallback for the closed R5-hands residual (the coherent displaced 'ceiling hand' + wrist spike-webbing = the 87.2deg seed-R rebake mechanism, HANDS-ADJUDICATION/VERDICT.md par.2). Explicitly NOT an offset bake: no anchor capture, no authored-data mutation - a per-frame palette lerp only. In Rnd_Wgpu_RB3.cpp skinned palette compose: for each BAND hand-mesh (hands_naked/gloves/fingernails, crowd excluded by name) finger bone, compare its composed skin A_i*O_i(t) to its side's WRIST bone rigid composed skin A_w*O_w(t); when rotation-to-wrist exceeds a ramp (default TH_LO=45 TH_HI=90 deg; RB3_HANDS_MITTEN_TH_LO/HI override) blend that finger palette toward wrist-rigid, degrading finger articulation at exactly the poses that tear/displace so the hand stays attached and moving. Calibrated from live relAng-to-wrist distribution (p50=21.8 p90~54 tail~135) + Wave-16 burst_08/12 evidence; measured trigger rate ~17.7pct of finger-draws. E1 VISUAL evidence (execution/R5-MITTEN/evidence/): flag-ON collapses the spike-fan/ceiling-hand at extreme poses, both genders. No-regression: blend is a mathematical no-op when relAng<TH_LO (alpha=0) so coherent frames are byte-identical by construction (trigger rate 0 there). flag-OFF (unset) byte-identical: drawlog-golden 792 PASS. Default is E1-DECIDED by the coordinator, NOT this lane. rb3-tests green, R2 skinning fixtures unaffected. [engine Rnd_Wgpu_RB3.cpp DrawMesh palette + GameRenderHook IsBandHandMesh/HandBoneRole/HandBoneSide; rb3 native/src/rb3_render_hook.cpp]",
+    "default": "on",
+    "read": "presence"
+  },
+  "RB3_HANDS_RESKIN": {
+    "class": "workaround",
+    "owner": "skinning/hands",
+    "faithfulStatus": "not-live REFUTED, do-NOT default-flip (Wave 14 Lane RESKIN R2): the R1-headline per-member hands reskin. Synthesized per-vertex weighted multi-bone blend (RndMeshDeform::Reskin LBS primitive, computed directly in BandCharacter native code) that re-poses hands_naked verts from the authored bind basis onto the member's OWN gender-posed rest, wired at SyncObjects rest time (post-SetDeformation, authored offsets intact), once-per-mesh-pointer latched, composing with the default-ON RebindHeadHandsAtRest rebake. Fires correctly (all bones resolved, gender-distinct: female 40 bones/1256v vs male 38 bones/1876v, per-member in-place mutate, zero engine TU edits). MEASURED a REGRESSION on the pre-registered IK_SHARD_VERT wext gate (gameplay burst, N~1000 draws/arm): hands_naked wext flag-OFF 60-106u mean 74.8 (39 distinct=animating) -> flag-ON 60-105u mean 87.7 (WORSE); reskin-alone (RB3_NO_HEAD_REBIND) 75-187u mean 136 (much worse). E1 band screenshots corroborate (flag-ON = LARGER hand shards, both genders). ROOT CAUSE (refutes R1's rest-shape thesis): the hands shard is an ANIMATION-BASIS problem (own_rest vs own_live rotation, R*sin(theta) far-vert smear), NOT a rest-shape/bind-basis one; a one-time vertex re-pose leaves the animation delta identical by construction and amplifies the shard (re-posed verts sit at larger radius). Same dead-end class as the refuted RB3_APPENDAGE_REST_ROT / RB3_APPENDAGE_ASSET_REBAKE; the genuine fix is asset/skeleton-basis (skeleton_unshared.milo per-member bind), not any vert/offset bake. Kept in-tree default-OFF as the definitive measured artifact so the per-member-reskin lever is not re-attempted. flag-OFF inert (early-return) / Wii byte-identical (#ifdef HX_NATIVE) [rb3 BandCharacter.cpp NativeReskinHandsAtRest + SyncObjects] | GT-D CLOSURE (Wave 18, execution/R5-HANDS-ENDGAME/CLOSURE.md): hands family CLOSED without articulated ground truth (D5+VISCAP exhausted: nav solved, substrate never animates band CharBones). Accepted residual: hands may articulate wrongly/appear displaced at extreme animated poses, most visible close-up, no mesh tearing (RB3_NO_SKIN_CLAMP is NOT a hands mitigation - rebound-skip). Reopen condition pre-registered in CLOSURE.md; do not re-attempt dead cells.",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_UI_POST_GRADE_OFF": {
+    "class": "workaround",
+    "owner": "ui/postproc",
+    "faithfulStatus": "live opt-out for the menu grade-exempt UI flush (RB3_UI_POST_GRADE, default-ON as of Wave 14); setting this restores the graded (washed) menu UI",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_SS_ART_YFIX_OFF": {
+    "class": "workaround",
+    "owner": "ui/song_select",
+    "faithfulStatus": "live opt-out for the song-select album-art assembly move (default-ON as of Wave 14); setting this restores the header-overlapping art",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_PLAYER_NAME_FALLBACK": {
+    "class": "feature",
+    "owner": "ui/profile",
+    "faithfulStatus": "live: Wii-faithful \"Player N\" name fallback (ports PlatformMgr_Wii.cpp:489-496; strong override of the weak GetName NULL stub), default-ON as of the Wave-15 coordinator E1 flip — fixes the \"(null)\" text in the song_select header + overshell plate + all GetName consumers; legacy opt-in name retired, opt out via RB3_PLAYER_NAME_FALLBACK_OFF.",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_PLAYER_NAME_FALLBACK_OFF": {
+    "class": "workaround",
+    "owner": "platform/profile",
+    "faithfulStatus": "live opt-out for the Player-N name fallback (default-ON as of Wave 15); setting this restores the null-stub \"(null)\" text",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_ROWFIX_OFF": {
+    "class": "workaround",
+    "owner": "ui/song_select",
+    "faithfulStatus": "live opt-out for the focused-row polarity fix (default-ON as of Wave 16); setting this restores the dim-fill white-text focused row",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_HANDS_MITTEN_OFF": {
+    "class": "workaround",
+    "owner": "skinning/hands",
+    "faithfulStatus": "opt-out for the LIVE default-ON RB3_HANDS_MITTEN (Wave-18 close-out E1 flip). Setting it restores the pre-mitten shipped state (seed-R rebake residual: displaced ceiling-hand + spike-webbing at extreme poses)."
+  },
+  "RB3_HANDS_MITTEN_PROBE": {
+    "class": "diagnostic",
+    "owner": "skinning/hands",
+    "faithfulStatus": "not-live diagnostic: per-draw mitten trigger-rate/relAng probe used for Lane-M calibration (execution/R5-MITTEN/)."
+  },
+  "RB3_HANDS_MITTEN_TH_LO": {
+    "class": "tuning",
+    "owner": "skinning/hands",
+    "faithfulStatus": "tuning knob: mitten rotation-ramp low threshold, default 45 deg (below it no blend — coherent frames untouched). Calibrated Wave-18 (relAng p50=21.8, p90=62, tail 134)."
+  },
+  "RB3_HANDS_MITTEN_TH_HI": {
+    "class": "tuning",
+    "owner": "skinning/hands",
+    "faithfulStatus": "tuning knob: mitten rotation-ramp high threshold, default 90 deg (full wrist-rigid blend past it)."
+  },
+  "RB3_HANDS_BINDFIX": {
+    "class": "workaround",
+    "owner": "skinning/hands",
+    "faithfulStatus": "not-live NO-VISUAL-EFFECT, do-NOT default-flip (Wave-21 Lane FIX): faithful Layer-1 load-topology restore — scopes the white-texture FilterSubdir shim so char_shared.milo + outfit resources take retail kMerge (restoring the sBoneMergeDir remap, br2=31,488/member) while colorpalettes.milo keeps kReplace (white-texture fix intact, 0 dummy misses, 0 crashes, all 4 members boot). BUT hand meshes bind their bones at PARSE (upstream of the merge remap) so BINDFIX draw output == flag-OFF byte-for-byte (seed-R 87.3°); zero hand-visual benefit. Kept default-OFF as documented partial + substrate for any future parse-time un-share. Hands are L2-b R5-walled (see W21-DISCRIM). [BandCharacter.cpp :107 IsSharedPaletteSubdir/FilterSubdir]",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_BINDFIX_DUMP": {
+    "class": "probe",
+    "owner": "skinning/hands",
+    "faithfulStatus": "probe: per-slot draw-time composition dump for RB3_HANDS_BINDFIX (Wave-21 A2 — offsets + mNativeBonesRebound flag + regime naming)",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_BINDFIX_KEEPCS": {
+    "class": "probe",
+    "owner": "skinning/hands",
+    "faithfulStatus": "probe: A/B knob keeping char_shared.milo on kReplace (DISABLES the remap, br2=0) — re-demonstrates the counted Wave-21 mechanism only",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_LOADBIND_NOSHIM": {
+    "class": "probe",
+    "owner": "skinning/loader",
+    "faithfulStatus": "probe: full FilterSubdir shim bypass (every subdir retail kMerge → white textures) — Wave-20 Lane N binding-measurement substrate only, NOT a fix",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_LOADBIND_PROBE": {
+    "class": "probe",
+    "owner": "skinning/loader",
+    "faithfulStatus": "probe: Wave-20 Lane N load-bind trace logging (branch hit-counts, FilterSubdir action log, OnInstallFilter dir dump, pristine-binding slot dump)",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_HUD_SCOREBOARD_TOPRIGHT": {
+    "class": "workaround",
+    "owner": "ui/hud",
+    "faithfulStatus": "live DEFAULT-ON (Wave-22 close-out, opt-out RB3_HUD_SCOREBOARD_TOPRIGHT_OFF): makes K9 (RB3_APPLY_HANDLER_FIX_OFF) SKIP the scoreboard-anchor neutralization so the score plate keeps its authored TOP-RIGHT position, matching the Wii GT (yt_qRagnZCIMzk_gameplay_*). K9's top-center premise was config-reasoning never GT-backed. nPlayers==1-gated so no multiplayer regression; ConfigureTracks objdiff 100% (HX_NATIVE-only). E1-confirmed (score pill 88% width). [TrackPanelDir.cpp:344]",
+    "default": "on",
+    "read": "opt-out"
+  },
+  "RB3_HUD_SCOREBOARD_TOPRIGHT_OFF": {
+    "class": "workaround",
+    "owner": "ui/hud",
+    "faithfulStatus": "live opt-out for RB3_HUD_SCOREBOARD_TOPRIGHT — restores K9's mid-screen scoreboard neutralization",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_HUD_STAR_DBG": {
+    "class": "probe",
+    "owner": "ui/hud",
+    "faithfulStatus": "probe: Wave-22 star-meter fill trace (SetNumStars f + per-star fill state) — proved the star meter fills correctly (false-alarm refutation)",
+    "default": "off",
+    "read": "presence"
+  },
+  "BAND_ANIM_YTHRESH": {
+    "class": "probe",
+    "owner": "skinning/char",
+    "faithfulStatus": "probe: Wave-23 FOREARM discovery — world-y threshold (default 50) for the event-triggered BAND_ANIM_PROBE emit; inert unless BAND_ANIM_PROBE set",
+    "default": "off",
+    "read": "value"
+  },
+  "CROWD_CENSUS_MESHES": {
+    "class": "probe",
+    "owner": "world/crowd",
+    "faithfulStatus": "probe: Wave-23 CROWD recon — verbosity/scope for the read-only rb3_crowd_census DTA func (sv3_a vignette crowd actor census)",
+    "default": "off",
+    "read": "presence"
+  },
+  "CROWD_CENSUS_VERBOSE": {
+    "class": "probe",
+    "owner": "world/crowd",
+    "faithfulStatus": "probe: Wave-23 CROWD recon — verbose per-mesh census output (read-only)",
+    "default": "off",
+    "read": "presence"
+  },
+  "CROWD_CENSUS_DRAWS": {
+    "class": "probe",
+    "owner": "world/crowd",
+    "faithfulStatus": "probe: W24-RECON crowd census draw-count reporting (read-only)",
+    "default": "off",
+    "read": "presence"
+  },
+  "CROWD_DRAW_DBG": {
+    "class": "probe",
+    "owner": "world/crowd",
+    "faithfulStatus": "probe: W24-RECON crowd draw-path trace (mDraws → DrawMesh)",
+    "default": "off",
+    "read": "presence"
+  },
+  "CROWD_POSCTRL": {
+    "class": "probe",
+    "owner": "world/crowd",
+    "faithfulStatus": "probe: W24-RECON positive-control arm (band-mesh vert-field comparison vs crowd meshes)",
+    "default": "off",
+    "read": "presence"
+  },
+  "CROWD_SUBMIT_DBG": {
+    "class": "probe",
+    "owner": "world/crowd",
+    "faithfulStatus": "probe: W24-RECON engine SubmitDraw trace for crowd meshes (Rnd_Wgpu_RB3, inert unless env set)",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_IK_REACH_CLAMP": {
+    "class": "workaround",
+    "owner": "char/ik",
+    "faithfulStatus": "live DEFAULT-ON (Wave-25 close-out, opt-out RB3_IK_REACH_CLAMP_OFF): graduated IK reach-guard in CharIKHand::Poll — when the instrument-tip IK target sits beyond the arm's measured reach (mAAPlusBB), clamp mWorldDst onto the shoulder reach-sphere (reach<d<=k*reach) or neutralize IK to the clip pose (d>k*reach), instead of over-rotating the upperArm into a spike-fan. Fixes the exploded band arm/hand fan on closeup frames. 20u arm reach VERIFIED correct (leg-reach cross-check); the far targets are mis-posed instrument-prop bones (Wave-26 tail). Wii byte-identical (HX_NATIVE); batch_objdiff==baseline all 20 CharIKHand fns. E1-confirmed. [CharIKHand.cpp:233]",
+    "default": "on",
+    "read": "opt-out"
+  },
+  "RB3_IK_REACH_CLAMP_OFF": {
+    "class": "workaround",
+    "owner": "char/ik",
+    "faithfulStatus": "live opt-out for RB3_IK_REACH_CLAMP — restores raw over-reach IK (spike-fan)",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_IK_REACH_K": {
+    "class": "tuning",
+    "owner": "char/ik",
+    "faithfulStatus": "tuning: reach-clamp k multiplier (default 2.0) — d>k*reach neutralizes IK to clip pose",
+    "default": "off",
+    "read": "value"
+  },
+  "RB3_CROWD_CLIP_KEEP": {
+    "class": "workaround",
+    "owner": "world/crowd",
+    "faithfulStatus": "not-live DEFAULT-OFF partial (Wave-25): re-plays the snapshotted crowd walk clip on starvation after the sv3_a async load-merge destroys it. Recovers bank-intact drivers only (ZERO of 8 as-observed — female04 never Played) → PROPHYLACTIC scaffolding for the W26 engine load-merge fix; clipType=='crowd'-scoped + byte-identical #else (WorldCrowd oracle untouched). Removal criterion: delete if W26 lands the engine fix and this adds nothing. [CharDriver.cpp]",
+    "default": "off",
+    "read": "presence"
+  },
+  "IK_ROOTCMP": {
+    "class": "probe",
+    "owner": "char/ik",
+    "faithfulStatus": "probe: Wave-25 FOREARM discriminator — walks the TransParent chain-to-root for IK hand + target bones (H-A/H-C refutation)",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_IK_CLAMP_DBG": {
+    "class": "probe",
+    "owner": "char/ik",
+    "faithfulStatus": "probe: Wave-25 reach-clamp fire/skip counters + preDist distribution",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_PROP_POSE": {
+    "class": "workaround",
+    "owner": "char/ik",
+    "faithfulStatus": "not-live DEFAULT-OFF partial (Wave-26): redirects an out-of-reach instrument IK tip target to its correctly-posed bone_target_* parent frame (clip-binding gap — the prop-bone clip track is unbound natively so the tip stays at its rest offset). Drops raw target distance -44..-64% but does NOT make RB3_IK_REACH_CLAMP dormant (engine mFinger re-projection, W27) and produces no visible arm change (clamp already clip-poses). Kept as pinned discriminator + first-half scaffolding; HX_NATIVE, byte-identical #else. [CharIKHand.cpp:49 sPropPoseRedirect]",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_PROP_POSE_DBG": {
+    "class": "probe",
+    "owner": "char/ik",
+    "faithfulStatus": "probe: Wave-26 PROP redirect trace (tgt->parent, dTip/dPar)",
+    "default": "off",
+    "read": "presence"
+  },
+  "IK_PROP_DBG": {
+    "class": "probe",
+    "owner": "char/ik",
+    "faithfulStatus": "probe: Wave-26 PROP discriminator — far-target LocalXfm + parent world + parent-to-hand distance (clip-binding vs attach/proxy)",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_PROP_DST_DBG": {
+    "class": "probe",
+    "owner": "char/ik",
+    "faithfulStatus": "probe: Wave-26 PROP per-ikhand pre/post target-distance histogram (A5-i regression gate)",
+    "default": "off",
+    "read": "presence"
+  },
+  "FMERGE_PROBE": {
+    "class": "probe",
+    "owner": "char/loader",
+    "faithfulStatus": "probe: Wave-26 CROWD discriminator — FileMerger merge/clear event log (proved zero crowd merges → refuted the load-merge theory)",
+    "default": "off",
+    "read": "presence"
+  },
+  "CHARDRV_BT": {
+    "class": "probe",
+    "owner": "char/loader",
+    "faithfulStatus": "probe: Wave-26 CROWD discriminator — symbolized backtrace at CharDriver::Replace (pinned the UI panel-unload teardown as the clip-kill)",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_CROWD_PANEL_DBG": {
+    "class": "probe",
+    "owner": "ui/panel",
+    "faithfulStatus": "probe: Wave-27 CROWD STEP-0 discriminator — per-panel mLoadRefs CheckLoad/CheckUnload trace + Load/UnloadPanels call-site markers + PanelDir::Enter trigger census + BandScreen interstitial trace (proved sv3_panel RESIDENT across splash->main_hub; close-out E1 reinstated the W26 teardown mechanism sourced at the faithful splash-side sv8/splash panel unload). [UIPanel.cpp, UIScreen.cpp, PanelDir.cpp, BandScreen.cpp]",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_PROP_FINGER_BYPASS": {
+    "class": "probe",
+    "owner": "char/ik",
+    "faithfulStatus": "probe: Wave-27 mFinger-bypass A/B — skips the CharIKHand::Poll mFinger re-projection to test W26-E7; CONFIRMED: over-reach 120-240u collapses to 21-25u (reach 20.3u), all gross-unreachable clamp skips vanish -> clamp effectively dormant. Kept as collapse-target reference for the eventual prop binding fix. [CharIKHand.cpp]",
+    "default": "off",
+    "read": "presence"
+  }
 }
