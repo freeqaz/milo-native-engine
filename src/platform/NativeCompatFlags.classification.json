@@ -360,6 +360,12 @@
     "faithfulStatus": "not-live: hub highlight fix default-ON",
     "default": "on"
   },
+  "RB3_NO_BUTTON_GLYPH_FIX": {
+    "class": "workaround",
+    "owner": "ui/glyphs",
+    "faithfulStatus": "not-live: W31 F3 buttons.mat colour-icon fix default-ON — buttons.mat glyph atlas is RGB artwork + alpha cell mask; without the fix the alpha->RGB text path collapses every button prompt to a solid white blob (footer pills, overshell MENU dot). Opt-out disables, restoring the white-blob rendering for A/B.",
+    "default": "on"
+  },
   "RB3_NO_HUB_BAR_SHARD_EXEMPT": {
     "class": "workaround",
     "owner": "ui/hub",
@@ -1785,18 +1791,32 @@
     "owner": "bandobj/perf",
     "faithfulStatus": "probe: one-shot clips-enumeration census of each band member's bound CharClipSet via public CharDriver::ClipDir() ([BANDPERF_CLIPS/_CLIPFLAGS]); W30 asset census proved performance clips RESIDENT (stand_rhythm_*=P/PM, stand_solo_*=PS) — the gap is selection, not loading"
   },
-  "RB3_BAND_PERF_FORCE_PLAY": {
-    "class": "workaround",
-    "default": "off",
-    "read": "truthy",
-    "owner": "bandobj/perf",
-    "faithfulStatus": "NON-FAITHFUL demo lever (Wave-30, default-OFF): forces resident idle-flagged clips to promote to play class P so rhythm/solo clips play in-song (OFF=0 -> ON=55 CHARDRV_PLAY census) — proves residency-vs-selection, NOT the faithful fix (that is the venue-mood set_play dispatch, W31). Side effect E3: sit-group SetState retrigger churn 16->4373. RETIRE at W31 close-out once the faithful dispatch lands (zombie-lever hazard per the E-C2 precedent)"
-  },
   "RB3_PROP_CENSUS_DBG": {
     "class": "probe",
     "default": "off",
     "read": "presence",
     "owner": "char/ik",
     "faithfulStatus": "probe: standing threshold-unbiased one-shot CharIKHand mFinger census ([PROP_CENSUS], logged independent of the 30u dst gate) — the instrument any future flip decision needs (CA5). E7 caveat: rows are name-keyed (root|ikhand); same-named ikhands across scene phases (hub walkers = player0-3) collapse — key by object pointer or state the caveat"
+  },
+  "RB3_SETPLAY_PROBE": {
+    "class": "probe",
+    "owner": "bandobj/perf",
+    "faithfulStatus": "probe: W31 read-only set_play mechanism instrument — [SETPLAY_KEYS] dumps the song.anim {guitar,bass,drum,mic,key}_intensity SymbolKeys resident on BandDirector::mPropAnim; [SETPLAY_SEND] logs each SyncProperty intensity SendMessage(inst, mood) dispatch. Diagnostic only, no behavior",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_SHARD_PROBE_SCENE": {
+    "class": "probe",
+    "owner": "char/skin",
+    "faithfulStatus": "probe: W31-HUBWALKER-SHARDS read-only distinct-TU shard census (native/src/rb3_shardprobe_native.cpp, A2-compliant) — per-mesh skin extent + bone attribution for the hub street population; produced the 34-row table behind the SKEL_FAMILY_STOP verdict. Scene selector",
+    "default": "off",
+    "read": "truthy"
+  },
+  "RB3_SHARD_PROBE_OUT": {
+    "class": "probe",
+    "owner": "char/skin",
+    "faithfulStatus": "probe: output path selector for RB3_SHARD_PROBE_SCENE (JSON dump destination). Diagnostic only",
+    "default": "off",
+    "read": "truthy"
   }
 }
