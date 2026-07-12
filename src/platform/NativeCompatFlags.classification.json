@@ -1805,24 +1805,10 @@
     "default": "off",
     "read": "presence"
   },
-  "RB3_SHARD_PROBE_SCENE": {
-    "class": "probe",
-    "owner": "char/skin",
-    "faithfulStatus": "probe: W31-HUBWALKER-SHARDS read-only distinct-TU shard census (native/src/rb3_shardprobe_native.cpp, A2-compliant) — per-mesh skin extent + bone attribution for the hub street population; produced the 34-row table behind the SKEL_FAMILY_STOP verdict. Scene selector",
-    "default": "off",
-    "read": "truthy"
-  },
-  "RB3_SHARD_PROBE_OUT": {
-    "class": "probe",
-    "owner": "char/skin",
-    "faithfulStatus": "probe: output path selector for RB3_SHARD_PROBE_SCENE (JSON dump destination). Diagnostic only",
-    "default": "off",
-    "read": "truthy"
-  },
   "RB3_MIDIDRV_PROBE": {
     "class": "probe",
-    "owner": "char/anim",
-    "faithfulStatus": "probe: W32-PROP-FAN read-only instrument-MIDI driver census — [MIDIDRV_CTOR] driver creation, [MIDIDRV_ENTER] Enter+parser-found, [MIDIDRV_FEED] OnMidiParser fire, [MIDIDRV_IKFEED] CharIKMidi NewSpot, [MIDIDRV_POLL] polled-driver+dir. Proved the drum/strum .dmidi drivers are created+polled but never entered (0 Enter, 0 feed). Diagnostic only",
+    "owner": "char/driver",
+    "faithfulStatus": "probe: W32-PROP-FAN read-only discriminator — logs .dmidi/.ikmidi driver lifecycle (CTOR/ENTER/POLL/FEED [MIDIDRV_*]) to prove the Enter-starvation mechanism. Diagnostic only",
     "default": "off",
     "read": "presence"
   },
@@ -1832,5 +1818,12 @@
     "faithfulStatus": "W32-PROP-FAN branch-(b) STARVED fix (default-OFF this wave; PROPOSED flip to default-ON + RB3_MIDIDRV_ENTER_FIX_OFF opt-out, earned by ON-vs-OFF evidence). The instrument-MIDI prop drivers (drum-hit/strum/fret .dmidi, CharDriverMidi) are created and per-frame POLLED (BandCharacter::Poll->Character::Poll->RndDir::Poll) but their Enter() is never invoked natively (char load-order gap: RndDir::SyncObjects rebuilds mPolls AFTER the one-time Character::Enter, so RndDir::Enter's loop misses the drivers while RndDir::Poll picks them up). Enter is what AddSink()s the driver onto its MIDI parser MsgSource; skipped Enter => no subscription => OnMidiParser never fires => per-note hit/strum clip never plays => arm holds idle pose => CharIKHand over-reaches far drum/fret target => prop-tip stick-fan. FIX: lazily run the missing Enter once, on first native Poll, per driver (native-only std::set guard, no struct member). Evidence: OnMidiParser 0->173, drum-hit clips 0->416 (hihat_hover_hit/hit_closed/kick/snare_hover_hit), drummer band-shard drops 1107->2, guitarist 843->0, stick-fans visually gone; W31 set_play UNCHANGED (stand_rhythm/solo 81->80, SETPLAY_SEND 26->26). Wii object byte-identical (#ifdef HX_NATIVE; Poll/Enter/ctor stay 100.0% objdiff). [CharDriverMidi.cpp]",
     "default": "off",
     "read": "nonempty-nonzero"
+  },
+  "RB3_NO_MIDIDRV_ENTER_FIX": {
+    "class": "workaround",
+    "owner": "char/driver",
+    "faithfulStatus": "not-live: W32-PROP-FAN Enter-starvation fix default-ON — instrument-MIDI prop drivers (drum-hit/strum/fret .dmidi) were Polled but never Entered natively (added to mPolls after the one-time Character::Enter), so they never AddSink'd onto their MIDI parser: no hit/strum clips, idle arm, CharIKHand over-reach, prop-tip fans. Fix lazily Enters once on first native Poll. Earned by ON-vs-OFF: OnMidiParser 0->173, clips 0->416, drummer shards 1107->2, guitarist 843->0, set_play non-regressed. Opt-out restores the fan artifacts for A/B",
+    "default": "on",
+    "read": "presence"
   }
 }
