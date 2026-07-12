@@ -1081,6 +1081,39 @@ void BandRnd::Shutdown() {
     mIntermediateHeight = 0;
     mPostProcFlushed = false;
 
+    // Billboard-particle (DrawParticlesBillboard) cluster. Same omission class as
+    // the compose cluster below: added after this Shutdown() was first written and
+    // never released here, so its wgpu handles survived to ~BandRnd's static-dtor
+    // phase and re-triggered the same libvulkan teardown fault (W31-EXIT-TRAP:
+    // after the compose fix the bt moved to mPartShader->~ShaderModule).
+    mPartPipelines.clear();
+    mPartPL = nullptr;
+    mPartTexBGL = nullptr;
+    mPartShader = nullptr;
+    mPartVB = nullptr;
+    mPartIB = nullptr;
+    mPartVBCapacity = 0;
+    mPartIBCapacity = 0;
+    mPartReady = false;
+
+    // Char-face compose (C8 RTT) cluster. Added after this Shutdown() was first
+    // written, so it was NOT being released here — and mComposeDiffView (a live
+    // wgpu::TextureView) transitively held the LAST strong ref to the Dawn
+    // Device/Adapter/Instance. That surviving ref meant mGpu.Shutdown() below
+    // (mDevice=nullptr) did not actually retire the device; the real teardown was
+    // deferred to ~BandRnd during libc's static-destructor phase (exit(0)), where
+    // dropping the last ref jumped into a torn-down libvulkan ICD and segfaulted
+    // (the W31-EXIT-TRAP rc=139: bt = mComposeDiffView->~TextureView ->
+    // VulkanInstance::~VulkanInstance -> libvulkan). Drop the whole cluster here,
+    // while Dawn is still alive, ahead of mGpu.Shutdown().
+    mComposePipelines.clear();
+    mComposePL = nullptr;
+    mComposeBGL = nullptr;
+    mComposeShader = nullptr;
+    mComposeUB = nullptr;
+    mComposeDiffView = nullptr;
+    mComposeHaveDiff = false;
+
     // Pipeline manager: drops the pipeline+shader caches + layouts.
     mPipelines.Terminate();
 
