@@ -17,6 +17,7 @@
 #include "rndobj/BaseMaterial.h"
 #include "rndobj/Cam.h"
 #include "rndobj/Rnd.h"
+#include "obj/Dir.h"
 #include "math/Mtx.h"
 #include <cstdio>
 #include <cstring>
@@ -120,6 +121,59 @@ static void RecordDrawCall(
     }
 }
 
+// A mesh whose name contains "_lod" is a level-of-detail variant. In the full
+// engine Character::DrawLodOrShadow picks exactly one LOD out of Character::mLods
+// and draws it; consumers that iterate an ObjectDir's meshes directly would
+// otherwise draw every LOD on top of itself.
+//
+// The skip must be *sibling-aware*, not a bare name match. A lod-suffixed mesh
+// with no higher-detail sibling IS the geometry, not a redundant copy:
+//
+//   DC3  char/crowd/gen/crowd_f_01      crowd_f_body01_lod.mesh   + crowd_f_body01.mesh   -> redundant
+//   DC3  char/main/dancer/gen/aubrey01  aubrey01_lod.1.mesh       + aubrey01.1.mesh       -> redundant
+//   DC3  char/main/dancer/gen/aubrey01  aubrey_head_lod1.mesh     + aubrey_head.mesh      -> redundant
+//   RB3  char/crowd/gen/crowd_female01  female_crowd_body01_lod02.mesh, NO sibling        -> the body
+//
+// RB3's crowd characters are authored *as* the LOD-2 asset. Blanket-skipping them
+// left the character as two disembodied hands. Returns true only when a preferred
+// sibling actually exists in the same ObjectDir, so this is strictly fewer skips
+// than the old `strstr(Name(), "_lod")` test.
+static bool IsRedundantLodMesh(RndMesh* mesh) {
+    const char* name = mesh->Name();
+    const char* lod = strstr(name, "_lod");
+    if (!lod) return false;
+
+    ObjectDir* dir = mesh->Dir();
+    if (!dir) return false;  // no siblings knowable — draw it
+
+    size_t prefixLen = (size_t)(lod - name);
+    const char* tail = lod + 4;  // text after "_lod"
+
+    // An explicit LOD index may follow ("_lod1", "_lod02"); the rest of the name
+    // (a ".N" split-mesh index and the ".mesh" extension) is part of the sibling's
+    // name and must be preserved.
+    int index = -1;
+    if (*tail >= '0' && *tail <= '9') {
+        index = 0;
+        while (*tail >= '0' && *tail <= '9') { index = index * 10 + (*tail - '0'); tail++; }
+    }
+
+    char candidate[256];
+    // Preference 1: the un-suffixed sibling ("crowd_f_body01_lod.mesh" -> "crowd_f_body01.mesh").
+    snprintf(candidate, sizeof(candidate), "%.*s%s", (int)prefixLen, name, tail);
+    if (dir->Find<RndMesh>(candidate, false)) return true;
+
+    // Preference 2: any lower (= higher detail) LOD index, plain and zero-padded.
+    for (int i = 0; i < index; i++) {
+        snprintf(candidate, sizeof(candidate), "%.*s_lod%d%s", (int)prefixLen, name, i, tail);
+        if (dir->Find<RndMesh>(candidate, false)) return true;
+        snprintf(candidate, sizeof(candidate), "%.*s_lod%02d%s", (int)prefixLen, name, i, tail);
+        if (dir->Find<RndMesh>(candidate, false)) return true;
+    }
+
+    return false;
+}
+
 void RndMesh::DrawShowing() {
     if (!gWgpuRnd || !gWgpuRnd->IsInPass()) return;
     bool capturing = FrameCapture::Get().IsCapturing();
@@ -131,9 +185,8 @@ void RndMesh::DrawShowing() {
         return;
     }
 
-    // Skip LOD meshes (drawn by Character::DrawLod in the full engine,
-    // but we iterate all meshes directly in the viewer)
-    if (strstr(Name(), "_lod")) {
+    // Skip LOD variants that are shadowed by a higher-detail sibling (see above).
+    if (IsRedundantLodMesh(this)) {
         if (capturing) FrameCapture::Get().AddSkip(Name(), "LOD mesh");
         return;
     }
