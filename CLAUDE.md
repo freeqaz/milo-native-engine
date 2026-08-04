@@ -33,6 +33,13 @@ consumer's CMakeLists, re-read with `cmake -UMILO_ENGINE_PIN -B build` once.
 - HX_NATIVE matched-fork edits are additive `#ifdef HX_NATIVE … #endif` blocks;
   the permuter never produces them, so they rarely conflict — re-read + re-apply
   if a file shifts under you.
+- ★ **Land worktree branches with `git merge --no-ff`, never cherry-pick,
+  squash, or `--ff-only`** (effective 2026-08-04; supersedes older cherry-pick /
+  `format-patch` guidance in any repo). Rebase onto the default branch first,
+  then merge with a real message saying what the work found and what it
+  deliberately did not do. The intermediate commits — especially the reverts and
+  their reasoning — are the point, and they feed the training-data pipelines.
+  Cherry-pick survives only for salvaging one commit from an abandoned branch.
 
 ## Three-layer source model
 
