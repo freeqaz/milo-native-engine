@@ -87,6 +87,42 @@ namespace {
     int gFreeCall;
 
 #ifndef __EMSCRIPTEN__
+    // Worker-thread stack size.
+    //
+    // The Xbox build asks for 0x10000 (64 KB) — ThreadCall_Win.cpp:
+    //   _beginthreadex(nullptr, 0x10000, MyThreadFunc, nullptr, 0, nullptr)
+    // — and that number was originally transliterated here verbatim. A stack
+    // budget expressed in *bytes* does not survive a change of ABI and code
+    // generator, and this one did not: the DTA loader (DataLoaderThreadObj::
+    // ThreadStart -> DataReadStream -> ParseArray/ParseNode) is the deepest
+    // recursion that runs on this thread, and its frames are ~17x fatter under
+    // clang/x86_64 than under MSVC/PPC.
+    //
+    // Measured, per DTA array-nesting level (target .s prologues vs the native
+    // build's frames):
+    //             MSVC/PPC   clang/x86_64
+    //   ParseNode   0x160        4192 B
+    //   ParseArray  0x080        4240 B
+    //   per level    480 B       8432 B
+    //
+    // The gap is not pointer width, it is inlining: MakeString<>/FormatString
+    // owns a `char mFmtBuf[0x1000]` (MakeString.h), MSVC keeps the template
+    // instantiation out of line in its own COMDAT, and clang inlines it into
+    // every caller that mentions MILO_ASSERT / MILO_NOTIFY / MakeString — which
+    // is every function on this path. So each frame carries a cold 4 KB buffer.
+    //
+    // 64 KB therefore bought the Xbox ~130 nesting levels and bought native
+    // about 4. Shipped DC3 content nests to 20 (world/world_objects.dta,
+    // ui/hud/hud_objects.dta), i.e. ~180 KB, and #include/#merge nests parser
+    // instances on top of that. The worker blew its guard page mid-parse during
+    // ContentMgr::RefreshSynchronously at only four levels deep.
+    //
+    // Use the same 8 MB the main thread gets (glibc's default). Nothing on this
+    // thread should have a smaller stack budget than the same code called
+    // synchronously from main, and the cost is address space, not memory: the
+    // pages are demand-faulted (RSS at the crash was 64 KB of a 64 KB stack).
+    constexpr size_t kWorkerStackSize = 8u * 1024u * 1024u;
+
     pthread_t gWorker;
     bool gWorkerStarted;
     sem_t gWorkerSem;
@@ -135,7 +171,7 @@ void ThreadCallInit() {
     }
     pthread_attr_t attr;
     pthread_attr_init(&attr);
-    pthread_attr_setstacksize(&attr, 0x10000);
+    pthread_attr_setstacksize(&attr, kWorkerStackSize);
     int rc = pthread_create(&gWorker, &attr, WorkerMain, nullptr);
     pthread_attr_destroy(&attr);
     if (rc != 0) {
