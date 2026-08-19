@@ -164,8 +164,27 @@ void FileEnumerate(
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
             continue;
 
+        // Mirror the Win32 reference (DC3 src/system/os/File_Win.cpp:107-111)
+        // exactly: when the qualified directory is ".", the path built here is
+        // the *bare* filename, not "./name".
+        //
+        // `buf` is not just a stat target -- it is what FileMatch() prefix-
+        // matches against the caller's pattern, and what the recursion descends
+        // into. FileQualifiedFilename() prepends gNativeDataDir (default "."),
+        // so an unconditional "%s/%s" made `buf` data-dir-qualified while the
+        // caller's pattern was not, and FileMatch requires a literal prefix
+        // match up to the first wildcard. Every pattern not beginning with a
+        // wildcard therefore enumerated *empty rather than failing* -- a silent
+        // wrong answer, not a crash. Callers that hit it: DC3's
+        // ShaderProgram.cpp:53 ("%s/shaders/*.fx") and obj/Utl.cpp:482,517,
+        // plus RecursePatternInternal, whose #ifndef HX_NATIVE guard was
+        // removed on 2026-08-19 and which had no other platform primitive.
         char buf[512];
-        snprintf(buf, sizeof(buf), "%s/%s", qualified, entry->d_name);
+        if (strcmp(qualified, ".") == 0) {
+            snprintf(buf, sizeof(buf), "%s", entry->d_name);
+        } else {
+            snprintf(buf, sizeof(buf), "%s/%s", qualified, entry->d_name);
+        }
 
         struct stat st;
         if (stat(buf, &st) != 0) continue;
