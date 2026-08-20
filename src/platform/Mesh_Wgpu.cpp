@@ -208,7 +208,7 @@ void DrawMeshImmediate(RndMesh* mesh) {
     WgpuCull matCull = (isTextMesh || isOverlayPass) ? WgpuCull::None : (WgpuCull)mat->GetCull();
     // Reflection mode (DrawMode 8) flips the camera, reversing winding order.
     // Flip cull mode so front faces aren't discarded.
-    if (TheRnd.GetDrawMode() == 8 && matCull != WgpuCull::None) {
+    if (TheRnd.DrawMode() == 8 && matCull != WgpuCull::None) {
         matCull = (matCull == WgpuCull::Regular) ? WgpuCull::Backwards : WgpuCull::Regular;
     }
     key.cull = matCull;
@@ -301,7 +301,7 @@ void DrawMeshImmediate(RndMesh* mesh) {
         npKey.blend = (WgpuBlend)nextPass->GetBlend();
         npKey.zMode = (WgpuZMode)nextPass->GetZMode();
         WgpuCull npCull = (WgpuCull)nextPass->GetCull();
-        if (TheRnd.GetDrawMode() == 8 && npCull != WgpuCull::None) {
+        if (TheRnd.DrawMode() == 8 && npCull != WgpuCull::None) {
             npCull = (npCull == WgpuCull::Regular) ? WgpuCull::Backwards : WgpuCull::Regular;
         }
         npKey.cull = npCull;

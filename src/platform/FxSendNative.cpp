@@ -106,7 +106,7 @@ void NativeEffectSlot::SyncParams() {
             FxSendEQ *eq = (FxSendEQ *)send;
             EQEffect *fx = (EQEffect *)processor;
             EQEffect::Params p;
-            p.mActiveBands = 0x1F; // all 5 bands
+            p.unk0 = false; // bypass slot (offset 0x0); SetParameters never reads it
             p.mBand1Freq = eq->mHighFreqCutoff;
             p.mBand1Gain = eq->mHighFreqGain;
             p.mBand1Q = 1.0f;
@@ -120,7 +120,6 @@ void NativeEffectSlot::SyncParams() {
             p.mBand4Gain = 0.0f;
             p.mBand4Q = eq->mLowPassReso;
             p.mBand5Freq = eq->mHighPassCutoff;
-            p.mBand5Q = eq->mHighPassReso;
             fx->SetParameters(p);
             break;
         }
