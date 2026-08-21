@@ -5,7 +5,25 @@
 
 #pragma once
 
+// The MovieImpl base header is spelled differently by the game trees that share
+// this engine, so pick the spelling that is actually present.
+//
+// DC3 renamed src/system/movie/MovieImpl.h to MovieImpl_p.h (dc3-decomp
+// b606a4c96), on the evidence of the __FILE__ retail embedded in the asserts
+// inside it. rb3-xenon still ships it under the old name. Probe the retail-
+// correct _p spelling first: DC3 carries a native-only compatibility shim at
+// native/include/movie/MovieImpl.h, so testing the old name first would keep
+// resolving through the shim and the shim could never be retired.
+#if defined(__has_include)
+#if __has_include("movie/MovieImpl_p.h")
+#include "movie/MovieImpl_p.h"
+#else
 #include "movie/MovieImpl.h"
+#endif
+#else
+#include "movie/MovieImpl.h"
+#endif
+
 #include "os/Timer.h"
 #include "utl/Str.h"
 
