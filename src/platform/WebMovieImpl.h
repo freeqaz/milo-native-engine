@@ -5,7 +5,19 @@
 
 #pragma once
 
+// See the note in FFmpegMovieImpl.h: DC3 spells this header MovieImpl_p.h,
+// rb3-xenon spells it MovieImpl.h, and DC3's native-only shim means the _p
+// spelling has to be probed first.
+#if defined(__has_include)
+#if __has_include("movie/MovieImpl_p.h")
+#include "movie/MovieImpl_p.h"
+#else
 #include "movie/MovieImpl.h"
+#endif
+#else
+#include "movie/MovieImpl.h"
+#endif
+
 #include "os/Timer.h"
 #include "utl/Str.h"
 
