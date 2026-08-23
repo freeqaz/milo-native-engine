@@ -17,12 +17,24 @@
 #if defined(__has_include)
 #if __has_include("movie/MovieImpl_p.h")
 #include "movie/MovieImpl_p.h"
+#define MILO_MOVIEIMPL_QUERY_CONST const
 #else
 #include "movie/MovieImpl.h"
+#define MILO_MOVIEIMPL_QUERY_CONST
 #endif
 #else
 #include "movie/MovieImpl.h"
+#define MILO_MOVIEIMPL_QUERY_CONST
 #endif
+
+// MovieImpl::IsOpen/IsLoading are const in DC3 -- ?IsOpen@MovieImpl@@UBA_NXZ and
+// ?IsLoading@MovieImpl@@UBA_NXZ in orig/373307D9/ham_xbox_r.map, corroborated by
+// rb3's independent Wii decomp (Movie::Impl::IsOpen() const). rb3-xenon's
+// movie/MovieImpl.h still declares them non-const; that is very likely the same
+// latent bug DC3 had (a const override there silently became two EXTRA vtable
+// slots instead of overriding), but fixing it belongs in that tree, so key the
+// qualifier off the same header probe used above and keep `override` so either
+// tree drifting fails loudly instead of silently re-growing the vtable.
 
 #include "os/Timer.h"
 #include "utl/Str.h"
@@ -49,8 +61,8 @@ public:
     virtual bool Poll() override;
     virtual void Save(BinStream *) override {}
     virtual void End() override;
-    virtual bool IsOpen() override { return mOpen; }
-    virtual bool IsLoading() override { return false; }
+    virtual bool IsOpen() MILO_MOVIEIMPL_QUERY_CONST override { return mOpen; }
+    virtual bool IsLoading() MILO_MOVIEIMPL_QUERY_CONST override { return false; }
     virtual bool CheckOpen(bool) override;
     virtual void SetPaused(bool paused) override;
     virtual bool Paused() const override { return mPaused; }
