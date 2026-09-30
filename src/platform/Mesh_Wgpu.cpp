@@ -122,9 +122,19 @@ static void RecordDrawCall(
 }
 
 const char* RndMeshDrawShowingSkip(RndMesh* mesh) {
-    // Text meshes (created by RndText::FontMap) have empty names and may not have
-    // their Showing flag set since they're internal meshes drawn by RndText::DrawMesh.
-    if (!mesh->Showing() && mesh->Name()[0]) return "not showing";
+    // No Showing() test, deliberately. The image's override is
+    // DxMesh::DrawShowing (826229B0; 100% matched in dc3-decomp's
+    // src/system/rnddx9/Mesh.cpp), and its only refusal is `!geom->CanDraw()`.
+    // Showing() is gated one level up, in RndDrawable::Draw(). Everything that
+    // calls DrawShowing() DIRECTLY draws the mesh whatever its flag says --
+    // UIListMeshElement::Draw on a list's hidden template mesh (the case that
+    // made dc3 carry a SetShowing(true)/restore workaround), RndText, RndLine,
+    // RndRibbon, RndMultiMeshProxy, CharFeedback. A native-only test here
+    // dropped every hidden *named* mesh on those paths.
+    //
+    // Tools that walk an ObjectDir and call DrawShowing() on every mesh (the
+    // viewers, render-test, rb3-xenon's main_render) are bypassing Draw(), so
+    // they must apply the showing gate themselves -- and do.
 
     // Content filters are CONSUMER policy, not engine semantics, and the engine
     // already owns a seam for them: ShouldSkipMesh (platform/MeshFilter.h), which
