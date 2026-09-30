@@ -7,6 +7,7 @@
 #include "platform/Rnd_Wgpu.h"
 #include "platform/BoneSetup.h"
 #include "platform/MaterialSetup.h"
+#include "platform/MeshDrawShowing.h"
 #include "platform/MeshFilter.h"
 #include "platform/TransformUtils.h"
 #include "platform/TexGpu.h"
@@ -120,16 +121,10 @@ static void RecordDrawCall(
     }
 }
 
-void RndMesh::DrawShowing() {
-    if (!gWgpuRnd || !gWgpuRnd->IsInPass()) return;
-    bool capturing = FrameCapture::Get().IsCapturing();
-
+const char* RndMeshDrawShowingSkip(RndMesh* mesh) {
     // Text meshes (created by RndText::FontMap) have empty names and may not have
     // their Showing flag set since they're internal meshes drawn by RndText::DrawMesh.
-    if (!Showing() && Name()[0]) {
-        if (capturing) FrameCapture::Get().AddSkip(Name(), "not showing");
-        return;
-    }
+    if (!mesh->Showing() && mesh->Name()[0]) return "not showing";
 
     // Content filters are CONSUMER policy, not engine semantics, and the engine
     // already owns a seam for them: ShouldSkipMesh (platform/MeshFilter.h), which
@@ -145,15 +140,17 @@ void RndMesh::DrawShowing() {
     // DrawMeshImmediate calls ShouldSkipMesh again; it is a pure name/material
     // predicate, so the second call is free. Testing here as well keeps the skip
     // ahead of IncrementMeshDrawCalls, so the draw-call counter is unchanged.
-    if (ShouldSkipMesh(Name(), Mat())) {
-        if (capturing) FrameCapture::Get().AddSkip(Name(), "filtered by consumer");
-        return;
-    }
+    if (ShouldSkipMesh(mesh->Name(), mesh->Mat())) return "filtered by consumer";
 
-    // Get material
-    RndMat* mat = Mat();
-    if (!mat) {
-        if (capturing) FrameCapture::Get().AddSkip(Name(), "no material");
+    if (!mesh->Mat()) return "no material";
+    return nullptr;
+}
+
+void RndMesh::DrawShowing() {
+    if (!gWgpuRnd || !gWgpuRnd->IsInPass()) return;
+
+    if (const char* skip = RndMeshDrawShowingSkip(this)) {
+        if (FrameCapture::Get().IsCapturing()) FrameCapture::Get().AddSkip(Name(), skip);
         return;
     }
 
