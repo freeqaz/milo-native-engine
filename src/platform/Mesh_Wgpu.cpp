@@ -7,6 +7,7 @@
 #include "platform/Rnd_Wgpu.h"
 #include "platform/BoneSetup.h"
 #include "platform/MaterialSetup.h"
+#include "platform/MeshDrawShowing.h"
 #include "platform/MeshFilter.h"
 #include "platform/TransformUtils.h"
 #include "platform/TexGpu.h"
@@ -120,16 +121,20 @@ static void RecordDrawCall(
     }
 }
 
-void RndMesh::DrawShowing() {
-    if (!gWgpuRnd || !gWgpuRnd->IsInPass()) return;
-    bool capturing = FrameCapture::Get().IsCapturing();
-
-    // Text meshes (created by RndText::FontMap) have empty names and may not have
-    // their Showing flag set since they're internal meshes drawn by RndText::DrawMesh.
-    if (!Showing() && Name()[0]) {
-        if (capturing) FrameCapture::Get().AddSkip(Name(), "not showing");
-        return;
-    }
+const char* RndMeshDrawShowingSkip(RndMesh* mesh) {
+    // No Showing() test, deliberately. The image's override is
+    // DxMesh::DrawShowing (826229B0; 100% matched in dc3-decomp's
+    // src/system/rnddx9/Mesh.cpp), and its only refusal is `!geom->CanDraw()`.
+    // Showing() is gated one level up, in RndDrawable::Draw(). Everything that
+    // calls DrawShowing() DIRECTLY draws the mesh whatever its flag says --
+    // UIListMeshElement::Draw on a list's hidden template mesh (the case that
+    // made dc3 carry a SetShowing(true)/restore workaround), RndText, RndLine,
+    // RndRibbon, RndMultiMeshProxy, CharFeedback. A native-only test here
+    // dropped every hidden *named* mesh on those paths.
+    //
+    // Tools that walk an ObjectDir and call DrawShowing() on every mesh (the
+    // viewers, render-test, rb3-xenon's main_render) are bypassing Draw(), so
+    // they must apply the showing gate themselves -- and do.
 
     // Content filters are CONSUMER policy, not engine semantics, and the engine
     // already owns a seam for them: ShouldSkipMesh (platform/MeshFilter.h), which
@@ -145,15 +150,17 @@ void RndMesh::DrawShowing() {
     // DrawMeshImmediate calls ShouldSkipMesh again; it is a pure name/material
     // predicate, so the second call is free. Testing here as well keeps the skip
     // ahead of IncrementMeshDrawCalls, so the draw-call counter is unchanged.
-    if (ShouldSkipMesh(Name(), Mat())) {
-        if (capturing) FrameCapture::Get().AddSkip(Name(), "filtered by consumer");
-        return;
-    }
+    if (ShouldSkipMesh(mesh->Name(), mesh->Mat())) return "filtered by consumer";
 
-    // Get material
-    RndMat* mat = Mat();
-    if (!mat) {
-        if (capturing) FrameCapture::Get().AddSkip(Name(), "no material");
+    if (!mesh->Mat()) return "no material";
+    return nullptr;
+}
+
+void RndMesh::DrawShowing() {
+    if (!gWgpuRnd || !gWgpuRnd->IsInPass()) return;
+
+    if (const char* skip = RndMeshDrawShowingSkip(this)) {
+        if (FrameCapture::Get().IsCapturing()) FrameCapture::Get().AddSkip(Name(), skip);
         return;
     }
 
