@@ -133,7 +133,7 @@ struct MaterialUniforms {
     useAlphaAsRGB: f32,      // 1.0 to use texture alpha as grayscale RGB (font textures)
     hasSpecularMap: f32,     // 1.0 when specular map is bound
     unlit: f32,              // 1.0 = Wii mUseEnviron==0 && !mPreLit: register color only (no ambient/lights/vertex tint)
-    _padMat2: f32,
+    bloomMaskScale: f32,     // >0: alpha = luma(rgb) * this (RB3 pseudo-HDR bloom mask)
     _padMat3: f32,
 };
 
@@ -905,6 +905,14 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
     // brightens everything drawn through the target.
     if (scene.outputLinear < 0.5) {
         finalColor = linearToSrgb(finalColor);
+    }
+
+    // RB3 pseudo-HDR bloom mask (standard.ps ShaderOptions bit 22): alpha is the
+    // luma of the colour written, scaled by SetBloomColor's c7. Only set for
+    // AllowHDR materials in the main frame, whose pipelines then write alpha.
+    if (material.bloomMaskScale > 0.0) {
+        let mask = dot(finalColor, vec3f(0.3, 0.59, 0.11)) * material.bloomMaskScale;
+        return vec4f(finalColor, clamp(mask, 0.0, 1.0));
     }
 
     return vec4f(finalColor, baseColor.a);

@@ -661,11 +661,15 @@ void WgpuRnd::BeginFramePass(bool clear) {
         colorAtt.storeOp = wgpu::StoreOp::Store;
     }
     colorAtt.loadOp = clear ? wgpu::LoadOp::Clear : wgpu::LoadOp::Load;
+    // RB3's retail chain reads the frame's alpha as its bloom mask
+    // (rndshape::BloomMaskScale), and retail clears only RGB, leaving alpha 0.
+    const int retailMode = rndshape::RetailPostMode();
+    const bool maskInAlpha = hasPostProc && (retailMode == 1 || retailMode >= 3);
     colorAtt.clearValue = {
         (double)mClearColor.red,
         (double)mClearColor.green,
         (double)mClearColor.blue,
-        1.0
+        maskInAlpha ? 0.0 : 1.0
     };
 
     wgpu::RenderPassDepthStencilAttachment depthAtt{};

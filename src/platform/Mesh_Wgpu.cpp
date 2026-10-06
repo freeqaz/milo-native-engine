@@ -230,6 +230,12 @@ void DrawMeshImmediate(RndMesh* mesh) {
     key.alphaWrite = mat->GetAlphaWrite();
     if (rndshape::kRenderTargetForcesAlphaWrite && gWgpuRnd->ActiveTargetTex())
         key.alphaWrite = true;
+    // RB3's pseudo-HDR bloom mask (rndshape::BloomMaskScale; 0 for DC3): an
+    // AllowHDR material drawn into the main frame writes its luma to alpha.
+    const float bloomMaskScale = (!isOverlayPass && !gWgpuRnd->ActiveTargetTex())
+        ? rndshape::BloomMaskScale(mat) : 0.0f;
+    if (bloomMaskScale > 0.0f)
+        key.alphaWrite = true;
     key.alphaToCoverage = mat->GetAlphaCut();
     key.depthBias = meshData.depthBias;
 
@@ -240,6 +246,7 @@ void DrawMeshImmediate(RndMesh* mesh) {
 
     // --- Material (group 1) ---
     MaterialParams matParams = BuildMaterialParams(mat, isTextMesh);
+    matParams.uniforms.bloomMaskScale = bloomMaskScale;
     heuristics |= matParams.heuristics;
 
     uint32_t matOffset = gWgpuRnd->MaterialRing().Write(

@@ -1,10 +1,12 @@
 #pragma once
 #include "gfx/BloomPass.h"
 #include "gfx/DofPass.h"
+#include "gfx/RB3RetailPost.h"
 #include <webgpu/webgpu_cpp.h>
 #include <chrono>
 
 class GpuDevice;
+class RndPostProc;
 
 class PostProcPass {
 public:
@@ -20,9 +22,12 @@ public:
 
 private:
     void EnsurePipeline(GpuDevice& gpu);
+    float StepTime();
+    float StepFlicker(RndPostProc* pp, float dt);
 
     BloomPass mBloom;
     DofPass mDof;
+    RB3RetailPost mRetail;   // RB3 content only (rndshape::kRetailPostChain)
 
     wgpu::ShaderModule mPostProcShader;
     wgpu::BindGroupLayout mPostProcBGL;
@@ -38,4 +43,5 @@ private:
     float mFlickerTimer = 0.0f;
     std::chrono::steady_clock::time_point mLastTime{};
     bool mTimeInit = false;
+    float mNoiseTime = 0.0f;
 };

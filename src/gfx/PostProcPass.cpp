@@ -3,6 +3,7 @@
 #include "rndobj/PostProc.h"
 #include "rndobj/ColorXfm.h"
 #include "platform/rndshape/RndShape.h"
+#include "gfx/RB3RetailPost.h"
 
 #include <cstring>
 #include <cstdlib>
@@ -236,6 +237,40 @@ void PostProcPass::EnsurePipeline(GpuDevice& gpu) {
     mPostProcReady = true;
 }
 
+// Seconds since the previous Run; also advances the noise clock.
+float PostProcPass::StepTime() {
+    auto now = std::chrono::steady_clock::now();
+    if (!mTimeInit) { mLastTime = now; mTimeInit = true; }
+    float dt = std::chrono::duration<float>(now - mLastTime).count();
+    mLastTime = now;
+    mNoiseTime += dt;
+    return dt;
+}
+
+// Flicker: random brightness modulation between bounds over time.
+// Match original engine guard: all three must be positive for flicker to activate
+float PostProcPass::StepFlicker(RndPostProc* pp, float dt) {
+    const Vector2& flickerMod = pp->GetFlickerModBounds();
+    const Vector2& flickerTime = pp->GetFlickerTimeBounds();
+    if (flickerTime.x > 0.0f && flickerTime.y > 0.0f && flickerMod.y > 0.0f) {
+        mFlickerTimer -= dt;
+        if (mFlickerTimer <= 0.0f) {
+            // Pick new random target and duration
+            // Original: mFlickerMod = 1.0f - RandomFloat(modBounds.x, modBounds.y)
+            float t = (float)rand() / (float)RAND_MAX;
+            mFlickerTarget = 1.0f - (flickerMod.x + t * (flickerMod.y - flickerMod.x));
+            float dur = flickerTime.x + ((float)rand() / (float)RAND_MAX) * (flickerTime.y - flickerTime.x);
+            mFlickerTimer = dur > 0.0f ? dur : 0.1f;
+        }
+        // Lerp toward target
+        float rate = dt * 10.0f;
+        if (rate > 1.0f) rate = 1.0f;
+        mFlickerCurrent += (mFlickerTarget - mFlickerCurrent) * rate;
+        return mFlickerCurrent;
+    }
+    return 1.0f;
+}
+
 void PostProcPass::Run(wgpu::CommandEncoder& encoder, wgpu::TextureView& intermediateView,
                        wgpu::Texture& intermediateTex, int intermediateW, int intermediateH,
                        wgpu::TextureView& depthView, wgpu::TextureView& frameView,
@@ -248,6 +283,18 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, wgpu::TextureView& interme
     // Run DOF before bloom/composite
     mDof.Run(encoder, intermediateView, intermediateTex, depthView,
              intermediateW, intermediateH, gpu);
+
+    if constexpr (rndshape::kRetailPostChain) {
+        if (const int mode = rndshape::RetailPostMode()) {
+            float dt = StepTime();
+            RetailPostParams rp;
+            if (mode != 2) rndshape::FillRetailPost(pp, StepFlicker(pp, dt), rp);
+            if (mode >= 3) rp.debugView = mode - 2;
+            rp.time = mNoiseTime;
+            mRetail.Run(encoder, intermediateView, intermediateW, intermediateH, frameView, rp, gpu);
+            return;
+        }
+    }
 
     // Run bloom if active — clamp intensity and raise threshold floor
     float bloomIntensity = std::min(pp->GetBloomIntensity(), 1.0f);
@@ -291,40 +338,14 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, wgpu::TextureView& interme
     uni.bloomColor[3] = 1.0f;
 
     // Time tracking for noise animation
-    auto now = std::chrono::steady_clock::now();
-    if (!mTimeInit) { mLastTime = now; mTimeInit = true; }
-    float dt = std::chrono::duration<float>(now - mLastTime).count();
-    mLastTime = now;
-    static float sTime = 0.0f;
-    sTime += dt;
-    uni.time = sTime;
+    float dt = StepTime();
+    uni.time = mNoiseTime;
 
     // Noise/grain
     uni.noiseIntensity = rndshape::PostProcGrain(pp);
     uni.noiseMidtone = pp->GetNoiseMidtone() ? 1.0f : 0.0f;
 
-    // Flicker: random brightness modulation between bounds over time
-    // Match original engine guard: all three must be positive for flicker to activate
-    const Vector2& flickerMod = pp->GetFlickerModBounds();
-    const Vector2& flickerTime = pp->GetFlickerTimeBounds();
-    if (flickerTime.x > 0.0f && flickerTime.y > 0.0f && flickerMod.y > 0.0f) {
-        mFlickerTimer -= dt;
-        if (mFlickerTimer <= 0.0f) {
-            // Pick new random target and duration
-            // Original: mFlickerMod = 1.0f - RandomFloat(modBounds.x, modBounds.y)
-            float t = (float)rand() / (float)RAND_MAX;
-            mFlickerTarget = 1.0f - (flickerMod.x + t * (flickerMod.y - flickerMod.x));
-            float dur = flickerTime.x + ((float)rand() / (float)RAND_MAX) * (flickerTime.y - flickerTime.x);
-            mFlickerTimer = dur > 0.0f ? dur : 0.1f;
-        }
-        // Lerp toward target
-        float rate = dt * 10.0f;
-        if (rate > 1.0f) rate = 1.0f;
-        mFlickerCurrent += (mFlickerTarget - mFlickerCurrent) * rate;
-        uni.flickerMul = mFlickerCurrent;
-    } else {
-        uni.flickerMul = 1.0f;
-    }
+    uni.flickerMul = StepFlicker(pp, dt);
 
     gpu.Queue().WriteBuffer(mPostProcUniformBuffer, 0, &uni, sizeof(uni));
 
@@ -367,6 +388,7 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, wgpu::TextureView& interme
 
 void PostProcPass::Terminate() {
     mBloom.Terminate();
+    mRetail.Terminate();
     mDof.Terminate();
 
     mPostProcShader = nullptr;
