@@ -71,6 +71,8 @@ calls by name:
 
 BandRnd-only instrumentation (draw log, progressive texture sharpen) reports
 "off", and BandRnd's own test suites build only with the rb3 flavor.
+(Superseded by section 14: both are implemented under dc3 and the suites build
+for both flavors.)
 
 One matched-fork edit was needed: rb3 `src/system/rndobj/Cam.cpp`
 `RndCam::Select` (`#ifdef HX_NATIVE`) opens the camera's target texture as the
@@ -191,7 +193,8 @@ fixes, so those fixes did not move them.
   it needs this engine branch pinned first (the pinned `2ea8e34` has no shape
   seam), and it switches off BandRnd-only harness features: the draw log and its
   goldens, texture sharpen, and the WGSL validation suite. That is the
-  coordinator's call.
+  coordinator's call. (Section 14: those features now work under dc3, so the
+  flip no longer switches them off.)
 - **Tone and post chain**: RB3's grade, venue lights and fog vs DC3's (section 3).
 - **Render-target content**: the cloud layer and the billboard are RTs that
   RB3's systems fill (outfit/`TexRenderer`-style paths). They draw black or
@@ -380,12 +383,13 @@ cell is empty because its `hair_straight.bmp` is absent from `wii-extracted`.
   block; the menu-UI post-grade boundary, chroma preservation and soft-clip
   ceiling of `RB3PostProc`; sustain-tail colour; render-to-texture without
   depth; texture sharpen; the draw log and its goldens; the WGSL validation
-  suite; BandRnd's skinning workarounds. None of them was needed to match or
+  suite (these three closed in section 14); BandRnd's skinning workarounds. None of them was needed to match or
   beat BandRnd on the frames above; bloom is the most visible remaining gap
   against retail.
 - **Crowd recolouring.** `Crowd.cpp` sets `kColorModModulate` with three random
   colours per crowd character; no backend implements `mColorMod`, and the Wii
   `WiiMat` decomp has no consumer of it to copy, so its semantics are unknown.
+  Implemented from retail's shaders in section 14.4; inert on shipped content.
 - **Sky brightness and logo colour** (7.2) — shared with BandRnd. Fixed in
   section 8 (gamma-space shading).
 - **`PresyncBitmap`** fingerprints every texture on every draw (~170k calls in
@@ -1741,4 +1745,229 @@ restore at 19:44:29). rb3-xenon's health run was restarted on the clean tree.
 - The colour probe, the per-draw probe and the AO switches were temporary and
   are not committed.
 - **Inverse square root**: unchanged from 12.7.
+- No merge, pin bump or push.
+
+## 14. The last BandRnd-only features: texture sharpen, draw log, WGSL coverage, crowd colour mod (lane W16-RH, 2026-10-06)
+
+Before this lane, four rb3 test suites (`test_texsharpen`,
+`test_texsharpen_manager`, `test_wgsl_validation`, `test_draw_log_golden`)
+built only when `RB3_GPU_BACKEND=rb3`, and section 7.5 listed crowd recolouring
+as unimplemented in both backends. Under the dc3 flavor, the rb3 facade
+(`rb3_rnd_backend_dc3.cpp`) stubbed the draw log as empty and texture sharpen as
+off. All four suites now build and pass under both flavors. The colour
+modulation is implemented with retail's math in the shared standard shader.
+
+| gap | before | after |
+|---|---|---|
+| Progressive texture sharpen | dc3 facade stub: `RB3ProgressiveSharpenEnabled()` returns false; suites rb3-only | the engine's `RB3TexSharpen.cpp` manager builds for dc3 + rb3wii over new texture-cache hooks; 7/7 sharpen tests pass under dc3 |
+| Draw log + provenance | dc3 facade stub: empty log, `RB3DebugDrawLogEnabled()` false | every `Mesh_Wgpu` draw is recorded in BandRnd's format; the title dump has 881 draws, `/api/drawlog?prov=1` has 890 with provenance; 10/10 golden-comparator tests pass, the real-draw test skips by design in both flavors |
+| WGSL validation | compiled BandRnd's 5 `.inc` modules + standard; rb3-only | compiles the linked flavor's own table (10 modules under dc3, 6 under rb3); found and fixed a real DoF shader bug |
+| Crowd colour mod | no backend reads `mColorModFlags` / `mColorMod`; semantics unknown | retail's three modes implemented in `standard_wgsl.inc`; mode 0 is an exact identity; inert on shipped RB3 content (14.4) |
+
+### 14.1 Texture sharpen
+
+The manager (`platform/RB3TexSharpen.cpp`) was already flavor-neutral apart
+from four texture-cache hooks. `platform/rndshape/RB3WiiTexSharpen.cpp`
+implements them over `Tex_Wgpu`:
+
+- `RB3SharpenTexFingerprint`: a new `GpuTexPixelFingerprint`, the same hash
+  `PresyncBitmap` uses to detect changed pixels.
+- `RB3SharpenReuploadTex`: calls `PresyncBitmap`. It reports success when the
+  texture's create counter moved (`GetGpuTexDebugInfo(tex).createCount`, a
+  new global counter of `PresyncBitmap` re-creates). `PresyncBitmap` re-creates
+  at the bitmap's current size whenever the pixel pointer or fingerprint
+  changed. The dc3 mesh path builds the material bind group per draw from
+  `GetGpuTexView`, so the next draw binds the new view without further
+  invalidation.
+- `RB3DebugUploadTex` and `RB3DebugGetTexGpuInfo`: a test-facing view of
+  `GpuTexDebugInfo` (present, uploaded, size, view/texture handles, create
+  count). `GpuTexData` records the last uploaded size for this.
+
+The manager test's "GPU not ready" case used to set `gBandRnd.mGpuReady=false`.
+It now calls a new `RB3DebugSetSharpenGpuUnavailable(bool)`, which both flavors
+define.
+
+### 14.2 Draw log and provenance
+
+`platform/rndshape/RB3WiiDrawLog.cpp` (dc3 + rb3wii only) carries BandRnd's
+record, provenance, dump and accessor code. The engine side is a neutral seam
+in `RndShape.h`: `DrawLogActive`, `DrawLogFrameBegin`, `DrawLogPassOpen`,
+`DrawLogRecord` and `DrawLogFrameEnd`. They are inline no-ops in
+`RndShape_DC3.h`, so DC3 and rb3-xenon compile them away. `WgpuRnd` opens the
+frame in `BeginDrawing`, numbers the passes (main, overlay, HUD, texture) and
+writes the `RB3_DRAWLOG_DUMP` JSON in `EndDrawing`. `Mesh_Wgpu` fills a
+`DrawLogDraw` after each `DrawIndexed`. The log is active under `RB3_DRAWLOG`,
+under `RB3DebugSetDrawLogEnabled(true)`, or when provenance is on.
+
+Differences from BandRnd's records, each a consequence of how the dc3 path
+binds, not an omission:
+
+- **Tokens.** BandRnd's scene/material/object/bone tokens are bind-group
+  handles. The dc3 path builds bind groups per draw, so a handle would name
+  every draw differently. The tokens here hash (uniform ring buffer, offset),
+  which names the same uniform data the same way. The bone token of an
+  unskinned draw is the dummy bone bind group.
+- **World matrix** is `ObjectUniforms.world`, which is identity for skinned
+  meshes (their bones carry the transform).
+- **Vertex count** is the uploaded buffer's count.
+- **`boneFallback`** is always 0: the dc3 skinning path has no fallback state.
+- The provenance sphere and exact-vertex screen rects use the mesh's own
+  `WorldXfm`.
+
+Measured on the title under dc3. The `RB3_DRAWLOG_DUMP` at frame 401 has
+881 draws, with 21 distinct scene tokens, 881 material, 881 object, 568 bone
+(567 skinned draws plus the dummy), 21 pipelines and 269 mesh names. HTTP
+`/api/drawlog?prov=1` at frame 312 returned 890 draws, all with provenance
+(`rectKind` 1: 312, 3: 576, 2: 1, 0: 1; camera `world.cam` 553, none 335).
+`/api/uidump` returns ok. The golden test's own comment records BandRnd's boot
+capture of a menu frame as 877–891 draws.
+
+`DrawLogGolden.PopulatesFromRealDrawMesh` skips in both flavors by design (its
+comment: the unit fixture stands up no render pass). The live captures above
+are the real-draw evidence.
+
+### 14.3 WGSL coverage, and a DoF shader bug
+
+The old test embedded BandRnd's five `.inc` modules and the standard shader,
+so under dc3 it would have validated shaders the renderer never compiles.
+`gfx/ShippedWgsl.h` now declares `ShippedWgslModules()`, and exactly one
+definition links per flavor:
+
+- dc3 (`gfx/ShippedWgsl_DC3.cpp`): standard, bloom, DoF, DoF depth resolve,
+  `DrawRect2D`, post-proc, `RB3RetailPost`, display ramp, shadow, particles.
+  Each source comes from an accessor in the file that compiles it, so the table
+  holds the exact bytes.
+- rb3 (`platform/RB3ShippedWgsl.cpp`): standard plus the five BandRnd modules.
+
+`WgslValidation.AllShippedShadersCompile` compiles every entry on the device
+and fails on any error. `HarnessCatchesBadShader` still proves the harness can
+fail.
+
+The first dc3 run failed:
+`gfx/DofPass.cpp (dof): 'textureSample' must only be called from uniform
+control flow`. DoF's blur loop sampled after an early return. Dawn rejects
+that module, so a DoF pipeline built from it is invalid. The pass runs only
+when `TheDOFProc` is enabled, which is why no frame showed it. The taps now use
+`textureSampleLevel(..., 0.0)`; the scene texture has a single mip, so the
+result is the same. All 10 modules compile.
+
+Not examined: the DoF depth texture is bound as `UnfilterableFloat` and sampled
+through a filtering sampler. That is a bind-group-layout question that shader
+compilation cannot see. Only creating the DoF pipeline with DoF enabled would
+show it.
+
+### 14.4 Crowd colour modulation, from retail
+
+RB3's `RndMat` carries `mColorModFlags` and three `mColorMod` colours.
+`Crowd::Init` (`world/Crowd.cpp`) gives each 3D crowd character's materials
+`kColorModModulate` with three `ColorPalette` picks. Retail
+`NgMat::SetupShader` loads the colours into `c131..c133` whenever the flags
+are set. Section 7.5 noted that no backend consumed this and that the Wii
+material had nothing to copy. The retail Xbox shader microcode does consume it,
+and its math is what is now implemented:
+
+| mode | bands of texel alpha `a` | colour | output alpha |
+|---|---|---|---|
+| 3 Modulate | [0, 1/3], [1/3, 2/3], [2/3, 1]; t = 3a − band | × `mix(c_band, 1, t)` | unchanged |
+| 2 AlphaUnpackModulate | [0.1, 0.4], [0.4, 0.7], [0.7, 1]; t = (a − lo)/0.3 | × `mix(c_band, 1, t)` | 10a |
+| 1 AlphaPack | — | unchanged | 0.1 + 0.9a |
+
+Band membership is `clamp(a, lo, hi) == a`, so a value on a band edge falls
+in both bands. The retail shader applies three chained conditional multiplies,
+and so does `colorModScale`. The scale applies to the fully shaded colour,
+additive terms included.
+
+Implementation:
+
+- `MaterialUniforms.colorMod` (`vec4u`) holds the three colours as RGBA8 in
+  `pack4x8unorm` order, with the mode in `.w`. A first version used 3×`vec4f`,
+  which made the struct 288 bytes and doubled its ring slot. Packing keeps it at
+  256 (`static_assert`).
+- `rndshape::MatColorMod` reads the flags and colours. It is inline in
+  `RndShape_RB3Wii.h` and returns 0 from `RndShape_DC3.h`.
+- `MaterialSetup::FillColorMod` packs them for the primary material and the
+  NextPass.
+
+**It is inert on shipped RB3 content, and that was measured, not assumed.**
+I predicted crowd draws in Quickplay would use Modulate. A temporary
+per-bind probe counted 320,000 material binds through `game_screen`: all
+mode 0, none AlphaPack, AlphaUnpackModulate or Modulate. The cause:
+`WorldCrowd::AssignRandomColors` sets `mUseRandomColor` only when the venue's
+`random1.pal`–`random3.pal` palettes load. None of the 4,455 RB3 `.milo_xbox`
+files contains them (84 files contain the `ColorPalette` class string). So
+`Crowd::Init` never sets Modulate. Consistent with that, the retail RB3 shader
+cache has no Modulate permutation; it does have the AlphaUnpackModulate one
+(`0x4202000010`). The code is there for content that sets the flags.
+
+Mode 0 is `× vec3f(1.0)` with the alpha unchanged, which is bit-exact. Every
+DC3 material, and every rb3-xenon material, takes mode 0.
+
+### 14.5 Exit-time teardown in test binaries
+
+Under dc3, all four suites passed and then the binary died with rc=139 at
+exit. gdb put the fault in `~ShadowPass` inside `~WgpuRnd`, during libc's
+static-destructor phase, after Dawn's Vulkan backend was gone. The game
+avoids this through the `Debug::Exit` callback (`RB3RegisterBandRndShutdown`).
+A gtest binary returns from `main` and never reaches it. The rb3 flavor
+had the same fault in the same suites (`~PipelineManager` in `~BandRnd`):
+10 SegFaults in its ctest run. Both facades' `InitGpu` now registers an
+`atexit` teardown once. That handler runs before the renderer's static
+destructor and is a no-op if the teardown already ran.
+
+### 14.6 Title and Quickplay
+
+rb3 dc3-flavor `rb3-native` built from the committed rb3 + engine branches
+(`bin-final`, byte-identical by `cmp` to the build the colour-mod probe and
+shots were measured on). `title_capture.sh` (`RB3_FIXED_CLOCK=1`) and
+`title_fidelity.py` against TCRF, frame 400:
+
+| run | sky_dE | city_dE | city_edge |
+|---|---|---|---|
+| engine base `b44d40d`, three runs | 11.5–11.6 | 11.7–11.9 | 0.911–0.912 |
+| this lane, two runs (288-byte colour-mod build) | 11.5 | 11.9 | 0.910 |
+| this lane, final | 11.5 | 11.7 | 0.912 |
+
+Within run-to-run noise, which is large: two base runs differ in about 95% of
+pixels even under `RB3_FIXED_CLOCK`. That is the expected result, since every
+title material takes colour-mod mode 0. Title exit rc=0.
+
+Quickplay (`venue_capture.py`, `RB3_FIXED_CLOCK=1`) reached `game_screen` at
+frame 759 and captured gameplay at frames 822, 1060, 1360 and 1663. Exit
+rc=0, with no crash or WGSL validation lines in the log. Earlier runs in this lane:
+base 1,769, the 288-byte build 795, the probe build 734. The arrival frame
+varies run to run, so venue frames are not compared pixel for pixel across
+builds.
+
+### 14.7 Consumer verification (engine `w16-rh`)
+
+Fresh `~/tmp` worktrees made with each repo's `scripts/setup_worktree.sh`,
+configured with `-DMILO_ENGINE_PATH` at the `w16-rh` engine worktree
+(confirmed in each `CMakeCache.txt`), built at `000d802`.
+
+| consumer | instrument | result |
+|---|---|---|
+| dc3-decomp (on `e992ee9b5`) | `scripts/native_test.sh` | 626 registered, 557 executed, 557 passed, 0 failed, 69 skipped (budget 69), rc=0 |
+| rb3-xenon (on `dd88a0ee7`) | `tools/native_health.sh` | `NATIVE_HEALTH_RESULT verdict=PASS link=PASS link_verified=18 link_expected=18 link_skipped=0 runtime=PASS runtime_ran=18 runtime_total=18 gates_pass=77 gates_fail=0 unrunnable=none selftest=SKIPPED scatter_unlinked=16 scatter_dirb=0 scatter_multihost=17 rc=0 handpose_controls=- handpose_baseline_fail=- runtime_crashed=0 runtime_failed=none` (embedded link gate: `verdict=PASS expected=18 verified=18 skipped=0 partial=0 failed=0 rc=0`) |
+| rb3-xenon | `tools/native_build_gate.sh` | run as the lane's last action; its `NATIVE_GATE_RESULT` line is in the lane report |
+| rb3 (Wii) `w16-rh` (`763ef1efc`), dc3 flavor | `ctest` | 123 tests: 116 passed, 7 skipped (six fixture-gated oracles plus `PopulatesFromRealDrawMesh`), 0 failed |
+| rb3 (Wii) `w16-rh`, rb3 flavor | `ctest` | 123 tests: 116 passed, the same 7 skipped, 0 failed (10 exit SegFaults before 14.5) |
+| rb3 (Wii), dc3 flavor | title and Quickplay | title rc=0 (f400 11.5 / 11.7 / 0.912); Quickplay reaches `game_screen` at frame 759, rc=0 (14.6) |
+
+Before this lane, the dc3-flavor ctest did not build the four suites: on the
+base engine it ran 104 tests. It now runs the same 123 as the rb3 flavor; the
+19 added are the four suites.
+
+### 14.8 Not done
+
+- **BandRnd's material binder does not fill `colorMod`.** Under the rb3
+  flavor every draw takes mode 0, as before; BandRnd is not the shipping path.
+- **DC3's own colour modulation.** DC3 materials use `kColorMod*` bits in the
+  permutation key (bits 32–33). `RndShape_DC3.h::MatColorMod` returns 0, so DC3
+  is unchanged. Wiring it is a follow-up for the DC3 consumer.
+- **The pseudo-HDR alpha** (the bloom mask in alpha) is computed from the
+  post-modulation colour; retail computes it before. This matters only for a
+  material with a non-zero mode, and shipped content has none.
+- **DoF depth binding** (14.3): unfilterable depth through a filtering sampler,
+  not examined.
+- The colour-mod probe was temporary and is not committed.
 - No merge, pin bump or push.
