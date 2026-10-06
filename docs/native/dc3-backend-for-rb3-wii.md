@@ -2427,6 +2427,26 @@ landed on the close-up in both legs.
 - **colorpalettes.milo's `head_naked.mat`** (the texblender copy) is still one
   instance for all members.
 
+### 17.6 Other flavors and web (lane W16-RR, 2026-10-06)
+
+rb3 master `e90f93e6d` with the engine at `bbbf9c1` (the 16 and 17 fixes),
+measured with the probe `RB3_SKIN_MAT_ADOPT_PROBE`; "before" sets all three
+opt-outs (`RB3_NO_OUTFIT_CHAIN_ANCHOR`, `RB3_NO_SKIN_MAT_ADOPT`,
+`RB3_NO_SKIN_MAPS`). No code change was needed.
+
+| combination | test | own-material skin meshes, before / after |
+|---|---|---|
+| desktop, rb3 flavor | `ctest` 125: 118 passed, 7 skipped, 0 failed | 0/66 / 66/66 |
+| web, dc3 (`build.sh --release`) | smoke PASS, 0 WebGPU errors, 73.31% painted | 0/63 / 65/65 |
+| web, rb3 flavor | smoke PASS, 0 WebGPU errors, 86.45% painted | 0/65 / 66/66 |
+
+All four members have hair in every "after" frame. On web dc3 the "before"
+frame also shows the white specular hot spots of 16; they are gone after.
+A web smoke run from a `~/tmp` worktree needs the four asset directories
+passed explicitly (`--assets-dir`, `--assets-fallback`, `--sidecar-dir`,
+`--downscale-dir`): otherwise the intro video 404s and boot stalls before the
+splash screen. 15.5 noted the same path problem for sound files only.
+
 ## 18. Depth of field, from retail (lane W16-RO, 2026-10-06)
 
 Section 14.3 left one DoF question open: the depth texture was bound as
