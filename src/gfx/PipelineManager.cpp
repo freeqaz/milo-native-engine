@@ -148,10 +148,11 @@ void PipelineManager::Init(GpuDevice* device) {
     matLayoutDesc.entries = matEntries;
     mLayouts[1] = dev.CreateBindGroupLayout(&matLayoutDesc);
 
-    // Group 2: Object uniforms (world transform)
+    // Group 2: Object uniforms (world transform; the fragment stage reads the
+    // RB3 retail box map and per-draw flags)
     wgpu::BindGroupLayoutEntry objEntries[1] = {};
     objEntries[0].binding = 0;
-    objEntries[0].visibility = wgpu::ShaderStage::Vertex;
+    objEntries[0].visibility = wgpu::ShaderStage::Vertex | wgpu::ShaderStage::Fragment;
     objEntries[0].buffer.type = wgpu::BufferBindingType::Uniform;
     objEntries[0].buffer.minBindingSize = 0;
 

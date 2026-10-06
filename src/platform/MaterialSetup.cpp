@@ -66,6 +66,38 @@ static void FillTexGen(const MatT& mat, MaterialUniforms& uni) {
     }
 }
 
+// RB3's retail material terms (rndshape::MatRetailTerms, doc section 12):
+// the uniforms the shader's retail branch reads, and the normal, specular and
+// rim maps bound in the slots the dc3 model would use. The dc3 model's own
+// fields (hasNormalMap, specularPower, rimColor, ...) stay zero for these
+// materials, so its terms never run on top of the retail ones.
+template <class MatT>
+static void FillRetailTerms(const MatT& mat, MaterialUniforms& uni,
+                            WgpuRnd::MaterialTexViews& views) {
+    rndshape::RetailMatTerms t;
+    if (!rndshape::MatRetailTerms(mat, t)) return;
+    if (t.specular) {
+        uni.retailSpec[0] = t.specular_rgb[0];
+        uni.retailSpec[1] = t.specular_rgb[1];
+        uni.retailSpec[2] = t.specular_rgb[2];
+    }
+    uni.retailSpec[3] = t.specularPower;
+    if (t.rim) {
+        uni.retailRim[0] = t.rim_rgb[0];
+        uni.retailRim[1] = t.rim_rgb[1];
+        uni.retailRim[2] = t.rim_rgb[2];
+    }
+    uni.retailRim[3] = t.rimPower;
+    uni.retailFlags[0] = t.perPixel ? 1.0f : 0.0f;
+    uni.retailFlags[1] = t.normalMap ? 1.0f : 0.0f;
+    uni.retailFlags[2] = t.specularMap ? 1.0f : 0.0f;
+    uni.retailFlags[3] = t.rimMap ? 1.0f : 0.0f;
+    if (t.perPixel) uni.deNormal = t.deNormal;
+    if (t.normalMap) views.normal = ResolveMap(t.normalTex, gWgpuRnd->FlatNormalTexView());
+    if (t.specularMap) views.specular = ResolveMap(t.specularTex, gWgpuRnd->WhiteTexView());
+    if (t.rimMap) views.rim = ResolveMap(t.rimTex, gWgpuRnd->WhiteTexView());
+}
+
 MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh) {
     // DC3 BaseMaterial getters, whatever the rndobj shape (platform/rndshape/).
     auto mat = rndshape::Mat(rawMat);
@@ -223,6 +255,8 @@ MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh) {
     // Detail normal map
     texViews.normDetail = ResolveMap(mat->GetNormDetailMap(), gWgpuRnd->FlatNormalTexView());
 
+    FillRetailTerms(mat, matUni, texViews);
+
     // --- Environment cube map ---
     RndCubeTex* environMap = mat->GetEnvironMap();
     if (environMap) {
@@ -329,6 +363,7 @@ MaterialParams BuildPassMaterialParams(BaseMaterial* rawNextPass) {
     npTexViews.rim        = ResolveMap(nextPass->GetRimMap(),      gWgpuRnd->WhiteTexView());
     npTexViews.environCube = gWgpuRnd->BlackCubeTexView();
     npTexViews.normDetail = ResolveMap(nextPass->GetNormDetailMap(), gWgpuRnd->FlatNormalTexView());
+    FillRetailTerms(nextPass, npMatUni, npTexViews);
 
     // Multi-pass materials don't set their own sampler -- caller reuses primary material's sampler
     result.heuristics = 0;

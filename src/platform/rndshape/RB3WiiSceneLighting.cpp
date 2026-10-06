@@ -165,6 +165,88 @@ void WriteRetailLighting(SceneUniforms& s, RndEnviron* env) {
         pl++;
     }
     s.numPointLights = (float)pl;
+
+    // NgEnviron::Select: c24 = AOStrength when mAOEnabled, and the AO option
+    // (bit 38) also needs AOStrength > 0.003 (CalcShaderOpts). The mesh half
+    // of the test (HasAOCalc) and the material half (!prelit) are per draw.
+    s.aoStrength = (env->mAOEnabled && env->mAOStrength > 0.003f) ? env->mAOStrength : 0.0f;
+    // NgEnviron::Select: c109..c111 = SetPConstant4x3(Matrix4(ColorXfm()))
+    // when mUseColorAdjust, which DxShaderMgr::SetPConstant4x3 writes as the
+    // matrix's columns: output channel c = rgb . m.<row>.c + v.c, the same as
+    // Multiply(rgb, xfm). CalcShaderOpts selects the term (bit 21) from the
+    // environ's UseColorAdjust() for every standard mesh draw.
+    s.colorAdjust = env->mUseColorAdjust ? 1.0f : 0.0f;
+    const Transform& cx = env->ColorXfm();
+    const Vector3* rows[3] = {&cx.m.x, &cx.m.y, &cx.m.z};
+    const float t[3] = {cx.v.x, cx.v.y, cx.v.z};
+    for (int c = 0; c < 3; c++) {
+        const float* m0 = &rows[0]->x;
+        const float* m1 = &rows[1]->x;
+        const float* m2 = &rows[2]->x;
+        s.colorXfm[c][0] = m0[c];
+        s.colorXfm[c][1] = m1[c];
+        s.colorXfm[c][2] = m2[c];
+        s.colorXfm[c][3] = t[c];
+    }
+}
+
+// Retail BoxMapLighting::ApplyQueuedLights (rb3-xenon rndobj/BoxMap.cpp,
+// 100% matched): each queued light lands on the six faces {+X,-X,+Y,-Y,+Z,-Z}
+// weighted by the squared positive part of its direction along the face.
+// Read off the same queues the Wii class fills, because the Wii
+// BoxMapLighting::ApplyLight for spots skips any spot whose colour sums to
+// less than 0.28 and retail has no such test. Points use the exact inverse
+// length where retail takes the frsqrte estimate.
+void AddBoxLight(Hmx::Color* faces, float dx, float dy, float dz, float r, float g, float b) {
+    const float w[6] = {
+        std::max(0.f, dx) * std::max(0.f, dx), std::max(0.f, -dx) * std::max(0.f, -dx),
+        std::max(0.f, dy) * std::max(0.f, dy), std::max(0.f, -dy) * std::max(0.f, -dy),
+        std::max(0.f, dz) * std::max(0.f, dz), std::max(0.f, -dz) * std::max(0.f, -dz)};
+    for (int i = 0; i < 6; i++) {
+        faces[i].red += w[i] * r;
+        faces[i].green += w[i] * g;
+        faces[i].blue += w[i] * b;
+    }
+}
+
+void ApplyRetailBoxMap(const BoxMapLighting& bl, Hmx::Color* faces, const Vector3* pos) {
+    if (pos) {
+        const Vector3& p = *pos;
+        for (unsigned int i = 0; i < bl.mQueued_Spot.NumElements(); i++) {
+            const BoxMapLighting::LightParams_Spot& L = bl.mQueued_Spot[i];
+            float dx = p.x - L.mTipPosition.x, dy = p.y - L.mTipPosition.y,
+                  dz = p.z - L.mTipPosition.z;
+            const float distSq = dx * dx + dy * dy + dz * dz;
+            const float invDist = 1.0f / std::sqrt(distSq);
+            dx *= invDist; dy *= invDist; dz *= invDist;
+            const float dist =
+                std::min(1.0f, invDist * distSq * L.mOneOverRange2x - L.mTipOverRange2x);
+            const float cone = std::min(1.0f, L.mDirection.x * dx + L.mDirection.y * dy +
+                                                  L.mDirection.z * dz) - L.mCosTheta;
+            const float atten = std::max(0.0f, 1.0f - dist) *
+                                (L.mOneOverOneSubCos * std::max(0.0f, cone));
+            AddBoxLight(faces, -dx, -dy, -dz, atten * L.mColor.red, atten * L.mColor.green,
+                        atten * L.mColor.blue);
+        }
+        for (unsigned int i = 0; i < bl.mQueued_Point.NumElements(); i++) {
+            const BoxMapLighting::LightParams_Point& L = bl.mQueued_Point[i];
+            if (!(L.mRange > L.mFalloffStart)) continue;
+            const float dx = L.mLightPos.x - p.x, dy = L.mLightPos.y - p.y,
+                        dz = L.mLightPos.z - p.z;
+            const float distSq = dx * dx + dy * dy + dz * dz;
+            if (!(distSq > 0.0f)) continue;
+            const float invDist = 1.0f / std::sqrt(distSq);
+            const float dist = std::max(0.0f, invDist * distSq - L.mFalloffStart);
+            const float atten = std::max(0.0f, 1.0f - dist / (L.mRange - L.mFalloffStart));
+            AddBoxLight(faces, dx * invDist, dy * invDist, dz * invDist, L.mColor.red * atten,
+                        L.mColor.green * atten, L.mColor.blue * atten);
+        }
+    }
+    for (unsigned int i = 0; i < bl.mQueued_Directional.NumElements(); i++) {
+        const BoxMapLighting::LightParams_Directional& L = bl.mQueued_Directional[i];
+        AddBoxLight(faces, L.mDirection.x, L.mDirection.y, L.mDirection.z, L.mColor.red,
+                    L.mColor.green, L.mColor.blue);
+    }
 }
 
 // The position retail evaluates a mesh's approx lights at. RndMesh draws
@@ -199,26 +281,32 @@ Vector3 ApproxLightPos(RndMesh* mesh) {
 
 namespace rndshape {
 
-void FillMeshApproxLighting(RndMesh* mesh, float box[6][4]) {
+void FillMeshApproxLighting(RndMesh* mesh, float box[6][4], float retail[4]) {
     RndEnviron* env = RndEnviron::sCurrent;
     if (!mesh || !RetailLightingActive(RndCam::sCurrent, env)) return;
+    // Mesh::Draw: TheShaderMgr.SetMeshInfo(boneCount, HasAOCalc()).
+    retail[0] = mesh->HasAOCalc() ? 1.0f : 0.0f;
     // NgEnviron::UpdateApproxLighting.
     if (!(env->UsesApproxLocal() || env->UsesApproxGlobal())) return;
     if (env->mLightsReal.empty() && env->mLightsApprox.empty()) return;
     const Vector3 pos = ApproxLightPos(mesh);
     Hmx::Color faces[6];
     for (int i = 0; i < 6; i++) faces[i].Set(0, 0, 0);
+    int numApprox = 0;
     if (env->UsesApproxLocal()) {
         static BoxMapLighting sBoxLight;
         sBoxLight.Clear();
         for (ObjPtrList<RndLight>::iterator it = env->mLightsApprox.begin();
              it != env->mLightsApprox.end(); ++it) {
-            if (*it) sBoxLight.QueueLight(*it, 1.0f);
+            if (*it && sBoxLight.QueueLight(*it, 1.0f)) numApprox++;
         }
-        sBoxLight.ApplyQueuedLights(faces, &pos);
+        ApplyRetailBoxMap(sBoxLight, faces, &pos);
     }
-    if (env->UsesApproxGlobal() && RndEnviron::sGlobalLighting.NumQueuedLights() != 0)
-        RndEnviron::sGlobalLighting.ApplyQueuedLights(faces, &pos);
+    if (env->UsesApproxGlobal() && RndEnviron::sGlobalLighting.NumQueuedLights() != 0) {
+        numApprox += (int)RndEnviron::sGlobalLighting.NumQueuedLights();
+        ApplyRetailBoxMap(RndEnviron::sGlobalLighting, faces, &pos);
+    }
+    retail[1] = (float)numApprox;
     for (int i = 0; i < 6; i++) {
         box[i][0] = faces[i].red;
         box[i][1] = faces[i].green;

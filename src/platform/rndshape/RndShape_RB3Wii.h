@@ -200,6 +200,50 @@ inline bool MatUnlit(const MatView &m) { return !m.Raw()->mUseEnviron && !m.Raw(
 // (SceneUniforms.retailLighting) reads this.
 inline bool MatPrelitAmbient(const MatView &m) { return m.Raw()->mPreLit && m.Raw()->mUseEnviron; }
 
+// RB3's Xbox 360 material terms (RndShape.h). The Wii RndMat::Load reads them
+// and drops them; with RB3_NATIVE_XBOX_MAT_FIELDS the consumer's RndMat keeps
+// them (mXb* members). The selection is retail
+// RndShaderStandard::CalcShaderOpts with TheShaderMgr.AllowPerPixel() true
+// (its default); the constants are NgMat's: c2 = (specular rgb,
+// max(power, 0.5)), c63 = (rim rgb, max(power, 0.5)), c14.x = 1 - deNormal.
+// Whether lights exist at all (CalcShaderOpts gates every term on real or
+// approx lights) is a per-draw test the shader makes.
+inline bool PackNonZero(const Hmx::Color &c) {
+    // Hmx::Color::Pack(): rgb as truncated bytes, alpha ignored.
+    return (((int)(c.red * 255.0f) & 0xFF) | (((int)(c.green * 255.0f) & 0xFF) << 8)
+            | (((int)(c.blue * 255.0f) & 0xFF) << 16)) != 0;
+}
+inline bool MatRetailTerms(const MatView &m, RetailMatTerms &t) {
+#ifdef RB3_NATIVE_XBOX_MAT_FIELDS
+    RndMat *mat = m.Raw();
+    if (!mat->mUseEnviron) return false;
+    t = RetailMatTerms();
+    const Hmx::Color &spec = mat->mXbSpecularRGB;
+    t.specular = PackNonZero(spec);
+    t.specular_rgb[0] = spec.red; t.specular_rgb[1] = spec.green; t.specular_rgb[2] = spec.blue;
+    t.specularPower = spec.alpha > 0.5f ? spec.alpha : 0.5f;
+    if (mat->mXbPerPixelLit) {
+        t.perPixel = true;
+        t.normalTex = mat->mXbNormalMap;
+        t.normalMap = t.normalTex != nullptr;
+        t.specularTex = t.specular ? (RndTex *)mat->mXbSpecularMap : nullptr;
+        t.specularMap = t.specularTex != nullptr;
+        const Hmx::Color &rim = mat->mXbRimRGB;
+        t.rim = PackNonZero(rim);
+        t.rim_rgb[0] = rim.red; t.rim_rgb[1] = rim.green; t.rim_rgb[2] = rim.blue;
+        t.rimPower = rim.alpha > 0.5f ? rim.alpha : 0.5f;
+        t.rimLightUnder = t.rim && mat->mXbRimLightUnder;
+        t.rimTex = t.rim ? (RndTex *)mat->mXbRimMap : nullptr;
+        t.rimMap = t.rimTex != nullptr;
+        t.deNormal = mat->mXbDeNormal;
+    }
+    return true;
+#else
+    (void)m; (void)t;
+    return false;
+#endif
+}
+
 // ---- environment -----------------------------------------------------------
 inline RndEnviron *CurrentEnv() { return RndEnviron::sCurrent; }
 inline bool EnvHasAmbientFogOwner(RndEnviron *e) { return e->mAmbientFogOwner.Ptr() != nullptr; }
@@ -505,6 +549,15 @@ bool WriteSceneLighting(SceneUniforms &s, RndCam *cam);
 // world sphere centre (RndMesh::sUpdateApproxLight), and once per character
 // at the character's sphere centre (Character::DrawLodOrShadow). Leaves the
 // faces zero when the retail light model does not apply to this draw.
-void FillMeshApproxLighting(RndMesh *mesh, float box[6][4]);
+// retail[0] = 1 when the mesh carries baked ambient occlusion
+// (RndMesh::HasAOCalc, retail's TheShaderMgr.UseAO()), retail[1] = the number
+// of approx lights queued (NgEnviron::UpdateApproxLighting); both 0 when the
+// retail light model does not apply.
+void FillMeshApproxLighting(RndMesh *mesh, float box[6][4], float retail[4]);
+// How VertexFormats.cpp reads a compressed vertex's packed colour: true reads
+// it as the D3DCOLOR retail's FillCompressedVertex packs (rb3-xenon
+// rnddx9/Mesh.cpp: A, R, G, B from the high byte down, low byte blue), which
+// is what the retail vertex declaration's D3DCOLOR element fetches.
+constexpr bool kCompressedColorIsArgb = true;
 
 } // namespace rndshape
