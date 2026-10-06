@@ -2,6 +2,7 @@
 #include "gfx/GpuDevice.h"
 #include "rndobj/PostProc.h"
 #include "rndobj/ColorXfm.h"
+#include "platform/rndshape/RndShape.h"
 
 #include <cstring>
 #include <cstdlib>
@@ -299,7 +300,7 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, wgpu::TextureView& interme
     uni.time = sTime;
 
     // Noise/grain
-    uni.noiseIntensity = pp->GetNoiseIntensity();
+    uni.noiseIntensity = rndshape::PostProcGrain(pp);
     uni.noiseMidtone = pp->GetNoiseMidtone() ? 1.0f : 0.0f;
 
     // Flicker: random brightness modulation between bounds over time

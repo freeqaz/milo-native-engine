@@ -15,7 +15,7 @@
 #include "gfx/VertexFormats.h"
 #include "rndobj/Mesh.h"
 #include "rndobj/Mat.h"
-#include "rndobj/BaseMaterial.h"
+#include "platform/rndshape/RndShape.h"
 #include "rndobj/Cam.h"
 #include "rndobj/Rnd.h"
 #include "math/Mtx.h"
@@ -29,11 +29,12 @@ void DrawMeshImmediate(RndMesh* mesh);
 // Record a draw call for frame capture diagnostics.
 // Encapsulates NDC projection, texture binding info, and material uniform snapshot.
 static void RecordDrawCall(
-    RndMesh* mesh, RndMat* mat,
+    RndMesh* mesh, RndMat* rawMat,
     const MaterialParams& matParams,
     bool skinned, int blend,
     uint32_t heuristics)
 {
+    auto mat = rndshape::Mat(rawMat);
     auto& rec = FrameCapture::Get().AddDraw();
     rec.meshName = MeshLabel(mesh);
     rec.materialName = mat->Name();
@@ -61,7 +62,7 @@ static void RecordDrawCall(
         cam->UpdatedWorldXfm();
         Transform viewXfm;
         Hmx::Matrix4 projMtx;
-        cam->GetViewProjectXfms(viewXfm, projMtx);
+        rndshape::CamViewProjectXfms(cam, viewXfm, projMtx);
 
         float view[16] = {
             viewXfm.m.x.x, viewXfm.m.x.y, viewXfm.m.x.z, 0.0f,
@@ -177,7 +178,8 @@ void DrawMeshImmediate(RndMesh* mesh) {
     // Re-upload scene uniforms if camera changed (e.g., UI camera vs world camera)
     gWgpuRnd->EnsureSceneUniformsCurrent();
 
-    RndMat* mat = mesh->Mat();
+    // DC3 BaseMaterial getters, whatever the rndobj shape (platform/rndshape/).
+    auto mat = rndshape::Mat(mesh->Mat());
     if (!mat) {
         if (capturing) FrameCapture::Get().AddSkip(MeshLabel(mesh), "no material");
         return;
@@ -213,9 +215,9 @@ void DrawMeshImmediate(RndMesh* mesh) {
     key.blend = (WgpuBlend)matBlend;
     key.zMode = isTextMesh ? (WgpuZMode)0 : (WgpuZMode)mat->GetZMode(); // No depth for text
     WgpuCull matCull = (isTextMesh || isOverlayPass) ? WgpuCull::None : (WgpuCull)mat->GetCull();
-    // Reflection mode (DrawMode 8) flips the camera, reversing winding order.
+    // Reflection mode (rndshape::kDrawModeReflection) flips the camera, reversing winding order.
     // Flip cull mode so front faces aren't discarded.
-    if (TheRnd.DrawMode() == 8 && matCull != WgpuCull::None) {
+    if (rndshape::TheRndRef().DrawMode() == rndshape::kDrawModeReflection && matCull != WgpuCull::None) {
         matCull = (matCull == WgpuCull::Regular) ? WgpuCull::Backwards : WgpuCull::Regular;
     }
     key.cull = matCull;
@@ -305,17 +307,17 @@ void DrawMeshImmediate(RndMesh* mesh) {
     while (nextPass) {
         // Pipeline may differ (blend mode, z mode, etc.)
         PipelineKey npKey = key;
-        npKey.blend = (WgpuBlend)nextPass->GetBlend();
-        npKey.zMode = (WgpuZMode)nextPass->GetZMode();
-        WgpuCull npCull = (WgpuCull)nextPass->GetCull();
-        if (TheRnd.DrawMode() == 8 && npCull != WgpuCull::None) {
+        npKey.blend = (WgpuBlend)rndshape::Mat(nextPass)->GetBlend();
+        npKey.zMode = (WgpuZMode)rndshape::Mat(nextPass)->GetZMode();
+        WgpuCull npCull = (WgpuCull)rndshape::Mat(nextPass)->GetCull();
+        if (rndshape::TheRndRef().DrawMode() == rndshape::kDrawModeReflection && npCull != WgpuCull::None) {
             npCull = (npCull == WgpuCull::Regular) ? WgpuCull::Backwards : WgpuCull::Regular;
         }
         npKey.cull = npCull;
-        npKey.stencil = (WgpuStencil)nextPass->GetStencil();
-        npKey.alphaCut = nextPass->GetAlphaCut();
-        npKey.alphaWrite = nextPass->GetAlphaWrite();
-        npKey.alphaToCoverage = nextPass->GetAlphaCut();
+        npKey.stencil = (WgpuStencil)rndshape::Mat(nextPass)->GetStencil();
+        npKey.alphaCut = rndshape::Mat(nextPass)->GetAlphaCut();
+        npKey.alphaWrite = rndshape::Mat(nextPass)->GetAlphaWrite();
+        npKey.alphaToCoverage = rndshape::Mat(nextPass)->GetAlphaCut();
 
         wgpu::RenderPipeline npPipeline = gWgpuRnd->Pipelines().GetPipeline(npKey);
         if (npPipeline) {
@@ -333,7 +335,7 @@ void DrawMeshImmediate(RndMesh* mesh) {
             // Object + bone bind groups unchanged, just re-draw
             pass.DrawIndexed(meshData.numIndices);
         }
-        nextPass = nextPass->NextPass();
+        nextPass = rndshape::Mat(nextPass)->NextPass();
     }
 }
 

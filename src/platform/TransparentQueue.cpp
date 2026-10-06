@@ -6,7 +6,7 @@
 #include "rndobj/Cam.h"
 #include "rndobj/Env.h"
 #include "rndobj/Mesh.h"
-#include "rndobj/BaseMaterial.h"
+#include "platform/rndshape/RndShape.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -131,9 +131,9 @@ void FlushTextDraws() {
         }
     }
     RndCam* savedCam = RndCam::Current();
-    RndEnviron* savedEnv = RndEnviron::Current();
+    RndEnviron* savedEnv = rndshape::CurrentEnv();
     for (auto& td : draws) {
-        if (td.env && td.env != RndEnviron::Current())
+        if (td.env && td.env != rndshape::CurrentEnv())
             td.env->Select(nullptr);
         if (td.cam && td.cam != RndCam::Current())
             td.cam->Select();
@@ -141,7 +141,7 @@ void FlushTextDraws() {
     }
     if (savedCam && savedCam != RndCam::Current())
         savedCam->Select();
-    if (savedEnv && savedEnv != RndEnviron::Current())
+    if (savedEnv && savedEnv != rndshape::CurrentEnv())
         savedEnv->Select(nullptr);
 }
 
@@ -157,7 +157,7 @@ void FlushTransparentDraws() {
     // Each deferred draw restores its own camera, but the caller expects the
     // camera to remain unchanged after the flush.
     RndCam* savedCam = RndCam::Current();
-    RndEnviron* savedEnv = RndEnviron::Current();
+    RndEnviron* savedEnv = rndshape::CurrentEnv();
 
     // W0.3c.S1 probe: capture pre-sort (= insertion) order before the sort so we
     // can (a) print it and (b) map each post-sort entry back to its insertion-seq.
@@ -201,7 +201,7 @@ void FlushTransparentDraws() {
     }
 
     for (auto& dd : draws) {
-        if (dd.env && dd.env != RndEnviron::Current())
+        if (dd.env && dd.env != rndshape::CurrentEnv())
             dd.env->Select(nullptr);
         // Restore the camera that was active when this mesh was queued
         if (dd.cam && dd.cam != RndCam::Current())
@@ -213,7 +213,7 @@ void FlushTransparentDraws() {
     // caller's camera state is not corrupted.
     if (savedCam && savedCam != RndCam::Current())
         savedCam->Select();
-    if (savedEnv && savedEnv != RndEnviron::Current())
+    if (savedEnv && savedEnv != rndshape::CurrentEnv())
         savedEnv->Select(nullptr);
 
     sFlushingTransparentQueue = false;

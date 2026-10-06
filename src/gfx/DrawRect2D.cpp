@@ -7,6 +7,7 @@
 #include "math/Color.h"
 #include "rndobj/Mat.h"
 #include "rndobj/Rnd.h"
+#include "platform/rndshape/RndShape.h"
 #include "obj/Object.h"
 
 #include <cstring>
@@ -104,8 +105,8 @@ void DrawRect2D::Draw(wgpu::RenderPassEncoder& pass, const Hmx::Rect& rect, RndM
     // Use the Rnd virtual resolution (e.g. 768×432 widescreen) for coordinate conversion,
     // NOT the GPU framebuffer size (1280×720). The engine generates DrawRect coordinates in
     // Rnd pixel space (Width()×Height()), so we must map [0,Width] → NDC [-1,1].
-    float w = (float)TheRnd.Width();
-    float h = (float)TheRnd.Height();
+    float w = (float)rndshape::TheRndRef().Width();
+    float h = (float)rndshape::TheRndRef().Height();
     if (w <= 0 || h <= 0) return;
 
     float x0 = rect.x / w * 2.0f - 1.0f;
@@ -145,8 +146,11 @@ void DrawRect2D::Draw(wgpu::RenderPassEncoder& pass, const Hmx::Rect& rect, RndM
 
     bool hasTex = false;
     wgpu::TextureView texView;
-    if (mat && mat->GetDiffuseTex()) {
-        texView = GetGpuTexView(mat->GetDiffuseTex());
+    if (RndTex* diffTex = mat ? mat->GetDiffuseTex() : nullptr) {
+        // Upload on first use (see MaterialSetup's ResolveMap): a texture only a
+        // 2D rect samples is otherwise never uploaded.
+        diffTex->PresyncBitmap();
+        texView = GetGpuTexView(diffTex);
         if (texView) hasTex = true;
     }
     if (!hasTex) texView = whiteTexView;

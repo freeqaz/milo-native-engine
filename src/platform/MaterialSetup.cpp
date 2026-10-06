@@ -7,7 +7,7 @@
 #include "platform/TexGpu.h"
 #include "gfx/FrameCapture.h"
 #include "rndobj/Mat.h"
-#include "rndobj/BaseMaterial.h"
+#include "platform/rndshape/RndShape.h"
 #include "rndobj/CubeTex.h"
 #include "math/Mtx.h"
 
@@ -49,7 +49,9 @@ static wgpu::TextureView ResolveMap(RndTex* tex, wgpu::TextureView& fallback) {
     return v ? v : fallback;
 }
 
-MaterialParams BuildMaterialParams(RndMat* mat, bool isTextMesh) {
+MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh) {
+    // DC3 BaseMaterial getters, whatever the rndobj shape (platform/rndshape/).
+    auto mat = rndshape::Mat(rawMat);
     MaterialParams result{};
     MaterialUniforms& matUni = result.uniforms;
     uint32_t heuristics = 0;
@@ -244,7 +246,8 @@ MaterialParams BuildMaterialParams(RndMat* mat, bool isTextMesh) {
     return result;
 }
 
-MaterialParams BuildPassMaterialParams(BaseMaterial* nextPass) {
+MaterialParams BuildPassMaterialParams(BaseMaterial* rawNextPass) {
+    auto nextPass = rndshape::Mat(rawNextPass);
     MaterialParams result{};
     MaterialUniforms& npMatUni = result.uniforms;
 

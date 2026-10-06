@@ -138,6 +138,22 @@ if(NOT MILO_ENGINE_GPU_BACKEND STREQUAL "off" AND NOT MILO_ENGINE_BUILD_GFX)
         "MILO_ENGINE_GPU_BACKEND=${MILO_ENGINE_GPU_BACKEND} needs the gfx core: "
         "set MILO_ENGINE_BUILD_GFX=ON (or MILO_ENGINE_GPU_BACKEND=off).")
 endif()
+
+# rndobj SHAPE of the consumer's matched-fork headers — orthogonal to the GPU
+# flavor. The `dc3` backend was written against DC3's 2012-era rndobj (NgRnd,
+# BaseMaterial, RndShaderMgr, Rnd& TheRnd); RB3-Wii's fork is the 2010-era shape
+# (Rnd* TheRnd, everything on RndMat, no NgRnd). src/platform/rndshape/ is the
+# one seam between the two: the `dc3` shape is identity forwarders (DC3 and
+# rb3-xenon render byte-for-byte as before), `rb3wii` maps the same accessors
+# onto RB3-Wii's members so the dc3 backend can serve Wii RB3 too.
+if(NOT DEFINED MILO_ENGINE_RNDOBJ_SHAPE)
+    set(MILO_ENGINE_RNDOBJ_SHAPE dc3 CACHE STRING "Consumer rndobj header shape: dc3 or rb3wii")
+endif()
+set_property(CACHE MILO_ENGINE_RNDOBJ_SHAPE PROPERTY STRINGS dc3 rb3wii)
+if(NOT MILO_ENGINE_RNDOBJ_SHAPE MATCHES "^(dc3|rb3wii)$")
+    message(FATAL_ERROR
+        "MILO_ENGINE_RNDOBJ_SHAPE must be dc3 or rb3wii (got '${MILO_ENGINE_RNDOBJ_SHAPE}').")
+endif()
 option(MILO_ENGINE_BUILD_TESTS  "Build the engine-only convergence test suite"  ${MILO_ENGINE_STANDALONE})
 option(MILO_ENGINE_LP64_AUDIT   "Enable LP64 pointer-truncation warnings for auditing"          OFF)
 option(MILO_ENGINE_ENABLE_ASAN  "Build the engine with AddressSanitizer"                        OFF)
@@ -467,6 +483,11 @@ target_include_directories(milo-engine PUBLIC
 )
 
 target_compile_definitions(milo-engine PRIVATE HX_NATIVE=1)
+# PUBLIC: consumer TUs that include engine platform headers (Rnd_Wgpu.h ->
+# platform/rndshape/RndShape.h) must see the same shape the engine compiled.
+if(MILO_ENGINE_RNDOBJ_SHAPE STREQUAL "rb3wii")
+    target_compile_definitions(milo-engine PUBLIC MILO_RNDOBJ_SHAPE_RB3WII=1)
+endif()
 target_compile_options(milo-engine PRIVATE ${MILO_ENGINE_EXTRA_FLAGS})
 target_link_options(milo-engine PRIVATE ${MILO_ENGINE_EXTRA_LINK_FLAGS})
 target_link_libraries(milo-engine PUBLIC Threads::Threads)
@@ -670,6 +691,7 @@ if(MILO_ENGINE_HAVE_CONTEXT)
     message(STATUS "    engine sources       : ${_n} (+ EngineVersion)")
     message(STATUS "    gfx (WebGPU core)    : ${MILO_ENGINE_BUILD_GFX}")
     message(STATUS "    gpu backend flavor   : ${MILO_ENGINE_GPU_BACKEND}")
+    message(STATUS "    rndobj shape         : ${MILO_ENGINE_RNDOBJ_SHAPE}")
     message(STATUS "    FFmpeg               : ${MILO_ENGINE_HAVE_FFMPEG}")
     if(MILO_BUILD_WEB AND EMSCRIPTEN)
         message(STATUS "    web (Emscripten)     : ON (MILO_WEB_ASYNC=${MILO_WEB_ASYNC})")

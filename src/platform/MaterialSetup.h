@@ -7,8 +7,8 @@
 #include "platform/Rnd_Wgpu.h"
 #include <cstdint>
 
-class RndMat;
-class BaseMaterial;
+// RndMat / BaseMaterial come from platform/rndshape/RndShape.h (via Rnd_Wgpu.h):
+// on RB3-Wii-shaped rndobj, BaseMaterial is an alias of RndMat.
 
 // All material-related data needed for a draw call
 struct MaterialParams {

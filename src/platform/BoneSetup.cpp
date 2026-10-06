@@ -5,6 +5,7 @@
 #include "platform/BoneSetup.h"
 #include "platform/TransformUtils.h"
 #include "rndobj/Rnd.h"
+#include "platform/rndshape/RndShape.h"
 #include "rndobj/Mesh.h"
 #include "rndobj/Trans.h"
 #include "math/Mtx.h"
@@ -177,7 +178,7 @@ void FillBoneUniforms(RndMesh* mesh, BoneUniforms& out) {
         RndTransformable* boneTrans = mesh->BoneTransAt(i);
         if (boneTrans) {
             const Transform& wt = boneTrans->WorldXfm();
-            MaybeDumpArmChain((int)TheRnd.GetFrameID(), boneTrans);
+            MaybeDumpArmChain((int)rndshape::TheRndRef().GetFrameID(), boneTrans);
 
             // Log arm-related bones + first 3 for context
             bool isArm = (strstr(boneTrans->Name(), "Arm") || strstr(boneTrans->Name(), "arm")

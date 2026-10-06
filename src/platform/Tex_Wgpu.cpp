@@ -9,6 +9,7 @@
 #include "rndobj/Tex.h"
 #include "rndobj/CubeTex.h"
 #include "rndobj/Bitmap.h"
+#include "platform/rndshape/RndShape.h"
 
 #include <unordered_map>
 #include <cstdio>
@@ -284,6 +285,11 @@ struct GpuCubeTexData {
 
 static std::unordered_map<RndCubeTex*, GpuCubeTexData> sCubeTexGpuData;
 
+void ClearGpuTexCaches() {
+    sTexGpuData.clear();
+    sCubeTexGpuData.clear();
+}
+
 wgpu::TextureView GetGpuCubeTexView(RndCubeTex* cubeTex) {
     if (!cubeTex || !gWgpuRnd) return wgpu::TextureView();
 
@@ -296,7 +302,7 @@ wgpu::TextureView GetGpuCubeTexView(RndCubeTex* cubeTex) {
     RndBitmap* faces[6];
     bool allValid = true;
     for (int i = 0; i < 6; i++) {
-        faces[i] = &cubeTex->GetBitmap((RndCubeTex::CubeFace)i);
+        faces[i] = rndshape::CubeFaceBitmap(cubeTex, i);
         if (!faces[i] || faces[i]->Width() <= 0 || faces[i]->Height() <= 0 || !faces[i]->Pixels()) {
             allValid = false;
         }

@@ -1,6 +1,9 @@
 #include "gfx/VertexFormats.h"
 #include "rndobj/Mesh.h"
+#include "platform/rndshape/RndShape.h"
+#ifndef MILO_RNDOBJ_SHAPE_RB3WII
 #include "rndobj/MeshVertCompress.h"
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -99,13 +102,11 @@ int UnpackStaticVertices(const RndMesh& mesh, GpuVertex* out, int maxVerts) {
         gv.norm[1] = v.norm.y;
         gv.norm[2] = v.norm.z;
 
-        gv.color[0] = v.color.red;
-        gv.color[1] = v.color.green;
-        gv.color[2] = v.color.blue;
-        gv.color[3] = v.color.alpha;
+        rndshape::VertColor(v, gv.color);
 
-        gv.uv[0] = v.tex.x;
-        gv.uv[1] = v.tex.y;
+        const Vector2& uv = rndshape::VertUV(v);
+        gv.uv[0] = uv.x;
+        gv.uv[1] = uv.y;
 
         // Tangent will be computed by MikkTSpace after unpacking
         gv.tangent[0] = 1.0f; gv.tangent[1] = 0.0f;
@@ -130,18 +131,13 @@ int UnpackSkinnedVertices(const RndMesh& mesh, GpuVertexSkinned* out, int maxVer
         gv.norm[1] = v.norm.y;
         gv.norm[2] = v.norm.z;
 
-        gv.color[0] = v.color.red;
-        gv.color[1] = v.color.green;
-        gv.color[2] = v.color.blue;
-        gv.color[3] = v.color.alpha;
+        rndshape::VertColor(v, gv.color);
 
-        gv.uv[0] = v.tex.x;
-        gv.uv[1] = v.tex.y;
+        const Vector2& uv = rndshape::VertUV(v);
+        gv.uv[0] = uv.x;
+        gv.uv[1] = uv.y;
 
-        gv.boneWeights[0] = v.boneWeights.x;
-        gv.boneWeights[1] = v.boneWeights.y;
-        gv.boneWeights[2] = v.boneWeights.z;
-        gv.boneWeights[3] = v.boneWeights.w;
+        rndshape::VertBoneWeights(v, gv.boneWeights);
 
         gv.boneIndices[0] = (uint8_t)v.boneIndices[0];
         gv.boneIndices[1] = (uint8_t)v.boneIndices[1];
@@ -273,7 +269,13 @@ enum CompressedVertexOffset {
     kCV_BoneIdx    = 28,  // UDEC4N BLENDWEIGHT (names swapped — these are weights)
     kCV_BoneWeight = 32,  // UBYTE4  BLENDINDICES (names swapped — these are indices)
 };
-static const int kCompressedVertexStride = (int)sizeof(CompressedVertex_Xbox); // 36
+// The Xbox 360 compressed vertex is 9 big-endian words on disc, whichever fork
+// loaded it (RB3-Wii's fork keeps an .milo_xbox mesh's stream verbatim too).
+static const int kCompressedVertexStride = 36;
+#ifndef MILO_RNDOBJ_SHAPE_RB3WII
+static_assert(sizeof(CompressedVertex_Xbox) == kCompressedVertexStride,
+              "CompressedVertex_Xbox is the 36-byte on-disc record");
+#endif
 
 int UnpackCompressedVertices(const unsigned char* compressedData, int numVerts,
                              GpuVertex* out, int maxVerts) {

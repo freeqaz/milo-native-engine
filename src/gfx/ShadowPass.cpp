@@ -9,6 +9,7 @@
 #include "rndobj/Mat.h"
 #include "rndobj/Mesh.h"
 #include "obj/Dir.h"
+#include "platform/rndshape/RndShape.h"
 
 #include <cmath>
 #include <cstdio>
@@ -258,9 +259,9 @@ void ShadowPass::Render(wgpu::CommandEncoder& encoder, UniformRingBuffer& object
 
     // Get the primary light direction
     float lightDir[3] = {0, -1, 0};
-    RndEnviron* env = RndEnviron::Current();
+    RndEnviron* env = rndshape::CurrentEnv();
     if (env) {
-        ObjPtrList<RndLight>& lights = env->LightsApprox();
+        ObjPtrList<RndLight>& lights = rndshape::EnvLightsApprox(env);
         for (ObjPtrList<RndLight>::iterator it = lights.begin(); it != lights.end(); ++it) {
             RndLight* light = *it;
             if (light && light->GetType() == RndLight::kDirectional) {
