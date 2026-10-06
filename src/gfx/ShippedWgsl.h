@@ -25,7 +25,6 @@ const ShippedWgslModule* ShippedWgslModules(int* count);
 const char* StandardWgslSource();      // gfx/PipelineManager.cpp (compiled-in copy)
 const char* BloomPassWgslSource();     // gfx/BloomPass.cpp
 const char* DofPassWgslSource();       // gfx/DofPass.cpp, depth of field
-const char* DofDepthResolveWgslSource(); // gfx/DofPass.cpp, MSAA depth resolve
 const char* DrawRect2DWgslSource();    // gfx/DrawRect2D.cpp
 const char* PostProcPassWgslSource();  // gfx/PostProcPass.cpp
 const char* RB3RetailPostWgslSource(); // gfx/RB3RetailPost.cpp

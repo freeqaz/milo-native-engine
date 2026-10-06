@@ -60,8 +60,10 @@ class RB3RetailPost {
 public:
     void Init(GpuDevice& gpu);
     // Grades `sceneView` (sceneW x sceneH) onto `frameView` (cleared, full
-    // overwrite, surface format).
+    // overwrite, surface format). Bloom is built from `bloomSrcView` (same
+    // size), which differs from the scene only when depth of field ran.
     void Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& sceneView,
+             const wgpu::TextureView& bloomSrcView,
              int sceneW, int sceneH, const wgpu::TextureView& frameView,
              const RetailPostParams& p, GpuDevice& gpu);
     // Draws `src` (frame-sized, frame format) over the whole current render

@@ -11,10 +11,12 @@ class RndPostProc;
 class PostProcPass {
 public:
     void Init(GpuDevice& gpu);
-    void Run(wgpu::CommandEncoder& encoder, wgpu::TextureView& intermediateView,
-             wgpu::Texture& intermediateTex, int intermediateW, int intermediateH,
-             wgpu::TextureView& depthView, wgpu::TextureView& frameView,
-             wgpu::TextureView& blackTexView, GpuDevice& gpu);
+    // `depthView` is a depth-only view of the scene depth (`depthSamples`
+    // samples, intermediate-sized); depth of field reads it.
+    void Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& intermediateView,
+             const wgpu::Texture& intermediateTex, int intermediateW, int intermediateH,
+             const wgpu::TextureView& depthView, uint32_t depthSamples,
+             wgpu::TextureView& frameView, wgpu::TextureView& blackTexView, GpuDevice& gpu);
     void Terminate();
     // RB3: copies a graded frame over the current pass (RB3RetailPost::Blit).
     void BlitRetail(wgpu::RenderPassEncoder& pass, const wgpu::TextureView& src,

@@ -362,6 +362,7 @@ void RB3RetailPost::Pass(wgpu::CommandEncoder& encoder, const wgpu::RenderPipeli
 }
 
 void RB3RetailPost::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& sceneView,
+                        const wgpu::TextureView& bloomSrcView,
                         int sceneW, int sceneH, const wgpu::TextureView& frameView,
                         const RetailPostParams& p, GpuDevice& gpu) {
     if (!sceneView || !frameView || sceneW <= 0 || sceneH <= 0) return;
@@ -374,7 +375,8 @@ void RB3RetailPost::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& 
         u.srcTexel[0] = 1.0f / sceneW;
         u.srcTexel[1] = 1.0f / sceneH;
         u.lumaScale = p.bloomLumaScale;
-        Pass(encoder, mBloomDownPipe, mView[0][0], sceneView, &u.srcTexel[0], sizeof(u), gpu);
+        Pass(encoder, mBloomDownPipe, mView[0][0], bloomSrcView ? bloomSrcView : sceneView,
+             &u.srcTexel[0], sizeof(u), gpu);
         for (int s = 0; s < kSets; s++) {
             if (s > 0) {
                 PassUniforms d{};
