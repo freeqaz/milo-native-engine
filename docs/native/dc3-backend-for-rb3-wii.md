@@ -223,3 +223,17 @@ MILO_CAPTURE_FRAME=60 ...
 
 Under the rb3 flavor, screenshots are named `NN_fNNNN.png`; under dc3 they are
 `frame_NNNNN.png`.
+
+## 6. Consumer verification on this branch (2026-10-06)
+
+Each consumer was built against this engine checkout (`MILO_ENGINE_PATH` pointed
+at the branch worktree, confirmed in each `CMakeCache.txt`):
+
+| consumer | instrument | result |
+|---|---|---|
+| rb3-xenon (on `c1f6bafef`) | `tools/native_health.sh` | `NATIVE_HEALTH_RESULT verdict=PASS link_verified=18 link_expected=18 link_skipped=0 runtime_ran=18 gates_pass=73 gates_fail=0 runtime_crashed=0 rc=0` |
+| rb3-xenon | `tools/native_build_gate.sh` | PASS 18/18 (the line is in the lane report; it is the lane's last action) |
+| rb3-xenon | `rb3-render` default cells vs base `e1b0c29` | byte-identical PNGs, `RESULT: ALL GATES PASSED` |
+| dc3-decomp | `scripts/native_configure.sh` + `scripts/native_test.sh` | 626 registered, 557 executed, 557 passed, 0 failed, 69 skipped (budget 69), rc=0 |
+| rb3 (Wii), rb3 flavor | title screen vs rb3 `master` | 0.63–0.72% of samples differ, inside the 0.67–0.80% run-to-run null |
+| rb3 (Wii), dc3 flavor | title screen | renders the full scene, exits rc=0 (section 3) |
