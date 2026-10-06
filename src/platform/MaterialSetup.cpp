@@ -49,6 +49,23 @@ static wgpu::TextureView ResolveMap(RndTex* tex, wgpu::TextureView& fallback) {
     return v ? v : fallback;
 }
 
+// TexGen mode + the 2x3 texture transform the vertex shader applies for the
+// transform-driven modes. Shared by the primary material and every NextPass
+// material: a pass whose mode is kTexGenXfm but whose rows are left zero maps
+// every vertex to the same texel.
+template <class MatT>
+static void FillTexGen(const MatT& mat, MaterialUniforms& uni) {
+    uni.texGenMode = (float)mat->GetTexGen();
+    if (mat->GetTexGen() == kTexGenXfm || mat->GetTexGen() == kTexGenXfmOrigin ||
+        mat->GetTexGen() == kTexGenProjected) {
+        const Transform& xfm = mat->TexXfm();
+        uni.texXfmRow0[0] = xfm.m.x.x; uni.texXfmRow0[1] = xfm.m.x.y;
+        uni.texXfmRow0[2] = xfm.v.x;   uni.texXfmRow0[3] = xfm.v.z;
+        uni.texXfmRow1[0] = xfm.m.y.x; uni.texXfmRow1[1] = xfm.m.y.y;
+        uni.texXfmRow1[2] = xfm.v.y;   uni.texXfmRow1[3] = 0.0f;
+    }
+}
+
 MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh) {
     // DC3 BaseMaterial getters, whatever the rndobj shape (platform/rndshape/).
     auto mat = rndshape::Mat(rawMat);
@@ -165,7 +182,12 @@ MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh) {
     // Forcing prelit makes the shader output baseColor directly: white material
     // color = multiply identity (no visible change), which is correct behavior
     // when the lighting scripts aren't driving the color.
-    bool isMultiplyBlend = (matBlend == BaseMaterial::kBlendMultiply);
+    // An unlit material (rndshape::MatUnlit; RB3-Wii use_environ=0) already
+    // skips lighting, and forcing prelit on top of it would pull in the raw
+    // vertex colour, which an unlit Wii material never sees.
+    const bool unlit = rndshape::MatUnlit(mat);
+    matUni.unlit = unlit ? 1.0f : 0.0f;
+    bool isMultiplyBlend = (matBlend == BaseMaterial::kBlendMultiply) && !unlit;
     bool forcePrelit = IsSimpleRender() || isOverlayPass || isMultiplyBlend;
     if (isMultiplyBlend) heuristics |= kHeuristicMultiplyPrelit;
     if (isTextMesh) heuristics |= kHeuristicTextMeshDetect;
@@ -181,15 +203,7 @@ MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh) {
     matUni.hasNormDetailMap = mat->GetNormDetailMap() ? 1.0f : 0.0f;
 
     // --- TexGen mode and transform ---
-    matUni.texGenMode = (float)mat->GetTexGen();
-    if (mat->GetTexGen() == kTexGenXfm || mat->GetTexGen() == kTexGenXfmOrigin ||
-        mat->GetTexGen() == kTexGenProjected) {
-        const Transform& xfm = mat->TexXfm();
-        matUni.texXfmRow0[0] = xfm.m.x.x; matUni.texXfmRow0[1] = xfm.m.x.y;
-        matUni.texXfmRow0[2] = xfm.v.x;   matUni.texXfmRow0[3] = xfm.v.z;
-        matUni.texXfmRow1[0] = xfm.m.y.x; matUni.texXfmRow1[1] = xfm.m.y.y;
-        matUni.texXfmRow1[2] = xfm.v.y;   matUni.texXfmRow1[3] = 0.0f;
-    }
+    FillTexGen(mat, matUni);
 
     // --- Resolve all material texture views ---
     WgpuRnd::MaterialTexViews& texViews = result.texViews;
@@ -271,16 +285,23 @@ MaterialParams BuildPassMaterialParams(BaseMaterial* rawNextPass) {
     npMatUni.deNormal = nextPass->GetDeNormal();
     npMatUni.hasNormalMap = nextPass->NormalMap() ? 1.0f : 0.0f;
     // Force prelit for multiply-blend passes (same rationale as primary material)
-    bool npMultiply = (nextPass->GetBlend() == BaseMaterial::kBlendMultiply);
+    const bool npUnlit = rndshape::MatUnlit(nextPass);
+    npMatUni.unlit = npUnlit ? 1.0f : 0.0f;
+    bool npMultiply = (nextPass->GetBlend() == BaseMaterial::kBlendMultiply) && !npUnlit;
     npMatUni.prelit = (nextPass->Prelit() || npMultiply) ? 1.0f : 0.0f;
-    npMatUni.texGenMode = (float)nextPass->GetTexGen();
+    FillTexGen(nextPass, npMatUni);
     npMatUni.shaderVariation = (float)nextPass->GetShaderVariation();
 
     // --- Resolve textures ---
     WgpuRnd::MaterialTexViews& npTexViews = result.texViews;
 
-    // Diffuse: no PresyncBitmap needed for multi-pass (already synced by primary pass)
+    // Diffuse: a NextPass usually carries its OWN texture (e.g. RB3's
+    // billboard_texture.mat multiplies a shared 256x256 grime map over every
+    // adboard poster), which no primary pass ever syncs. Without this the view
+    // lookup fails and the "upload failed" branch below paints the pass black.
+    // PresyncBitmap is idempotent for already-uploaded textures.
     RndTex* npDiffTex = nextPass->GetDiffuseTex();
+    if (npDiffTex) npDiffTex->PresyncBitmap();
     wgpu::TextureView npDiffuse = npDiffTex ? GetGpuTexView(npDiffTex) : wgpu::TextureView{};
     if (npDiffuse) {
         npMatUni.useTexture = 1.0f;

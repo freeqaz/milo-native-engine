@@ -79,7 +79,7 @@ struct SceneUniforms {
     // venue-light upload so arena range-55 spots reach the band 70-100u away.
     pointFalloffMode: f32,
     venueHighlightLumaMode: f32,
-    _padPL3: f32,
+    outputLinear: f32,
     // Shadow mapping
     lightViewProj: mat4x4f,
     shadowEnabled: f32,
@@ -900,7 +900,12 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
     }
 
     // W9: encode linear -> sRGB for the non-sRGB web surface (see linearToSrgb).
-    finalColor = linearToSrgb(finalColor);
+    // Except into a render target whose consumer re-encodes on sampling
+    // (scene.outputLinear, set only for the RB3-Wii shape): encoding twice
+    // brightens everything drawn through the target.
+    if (scene.outputLinear < 0.5) {
+        finalColor = linearToSrgb(finalColor);
+    }
 
     return vec4f(finalColor, baseColor.a);
 }

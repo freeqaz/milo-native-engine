@@ -42,7 +42,9 @@ struct SceneUniforms {
     // (byte-identical); 1 = luminance-preserving highlight compression (chroma survives the
     // rolloff) — set ONLY by RB3's world.cam venue-light upload. Mirrors pointFalloffMode.
     float venueHighlightLumaMode; // f32
-    float _padPL1;                // f32
+    // 1 = skip the fragment sRGB encode (the pass writes a render target that is
+    // sampled back as linear data). Set only under rndshape::kRenderTargetStoresLinear.
+    float outputLinear;           // f32
     // Shadow mapping
     float lightViewProj[16];      // mat4x4f — light's VP for shadow lookup
     float shadowEnabled;           // f32 — 1.0 when shadow map valid

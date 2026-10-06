@@ -79,6 +79,9 @@ public:
     // Headless rendering (offscreen)
     wgpu::TextureView AcquireHeadlessFrame();
     bool ReadbackHeadlessFrame(uint8_t* outPixels, size_t outSize);
+    // Copy a w x h 4-byte-per-texel colour texture (needs CopySrc usage) into
+    // outPixels (tightly packed rows). Synchronous; a debugging/capture aid.
+    bool ReadbackTexture(const wgpu::Texture& tex, int w, int h, uint8_t* outPixels, size_t outSize);
     wgpu::Texture& HeadlessTex() { return mHeadlessTex; }
 
     // Synchronously spin up + drain the driver's first-use submission/allocator

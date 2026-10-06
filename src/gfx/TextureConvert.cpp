@@ -1,6 +1,8 @@
 #include "gfx/TextureConvert.h"
 #include "gfx/GpuDevice.h"
+#include "gfx/GxTextureDecode.h"
 #include "rndobj/Bitmap.h"
+#include "platform/rndshape/RndShape.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -388,6 +390,89 @@ wgpu::TextureFormat MapBitmapFormat(const RndBitmap& bmp, bool hasBCSupport) {
 }
 
 // ============================================================================
+// GX (RB3 Wii) layouts
+// ============================================================================
+
+static bool DecodeGx(const RndBitmap& bmp, std::vector<uint8_t>& rgba) {
+    if (GxTextureDecode::DecodeToRGBA(bmp.Pixels(), bmp.PixelBytes(), bmp.Width(),
+                                      bmp.Height(), bmp.Bpp(), bmp.Order(), rgba))
+        return true;
+    static int sLogged = 0;
+    if (sLogged < 8) {
+        sLogged++;
+        fprintf(stderr, "TextureConvert: unsupported GX layout %dx%d bpp %d order 0x%x\n",
+                bmp.Width(), bmp.Height(), bmp.Bpp(), bmp.Order());
+    }
+    return false;
+}
+
+// A GX bitmap decoded to RGBA8 with a box-filtered mip chain. RB3 drops the
+// stored mips at load (RndBitmap::LoadHeader zeroes the count) because the Wii
+// rebuilt them at runtime, so they are rebuilt here as well.
+static wgpu::Texture CreateFromGxBitmap(GpuDevice& gpu, const RndBitmap& bmp) {
+    std::vector<uint8_t> level;
+    if (!DecodeGx(bmp, level)) return nullptr;
+    int w = bmp.Width(), h = bmp.Height();
+    int mipCount = 1;
+    for (int m = w > h ? w : h; m > 1; m >>= 1) mipCount++;
+
+    wgpu::TextureDescriptor texDesc{};
+    texDesc.size = {(uint32_t)w, (uint32_t)h, 1};
+    texDesc.format = wgpu::TextureFormat::RGBA8Unorm;
+    texDesc.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
+    texDesc.mipLevelCount = mipCount;
+    wgpu::Texture tex = gpu.Device().CreateTexture(&texDesc);
+    if (!tex) return nullptr;
+
+    std::vector<uint8_t> next;
+    for (int mip = 0; mip < mipCount; mip++) {
+        wgpu::TexelCopyTextureInfo dstInfo{};
+        dstInfo.texture = tex;
+        dstInfo.mipLevel = mip;
+        wgpu::TexelCopyBufferLayout srcLayout{};
+        srcLayout.bytesPerRow = w * 4;
+        wgpu::Extent3D extent = {(uint32_t)w, (uint32_t)h, 1};
+        gpu.Queue().WriteTexture(&dstInfo, level.data(), level.size(), &srcLayout, &extent);
+        if (mip + 1 < mipCount) {
+            GxTextureDecode::DownsampleRGBA(level.data(), w, h, next);
+            level.swap(next);
+            w = w > 1 ? w / 2 : 1;
+            h = h > 1 ? h / 2 : 1;
+        }
+    }
+    return tex;
+}
+
+// The six faces of a GX cube texture, each decoded to RGBA8 (no mips, as the
+// Xbox cube path).
+static wgpu::Texture CreateGxCube(GpuDevice& gpu, const RndBitmap* const* faces, int numFaces) {
+    const int w = faces[0]->Width(), h = faces[0]->Height();
+    wgpu::TextureDescriptor texDesc{};
+    texDesc.size = {(uint32_t)w, (uint32_t)h, 6};
+    texDesc.dimension = wgpu::TextureDimension::e2D;
+    texDesc.format = wgpu::TextureFormat::RGBA8Unorm;
+    texDesc.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
+    texDesc.mipLevelCount = 1;
+    wgpu::Texture tex = gpu.Device().CreateTexture(&texDesc);
+    if (!tex) return nullptr;
+
+    std::vector<uint8_t> rgba;
+    for (int face = 0; face < numFaces && face < 6; face++) {
+        const RndBitmap& bmp = *faces[face];
+        if (bmp.Width() != w || bmp.Height() != h || !bmp.Pixels()) continue;
+        if (!(bmp.Order() & GxTextureDecode::kGxOrderBit) || !DecodeGx(bmp, rgba)) continue;
+        wgpu::TexelCopyTextureInfo dstInfo{};
+        dstInfo.texture = tex;
+        dstInfo.origin = {0, 0, (uint32_t)face};
+        wgpu::TexelCopyBufferLayout srcLayout{};
+        srcLayout.bytesPerRow = w * 4;
+        wgpu::Extent3D extent = {(uint32_t)w, (uint32_t)h, 1};
+        gpu.Queue().WriteTexture(&dstInfo, rgba.data(), rgba.size(), &srcLayout, &extent);
+    }
+    return tex;
+}
+
+// ============================================================================
 // GPU texture creation
 // ============================================================================
 
@@ -395,6 +480,9 @@ wgpu::Texture CreateFromBitmap(GpuDevice& gpu, const RndBitmap& bmp, int numMips
     int w = bmp.Width();
     int h = bmp.Height();
     if (w == 0 || h == 0 || !bmp.Pixels()) return nullptr;
+    if constexpr (rndshape::kGxTextureLayout) {
+        if (bmp.Order() & GxTextureDecode::kGxOrderBit) return CreateFromGxBitmap(gpu, bmp);
+    }
 
     unsigned int order = bmp.Order();
     unsigned int dxt = order & 0x38;
@@ -543,6 +631,11 @@ wgpu::Texture CreateCubeFromBitmaps(GpuDevice& gpu, const RndBitmap* const* face
     int h = faces[0]->Height();
     if (w == 0 || h == 0) return nullptr;
 
+    if constexpr (rndshape::kGxTextureLayout) {
+        if (faces[0]->Order() & GxTextureDecode::kGxOrderBit)
+            return CreateGxCube(gpu, faces, numFaces);
+    }
+
     bool hasBCSupport = gpu.HasBCCompression();
     wgpu::TextureFormat fmt = MapBitmapFormat(*faces[0], hasBCSupport);
 
@@ -635,7 +728,7 @@ wgpu::Texture CreateRenderTarget(GpuDevice& gpu, int w, int h, wgpu::TextureForm
     desc.size = {(uint32_t)w, (uint32_t)h, 1};
     desc.format = fmt;
     desc.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding
-               | wgpu::TextureUsage::CopyDst;
+               | wgpu::TextureUsage::CopyDst | wgpu::TextureUsage::CopySrc;
     return gpu.Device().CreateTexture(&desc);
 }
 

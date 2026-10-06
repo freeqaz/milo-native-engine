@@ -820,7 +820,14 @@ void WgpuRnd::MakeDrawTarget() {
         EndActivePass();
         mActiveTargetTex = nullptr;
     }
-    if (!mInPass) {
+    // Resume the frame pass only once BeginDrawing has opened it. A render
+    // target selected during the pre-clear phase (before BeginFramePass(true)),
+    // e.g. RB3's outfit compose painting *_diffuse_output, restores its
+    // previous camera on the way out; resuming here would leave a
+    // MainPassResume open when BeginDrawing then begins the real main pass,
+    // and Dawn invalidates the whole frame's command buffer, including the
+    // render-target contents just drawn.
+    if (!mInPass && mFramePassValid) {
         BeginFramePass(false);
     }
 }
@@ -1040,7 +1047,8 @@ void WgpuRnd::EnsureSceneUniformsCurrent() {
     // differ from the default UI camera in X/Z as well as Y.
     const Vector3 &camPos = cam ? cam->WorldXfm().v : Vector3(0, 0, 0);
     bool camChanged = (cam != mLastSceneCam || env != mLastSceneEnv
-        || camPos.x != mLastCamPosX || camPos.y != mLastCamPosY || camPos.z != mLastCamPosZ);
+        || camPos.x != mLastCamPosX || camPos.y != mLastCamPosY || camPos.z != mLastCamPosZ
+        || (rndshape::kRenderTargetStoresLinear && mActiveTargetTex != mLastSceneTarget));
     if (camChanged) {
         if (HasTransparentDraws() && !IsFlushingTransparentDraws()) {
             FlushTransparentDraws();
@@ -1054,6 +1062,7 @@ void WgpuRnd::EnsureSceneUniformsCurrent() {
         }
         mLastSceneCam = cam;
         mLastSceneEnv = env;
+        mLastSceneTarget = mActiveTargetTex;
         mLastCamPosX = camPos.x;
         mLastCamPosY = camPos.y;
         mLastCamPosZ = camPos.z;
@@ -1382,7 +1391,11 @@ void WgpuRnd::WriteSceneUniforms() {
 
     // Environment (fog, ambient, lights)
     RndEnviron* env = rndshape::CurrentEnv();
-    if (env && rndshape::EnvHasAmbientFogOwner(env)) {
+    if (rndshape::kRenderTargetStoresLinear && mActiveTargetTex) scene.outputLinear = 1.0f;
+    if (rndshape::WriteSceneLighting(scene, cam)) {
+        // The content's own lighting model (RB3-Wii: rndshape/RB3WiiSceneLighting.cpp).
+        mProjLightTexView = nullptr;
+    } else if (env && rndshape::EnvHasAmbientFogOwner(env)) {
         // Ambient color (with minimum floor for visibility)
         const Hmx::Color& amb = env->AmbientColor();
         float minAmbient = 0.08f;
@@ -1821,6 +1834,10 @@ void WgpuRnd::MaybeCaptureFrame() {
         snprintf(path, sizeof(path), "%s/frame_%05d.png", mScreenshotDir.c_str(), mFrameID);
         if (WriteScreenshot(path, pixels, w, h)) {
             printf("DC3 Native: captured frame %d -> %s\n", mFrameID, path);
+            if (getenv("MILO_DUMP_RT")) {
+                void DumpGpuRenderTargets(const char* dir, int frame);
+                DumpGpuRenderTargets(mScreenshotDir.c_str(), mFrameID);
+            }
         } else {
             fprintf(stderr, "DC3 Native: failed to write screenshot %s\n", path);
         }

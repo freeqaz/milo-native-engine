@@ -11,8 +11,12 @@
 #include "rndobj/Bitmap.h"
 #include "platform/rndshape/RndShape.h"
 
+#include "gfx/Screenshot.h"
+
 #include <unordered_map>
+#include <vector>
 #include <cstdio>
+#include <cstring>
 
 // ============================================================================
 // GPU texture side table — maps RndTex* to GPU resources
@@ -284,6 +288,27 @@ struct GpuCubeTexData {
 };
 
 static std::unordered_map<RndCubeTex*, GpuCubeTexData> sCubeTexGpuData;
+
+// Debug aid: write every live render target's colour contents to
+// <dir>/rt_<frame>_<texname>.png. Driven from WgpuRnd::MaybeCaptureFrame when
+// MILO_DUMP_RT is set, so the dump lands next to that frame's screenshot.
+void DumpGpuRenderTargets(const char* dir, int frame) {
+    if (!gWgpuRnd || !dir) return;
+    for (auto& kv : sTexGpuData) {
+        RndTex* tex = kv.first;
+        GpuTexData& d = kv.second;
+        if (!d.renderTarget || !d.texture) continue;
+        int w = (int)d.texture.GetWidth(), h = (int)d.texture.GetHeight();
+        std::vector<uint8_t> px((size_t)w * h * 4);
+        if (!gWgpuRnd->Gpu().ReadbackTexture(d.texture, w, h, px.data(), px.size())) continue;
+        char name[128];
+        snprintf(name, sizeof(name), "%s", tex->Name() ? tex->Name() : "anon");
+        for (char* c = name; *c; ++c) if (*c == '/' || *c == ' ') *c = '_';
+        char path[600];
+        snprintf(path, sizeof(path), "%s/rt_%05d_%s.png", dir, frame, name);
+        WritePNG(path, px.data(), w, h);
+    }
+}
 
 void ClearGpuTexCaches() {
     sTexGpuData.clear();

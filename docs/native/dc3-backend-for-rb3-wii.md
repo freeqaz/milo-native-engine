@@ -182,6 +182,11 @@ fixes, so those fixes did not move them.
 
 ## 4. What is left, and what was deliberately not done
 
+> **Superseded in part by section 7 (lane W16-QE).** The cloud layer, the
+> black billboard, the outfit render targets, the reflection pass's lighting
+> and the GX texture decode are done there, and the ".milo_wii bitmaps arrive
+> empty" note below was wrong (7.4). The rest of this list stands as written.
+
 - **rb3's default is still `RB3_GPU_BACKEND=rb3`.** Flipping it is one line, but
   it needs this engine branch pinned first (the pinned `2ea8e34` has no shape
   seam), and it switches off BandRnd-only harness features: the draw log and its
@@ -237,3 +242,171 @@ at the branch worktree, confirmed in each `CMakeCache.txt`):
 | dc3-decomp | `scripts/native_configure.sh` + `scripts/native_test.sh` | 626 registered, 557 executed, 557 passed, 0 failed, 69 skipped (budget 69), rc=0 |
 | rb3 (Wii), rb3 flavor | title screen vs rb3 `master` | 0.63–0.72% of samples differ, inside the 0.67–0.80% run-to-run null |
 | rb3 (Wii), dc3 flavor | title screen | renders the full scene, exits rc=0 (section 3) |
+
+## 7. Parity pass (lane W16-QE, 2026-10-06)
+
+Goal: bring the dc3 flavor up to the rb3 flavor (BandRnd) on RB3 content so dc3
+can become rb3's default. **The default was not flipped, no branch was merged
+and no pin was bumped**; those are the coordinator's.
+
+Branches (not pushed):
+
+| repo | branch | commits |
+|---|---|---|
+| milo-native-engine | `w16-qe-dc3-parity` | 10 code commits (including the merge of `w16-qe-wii-tex`) plus 3 doc commits on `5d5b02e`, engine `main` at the time |
+| rb3 | `w16-qe-dc3-parity` | `5440427c7` on `04b189fcc` (`master`) |
+| rb3-xenon, dc3-decomp | none — no consumer change was needed | |
+
+`w16-qe-wii-tex` (`e0dee73`) is the pre-rebase copy of the Wii decode commit;
+the one to land is its rebased twin `39e697c`, inside `w16-qe-dc3-parity`.
+
+### 7.1 What changed
+
+Every RB3-only behaviour sits behind the rndshape seam with an identity DC3
+entry, so DC3 and rb3-xenon content does not take the new path. Five changes
+are shared code and do reach DC3/xenon; they are bug fixes, marked **shared**.
+
+| # | change | where | DC3 entry |
+|---|---|---|---|
+| 1 | **Cloud layer.** RB3's `RndTexRenderer::DrawToTexture` forces destination-alpha writes while a target is bound (`WiiMat::SetOverrideAlphaWrite`); NextPass materials never got their texgen transform, so `difference_clouds_b.mat` sampled one texel. `clouds_rnd.tex` alpha mean **1.2 → 96** | `kRenderTargetForcesAlphaWrite`; `FillTexGen` shared by both pass builders (**shared**) | false |
+| 2 | **Per-draw uniform slots.** `Queue::WriteBuffer` runs at Submit, ahead of the whole frame, so particles, 2D rects and bloom sub-passes all read the *last* data written in the frame (the rooftop smoke appeared inside the cloud target) | `Part_Wgpu`, `DrawRect2D` vertex arenas; `BloomPass` 64 round-robin slots (**shared**) | — |
+| 3 | **Black billboard.** A NextPass with its own diffuse (`billboard_texture.mat` under `adboard_01/02.mat`) was never presynced, so its upload missed and the pass drew black. Now shows the Ramones posters retail shows | `MaterialSetup` (**shared**) | — |
+| 4 | **Scene lighting.** WgpuRnd's DC3 venue rig over-lit RB3 (title f400 city luma 68.7 vs retail 52.4). `rndshape::WriteSceneLighting` carries BandRnd's converged model (GX point falloff, exposure 0.70/0.80, ambient ×0.09 floored 0.008, char environs from the real list, flat key for non-world cameras), with BandRnd's env-var names | `rndshape/RB3WiiSceneLighting.cpp` (built only for dc3 + rb3wii) | `return false` |
+| 5 | **Unlit materials.** Wii `use_environ=0 && pre_lit=0` takes the GX register colour only | `rndshape::MatUnlit` | false |
+| 6 | **Particles.** RB3 positions are relative to `mRelativeXfm`; colour × material colour; translucent haze alpha ×0.35 with a near-camera fade (BandRnd's model) | `PartWorldPos`, `kPartMaterialTint` | `p->pos`, false |
+| 7 | **Linear render targets.** `standard_wgsl` sRGB-encodes every fragment for the non-sRGB surface and a target is sampled back raw, so anything drawn through a target was encoded twice (the cloud target read 0.38 for a 0.12 material). Targets now store linear (`SceneUniforms.outputLinear`, replacing a pad float) | `kRenderTargetStoresLinear` | false |
+| 8 | **Reflection camera.** `WorldReflection` draws through an unnamed copy of `world.cam` in draw mode 7; it is lit as the venue camera | `RB3WiiSceneLighting.cpp` | — |
+| 9 | **Outfit composites were black.** `OutfitConfig::MatSwap::Compose` paints every `*_output` target in the pre-clear phase; restoring its camera made `MakeDrawTarget` open a `MainPassResume` pass before `BeginDrawing`'s own main pass, and Dawn invalidated the frame's whole command buffer (10 invalid frames in the first 60). `MakeDrawTarget` now resumes only once the frame pass exists → **0** | `Rnd_Wgpu.cpp` (**shared**) | — |
+| 10 | **Outfit tint.** RB3's `DrawRect` colour is material colour × argument; Compose passes white and carries the palette tint in `sMat->SetColor()`. Garments, hair and eyes now take their palette colour (e.g. `denimjacket_clean` output mean RGB 133/134/135 → 94/101/116) | `kRectModulatesMatColor` in `DrawRect2D` | false |
+| 11 | **Wii GX texture decode** (CMPR `0x48`; two-plane CMPR colour+alpha `0x148`; RGBA8 `0x40` and I8 `0xC0` implemented but unused by shipped data) with a rebuilt box mip chain | `gfx/GxTextureDecode`, `kGxTextureLayout` | false (`if constexpr`) |
+| rb3 | **`TheNgStats` was null.** `band3_link_stubs.s` gave it a weak 256-byte zero blob, so `SpotlightDrawer` segfaulted every frame of a song (2,410 caught crashes); the facade now defines a real `NgStats`. Highway, HUD and spotlights render, and `game_screen` arrives at frame ~1,120 instead of ~1,900 | rb3 `native/src/rb3_rnd_backend_dc3.cpp` | — |
+
+### 7.2 Title screen against retail
+
+Instrument: `tools/rb3-dc3-parity/title_fidelity.py` against
+`rb3/images/retail-screenshots/title_screen_360_tcrf.png` (the TCRF Xbox 360
+capture). `sky_dE` / `city_dE` = mean |ΔRGB| (0–255) between 16×16-box-blurred
+320×180 downsamples, sky = top 30%; lower is better. Both flavors were built
+from the same rb3 + engine worktrees and run back to back
+(`tools/rb3-dc3-parity/title_capture.sh`, Xbox data, 1280×720 headless).
+Retail: luma 50.1, sky 44.8, city 52.4.
+
+| frame | BandRnd sky_dE / city_dE | dc3 before this lane | dc3 now | dc3 now: luma / sky / city |
+|---|---|---|---|---|
+| 60 | 55.1 / 21.3 | 53.2 / 45.2 | **49.1 / 20.7** | 61.1 / 91.4 / 48.1 |
+| 200 | 43.5 / 24.1 | 53.0 / 45.7 | 43.9 / **23.4** | 61.5 / 86.7 / 50.8 |
+| 400 | 66.6 / 21.9 | 52.9 / 45.6 | **46.8 / 20.8** | 60.1 / 89.2 / 47.6 |
+
+Run-to-run noise on the same build is about ±0.4 sky_dE (two dc3 runs at
+frame 200: 43.8 and 44.2), so frame 200's sky is a tie and every other cell
+is better under dc3.
+
+The order in which the changes landed, frame 200 / 400 sky_dE (city_dE),
+shows why they belong together: unlit materials alone made the sky worse until
+the render-target encoding was fixed.
+
+| step | f200 | f400 |
+|---|---|---|
+| lane start (engine `cfef5a2`; city luma 81) | 53.0 (45.7) | 52.9 (45.6) |
+| cloud layer, per-draw slots, billboard presync | — | 70.3 (31.8) |
+| + lighting seam | 50.5 (24.5) | 60.3 (21.4) |
+| + unlit | 72.3 (26.9) | 91.1 (22.5) |
+| + particle tint | 71.5 (26.0) | 90.0 (22.5) |
+| + linear render targets | 44.1 (23.5) | 47.0 (20.9) |
+| + reflection camera | 44.3 (23.5) | 46.8 (20.8) |
+| + pass resume, rect tint, Wii decode, rebase | 43.9 (23.4) | 46.8 (20.8) |
+
+What the frames show (compare `frame_00400.png` with the retail capture):
+cloud layer, billboard posters, the rooftop band, skyline, Capitol marquee and
+cars are present. **The rooftop characters are correct**: retail shows the
+guitarist and singer on the left roof and the drummer/keys on the right; BandRnd
+does not draw them, so "extra characters" was a BandRnd defect, not a dc3 one.
+Remaining differences, all present under BandRnd too: the sky is about twice
+retail's luma (the clouds read grey-lavender rather than dark purple), there is
+no bloom/glow around lights, and the logo outline is grey-white rather than
+lavender.
+
+The street: retail shows no visible mirror reflection, only a green haze and
+light bloom. Under dc3 the reflection pass draws (128 mirrored meshes) beneath
+`city_road.mat` (SrcAlpha, alpha 0.9), so about 10% of it shows. BandRnd's cyan
+street is not in retail and was not reproduced.
+
+### 7.3 Venues
+
+Instrument: `tools/rb3-dc3-parity/venue_capture.py` drives Quickplay over the
+HTTP API (guitar, expert, no-fail, autohit), waits for `game_screen`, and
+captures at game-relative frames 60/300/600/900; `frame_stats.py` gives global
+luma. Camera cuts are random, so the two flavors show different shots and
+only the distributions compare.
+
+| | mean luma of the 4 shots | range |
+|---|---|---|
+| retail gameplay captures (5 images in `retail-screenshots/`) | 54.0 | 19.2–74.8 |
+| BandRnd | 40.4 | 29.6–53.8 |
+| dc3, before 7.1 #9/#10 (outfits black) | 72.2 | 20.5–102.1 |
+| dc3 now | 39.9 | 36.0–42.1 |
+
+Under dc3 the highway, gems, HUD, spotlights, crowd and the B&W/tinted
+post-processing shots render, and band clothing carries its palette colours.
+BandRnd's crowd dim (material colour ×0.10 on crowd extras and impostor
+billboards) was **deliberately not ported**: it compensates for BandRnd's own
+venue lighting, and dc3 venue luma is already inside retail's range without it.
+
+### 7.4 Wii data
+
+The game does not boot on Wii data under either flavor (`band_preinit_keep.dta`
+fails with "Couldn't find 'mem'"), so Wii textures were measured in `--viewer`
+cells (640×480, synthesized camera) against the same milo's `.milo_xbox`
+render, which uses the trusted Xbox DXT path. Mean RGB distance over drawn
+pixels, 78 Wii cells that render:
+
+| | before | after |
+|---|---|---|
+| pixel-weighted mean | 87.2 | 63.0 |
+| median cell | 81.2 | 35.9 |
+| `list_store_storefront` | 132.6 | 2.8 |
+| `campaign_topmeter` | 214.2 | 8.9 |
+
+46 cells moved closer, 6 further (framing or the asset's own material colour,
+checked by eye), 20 unchanged. All 72 Xbox-data cells are byte-identical
+before and after. The section-3 note that ".milo_wii bitmaps arrive empty" was
+wrong: the pixels arrived intact and were decoded as Xbox BC1. The crazyhawk
+cell is empty because its `hair_straight.bmp` is absent from `wii-extracted`.
+
+### 7.5 Not done
+
+- **Default switch, merges, pin bumps** — coordinator.
+- **BandRnd-only features not ported:** halo bloom and the highway track-light
+  block; the menu-UI post-grade boundary, chroma preservation and soft-clip
+  ceiling of `RB3PostProc`; sustain-tail colour; render-to-texture without
+  depth; texture sharpen; the draw log and its goldens; the WGSL validation
+  suite; BandRnd's skinning workarounds. None of them was needed to match or
+  beat BandRnd on the frames above; bloom is the most visible remaining gap
+  against retail.
+- **Crowd recolouring.** `Crowd.cpp` sets `kColorModModulate` with three random
+  colours per crowd character; no backend implements `mColorMod`, and the Wii
+  `WiiMat` decomp has no consumer of it to copy, so its semantics are unknown.
+- **Sky brightness and logo colour** (7.2) — shared with BandRnd.
+- **`PresyncBitmap`** fingerprints every texture on every draw (~170k calls in
+  220 title frames); a performance issue, untouched.
+
+### 7.6 Consumer verification (engine `w16-qe-dc3-parity`)
+
+Each consumer was built in its own `~/tmp` worktree against the engine
+worktree (`MILO_ENGINE_PATH`, confirmed in each `CMakeCache.txt`).
+
+| consumer | instrument | result |
+|---|---|---|
+| rb3-xenon (on `9fd8de7b1`) | `tools/native_health.sh` | `NATIVE_HEALTH_RESULT verdict=PASS link=PASS link_verified=18 link_expected=18 link_skipped=0 runtime=PASS runtime_ran=18 runtime_total=18 gates_pass=77 gates_fail=0 unrunnable=none selftest=SKIPPED scatter_unlinked=16 scatter_dirb=0 scatter_multihost=17 rc=0 handpose_controls=- handpose_baseline_fail=- runtime_crashed=0 runtime_failed=none` |
+| rb3-xenon | `tools/native_build_gate.sh` | run as the lane's last action; its `NATIVE_GATE_RESULT` line is in the lane report (the health run's embedded link gate read `verdict=PASS expected=18 verified=18 skipped=0 partial=0 failed=0 rc=0`) |
+| rb3-xenon | `rb3-render` default cells, branch vs base engine `5d5b02e` | both `RESULT: ALL GATES PASSED`; both PNGs (`tracksystem_meshes`, `crowd_female01`) byte-identical |
+| dc3-decomp (on `e992ee9b5`) | `scripts/native_configure.sh` + `scripts/native_test.sh` | 626 registered, 557 executed, 557 passed, 0 failed, 69 skipped (budget 69), rc=0 |
+| rb3 (Wii), both flavors | title (7.2) and venues (7.3) | dc3 renders title and Quickplay to `game_screen`, exits cleanly |
+
+Two environment traps hit on the way, neither an engine problem: a fresh
+dc3-decomp worktree needs `archive/` and `orig-assets/` symlinked from the main
+checkout. Without `archive/`, one more test skips (70 > budget 69 fails the
+ratchet); with `archive/` but without `orig-assets/`, the two `XeniaGolden`
+tests and `HttpInputTest.PressReachesTheUIAsAPad0Button` launch `dc3-native`
+with no game data and fail ("could not find game data", SIGFPE before ready).
+With both links all three pass.

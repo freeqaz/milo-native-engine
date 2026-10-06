@@ -86,10 +86,10 @@ void DrawRect2D::EnsurePipeline(GpuDevice& gpu) {
     plDesc.bindGroupLayouts = &m2dBindGroupLayout;
     m2dPipelineLayout = dev.CreatePipelineLayout(&plDesc);
 
-    wgpu::BufferDescriptor vbDesc{};
-    vbDesc.size = 6 * sizeof(Vertex2D);
-    vbDesc.usage = wgpu::BufferUsage::Vertex | wgpu::BufferUsage::CopyDst;
-    m2dVertexBuffer = dev.CreateBuffer(&vbDesc);
+    m2dVertexBuffer = nullptr;
+    m2dVBCapacity = 0;
+    m2dVBUsed = 0;
+    m2dVBFrame = -1;
 
     m2dPipelineReady = true;
 }
@@ -132,6 +132,13 @@ void DrawRect2D::Draw(wgpu::RenderPassEncoder& pass, const Hmx::Rect& rect, RndM
     cBR[1] = (cTR[1] + cBL[1]) * 0.5f;
     cBR[2] = (cTR[2] + cBL[2]) * 0.5f;
     cBR[3] = (cTR[3] + cBL[3]) * 0.5f;
+    if (rndshape::kRectModulatesMatColor && mat) {
+        const Hmx::Color& mc = mat->GetColor();
+        const float m[4] = { mc.red, mc.green, mc.blue, mc.alpha };
+        for (int i = 0; i < 4; i++) {
+            cTL[i] *= m[i]; cTR[i] *= m[i]; cBL[i] *= m[i]; cBR[i] *= m[i];
+        }
+    }
 
     Vertex2D verts[6] = {
         {{x0, y0}, {0, 0}, {cTL[0], cTL[1], cTL[2], cTL[3]}},
@@ -142,7 +149,28 @@ void DrawRect2D::Draw(wgpu::RenderPassEncoder& pass, const Hmx::Rect& rect, RndM
         {{x1, y1}, {1, 1}, {cBR[0], cBR[1], cBR[2], cBR[3]}},
     };
 
-    gpu.Queue().WriteBuffer(m2dVertexBuffer, 0, verts, sizeof(verts));
+    // Each rect gets its own slot in this frame's arena. A single 6-vertex
+    // buffer rewritten per call left every rect of the frame drawing at the
+    // LAST rect's position: WriteBuffer executes at Submit, before any of the
+    // frame's draws. A full arena is replaced by a larger one; draws already
+    // recorded keep the old buffer alive.
+    int frame = gWgpuRnd ? gWgpuRnd->FrameID() : 0;
+    if (frame != m2dVBFrame) {
+        m2dVBFrame = frame;
+        m2dVBUsed = 0;
+    }
+    if (!m2dVertexBuffer || m2dVBUsed >= m2dVBCapacity) {
+        int cap = m2dVBCapacity < 64 ? 64 : m2dVBCapacity * 2;
+        wgpu::BufferDescriptor vbDesc{};
+        vbDesc.size = (uint64_t)cap * sizeof(verts);
+        vbDesc.usage = wgpu::BufferUsage::Vertex | wgpu::BufferUsage::CopyDst;
+        m2dVertexBuffer = dev.CreateBuffer(&vbDesc);
+        m2dVBCapacity = cap;
+        m2dVBUsed = 0;
+    }
+    uint64_t vbOffset = (uint64_t)m2dVBUsed * sizeof(verts);
+    m2dVBUsed++;
+    gpu.Queue().WriteBuffer(m2dVertexBuffer, vbOffset, verts, sizeof(verts));
 
     bool hasTex = false;
     wgpu::TextureView texView;
@@ -218,7 +246,7 @@ void DrawRect2D::Draw(wgpu::RenderPassEncoder& pass, const Hmx::Rect& rect, RndM
 
     pass.SetPipeline(pipe);
     pass.SetBindGroup(0, bg);
-    pass.SetVertexBuffer(0, m2dVertexBuffer, 0, sizeof(verts));
+    pass.SetVertexBuffer(0, m2dVertexBuffer, vbOffset, sizeof(verts));
     pass.Draw(6);
 }
 
@@ -227,5 +255,8 @@ void DrawRect2D::Terminate() {
     m2dBindGroupLayout = nullptr;
     m2dPipelineLayout = nullptr;
     m2dVertexBuffer = nullptr;
+    m2dVBCapacity = 0;
+    m2dVBUsed = 0;
+    m2dVBFrame = -1;
     m2dPipelineReady = false;
 }

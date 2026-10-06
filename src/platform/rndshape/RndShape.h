@@ -21,6 +21,8 @@
 // which defines MILO_RNDOBJ_SHAPE_RB3WII for the Wii shape.
 #pragma once
 
+struct SceneUniforms;   // gfx/UniformStructs.h
+
 #if defined(MILO_RNDOBJ_SHAPE_RB3WII)
 #include "platform/rndshape/RndShape_RB3Wii.h"
 #else

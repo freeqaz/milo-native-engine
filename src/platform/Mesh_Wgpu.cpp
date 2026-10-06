@@ -228,6 +228,8 @@ void DrawMeshImmediate(RndMesh* mesh) {
     key.hasDepth = gWgpuRnd->CurrentPassHasDepth();
     key.alphaCut = mat->GetAlphaCut();
     key.alphaWrite = mat->GetAlphaWrite();
+    if (rndshape::kRenderTargetForcesAlphaWrite && gWgpuRnd->ActiveTargetTex())
+        key.alphaWrite = true;
     key.alphaToCoverage = mat->GetAlphaCut();
     key.depthBias = meshData.depthBias;
 
@@ -317,6 +319,8 @@ void DrawMeshImmediate(RndMesh* mesh) {
         npKey.stencil = (WgpuStencil)rndshape::Mat(nextPass)->GetStencil();
         npKey.alphaCut = rndshape::Mat(nextPass)->GetAlphaCut();
         npKey.alphaWrite = rndshape::Mat(nextPass)->GetAlphaWrite();
+        if (rndshape::kRenderTargetForcesAlphaWrite && gWgpuRnd->ActiveTargetTex())
+            npKey.alphaWrite = true;
         npKey.alphaToCoverage = rndshape::Mat(nextPass)->GetAlphaCut();
 
         wgpu::RenderPipeline npPipeline = gWgpuRnd->Pipelines().GetPipeline(npKey);

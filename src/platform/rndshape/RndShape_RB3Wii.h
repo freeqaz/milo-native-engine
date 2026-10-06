@@ -181,6 +181,13 @@ private:
 inline MatView Mat(RndMat *m) { return MatView(m); }
 inline MatView Mat(const MatView &m) { return m; }
 
+// Wii WiiMat::Select: a material with use_environ=0 and pre_lit=0 takes its
+// colour from the GX register (GX_SRC_REG) -- no ambient, no lights, no vertex
+// colour, just material colour x texture. RB3 authors most night-city neon,
+// signs, posters, the cloud painter (difference_clouds.mat) and the street
+// fog this way. Same rule as the rb3 flavor (RB3MaterialBinder.cpp, mu.unlit).
+inline bool MatUnlit(const MatView &m) { return !m.Raw()->mUseEnviron && !m.Raw()->mPreLit; }
+
 // ---- environment -----------------------------------------------------------
 inline RndEnviron *CurrentEnv() { return RndEnviron::sCurrent; }
 inline bool EnvHasAmbientFogOwner(RndEnviron *e) { return e->mAmbientFogOwner.Ptr() != nullptr; }
@@ -329,9 +336,30 @@ inline void VertBoneWeights(const RndMesh::Vert &v, float out[4]) {
 inline int PartTilesAcross(RndParticleSys *) { return 1; }
 inline int PartTilesDown(RndParticleSys *) { return 1; }
 inline int PartTileIndex(const RndParticle *) { return 0; }
+// A relative (non-world-space) RB3 system stores particles in the system's
+// frame; world position = mRelativeXfm * p->pos (Part.h). Absolute systems keep
+// mRelativeXfm at identity.
+inline Vector3 PartWorldPos(RndParticleSys *s, RndParticle *p) {
+    Vector3 w;
+    Multiply(p->Pos3(), s->RelativeXfm(), w);
+    return w;
+}
+// The Wii TEV multiplies the particle colour by the material register colour,
+// and RB3's translucent haze systems (material alpha < 1: street fog, the cloud
+// painter's wisps) are tuned for that dimmer GX blend. Same model as the rb3
+// flavor's BandRnd::DrawParticles: tint by material colour, scale haze alpha
+// by 0.35, and fade haze out within two half-sizes of the camera.
+constexpr bool kPartMaterialTint = true;
 
 // ---- cube texture ----------------------------------------------------------
 inline RndBitmap *CubeFaceBitmap(RndCubeTex *c, int face) { return &c->mBitmap[face]; }
+
+// ---- texture layout --------------------------------------------------------
+// RB3 Wii bitmaps (.milo_wii inline textures and .png_wii files) carry GX pixel
+// layouts, marked by the 0x40 order bit (RndTex::PlatformBppOrder on Wii):
+// CMPR, two-plane CMPR colour + alpha, RGBA8 and I8 tiles. The Wii decoded them
+// in hardware; TextureConvert decodes them to RGBA8 (gfx/GxTextureDecode).
+constexpr bool kGxTextureLayout = true;
 
 // ---- draw modes ------------------------------------------------------------
 // RB3's WorldReflection::DrawShowing sets mode 7 for the mirrored pass
@@ -350,6 +378,31 @@ constexpr int kDrawModeReflection = 7;
 // first, hid the whole skyline.
 constexpr bool kCamSelectSetsViewport = false;
 
+// ---- render-to-texture -----------------------------------------------------
+// RB3's RndTexRenderer::DrawToTexture brackets the draw into its output texture
+// with WiiMat::SetOverrideAlphaWrite(true) / (false) (rndobj/TexRenderer.cpp,
+// the #ifndef HX_NATIVE block): every material writes destination alpha while
+// a render target is bound. The title screen depends on it: clouds_rnd.tex is
+// painted by difference_clouds.mat (alpha write off) and composited onto the
+// sky by sky_dome.mat with SrcAlpha blending, so without the override the
+// target's alpha stays at the clear value 0 and the cloud layer is invisible.
+constexpr bool kRenderTargetForcesAlphaWrite = true;
+// The standard shader sRGB-encodes its output (gfx/standard_wgsl.inc,
+// linearToSrgb) for the non-sRGB surface, and a render target (RGBA8Unorm on
+// that surface) is sampled back as raw data, so a material drawn through a
+// target is encoded twice. On the title screen that lifts the cloud target
+// (clouds_rnd.tex, difference_clouds.mat colour 0.12) from about 0.12 to 0.38
+// and washes the sky. Draws into a target therefore write linear values.
+constexpr bool kRenderTargetStoresLinear = true;
+
+// ---- 2D rects --------------------------------------------------------------
+// RB3's DrawRect colour is the material's register colour times the colour
+// argument. OutfitConfig::MatSwap::Compose relies on it: every rect it draws
+// into an outfit's *_output target passes white and carries the palette tint
+// in sMat->SetColor(), so without the material colour every recoloured
+// garment, hair and eye composes to its untinted grey detail map.
+constexpr bool kRectModulatesMatColor = true;
+
 // ---- post-processing -------------------------------------------------------
 // RB3's mNoiseIntensity is a gain on a tiled noise TEXTURE (mNoiseMap scaled by
 // mNoiseBaseScale), not a per-pixel screen-space add: the menu and venue
@@ -361,5 +414,14 @@ inline float PostProcGrain(const RndPostProc *pp) {
     float n = std::fabs(pp->GetNoiseIntensity());
     return (n < 3.0f ? n : 3.0f) * 0.04f;
 }
+
+// ---- scene lighting --------------------------------------------------------
+// RB3 lights for the Wii's GX pipeline, not DC3's venue rig: world.cam reads
+// the environ's lights with real point lights, a clamped near-white ambient and
+// exposure scaling; every other camera gets a flat key. Defined in
+// rndshape/RB3WiiSceneLighting.cpp (built only for this shape under the dc3
+// backend). Writes ambient, directional and point lights; returns true, so
+// WgpuRnd skips its DC3 lighting block.
+bool WriteSceneLighting(SceneUniforms &s, RndCam *cam);
 
 } // namespace rndshape
