@@ -592,3 +592,20 @@ vars let a consumer choose the other trade-off without a rebuild.
 - No merge, pin bump or push.
 
 ### 8.7 Consumer verification (engine `w16-qn`)
+
+Each consumer was built in its own `~/tmp` worktree against the engine
+worktree (`MILO_ENGINE_PATH`, confirmed in each `CMakeCache.txt`).
+
+| consumer | instrument | result |
+|---|---|---|
+| rb3-xenon (on `ca61b767f`) | `tools/native_health.sh` | `NATIVE_HEALTH_RESULT verdict=PASS link=PASS link_verified=18 link_expected=18 link_skipped=0 runtime=PASS runtime_ran=18 runtime_total=18 gates_pass=77 gates_fail=0 unrunnable=none selftest=SKIPPED scatter_unlinked=16 scatter_dirb=0 scatter_multihost=17 rc=0 handpose_controls=- handpose_baseline_fail=- runtime_crashed=0 runtime_failed=none` (embedded link gate: `verdict=PASS expected=18 verified=18 skipped=0 partial=0 failed=0 rc=0`; layout-ODR `PASS`, x360 1,266 TUs, native 1,713) |
+| rb3-xenon | `tools/native_build_gate.sh` | run as the lane's last action; its `NATIVE_GATE_RESULT` line is in the lane report |
+| rb3-xenon | `rb3-render` default cells, branch vs base engine `14b3c2d` | both `RESULT: ALL GATES PASSED (0 gate failure(s))`; both PNGs (`tracksystem_meshes`, `crowd_female01`) byte-identical |
+| dc3-decomp (on `e992ee9b5`) | `scripts/native_configure.sh` + `scripts/native_test.sh` | 626 registered, 557 executed, 557 passed, 0 failed, 69 skipped (budget 69), rc=0 |
+| rb3 (Wii), dc3 flavor (default) | title (8.4) and venues (8.5) | renders title and Quickplay to `game_screen`, exits cleanly |
+
+One environment trap, not an engine problem: the gate's layout-ODR check
+compiles the X360 TUs from `build.ninja`. A plain `git worktree add` of
+rb3-xenon has none, so the check reports UNRUNNABLE and the gate goes
+INCOMPLETE (rc=3). In a worktree made with `scripts/setup_worktree.sh` it
+passes.
