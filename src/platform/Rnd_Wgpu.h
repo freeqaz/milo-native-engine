@@ -10,9 +10,11 @@
 #include "gfx/PostProcPass.h"
 #include "gfx/DisplayRamp.h"
 #include "gfx/DrawRect2D.h"
+#include "gfx/PointTestPass.h"
 #include "gfx/UniformStructs.h"
 #include "gfx/UniformRingBuffer.h"
 #include "platform/rndshape/RndShape.h"
+#include "platform/PointTestHook.h"
 #ifdef MILO_RNDOBJ_SHAPE_HAS_NGRND
 #include "rndobj/ShaderMgr.h"
 #endif
@@ -173,6 +175,18 @@ public:
     void FinishRenderTarget(RndTex* tex);
     RndTex* ActiveTargetTex() const { return mActiveTargetTex; }
 
+    // Flare point tests (platform/PointTestHook.h): retail DxRnd::DoPointTests
+    // on occlusion queries. QueuePointTest holds a test for this frame's world
+    // end; RunPointTests, at world end (DoWorldEnd for the RB3-Wii shape; else
+    // the first thing EndDrawing does, as retail's Rnd::EndDrawing ends the
+    // world), first delivers the answers to the tests issued the frame before,
+    // then draws this frame's against the world's depth.
+    bool QueuePointTest(const NativePointTest& test);
+    void CancelPointTests(const void* key);
+    void RunPointTests();
+    int PendingPointTests() const { return (int)mPointTestQueue.size(); }
+    int PointTestsInFlight() const { return mPointTestPass.InFlight(); }
+
 private:
     void ApplyViewport();
     // The viewport a camera select sets on DC3 (RndCam::Select) and on the Wii
@@ -215,6 +229,17 @@ public:
     PostProcPass mPostProcPass;
     DisplayRamp mDisplayRamp;   // rndshape::DisplayGamma(): the RB3 Xbox 360 display ramp
     DrawRect2D mDrawRect2D;
+    PointTestPass mPointTestPass;
+
+    // Point tests queued this frame, and whether this frame's world end ran.
+    std::vector<PointTestPass::Query> mPointTestQueue;
+    bool mPointTestsRan = false;
+    struct PointTester : NativePointTester {
+        WgpuRnd* rnd = nullptr;
+        bool QueuePointTest(const NativePointTest& t) override { return rnd->QueuePointTest(t); }
+        void CancelPointTests(const void* key) override { rnd->CancelPointTests(key); }
+    };
+    PointTester mPointTester;
 
     // GPU resource initialization tracking
     bool mGpuResourcesReady = false;
