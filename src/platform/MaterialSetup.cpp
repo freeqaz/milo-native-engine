@@ -288,8 +288,13 @@ MaterialParams BuildPassMaterialParams(BaseMaterial* rawNextPass) {
     // --- Resolve textures ---
     WgpuRnd::MaterialTexViews& npTexViews = result.texViews;
 
-    // Diffuse: no PresyncBitmap needed for multi-pass (already synced by primary pass)
+    // Diffuse: a NextPass usually carries its OWN texture (e.g. RB3's
+    // billboard_texture.mat multiplies a shared 256x256 grime map over every
+    // adboard poster), which no primary pass ever syncs. Without this the view
+    // lookup fails and the "upload failed" branch below paints the pass black.
+    // PresyncBitmap is idempotent for already-uploaded textures.
     RndTex* npDiffTex = nextPass->GetDiffuseTex();
+    if (npDiffTex) npDiffTex->PresyncBitmap();
     wgpu::TextureView npDiffuse = npDiffTex ? GetGpuTexView(npDiffTex) : wgpu::TextureView{};
     if (npDiffuse) {
         npMatUni.useTexture = 1.0f;
