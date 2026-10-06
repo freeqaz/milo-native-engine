@@ -397,3 +397,16 @@ worktree (`MILO_ENGINE_PATH`, confirmed in each `CMakeCache.txt`).
 
 | consumer | instrument | result |
 |---|---|---|
+| rb3-xenon (on `9fd8de7b1`) | `tools/native_health.sh` | `NATIVE_HEALTH_RESULT verdict=PASS link=PASS link_verified=18 link_expected=18 link_skipped=0 runtime=PASS runtime_ran=18 runtime_total=18 gates_pass=77 gates_fail=0 unrunnable=none selftest=SKIPPED scatter_unlinked=16 scatter_dirb=0 scatter_multihost=17 rc=0 handpose_controls=- handpose_baseline_fail=- runtime_crashed=0 runtime_failed=none` |
+| rb3-xenon | `tools/native_build_gate.sh` | run as the lane's last action; its `NATIVE_GATE_RESULT` line is in the lane report (the health run's embedded link gate read `verdict=PASS expected=18 verified=18 skipped=0 partial=0 failed=0 rc=0`) |
+| rb3-xenon | `rb3-render` default cells, branch vs base engine `5d5b02e` | both `RESULT: ALL GATES PASSED`; both PNGs (`tracksystem_meshes`, `crowd_female01`) byte-identical |
+| dc3-decomp (on `e992ee9b5`) | `scripts/native_configure.sh` + `scripts/native_test.sh` | 626 registered, 557 executed, 557 passed, 0 failed, 69 skipped (budget 69), rc=0 |
+| rb3 (Wii), both flavors | title (7.2) and venues (7.3) | dc3 renders title and Quickplay to `game_screen`, exits cleanly |
+
+Two environment traps hit on the way, neither an engine problem: a fresh
+dc3-decomp worktree needs `archive/` and `orig-assets/` symlinked from the main
+checkout. Without `archive/`, one more test skips (70 > budget 69 fails the
+ratchet); with `archive/` but without `orig-assets/`, the two `XeniaGolden`
+tests and `HttpInputTest.PressReachesTheUIAsAPad0Button` launch `dc3-native`
+with no game data and fail ("could not find game data", SIGFPE before ready).
+With both links all three pass.
