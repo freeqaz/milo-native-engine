@@ -98,6 +98,27 @@ static void FillRetailTerms(const MatT& mat, MaterialUniforms& uni,
     if (t.rimMap) views.rim = ResolveMap(t.rimTex, gWgpuRnd->WhiteTexView());
 }
 
+// RB3's material colour modulation (rndshape::MatColorMod): the three colours
+// as RGBA8 in colorMod.xyz and the mode in colorMod.w, which the shader's
+// colorModScale / colorModAlpha read. Zero (none) for DC3 materials.
+static uint32_t PackUnorm8(const float c[4]) {
+    uint32_t v = 0;
+    for (int k = 0; k < 4; k++) {
+        float x = c[k] < 0.0f ? 0.0f : (c[k] > 1.0f ? 1.0f : c[k]);
+        v |= (uint32_t)(x * 255.0f + 0.5f) << (8 * k);
+    }
+    return v;
+}
+
+template <class MatT>
+static void FillColorMod(const MatT& mat, MaterialUniforms& uni) {
+    float c[3][4] = {};
+    const int mode = rndshape::MatColorMod(mat, c);
+    if (mode == 0) return;
+    for (int i = 0; i < 3; i++) uni.colorMod[i] = PackUnorm8(c[i]);
+    uni.colorMod[3] = (uint32_t)mode;
+}
+
 MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh) {
     // DC3 BaseMaterial getters, whatever the rndobj shape (platform/rndshape/).
     auto mat = rndshape::Mat(rawMat);
@@ -256,6 +277,7 @@ MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh) {
     texViews.normDetail = ResolveMap(mat->GetNormDetailMap(), gWgpuRnd->FlatNormalTexView());
 
     FillRetailTerms(mat, matUni, texViews);
+    FillColorMod(mat, matUni);
 
     // --- Environment cube map ---
     RndCubeTex* environMap = mat->GetEnvironMap();
@@ -364,6 +386,7 @@ MaterialParams BuildPassMaterialParams(BaseMaterial* rawNextPass) {
     npTexViews.environCube = gWgpuRnd->BlackCubeTexView();
     npTexViews.normDetail = ResolveMap(nextPass->GetNormDetailMap(), gWgpuRnd->FlatNormalTexView());
     FillRetailTerms(nextPass, npMatUni, npTexViews);
+    FillColorMod(nextPass, npMatUni);
 
     // Multi-pass materials don't set their own sampler -- caller reuses primary material's sampler
     result.heuristics = 0;

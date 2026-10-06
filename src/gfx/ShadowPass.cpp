@@ -357,3 +357,8 @@ void ShadowPass::Terminate() {
     mShadowSceneBindGroup = nullptr;
     mShadowReady = false;
 }
+
+// Shipped WGSL accessor (gfx/ShippedWgsl.h): lets the validation test compile
+// the exact source this file hands CreateShaderModule.
+#include "gfx/ShippedWgsl.h"
+const char* ShadowPassWgslSource() { return kShadowShaderSource; }

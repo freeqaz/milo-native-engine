@@ -21,8 +21,12 @@
 // which defines MILO_RNDOBJ_SHAPE_RB3WII for the Wii shape.
 #pragma once
 
+#include <cstdint>
+
 struct SceneUniforms;   // gfx/UniformStructs.h
 class RndTex;
+class RndMesh;
+class RndMat;
 
 namespace rndshape {
 // RB3's Xbox 360 material terms as retail RndShaderStandard::CalcShaderOpts
@@ -46,6 +50,25 @@ struct RetailMatTerms {
     RndTex *normalTex = nullptr;
     RndTex *specularTex = nullptr;
     RndTex *rimTex = nullptr;
+};
+// One mesh draw as the per-draw state log records it (rndshape::DrawLogRecord;
+// RB3DrawLogDebug.h's RB3DrawRecord is the stored form). Every pointer is
+// borrowed for the duration of the call. The four tokens identify the uniform
+// data the draw bound (ring buffer + offset; a shared bind group for a static
+// mesh's bones), so draws that share uniforms share a token.
+struct DrawLogDraw {
+    uint64_t pipelineHash = 0;   // PipelineKeyHash of the draw's pipeline key
+    uint8_t blend = 0, zMode = 0, layout = 0;
+    bool hasDepth = false, alphaCut = false, alphaWrite = false, skinned = false;
+    uint32_t targetFormat = 0;
+    uint32_t indexCount = 0, triCount = 0, vertCount = 0;
+    RndMesh *mesh = nullptr;
+    RndMat *mat = nullptr;
+    const float *world = nullptr;      // ObjectUniforms.world (column-major)
+    const float *viewProj = nullptr;   // SceneUniforms.viewProj (column-major)
+    const float *boundColor = nullptr; // MaterialUniforms.color as written
+    float viewportW = 0.0f, viewportH = 0.0f;
+    uint64_t sceneToken = 0, matToken = 0, objToken = 0, boneToken = 0;
 };
 } // namespace rndshape
 

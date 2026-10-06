@@ -400,3 +400,8 @@ void PostProcPass::Terminate() {
     mDefaultSampler = nullptr;
     mPostProcReady = false;
 }
+
+// Shipped WGSL accessor (gfx/ShippedWgsl.h): lets the validation test compile
+// the exact source this file hands CreateShaderModule.
+#include "gfx/ShippedWgsl.h"
+const char* PostProcPassWgslSource() { return kPostProcShaderSource; }

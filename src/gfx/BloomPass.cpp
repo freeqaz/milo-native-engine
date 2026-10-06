@@ -388,3 +388,8 @@ void BloomPass::Terminate() {
     mDefaultSampler = nullptr;
     mBloomReady = false;
 }
+
+// Shipped WGSL accessor (gfx/ShippedWgsl.h): lets the validation test compile
+// the exact source this file hands CreateShaderModule.
+#include "gfx/ShippedWgsl.h"
+const char* BloomPassWgslSource() { return kBloomShaderSource; }

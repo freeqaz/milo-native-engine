@@ -260,3 +260,8 @@ void DrawRect2D::Terminate() {
     m2dVBFrame = -1;
     m2dPipelineReady = false;
 }
+
+// Shipped WGSL accessor (gfx/ShippedWgsl.h): lets the validation test compile
+// the exact source this file hands CreateShaderModule.
+#include "gfx/ShippedWgsl.h"
+const char* DrawRect2DWgslSource() { return k2DShaderSource; }

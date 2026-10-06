@@ -143,6 +143,8 @@ struct MaterialUniforms {
     retailSpec: vec4f,       // .rgb specular colour (0 = none), .a power
     retailRim: vec4f,        // .rgb rim colour (0 = none), .a power
     retailFlags: vec4f,      // x per-pixel lit, y normal map, z specular map, w rim map
+    // RB3 colour modulation (UniformStructs.h): xyz colours as RGBA8, w mode.
+    colorMod: vec4u,
 };
 
 @group(1) @binding(0) var<uniform> material: MaterialUniforms;
@@ -227,6 +229,55 @@ struct LightingTerms {
 
 fn isEnabled(value: f32) -> bool {
     return value > kBoolThreshold;
+}
+
+// RB3 material colour modulation (RndMat mColorModFlags / mColorMod; the mode
+// is material.colorMod.w, the colours its x, y, z as RGBA8). The math is retail's xbox_shaders: the diffuse
+// texel's alpha `a` selects a band and a position t in it, and the shaded
+// colour is scaled by mix(colour[band], 1, t). Membership is
+// clamp(a, lo, hi) == a, so a value on a band edge belongs to both bands and
+// both factors apply (the shader chains three conditional multiplies).
+//   3 Modulate:            bands [0, 1/3], [1/3, 2/3], [2/3, 1]; t = 3a - band
+//                          (DC3 permutations with key bits 32-33 = 3)
+//   2 AlphaUnpackModulate: alpha packed into [0.1, 1]: bands [0.1, 0.4],
+//                          [0.4, 0.7], [0.7, 1], t = (a - lo) / 0.3, and the
+//                          output alpha is 10a (RB3 permutation 0x4202000010)
+//   1 AlphaPack:           output alpha 0.1 + 0.9a, colour unchanged
+fn colorModMode() -> u32 {
+    return material.colorMod.w;
+}
+
+fn colorModBand(packed: u32, a: f32, lo: f32, hi: f32) -> vec3f {
+    if (clamp(a, lo, hi) != a) {
+        return vec3f(1.0);
+    }
+    return mix(unpack4x8unorm(packed).rgb, vec3f(1.0), (a - lo) / (hi - lo));
+}
+
+fn colorModScale(a: f32) -> vec3f {
+    let mode = colorModMode();
+    let c = material.colorMod;
+    if (mode == 3u) {
+        return colorModBand(c.x, a, 0.0, 1.0 / 3.0) * colorModBand(c.y, a, 1.0 / 3.0, 2.0 / 3.0) *
+               colorModBand(c.z, a, 2.0 / 3.0, 1.0);
+    }
+    if (mode == 2u) {
+        return colorModBand(c.x, a, 0.1, 0.4) * colorModBand(c.y, a, 0.4, 0.7) *
+               colorModBand(c.z, a, 0.7, 1.0);
+    }
+    return vec3f(1.0);
+}
+
+// The factor the texel alpha contributes to the output alpha.
+fn colorModAlpha(a: f32) -> f32 {
+    let mode = colorModMode();
+    if (mode == 1u) {
+        return 0.1 + 0.9 * a;
+    }
+    if (mode == 2u) {
+        return saturate(10.0 * a);
+    }
+    return a;
 }
 
 fn shaderVariationIs(value: f32, expectedVariation: f32) -> bool {
@@ -1043,12 +1094,16 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
     }
     var baseColor = vec4f(matRgb * vertexTint, materialAlpha * vertexAlpha);
 
+    // The texel alpha colour modulation reads (1 untextured: no band tint).
+    var colorModTexA = 1.0;
     if (isEnabled(material.useTexture)) {
         let diffuseSample = textureSample(diffuseTex, diffuseSampler, surfaceInput.uv);
         if (isEnabled(material.useAlphaAsRGB)) {
             baseColor = vec4f(baseColor.rgb * diffuseSample.a, baseColor.a * diffuseSample.a);
         } else {
-            baseColor = vec4f(baseColor.rgb * diffuseSample.rgb, baseColor.a * diffuseSample.a);
+            colorModTexA = diffuseSample.a;
+            baseColor = vec4f(baseColor.rgb * diffuseSample.rgb,
+                              baseColor.a * colorModAlpha(diffuseSample.a));
         }
     }
 
@@ -1178,6 +1233,10 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
     finalColor += emissiveTint * material.emissiveMultiplier * emissiveSample.rgb;
     finalColor += computeRimLighting(surfaceNormal, viewDir, surfaceInput.uv);
     finalColor += computeEnvironmentReflection(surfaceNormal, viewDir, specularSample);
+    // RB3 colour modulation scales the shaded colour, additive terms included:
+    // DC3 permutation 0x300431010 computes texel * lighting + the interpolated
+    // add, then multiplies by the band factors.
+    finalColor *= colorModScale(colorModTexA);
 
     if (isEnabled(scene.fogEnabled) && isEnabled(material.materialFogEnabled)) {
         let cameraDistance = length(surfaceInput.worldPos - scene.cameraPos);

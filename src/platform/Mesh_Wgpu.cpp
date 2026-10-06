@@ -169,6 +169,14 @@ void RndMesh::DrawShowing() {
     DrawMeshImmediate(this);
 }
 
+// Draw-log identity of a uniform binding: which buffer, at which offset. Never
+// dereferenced; equal tokens mean the draws bound the same uniform data.
+static uint64_t DrawLogToken(const void* buffer, uint32_t offset) {
+    uint64_t h = (uint64_t)(uintptr_t)buffer;
+    h ^= (uint64_t)offset + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+    return h;
+}
+
 void DrawMeshImmediate(RndMesh* mesh) {
     if (!gWgpuRnd || !gWgpuRnd->IsInPass()) return;
 
@@ -281,6 +289,7 @@ void DrawMeshImmediate(RndMesh* mesh) {
     pass.SetBindGroup(2, objBG);
 
     // --- Bone uniforms (group 3) ---
+    uint64_t boneToken = 0;   // draw-log identity of the bone data bound
     if (skinned) {
         BoneUniforms boneUni{};
         FillBoneUniforms(mesh, boneUni);
@@ -291,10 +300,14 @@ void DrawMeshImmediate(RndMesh* mesh) {
         wgpu::BindGroup boneBG = gWgpuRnd->CreateBoneBindGroup(
             boneOffset, sizeof(BoneUniforms));
         pass.SetBindGroup(3, boneBG);
+        if (rndshape::DrawLogActive())
+            boneToken = DrawLogToken(gWgpuRnd->BoneRing().Buffer().Get(), boneOffset);
     } else {
         // Static mesh: bind dummy bone bind group (pipeline layout requires group 3)
         EnsureDummyBoneBindGroup();
         pass.SetBindGroup(3, GetDummyBoneBindGroup());
+        if (rndshape::DrawLogActive())
+            boneToken = DrawLogToken(GetDummyBoneBindGroup().Get(), 0);
     }
 
     // --- Capture record ---
@@ -309,6 +322,35 @@ void DrawMeshImmediate(RndMesh* mesh) {
                         meshData.numIndices * sizeof(uint16_t));
 
     pass.DrawIndexed(meshData.numIndices);
+
+    // --- Per-draw state log (RB3's RB3_DRAWLOG; off for DC3) ---
+    if (rndshape::DrawLogActive()) {
+        rndshape::DrawLogDraw d;
+        d.pipelineHash = (uint64_t)PipelineKeyHash{}(key);
+        d.blend = (uint8_t)(int)key.blend;
+        d.zMode = (uint8_t)(int)key.zMode;
+        d.layout = (uint8_t)(int)key.layout;
+        d.hasDepth = key.hasDepth;
+        d.alphaCut = key.alphaCut;
+        d.alphaWrite = key.alphaWrite;
+        d.skinned = skinned;
+        d.targetFormat = (uint32_t)key.targetFormat;
+        d.indexCount = meshData.numIndices;
+        d.triCount = meshData.numIndices / 3;
+        d.vertCount = meshData.numVertices;
+        d.mesh = mesh;
+        d.mat = mesh->Mat();
+        d.world = objUni.world;
+        d.viewProj = gWgpuRnd->LastSceneViewProj();
+        d.boundColor = matParams.uniforms.color;
+        d.viewportW = (float)gWgpuRnd->Gpu().WindowWidth();
+        d.viewportH = (float)gWgpuRnd->Gpu().WindowHeight();
+        d.sceneToken = DrawLogToken(gWgpuRnd->SceneBuffer().Get(), gWgpuRnd->SceneOffset());
+        d.matToken = DrawLogToken(gWgpuRnd->MaterialRing().Buffer().Get(), matOffset);
+        d.objToken = DrawLogToken(gWgpuRnd->ObjectRing().Buffer().Get(), objOffset);
+        d.boneToken = boneToken;
+        rndshape::DrawLogRecord(d);
+    }
 
     // --- Multi-pass materials ---
     // Walk the NextPass chain and draw additional passes with the same geometry

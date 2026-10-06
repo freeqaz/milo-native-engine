@@ -304,6 +304,7 @@ set(MILO_ENGINE_GFX_RNDOBJ_SOURCES
     src/gfx/DisplayRamp.cpp     # rndobj-free; run by WgpuRnd::EndDrawing when rndshape::DisplayGamma() > 0
     src/gfx/TextureConvert.cpp
     src/gfx/GxTextureDecode.cpp
+    src/gfx/ShippedWgsl_DC3.cpp # the dc3 flavor's WGSL module table (gfx/ShippedWgsl.h)
 )
 
 set(MILO_ENGINE_AUDIO_SOURCES
@@ -345,6 +346,7 @@ set(MILO_ENGINE_GPU_PLATFORM_SOURCES_RB3
     src/platform/RB3PostProc.cpp    # W1.4: Stage-2 postproc composite/grade (RB3-only; NOT gfx/PostProcPass)
     src/platform/RB3Quad.cpp    # W1.4: 2D quad / DrawRect + outfit compose (RB3-only; NOT gfx/DrawRect2D)
     src/platform/RB3TexSharpen.cpp   # progressive in-session texture sharpen (research/13 T1)
+    src/platform/RB3ShippedWgsl.cpp  # the rb3 flavor's WGSL module table (gfx/ShippedWgsl.h)
 )
 
 # Non-GPU platform sources — kept regardless of MILO_ENGINE_BUILD_GFX (file I/O,
@@ -396,6 +398,15 @@ if(MILO_ENGINE_GPU_BACKEND STREQUAL "dc3")
         # RB3's retail post chain parameters (the DC3 shape's FillRetailPost is
         # an inline no-op and kRetailPostChain is false).
         list(APPEND MILO_ENGINE_PLATFORM_SOURCES src/platform/rndshape/RB3WiiPostChain.cpp)
+        # Progressive texture sharpen: the manager reads RB3's RndBitmap, and
+        # RB3WiiTexSharpen gives it the dc3 texture cache's fingerprint and
+        # re-upload (BandRnd defines the same hooks for the rb3 flavor).
+        list(APPEND MILO_ENGINE_PLATFORM_SOURCES
+            src/platform/RB3TexSharpen.cpp
+            src/platform/rndshape/RB3WiiTexSharpen.cpp)
+        # RB3's per-draw state log and provenance sidecar (RB3DrawLogDebug.h);
+        # the DC3 shape's draw-log hooks are inline no-ops.
+        list(APPEND MILO_ENGINE_PLATFORM_SOURCES src/platform/rndshape/RB3WiiDrawLog.cpp)
     endif()
 elseif(MILO_ENGINE_GPU_BACKEND STREQUAL "rb3")
     list(APPEND MILO_ENGINE_PLATFORM_SOURCES ${MILO_ENGINE_GPU_PLATFORM_SOURCES_RB3})
