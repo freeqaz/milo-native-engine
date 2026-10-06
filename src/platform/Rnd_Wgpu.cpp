@@ -1040,7 +1040,8 @@ void WgpuRnd::EnsureSceneUniformsCurrent() {
     // differ from the default UI camera in X/Z as well as Y.
     const Vector3 &camPos = cam ? cam->WorldXfm().v : Vector3(0, 0, 0);
     bool camChanged = (cam != mLastSceneCam || env != mLastSceneEnv
-        || camPos.x != mLastCamPosX || camPos.y != mLastCamPosY || camPos.z != mLastCamPosZ);
+        || camPos.x != mLastCamPosX || camPos.y != mLastCamPosY || camPos.z != mLastCamPosZ
+        || (rndshape::kRenderTargetStoresLinear && mActiveTargetTex != mLastSceneTarget));
     if (camChanged) {
         if (HasTransparentDraws() && !IsFlushingTransparentDraws()) {
             FlushTransparentDraws();
@@ -1054,6 +1055,7 @@ void WgpuRnd::EnsureSceneUniformsCurrent() {
         }
         mLastSceneCam = cam;
         mLastSceneEnv = env;
+        mLastSceneTarget = mActiveTargetTex;
         mLastCamPosX = camPos.x;
         mLastCamPosY = camPos.y;
         mLastCamPosZ = camPos.z;
@@ -1382,6 +1384,7 @@ void WgpuRnd::WriteSceneUniforms() {
 
     // Environment (fog, ambient, lights)
     RndEnviron* env = rndshape::CurrentEnv();
+    if (rndshape::kRenderTargetStoresLinear && mActiveTargetTex) scene.outputLinear = 1.0f;
     if (rndshape::WriteSceneLighting(scene, cam)) {
         // The content's own lighting model (RB3-Wii: rndshape/RB3WiiSceneLighting.cpp).
         mProjLightTexView = nullptr;

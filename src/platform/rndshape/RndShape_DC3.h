@@ -37,6 +37,11 @@ inline Rnd &TheRndRef() { return TheRnd; }
 template <class T>
 inline T *Mat(T *m) { return m; }
 
+// Whether a material ignores lighting entirely (register colour x texture, no
+// ambient, lights or vertex colour). DC3 has no such material state.
+template <class T>
+inline bool MatUnlit(const T &) { return false; }
+
 // ---- environment -----------------------------------------------------------
 inline RndEnviron *CurrentEnv() { return RndEnviron::Current(); }
 inline bool EnvHasAmbientFogOwner(RndEnviron *e) { return e->AmbientFogOwner() != nullptr; }
@@ -82,6 +87,12 @@ inline void VertBoneWeights(const RndMesh::Vert &v, float out[4]) {
 inline int PartTilesAcross(RndParticleSys *s) { return s->NumTilesAcross(); }
 inline int PartTilesDown(RndParticleSys *s) { return s->NumTilesDown(); }
 inline int PartTileIndex(const RndParticle *p) { return p->mCurrentTileIndex; }
+// DC3 particle positions are already in world space, and DC3 draws particle
+// colour as authored.
+inline Vector3 PartWorldPos(RndParticleSys *, RndParticle *p) {
+    return Vector3(p->pos.x, p->pos.y, p->pos.z);
+}
+constexpr bool kPartMaterialTint = false;
 
 // ---- cube texture ----------------------------------------------------------
 inline RndBitmap *CubeFaceBitmap(RndCubeTex *c, int face) {
@@ -103,6 +114,8 @@ constexpr bool kCamSelectSetsViewport = true;
 // DC3's RndTexRenderer::DrawToTexture leaves each material's alpha-write state
 // alone while it draws into the output texture.
 constexpr bool kRenderTargetForcesAlphaWrite = false;
+// DC3 draws into render targets with the same sRGB-encoded output as the frame.
+constexpr bool kRenderTargetStoresLinear = false;
 
 // ---- post-processing -------------------------------------------------------
 // The grain strength the post-process shader adds per pixel, as authored.

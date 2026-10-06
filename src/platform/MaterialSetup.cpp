@@ -182,7 +182,12 @@ MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh) {
     // Forcing prelit makes the shader output baseColor directly: white material
     // color = multiply identity (no visible change), which is correct behavior
     // when the lighting scripts aren't driving the color.
-    bool isMultiplyBlend = (matBlend == BaseMaterial::kBlendMultiply);
+    // An unlit material (rndshape::MatUnlit; RB3-Wii use_environ=0) already
+    // skips lighting, and forcing prelit on top of it would pull in the raw
+    // vertex colour, which an unlit Wii material never sees.
+    const bool unlit = rndshape::MatUnlit(mat);
+    matUni.unlit = unlit ? 1.0f : 0.0f;
+    bool isMultiplyBlend = (matBlend == BaseMaterial::kBlendMultiply) && !unlit;
     bool forcePrelit = IsSimpleRender() || isOverlayPass || isMultiplyBlend;
     if (isMultiplyBlend) heuristics |= kHeuristicMultiplyPrelit;
     if (isTextMesh) heuristics |= kHeuristicTextMeshDetect;
@@ -280,7 +285,9 @@ MaterialParams BuildPassMaterialParams(BaseMaterial* rawNextPass) {
     npMatUni.deNormal = nextPass->GetDeNormal();
     npMatUni.hasNormalMap = nextPass->NormalMap() ? 1.0f : 0.0f;
     // Force prelit for multiply-blend passes (same rationale as primary material)
-    bool npMultiply = (nextPass->GetBlend() == BaseMaterial::kBlendMultiply);
+    const bool npUnlit = rndshape::MatUnlit(nextPass);
+    npMatUni.unlit = npUnlit ? 1.0f : 0.0f;
+    bool npMultiply = (nextPass->GetBlend() == BaseMaterial::kBlendMultiply) && !npUnlit;
     npMatUni.prelit = (nextPass->Prelit() || npMultiply) ? 1.0f : 0.0f;
     FillTexGen(nextPass, npMatUni);
     npMatUni.shaderVariation = (float)nextPass->GetShaderVariation();

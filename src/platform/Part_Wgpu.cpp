@@ -185,6 +185,18 @@ void DrawParticlesBillboard(RndParticleSys* sys) {
     float rx = camXfm.m.x.x, ry = camXfm.m.x.y, rz = camXfm.m.x.z;
     float ux = camXfm.m.z.x, uy = camXfm.m.z.y, uz = camXfm.m.z.z;
 
+    // Material tint and haze (rndshape::kPartMaterialTint; RB3-Wii only).
+    float mcr = 1.0f, mcg = 1.0f, mcb = 1.0f, mca = 1.0f;
+    bool isHaze = false;
+    if constexpr (rndshape::kPartMaterialTint) {
+        const Hmx::Color& mc = mat->GetColor();
+        mcr = mc.red; mcg = mc.green; mcb = mc.blue; mca = mc.alpha;
+        if (mca < 0.999f) {
+            isHaze = true;
+            mca *= 0.35f;
+        }
+    }
+
     // UV tiling
     int tilesAcross = rndshape::PartTilesAcross(sys);
     int tilesDown = rndshape::PartTilesDown(sys);
@@ -199,7 +211,8 @@ void DrawParticlesBillboard(RndParticleSys* sys) {
 
     for (RndParticle* p = head; p; p = p->next) {
         float size = p->size * 0.5f;
-        float cx = p->pos.x, cy = p->pos.y, cz = p->pos.z;
+        const Vector3 wp = rndshape::PartWorldPos(sys, p);
+        float cx = wp.x, cy = wp.y, cz = wp.z;
 
         // Billboard offsets
         float srx = rx * size, sry = ry * size, srz = rz * size;
@@ -226,7 +239,16 @@ void DrawParticlesBillboard(RndParticleSys* sys) {
         float u1 = u0 + tileW;
         float v1 = v0 + tileH;
 
-        float cr = p->col.red, cg = p->col.green, cb = p->col.blue, ca = p->col.alpha;
+        float cr = p->col.red * mcr, cg = p->col.green * mcg, cb = p->col.blue * mcb,
+              ca = p->col.alpha * mca;
+        if (isHaze) {
+            // Fade a haze sprite out as it nears the camera: full alpha once its
+            // centre is two half-sizes ahead, none at or behind the eye.
+            float ahead = (cx - camXfm.v.x) * camXfm.m.y.x + (cy - camXfm.v.y) * camXfm.m.y.y +
+                          (cz - camXfm.v.z) * camXfm.m.y.z;
+            float t = ahead / ((size > 1.0f ? size : 1.0f) * 2.0f);
+            ca *= t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+        }
 
         // Quad: TL, BL, TR, BR
         ParticleVertex v;

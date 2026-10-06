@@ -277,6 +277,7 @@ public:
     // Scene uniform tracking — re-upload when camera or environment changes
     RndCam* mLastSceneCam = nullptr;
     RndEnviron* mLastSceneEnv = nullptr;
+    RndTex* mLastSceneTarget = nullptr;   // render target the scene uniforms were written for
     uint32_t mLastSceneOffset = 0;
     float mLastCamPosX = 0.0f; // detect same-pointer position changes
     float mLastCamPosY = 0.0f;
