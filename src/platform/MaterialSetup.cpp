@@ -193,6 +193,10 @@ MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh) {
     if (isMultiplyBlend) heuristics |= kHeuristicMultiplyPrelit;
     if (isTextMesh) heuristics |= kHeuristicTextMeshDetect;
     matUni.prelit = (mat->Prelit() || isTextMesh || forcePrelit) ? 1.0f : 0.0f;
+    // 2 = prelit whose vertex colour is its ambient (rndshape::MatPrelitAmbient);
+    // read only under the RB3 retail light model, any other path sees prelit.
+    if (mat->Prelit() && !isTextMesh && !forcePrelit && rndshape::MatPrelitAmbient(mat))
+        matUni.prelit = 2.0f;
     matUni.useAlphaAsRGB = isTextMesh ? 1.0f : 0.0f;
     if (isTextMesh) {
         heuristics |= kHeuristicTextAlphaAsRGB;
@@ -291,6 +295,8 @@ MaterialParams BuildPassMaterialParams(BaseMaterial* rawNextPass) {
     npMatUni.gammaShading = rndshape::kGammaSpaceShading ? 1.0f : 0.0f;
     bool npMultiply = (nextPass->GetBlend() == BaseMaterial::kBlendMultiply) && !npUnlit;
     npMatUni.prelit = (nextPass->Prelit() || npMultiply) ? 1.0f : 0.0f;
+    if (nextPass->Prelit() && !npMultiply && rndshape::MatPrelitAmbient(nextPass))
+        npMatUni.prelit = 2.0f;
     FillTexGen(nextPass, npMatUni);
     npMatUni.shaderVariation = (float)nextPass->GetShaderVariation();
 

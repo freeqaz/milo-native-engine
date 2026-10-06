@@ -41,6 +41,10 @@ inline T *Mat(T *m) { return m; }
 // ambient, lights or vertex colour). DC3 has no such material state.
 template <class T>
 inline bool MatUnlit(const T &) { return false; }
+// Whether a prelit material's vertex colour is its ambient term (lights add
+// on top). DC3's prelit materials skip lighting.
+template <class T>
+inline bool MatPrelitAmbient(const T &) { return false; }
 
 // ---- environment -----------------------------------------------------------
 inline RndEnviron *CurrentEnv() { return RndEnviron::Current(); }
@@ -144,5 +148,6 @@ inline float BloomMaskScale(const M &) { return 0.0f; }
 // ---- scene lighting --------------------------------------------------------
 // DC3 lights through WgpuRnd::WriteSceneUniforms' own environ block.
 inline bool WriteSceneLighting(SceneUniforms &, RndCam *) { return false; }
+inline void FillMeshApproxLighting(RndMesh *, float (*)[4]) {}
 
 } // namespace rndshape

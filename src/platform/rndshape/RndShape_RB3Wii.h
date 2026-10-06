@@ -193,6 +193,12 @@ inline MatView Mat(const MatView &m) { return m; }
 // signs, posters, the cloud painter (difference_clouds.mat) and the street
 // fog this way. Same rule as the rb3 flavor (RB3MaterialBinder.cpp, mu.unlit).
 inline bool MatUnlit(const MatView &m) { return !m.Raw()->mUseEnviron && !m.Raw()->mPreLit; }
+// RB3 retail (xbox_shaders `standard`, prelit bit 8): a prelit material that
+// uses the environ is lit as vertexColour * ambient + approx + point lights,
+// all times the material colour; only use_environ=0 keeps the bare vertex
+// colour (NgMat::SetupAmbient loads ambient 1). Only the retail light model
+// (SceneUniforms.retailLighting) reads this.
+inline bool MatPrelitAmbient(const MatView &m) { return m.Raw()->mPreLit && m.Raw()->mUseEnviron; }
 
 // ---- environment -----------------------------------------------------------
 inline RndEnviron *CurrentEnv() { return RndEnviron::sCurrent; }
@@ -464,12 +470,19 @@ float BloomMaskScale(const MatView &m);
 constexpr bool kGammaSpaceShading = true;
 
 // ---- scene lighting --------------------------------------------------------
-// RB3 lights for the Wii's GX pipeline, not DC3's venue rig: world.cam reads
-// the environ's lights with real point lights, a clamped near-white ambient and
-// exposure scaling; every other camera gets a flat key. Defined in
-// rndshape/RB3WiiSceneLighting.cpp (built only for this shape under the dc3
-// backend). Writes ambient, directional and point lights; returns true, so
-// WgpuRnd skips its DC3 lighting block.
+// RB3 lights with its own (Xbox 360 retail) model, not DC3's venue rig:
+// world.cam takes the environ's ambient and up to two real point lights with
+// retail's linear falloff (per environ, here), plus the approx lights folded
+// into a box map per mesh (FillMeshApproxLighting); every other camera gets a
+// flat key. Defined in rndshape/RB3WiiSceneLighting.cpp (built only for this
+// shape under the dc3 backend). Returns true, so WgpuRnd skips its DC3
+// lighting block.
 bool WriteSceneLighting(SceneUniforms &s, RndCam *cam);
+// The approx-light box map for one mesh draw (ObjectUniforms.boxLight, six
+// faces {+X,-X,+Y,-Y,+Z,-Z}). Retail recomputes it per mesh at the mesh's
+// world sphere centre (RndMesh::sUpdateApproxLight), and once per character
+// at the character's sphere centre (Character::DrawLodOrShadow). Leaves the
+// faces zero when the retail light model does not apply to this draw.
+void FillMeshApproxLighting(RndMesh *mesh, float box[6][4]);
 
 } // namespace rndshape

@@ -92,7 +92,8 @@ struct SceneUniforms {
     projLightProjRow0: vec4f,   // u = dot(worldPos, xyz) + w
     projLightProjRow1: vec4f,   // v = dot(worldPos, xyz) + w
     numProjLights: f32,
-    _padProj1: f32,
+    // 1.0: RB3 retail light model (see UniformStructs.h). 0: existing model.
+    retailLighting: f32,
     _padProj2: f32,
     _padProj3: f32,
 };
@@ -153,6 +154,9 @@ struct MaterialUniforms {
 struct ObjectUniforms {
     world: mat4x4f,
     worldInvTranspose: mat4x4f,
+    // RB3 retail box map for this draw, faces {+X,-X,+Y,-Y,+Z,-Z} (retail
+    // c80..c85); read only under scene.retailLighting.
+    boxLight: array<vec4f, 6>,
 };
 
 @group(2) @binding(0) var<uniform> object: ObjectUniforms;
@@ -195,6 +199,10 @@ struct VertexOutput {
     // Set per vertex entry point (vs_main=0.0 / vs_skinned=1.0); flat-interpolated
     // since it is constant across a primitive.
     @location(6) @interpolate(flat) isSkinned: f32,
+    // RB3 retail light model (scene.retailLighting): the box map + point
+    // lights evaluated at the vertex, as standard.vs does for a material
+    // without per_pixel_lit.
+    @location(7) vertexLit: vec3f,
 };
 
 struct LightingTerms {
@@ -527,7 +535,15 @@ fn computePointLight(
 
     let lightRange = pointLightRangeAt(lightIndex);
     var falloff: f32;
-    if (scene.pointFalloffMode >= 0.5) {
+    if (scene.pointFalloffMode >= 1.5) {
+        // RB3 retail (NgEnviron SetPointLightRegisters + standard.vs): the
+        // position's .w carries 1/(falloffStart - range) and the colour's .w
+        // -range/(falloffStart - range), so the light is full strength inside
+        // falloffStart and fades linearly to zero at range. Both are 0 and 1
+        // when falloffStart >= range: no falloff at all.
+        falloff = saturate(lightDistance * scene.pointLightPos[lightIndex].w
+            + scene.pointLightColors[lightIndex].w);
+    } else if (scene.pointFalloffMode >= 0.5) {
         // GX-faithful inverse-linear falloff: GXInitLightAttn(.., k0=1, k1=1/range,
         // k2=0) => 1/(1 + d/range). Half-bright at d==range, long tail (matches Wii
         // Lit.cpp:36-44) — not a hard cutoff. Set only by the RB3 venue-light path.
@@ -618,6 +634,40 @@ fn softClipLighting(lightSum: vec3f) -> vec3f {
     return select(lightSum, rolled, lightSum > knee);
 }
 
+// RB3 retail box map (standard.vs, constants c80..c85): each face colour is
+// weighted by the positive part of the unit normal along that axis.
+fn boxLightSample(N: vec3f) -> vec3f {
+    var c = vec3f(0.0);
+    c += max(0.0,  N.x) * object.boxLight[0].rgb;
+    c += max(0.0, -N.x) * object.boxLight[1].rgb;
+    c += max(0.0,  N.y) * object.boxLight[2].rgb;
+    c += max(0.0, -N.y) * object.boxLight[3].rgb;
+    c += max(0.0,  N.z) * object.boxLight[4].rgb;
+    c += max(0.0, -N.z) * object.boxLight[5].rgb;
+    return c;
+}
+
+// standard.vs's lighting: box map plus the real point lights (Lambert, with
+// retail's linear falloff), evaluated per vertex.
+fn retailVertexLight(worldPos: vec3f, worldNormal: vec3f) -> vec3f {
+    if (scene.retailLighting < 0.5) {
+        return vec3f(0.0);
+    }
+    let N = normalize(worldNormal);
+    var lit = boxLightSample(N);
+    let pointLightCount = i32(scene.numPointLights);
+    for (var i = 0; i < 4; i++) {
+        if (i >= pointLightCount) {
+            break;
+        }
+        let toLight = scene.pointLightPos[i].xyz - worldPos;
+        let d = length(toLight);
+        let atten = saturate(d * scene.pointLightPos[i].w + scene.pointLightColors[i].w);
+        lit += scene.pointLightColors[i].rgb * atten * max(dot(N, toLight / max(d, 0.001)), 0.0);
+    }
+    return lit;
+}
+
 fn compressHighlights(color: vec3f) -> vec3f {
     let knee = vec3f(kHighlightCompressionKnee);
     return select(
@@ -682,6 +732,7 @@ fn vs_main(vertex: VertexInput) -> VertexOutput {
     vertexOutput.worldTangent = worldTangent;
     vertexOutput.worldBitangent = cross(worldNormal, worldTangent) * vertex.tangent.w;
     vertexOutput.isSkinned = 0.0;
+    vertexOutput.vertexLit = retailVertexLight(worldPos, worldNormal);
 
     return vertexOutput;
 }
@@ -721,6 +772,7 @@ fn vs_skinned(vertex: SkinnedVertexInput) -> VertexOutput {
     vertexOutput.worldTangent = worldTangent;
     vertexOutput.worldBitangent = cross(worldNormal, worldTangent) * vertex.tangent.w;
     vertexOutput.isSkinned = 1.0;
+    vertexOutput.vertexLit = retailVertexLight(worldPos, worldNormal);
 
     return vertexOutput;
 }
@@ -765,7 +817,19 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
     // Desaturate kept skinned tint to kSkinnedVtxChroma of its chroma.
     let skinnedTint = mix(vtxLuma, rawVtx, kSkinnedVtxChroma);
     var vertexTint = vec3f(1.0);
-    if (isEnabled(material.prelit)) {
+    // RB3 retail light model: standard.vs fetches the vertex colour only for
+    // prelit materials. One that uses the environ takes it as its ambient
+    // (vertexColour * ambient, below); one that does not shows it as authored.
+    let retailLight = scene.retailLighting > 0.5;
+    let prelitAmbient = retailLight && material.prelit > 1.5;
+    if (retailLight) {
+        if (isEnabled(material.prelit) && !prelitAmbient) {
+            vertexTint = rawVtx;
+            if (isEnabled(material.gammaShading)) {
+                vertexTint = srgbToLinear(rawVtx);
+            }
+        }
+    } else if (isEnabled(material.prelit)) {
         vertexTint = rawVtx;                          // prelit: authored colour verbatim
     } else if (isEnabled(surfaceInput.isSkinned)) {
         vertexTint = skinnedTint;                     // skinned char: desaturated shading
@@ -871,7 +935,7 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
     // CPU side forces a white vertexTint (non-prelit static mesh), so baseColor.rgb
     // is material.color × texture — the Wii GX_SRC_REG / mUseEnviron==0 look.
     // Emissive/rim/reflection adds still apply below (night-city glow stays).
-    if (isEnabled(material.prelit) || isEnabled(material.unlit)) {
+    if ((isEnabled(material.prelit) && !prelitAmbient) || isEnabled(material.unlit)) {
         finalColor = baseColor.rgb;
     } else {
         // GX-faithful: soft-saturate the (ambient + diffuse) lighting sum before
@@ -879,7 +943,20 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
         // surface without blowing it past the texture's own brightness to white.
         // Specular is an additive glint term and is left unclamped (compress-
         // Highlights handles its tail) so legitimate highlights survive.
-        var litTerm = softClipLighting(ambientLight + totalLighting.diffuse * shadowFactor);
+        var litTerm: vec3f;
+        if (retailLight) {
+            // RB3 retail (standard.vs): ambient + box map + point lights, all
+            // evaluated per vertex and unclamped; only the 8-bit target
+            // saturates the product. A prelit material's vertex colour scales
+            // the ambient.
+            var ambientTerm = ambientLight;
+            if (prelitAmbient) {
+                ambientTerm = rawVtx * ambientLight;
+            }
+            litTerm = ambientTerm + surfaceInput.vertexLit;
+        } else {
+            litTerm = softClipLighting(ambientLight + totalLighting.diffuse * shadowFactor);
+        }
         if (gammaShading) {
             litTerm = srgbToLinear(litTerm);
         }
