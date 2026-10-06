@@ -2269,10 +2269,174 @@ These are scratch paths, not committed.
   member natively (the native milo merge; see the black-head comment in rb3's
   `OutfitConfig.cpp`). The last member to run `SetSkinTextures` sets its
   gender's spec and normal maps for all. A mixed-gender cast shares one set,
-  just as it already shares one head diffuse.
+  just as it already shares one head diffuse. **Fixed in section 17.**
 - **The head wrinkle normal RT** (`RndTexBlender`) is not composed natively.
   The head uses the neutral `head00` normal.
 - **The web build** was not rebuilt. The fixes are in rb3 game code that both
   targets compile.
 - rb3's rb3-flavor `ctest` and the native gate were not run.
+- No merge, pin bump or push.
+p='docs/native/dc3-backend-for-rb3-wii.md'
+s=open(p).read()
+old='''- **Shared skin materials.** One `head_naked.mat` instance serves every band
+  member natively (the native milo merge; see the black-head comment in rb3's
+  `OutfitConfig.cpp`). The last member to run `SetSkinTextures` sets its
+  gender's spec and normal maps for all. A mixed-gender cast shares one set,
+  just as it already shares one head diffuse.'''
+new='''- **Shared skin materials.** One `head_naked.mat` instance serves every band
+  member natively (the native milo merge; see the black-head comment in rb3's
+  `OutfitConfig.cpp`). The last member to run `SetSkinTextures` sets its
+  gender's spec and normal maps for all. A mixed-gender cast shares one set,
+  just as it already shares one head diffuse. **Fixed in section 17.**'''
+assert s.count(old)==1
+s=s.replace(old,new)
+s=s.rstrip('\n')+'\n'+open('/dev/stdin').read()
+open(p,'w').write(s)
+
+## 17. One skin material per band member (lane W16-RP, 2026-10-06)
+
+Section 16.5 recorded that every band member draws the same `head_naked.mat`.
+That is true of all five skin materials, and the cause is in rb3's native
+merge shim, not in this engine. The fix is in rb3 game code
+(`src/system/bandobj/BandCharacter.cpp`). The engine branch carries this section
+and the registry rows for the two new flags.
+
+Branches (not merged, not pushed, no pin bumped):
+
+| repo | branch | commits |
+|---|---|---|
+| rb3 | `w16-rp` (on `f71e9e036`) | `46c37d736` the fix, probe, comments, regenerated ledger |
+| milo-native-engine | `w16-rp` (on `f99c1f2`) | registry rows for `RB3_NO_SKIN_MAT_ADOPT` and `RB3_SKIN_MAT_ADOPT_PROBE`; this section |
+
+### 17.1 Cause
+
+A probe at the end of `OutfitConfig::SetSkinTextures` printed, for every mesh in
+the member's tree whose material is one of the five skin names, the material
+pointer and the dir that owns it. On main_hub (4 members, 2 male and 2 female),
+every drawn skin mesh used `char/main/shared/char_shared.milo`'s instance. That
+covers `head.mesh`, `hands_naked.mesh`, and every outfit `*_skin.N.mesh` (torso,
+legs, feet). Each member's own same-named material, the one `dir1->Find`
+returns and `SetSkinTextures` fills, was not drawn. The meshes are per member.
+Only the materials were shared.
+
+Consequences, before the fix:
+- `head.mesh` on all four members drew one material, with
+  `male_head_diff.tex`. The black-head fix binds a diffuse only when it is null,
+  so the first member processed (male) set it for everyone. The two women drew
+  the male head diffuse.
+- Spec and normal maps (`NativeBindSkinMaps`, section 16.2) and the skin tone
+  colour came from the last member to run `SetSkinTextures`.
+- Torso, legs and feet drew char_shared's `dummy_torso.tex`, `dummy_legs.tex`
+  and `dummy_feet.tex`, not the member's `<gender>_<part>_diff.tex`.
+
+How retail gives each member its own materials: `BandCharacter::Filter` has a
+branch for objects whose `Dir()` is `sCharSharedDir`, which is
+char_shared.milo, found through `feet_skin.mat` in the outfit. The branch finds
+the member's own object of the same name (retail asserts it exists and lives in
+the member), calls `ReplaceRefs(theirs, mine)`, and returns `kIgnore`.
+`ReplaceRefs` only rewrites refs owned by objects in `sOutfitDir`,
+`sResourceDir` or `sToDir`, which is the outfit being installed. So each
+install moves that outfit's skin meshes onto the member's own materials, and
+the shared copy is never moved or written.
+
+That branch runs only if the merge visits char_shared's objects, which needs
+`kMerge` on the subdir. Natively, `BandCharacter::FilterSubdir` turns every
+on-disk subdir's `kMerge` into `kReplace` (the shim against draining
+`colorpalettes.milo`, documented at the function). `kReplace` appends the
+subdir and returns without visiting its objects or its nested subdirs, so
+`Filter` never saw char_shared. char_shared is reached in two ways, and the
+shim blocks both:
+- directly, as a subdir of the head, hands, hair and accessory outfits;
+- nested under the torso, legs and feet outfits' `*_resource.milo`. There the
+  shim stops one level higher, at the resource dir.
+
+### 17.2 Fix
+
+rb3 `NativeAdoptCharSharedRefs`, called from `FilterSubdir`. It runs whenever
+the shim overrode `kMerge`, if the overridden subdir's tree contains
+`sCharSharedDir`. It does the retail branch's step for each object in
+char_shared's own table:
+1. Find the member's object of that name.
+2. Skip it unless it exists, is not char_shared's own object (natively,
+   char_shared is also a subdir of the member, so a missing name resolves back
+   into it), lives in the member (`Dir() == this`), and has the same class.
+3. Call `ReplaceRefs(theirs, mine)`.
+
+The shim's `kReplace` topology is unchanged: char_shared and the resource dirs
+stay appended as subdirs, and nothing is moved. Each adoption reports 5 objects
+adopted, the five skin materials. Opt-out: `RB3_NO_SKIN_MAT_ADOPT=1`. Probe:
+`RB3_SKIN_MAT_ADOPT_PROBE=1` prints `[SKIN_MAT_ADOPT]` per adoption and
+`[SKIN_MAT]` per drawn skin mesh, with `own=1` when the material is the
+member's.
+
+The native code downstream of the split still runs and still works:
+- The black-head fix still binds the drawn `head.mesh`'s material. That is now
+  `dir1`'s, which already has the gender diffuse.
+- `NativeBindSkinMaps` still binds every drawn instance. That set is now
+  `dir1`'s material plus `colorpalettes.milo`'s texblender copy of
+  `head_naked.mat`, which the wrinkle meshes use. That copy is still shared,
+  and its maps are still last-writer-wins. It is not drawn in the band shot.
+
+### 17.3 Measurements
+
+One binary for both legs. The "before" leg sets `RB3_NO_SKIN_MAT_ADOPT=1`.
+Both legs use `RB3_FIXED_CLOCK=1`, `RB3_GAME_INPUT="@10:start,@30:start"`, and
+the dc3 backend on desktop. The hub cast is the same in both: player0 male,
+player1 female, player2 male, player3 female.
+
+| instrument | before | after |
+|---|---|---|
+| `[SKIN_MAT]` rows for drawn skin meshes, colorpalettes excluded, with `own=1` | 0 / 63 | 63 / 63 |
+| distinct `head.mesh` materials across the 4 members | 1 | 4 |
+| head diffuse, player1 / player3 (female) | `male_head_diff.tex` | `female_head_diff.tex` |
+| head spec, player0 / player2 (male), at the end of loading | `female_head_spec.tex` (shared, last writer) | `male_head_spec.tex` |
+| torso / legs / feet skin diffuse | `dummy_*.tex` | `<gender>_torso_diff.tex`, `<gender>_legs_diff.tex` |
+
+The head-spec row reads the shared material's state after the last member
+loaded. Printed per call, the before leg shows each member's own gender
+momentarily, which is overwritten by the next member.
+
+Screenshots (scratch paths, not committed):
+- `~/tmp/w16rp_cast_wide_full_f580.png`, and its 2x crop
+  `~/tmp/w16rp_cast_wide_f580.png`: frame 580, wide shot, before next to
+  after. Before, the woman on the left and the man in the visor have the same
+  skin tone, and her face uses the male head texture. After, she has her own
+  darker tone and the female head, and the man's face and bare arm have his
+  lighter tone.
+- `~/tmp/w16rp_before_after_f500.png` and `~/tmp/w16rp_heads_f580.png`: the
+  close-up shot from the final binary. The male faces change little. Neck and
+  chest skin show the torso detail texture instead of the flat dummy.
+- `~/tmp/w16rp_before_after_f580.png`: the full frames for that pair.
+
+The wide-shot pair comes from the first build of the fix, which differs from
+the committed one only in the probe's name and in comments. Hub camera timing
+is not frame-exact between runs (section 16.3). The final binary's frame 580
+landed on the close-up in both legs.
+
+### 17.4 Consumer verification (engine `w16-rp`)
+
+| consumer | instrument | result |
+|---|---|---|
+| rb3 `w16-rp`, desktop, dc3 (`MILO_ENGINE_PATH` = engine `w16-rp`) | `ctest` | 125 tests: 118 passed, 7 skipped (the same fixture-gated set as 16.4), 0 failed, rc=0 |
+| same | `native_compat_census.py check` (also run by ctest) | rc=0, 432 flags, regen clean |
+
+16.4's 123 tests became 125 when W16-RN added the two census tests.
+
+### 17.5 Not done
+
+- **The rb3 flavor (BandRnd)** was not built or run. The fix is in game code
+  both flavors compile, so its cast also changes, from shared materials to
+  per-member ones.
+- **The web build** was not rebuilt.
+- **The native gate** (rb3-xenon's `tools/native_build_gate.sh`) was not run.
+  rb3-xenon does not compile rb3's `bandobj`.
+- **`RB3_SKIN_RTT=1`**, the composite path, was not exercised. Its MatSwap
+  materials are in `sToDir`, so `ReplaceRefs` repoints them too, as in
+  retail. The RT rebind comment in `SetSkinTextures` describes the split
+  before this fix.
+- **`RB3_HANDS_BINDFIX=1`** exempts char_shared from the shim. Retail's
+  `Filter` branch then runs and the adoption does not, because `overrode` is
+  false. This was not run.
+- **colorpalettes.milo's `head_naked.mat`** (the texblender copy) is still one
+  instance for all members.
 - No merge, pin bump or push.
