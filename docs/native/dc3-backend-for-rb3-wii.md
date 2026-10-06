@@ -826,3 +826,20 @@ No texture decode ships.
   generic one kept in 8.1. The title has none.
 - **Ambient alpha.** It was not modelled.
 - No merge, pin bump or push.
+
+### 9.7 Consumer verification (engine `w16-qs`)
+
+The consumers are the 8.7 worktrees, repointed with `-DMILO_ENGINE_PATH` at
+the `w16-qs` engine worktree. The setting was confirmed in each
+`CMakeCache.txt`, and the engine library was rebuilt in each.
+
+| consumer | instrument | result |
+|---|---|---|
+| dc3-decomp (on `e992ee9b5`) | `scripts/native_configure.sh` + `scripts/native_test.sh` | 626 registered, 557 executed, 557 passed, 0 failed, 69 skipped (budget 69), rc=0 |
+| rb3-xenon (on `ca61b767f`, a `scripts/setup_worktree.sh` worktree) | `tools/native_health.sh` | `NATIVE_HEALTH_RESULT verdict=PASS link=PASS link_verified=18 link_expected=18 link_skipped=0 runtime=PASS runtime_ran=18 runtime_total=18 gates_pass=77 gates_fail=0 unrunnable=none selftest=SKIPPED scatter_unlinked=16 scatter_dirb=0 scatter_multihost=17 rc=0 handpose_controls=- handpose_baseline_fail=- runtime_crashed=0 runtime_failed=none` (embedded link gate: `verdict=PASS expected=18 verified=18 skipped=0 partial=0 failed=0 rc=0`) |
+| rb3-xenon | `tools/native_build_gate.sh` | run as the lane's last action; its `NATIVE_GATE_RESULT` line is in the lane report |
+| rb3 (Wii), dc3 flavor | title (9.4) and venues (9.3) | renders the title and Quickplay to `game_screen`, exits cleanly |
+
+DC3 and rb3-xenon use the DC3 shape, so for them the change compiles to the
+no-op `FillMeshApproxLighting`, a never-set `retailLighting`, and a larger
+`ObjectUniforms`.
