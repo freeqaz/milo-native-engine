@@ -6,6 +6,7 @@
 #include "platform/Rnd_Wgpu.h"
 #include "gfx/VertexFormats.h"
 #include "rndobj/Mesh.h"
+#include "platform/rndshape/RndShape.h"
 
 #include <unordered_map>
 #include <cstdio>
@@ -229,12 +230,12 @@ bool EnsureMeshUploaded(RndMesh* mesh) {
         return true;
     }
 
-    RndMesh* geomOwner = mesh->GetGeomOwner();
+    RndMesh* geomOwner = rndshape::MeshGeomOwner(mesh);
     if (!geomOwner) geomOwner = mesh;
 
     int numVerts = geomOwner->NumVerts();
     int numFaces = geomOwner->NumFaces();
-    int numCompressedVerts = geomOwner->NumCompressedVerts();
+    int numCompressedVerts = rndshape::MeshNumCompressedVerts(geomOwner);
     bool skinned = mesh->IsSkinned();
 
     // Check if we have vertices (either uncompressed or compressed)
@@ -251,7 +252,7 @@ bool EnsureMeshUploaded(RndMesh* mesh) {
     }
 
     int vertCount = (numVerts > 0) ? numVerts : numCompressedVerts;
-    bool isCompressed = (numCompressedVerts > 0 && geomOwner->CompressedVerts());
+    bool isCompressed = (numCompressedVerts > 0 && rndshape::MeshCompressedVerts(geomOwner));
 
     // Skip MikkTSpace tangent generation on re-uploads (mesh was previously uploaded
     // but invalidated by Sync). Dynamic meshes like HamRibbon re-sync every frame;
@@ -279,7 +280,7 @@ bool EnsureMeshUploaded(RndMesh* mesh) {
         GpuVertexSkinned* verts = new GpuVertexSkinned[vertCount];
         if (isCompressed) {
             unpacked = VertexFormats::UnpackCompressedSkinnedVertices(
-                geomOwner->CompressedVerts(), numCompressedVerts, verts, vertCount);
+                rndshape::MeshCompressedVerts(geomOwner), numCompressedVerts, verts, vertCount);
         } else {
             unpacked = VertexFormats::UnpackSkinnedVertices(*geomOwner, verts, vertCount);
             // Compute tangents via MikkTSpace for uncompressed meshes on first upload only.
@@ -314,7 +315,7 @@ bool EnsureMeshUploaded(RndMesh* mesh) {
         GpuVertex* verts = new GpuVertex[vertCount];
         if (isCompressed) {
             unpacked = VertexFormats::UnpackCompressedVertices(
-                geomOwner->CompressedVerts(), numCompressedVerts, verts, vertCount);
+                rndshape::MeshCompressedVerts(geomOwner), numCompressedVerts, verts, vertCount);
         } else {
             unpacked = VertexFormats::UnpackStaticVertices(*geomOwner, verts, vertCount);
             // Compute tangents via MikkTSpace for uncompressed meshes on first upload only.

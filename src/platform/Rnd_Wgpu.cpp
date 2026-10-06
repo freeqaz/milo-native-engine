@@ -60,7 +60,9 @@
 // Global instances
 // ============================================================================
 
+#ifdef MILO_RNDOBJ_SHAPE_HAS_NGRND
 static WgpuShaderMgr gWgpuShaderMgr;
+#endif
 static WgpuRnd gWgpuRndInstance;
 
 static double PerfNow() {
@@ -68,9 +70,14 @@ static double PerfNow() {
     return duration<double>(steady_clock::now().time_since_epoch()).count();
 }
 
+#ifdef MILO_RNDOBJ_SHAPE_HAS_NGRND
 Rnd& TheRnd = gWgpuRndInstance;
 NgRnd& TheNgRnd = gWgpuRndInstance;
 RndShaderMgr& TheShaderMgr = gWgpuShaderMgr;
+#else
+// RB3-Wii's rndobj/Rnd.h declares `extern Rnd* TheRnd`, and has no NG layer.
+Rnd* TheRnd = &gWgpuRndInstance;
+#endif
 WgpuRnd* gWgpuRnd = &gWgpuRndInstance;
 
 // Exposed for input subsystem (Joypad_Native, Keyboard_Native)
@@ -78,8 +85,13 @@ WgpuRnd* gWgpuRnd = &gWgpuRndInstance;
 GLFWwindow *gNativeWindow = nullptr;
 #endif
 
+#ifndef MILO_RNDOBJ_SHAPE_RB3WII
+// DC3-shaped consumers link no UIManager instance of their own here; RB3-Wii's
+// fork defines `UIManager& TheUI` itself (ui/UIManager.cpp).
 UIManager* TheUI = nullptr;
+#endif
 
+#ifdef MILO_RNDOBJ_SHAPE_HAS_NGRND
 void WgpuShaderMgr::Init() {
     if (mPreInitialized) {
         return;
@@ -157,6 +169,7 @@ void WgpuShaderMgr::Terminate() {
     RELEASE(mPostProcMat);
     RndShaderMgr::Terminate();
 }
+#endif // MILO_RNDOBJ_SHAPE_HAS_NGRND
 
 // UniformRingBuffer method bodies moved to gfx/UniformRingBuffer.cpp (W1.5).
 
@@ -172,7 +185,7 @@ static void TransformToFloat16(const Transform& xfm, float* out) {
     out[12] = xfm.v.x;   out[13] = xfm.v.y;   out[14] = xfm.v.z;   out[15] = 1;
 }
 
-static NgRnd::Viewport BuildViewportForScreenRect(
+static WgpuRndBase::Viewport BuildViewportForScreenRect(
     int width, int height, const Hmx::Rect& screenRect, float minZ, float maxZ
 ) {
     Hmx::Rect r;
@@ -196,7 +209,7 @@ static NgRnd::Viewport BuildViewportForScreenRect(
         r.h = y2 - r.y;
     }
 
-    NgRnd::Viewport vp;
+    WgpuRndBase::Viewport vp;
     vp.X = (unsigned int)((float)width * r.x);
     vp.Y = (unsigned int)((float)height * r.y);
     vp.Width = (unsigned int)((float)width * r.w);
@@ -215,7 +228,9 @@ void WgpuRnd::Init() {
 
     // Register subsystem types (creates default cam/env/mat/etc.)
     PreInit();
+#ifdef MILO_RNDOBJ_SHAPE_HAS_NGRND
     TheShaderMgr.Init();
+#endif
 
     // Override clear color — DTA config isn't loaded in the native port.
     // Default to medium-dark teal to approximate the turbo_shell venue.
@@ -249,7 +264,15 @@ void WgpuRnd::Init() {
     // Legacy MILO_RENDER=1 still works for backwards compat.
     bool enableGpu = !getenv("MILO_NORENDER");
     if (getenv("MILO_RENDER")) enableGpu = true;  // explicit override
-    if (enableGpu) {
+    if (enableGpu && mGpu.IsReady()) {
+        // The consumer brought the device up before Init (RB3's RB3_GAME boot
+        // does, so Dawn enumerates adapters from the original cwd before the
+        // chdir into the data root). A second mGpu.Init would create a second
+        // device while every resource below binds to the first. DC3 and
+        // rb3-xenon never pre-init, so they always take the branch below.
+        gNativeWindow = mGpu.Window();
+        InitGpuResources();
+    } else if (enableGpu) {
         desc.headless = (getenv("MILO_HEADLESS") != nullptr);
         desc.width = getenv("MILO_WIDTH") ? atoi(getenv("MILO_WIDTH")) : 1280;
         desc.height = getenv("MILO_HEIGHT") ? atoi(getenv("MILO_HEIGHT")) : 720;
@@ -409,6 +432,10 @@ void WgpuRnd::Terminate() {
     BoneSetupTerminate();
     PartTerminate();
 
+    // Cached per-texture and per-mesh GPU objects (file-scope statics).
+    ClearGpuTexCaches();
+    ClearMeshGpuCache();
+
     // Intermediate texture
     mIntermediateTex = nullptr;
     mIntermediateView = nullptr;
@@ -559,8 +586,16 @@ void FlushPostProcessingForOverlay() {
 }
 
 void WgpuRnd::SetViewport(const Viewport& v) {
-    NgRnd::SetViewport(v);
+    WgpuRndBase::SetViewport(v);
     ApplyViewport();
+}
+
+void WgpuRnd::ApplyCameraViewport(RndCam* cam) {
+    if (!cam) return;
+    const Vector2& z = rndshape::CamZRange(cam);
+    SetViewport(BuildViewportForScreenRect(
+        (int)mCurrentTargetWidth, (int)mCurrentTargetHeight, rndshape::CamScreenRect(cam), z.x, z.y
+    ));
 }
 
 void WgpuRnd::ApplyViewport() {
@@ -673,7 +708,7 @@ void WgpuRnd::BeginFramePass(bool clear) {
     const Viewport& prevVp = GetViewport();
     if (cam && cam->TargetTex() == nullptr) {
         SetViewport(BuildViewportForScreenRect(
-            curW, curH, cam->GetScreenRect(), prevVp.MinZ, prevVp.MaxZ
+            curW, curH, rndshape::CamScreenRect(cam), prevVp.MinZ, prevVp.MaxZ
         ));
     } else {
         ApplyViewport();
@@ -747,7 +782,7 @@ void WgpuRnd::BeginTexturePass(RndTex* tex) {
     const Viewport& prevVp = GetViewport();
     if (cam && cam->TargetTex() == tex) {
         SetViewport(BuildViewportForScreenRect(
-            tex->Width(), tex->Height(), cam->GetScreenRect(), prevVp.MinZ, prevVp.MaxZ
+            tex->Width(), tex->Height(), rndshape::CamScreenRect(cam), prevVp.MinZ, prevVp.MaxZ
         ));
     } else {
         Viewport vp;
@@ -870,7 +905,7 @@ void WgpuRnd::BeginDrawing() {
     // Only if no camera is already current (viewer sets its own orbit camera)
     if (mDefaultCam && !RndCam::Current())
         mDefaultCam->Select();
-    if (mDefaultEnv && !RndEnviron::Current())
+    if (mDefaultEnv && !rndshape::CurrentEnv())
         mDefaultEnv->Select(nullptr);
 
     // Reset ring buffers for this frame
@@ -969,7 +1004,9 @@ void WgpuRnd::BeginDrawing() {
     // Write scene uniforms from current camera and environment
     WriteSceneUniforms();
     mLastSceneCam = RndCam::Current();
-    mLastSceneEnv = RndEnviron::Current();
+    mLastSceneEnv = rndshape::CurrentEnv();
+    if (!rndshape::kCamSelectSetsViewport)
+        ApplyCameraViewport(mLastSceneCam);
     // Create command encoder
     wgpu::CommandEncoderDescriptor encDesc{};
     encDesc.label = "FrameEncoder";
@@ -996,7 +1033,7 @@ void WgpuRnd::BeginDrawing() {
 
 void WgpuRnd::EnsureSceneUniformsCurrent() {
     RndCam* cam = RndCam::Current();
-    RndEnviron* env = RndEnviron::Current();
+    RndEnviron* env = rndshape::CurrentEnv();
     // Check both pointer identity AND camera position — the UI code modifies
     // the same camera object's position each frame before drawing panels.
     // Must check all 3 position components since scene cameras (e.g. turbo_shell.cam)
@@ -1008,6 +1045,8 @@ void WgpuRnd::EnsureSceneUniformsCurrent() {
         if (HasTransparentDraws() && !IsFlushingTransparentDraws()) {
             FlushTransparentDraws();
         }
+        if (!rndshape::kCamSelectSetsViewport && cam != mLastSceneCam)
+            ApplyCameraViewport(cam);
         WriteSceneUniforms();
         // Re-bind the new scene bind group on the active render pass
         if (mInPass) {
@@ -1250,7 +1289,7 @@ void WgpuRnd::WriteSceneUniforms() {
         }
 
         // Check if mViewProjMatrix was externally set (milo-viewer does this).
-        const Hmx::Matrix4& vp = cam->GetViewProjMatrix();
+        const Hmx::Matrix4& vp = rndshape::CamViewProjMatrix(cam);
         bool isIdentity = (vp.x.x == 1 && vp.x.y == 0 && vp.x.z == 0 && vp.x.w == 0 &&
                            vp.y.x == 0 && vp.y.y == 1 && vp.y.z == 0 && vp.y.w == 0 &&
                            vp.z.x == 0 && vp.z.y == 0 && vp.z.z == 1 && vp.z.w == 0 &&
@@ -1267,7 +1306,7 @@ void WgpuRnd::WriteSceneUniforms() {
 
             Transform viewXfm;
             Hmx::Matrix4 projMtx;
-            cam->GetViewProjectXfms(viewXfm, projMtx);
+            rndshape::CamViewProjectXfms(cam, viewXfm, projMtx);
 
             // Convert Transform (3x4 row-major) to 4x4 view matrix
             float view[16] = {
@@ -1330,8 +1369,8 @@ void WgpuRnd::WriteSceneUniforms() {
                     cam->YFov(), cam->YFov() * 57.2957795f,
                     cam->NearPlane(), cam->FarPlane(),
                     worldXfm.v.x, worldXfm.v.y, worldXfm.v.z,
-                    (float)TheRnd.GetAspect(),
-                    cam->ZRange().x, cam->ZRange().y,
+                    (float)rndshape::TheRndRef().GetAspect(),
+                    rndshape::CamZRange(cam).x, rndshape::CamZRange(cam).y,
                     NativeSettings::Get().fovScale);
         }
 
@@ -1342,8 +1381,8 @@ void WgpuRnd::WriteSceneUniforms() {
     }
 
     // Environment (fog, ambient, lights)
-    RndEnviron* env = RndEnviron::Current();
-    if (env && env->AmbientFogOwner()) {
+    RndEnviron* env = rndshape::CurrentEnv();
+    if (env && rndshape::EnvHasAmbientFogOwner(env)) {
         // Ambient color (with minimum floor for visibility)
         const Hmx::Color& amb = env->AmbientColor();
         float minAmbient = 0.08f;
@@ -1355,8 +1394,8 @@ void WgpuRnd::WriteSceneUniforms() {
         // Fog
         if (env->FogEnable()) {
             scene.fogEnabled = 1.0f;
-            scene.fogStart = env->FogStart();
-            scene.fogEnd = env->FogEnd();
+            scene.fogStart = rndshape::EnvFogStart(env);
+            scene.fogEnd = rndshape::EnvFogEnd(env);
             const Hmx::Color& fc = env->FogColor();
             scene.fogColor[0] = fc.red;
             scene.fogColor[1] = fc.green;
@@ -1406,7 +1445,7 @@ void WgpuRnd::WriteSceneUniforms() {
         float sceneCenter[3] = {0, 1.0f, 0}; // characters are roughly at origin, ~1m tall
 
         // From environment's approx list (directional + point lights)
-        ObjPtrList<RndLight>& approxLights = env->LightsApprox();
+        ObjPtrList<RndLight>& approxLights = rndshape::EnvLightsApprox(env);
         for (ObjPtrList<RndLight>::iterator it = approxLights.begin();
              it != approxLights.end(); ++it) {
             RndLight* light = *it;
@@ -1527,7 +1566,7 @@ void WgpuRnd::WriteSceneUniforms() {
         scene.numLights = (float)lightIdx;
         // Point lights (kPoint and kFakeSpot are in LightsReal)
         int pointIdx = 0;
-        ObjPtrList<RndLight>& realLights = env->LightsReal();
+        ObjPtrList<RndLight>& realLights = rndshape::EnvLightsReal(env);
         for (ObjPtrList<RndLight>::iterator it = realLights.begin();
              it != realLights.end() && pointIdx < 4; ++it) {
             RndLight* light = *it;
@@ -1560,7 +1599,7 @@ void WgpuRnd::WriteSceneUniforms() {
             RndLight* light = *it;
             if (!light || !light->Showing()) continue;
             if (light->GetType() != RndLight::kFakeSpot) continue;
-            if (!light->GetTexture()) continue;
+            if (!rndshape::LightTexture(light)) continue;
 
             // Use the first kFakeSpot with a texture as the projected light
             const Transform& lxfm = light->WorldXfm();
@@ -1577,7 +1616,7 @@ void WgpuRnd::WriteSceneUniforms() {
             scene.projLightColor[3] = 1.0f;
 
             // Compute projection matrix and extract UV rows
-            Transform proj = light->Projection();
+            Transform proj = rndshape::LightProjection(light);
             // Row 0 (u): column-major transform → row of transposed matrix
             scene.projLightProjRow0[0] = proj.m.x.x;
             scene.projLightProjRow0[1] = proj.m.y.x;
@@ -1590,7 +1629,7 @@ void WgpuRnd::WriteSceneUniforms() {
             scene.projLightProjRow1[3] = proj.v.y;
 
             scene.numProjLights = 1.0f;
-            mProjLightTexView = GetGpuTexView(light->GetTexture());
+            mProjLightTexView = GetGpuTexView(rndshape::LightTexture(light));
             break;  // only 1 projected light supported
         }
 

@@ -18,3 +18,10 @@ wgpu::TextureFormat ChooseRenderTargetFormat(RndTex* tex);
 
 // Check if a texture has a proper renderable GPU backing (RGBA, not compressed)
 bool IsGpuTexRenderable(RndTex* tex);
+
+// Release every cached GPU texture (2D and cube). WgpuRnd::Terminate calls it
+// before the device shuts down: the caches are file-scope statics, and a
+// consumer that leaves through exit() rather than _exit() would otherwise drop
+// the last device reference from a static destructor, after the Vulkan loader
+// has started tearing down (RB3-Wii's Debug::Exit takes that path).
+void ClearGpuTexCaches();

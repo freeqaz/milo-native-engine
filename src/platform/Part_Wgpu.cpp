@@ -6,6 +6,7 @@
 #include "rndobj/Part.h"
 #include "rndobj/Cam.h"
 #include "rndobj/Mat.h"
+#include "platform/rndshape/RndShape.h"
 
 #include <cstring>
 #include <vector>
@@ -160,8 +161,8 @@ void DrawParticlesBillboard(RndParticleSys* sys) {
     float ux = camXfm.m.z.x, uy = camXfm.m.z.y, uz = camXfm.m.z.z;
 
     // UV tiling
-    int tilesAcross = sys->NumTilesAcross();
-    int tilesDown = sys->NumTilesDown();
+    int tilesAcross = rndshape::PartTilesAcross(sys);
+    int tilesDown = rndshape::PartTilesDown(sys);
     if (tilesAcross < 1) tilesAcross = 1;
     if (tilesDown < 1) tilesDown = 1;
     float tileW = 1.0f / tilesAcross;
@@ -194,7 +195,7 @@ void DrawParticlesBillboard(RndParticleSys* sys) {
         }
 
         // UV tile
-        int tileIdx = p->mCurrentTileIndex;
+        int tileIdx = rndshape::PartTileIndex(p);
         float u0 = (tileIdx % tilesAcross) * tileW;
         float v0 = (tileIdx / tilesAcross) * tileH;
         float u1 = u0 + tileW;
@@ -292,8 +293,12 @@ void DrawParticlesBillboard(RndParticleSys* sys) {
 
     // Bind group 1: texture + sampler
     wgpu::TextureView texView;
-    if (mat->GetDiffuseTex()) {
-        texView = GetGpuTexView(mat->GetDiffuseTex());
+    if (RndTex* diffTex = mat->GetDiffuseTex()) {
+        // Upload on first use, as MaterialSetup does for meshes: a texture only
+        // a particle system samples is otherwise never uploaded and the quads
+        // draw untextured (solid, alpha-less).
+        diffTex->PresyncBitmap();
+        texView = GetGpuTexView(diffTex);
     }
     if (!texView) texView = gWgpuRnd->WhiteTexView();
 

@@ -1,5 +1,6 @@
 // DC3 Native Port — WebGPU Renderer Header
-// WgpuRnd (extends NgRnd) and WgpuShaderMgr (extends RndShaderMgr)
+// WgpuRnd (extends the shape's renderer base: NgRnd on DC3-shaped rndobj) and,
+// where the shape has the NG shader layer, WgpuShaderMgr (extends RndShaderMgr).
 
 #pragma once
 
@@ -10,8 +11,10 @@
 #include "gfx/DrawRect2D.h"
 #include "gfx/UniformStructs.h"
 #include "gfx/UniformRingBuffer.h"
-#include "rndobj/Rnd_NG.h"
+#include "platform/rndshape/RndShape.h"
+#ifdef MILO_RNDOBJ_SHAPE_HAS_NGRND
 #include "rndobj/ShaderMgr.h"
+#endif
 
 #include "gfx/VideoEncoder.h"
 
@@ -25,6 +28,7 @@
 // WgpuShaderMgr — captures SetVConstant/SetPConstant into staging area
 // ============================================================================
 
+#ifdef MILO_RNDOBJ_SHAPE_HAS_NGRND
 class WgpuShaderMgr : public RndShaderMgr {
 public:
     WgpuShaderMgr() {}
@@ -53,12 +57,13 @@ public:
 protected:
     RndShaderProgram* NewShaderProgram() override { return nullptr; }
 };
+#endif // MILO_RNDOBJ_SHAPE_HAS_NGRND
 
 // ============================================================================
-// WgpuRnd — WebGPU renderer extending NgRnd
+// WgpuRnd — WebGPU renderer extending WgpuRndBase (see platform/rndshape/)
 // ============================================================================
 
-class WgpuRnd : public NgRnd {
+class WgpuRnd : public WgpuRndBase {
 public:
     WgpuRnd() {}
     virtual ~WgpuRnd() {}
@@ -167,6 +172,11 @@ public:
 
 private:
     void ApplyViewport();
+    // The viewport a camera select sets on DC3 (RndCam::Select) and on the Wii
+    // (WiiCam::Select): mScreenRect over the current target, depth mZRange.
+    // Called by WgpuRnd only for shapes whose RndCam::Select does not do it
+    // (rndshape::kCamSelectSetsViewport).
+    void ApplyCameraViewport(RndCam* cam);
     void BeginFramePass(bool clear);
     void BeginTexturePass(RndTex* tex);
     void EndActivePass();
