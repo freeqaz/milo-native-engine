@@ -301,6 +301,7 @@ set(MILO_ENGINE_GFX_RNDOBJ_SOURCES
     src/gfx/ShadowPass.cpp
     src/gfx/PostProcPass.cpp
     src/gfx/RB3RetailPost.cpp   # rndobj-free; run by PostProcPass only for the rb3wii shape
+    src/gfx/DisplayRamp.cpp     # rndobj-free; run by WgpuRnd::EndDrawing when rndshape::DisplayGamma() > 0
     src/gfx/TextureConvert.cpp
     src/gfx/GxTextureDecode.cpp
 )

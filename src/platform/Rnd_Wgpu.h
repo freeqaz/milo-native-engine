@@ -8,6 +8,7 @@
 #include "gfx/PipelineManager.h"
 #include "gfx/ShadowPass.h"
 #include "gfx/PostProcPass.h"
+#include "gfx/DisplayRamp.h"
 #include "gfx/DrawRect2D.h"
 #include "gfx/UniformStructs.h"
 #include "gfx/UniformRingBuffer.h"
@@ -210,6 +211,7 @@ public:
     // Render passes (extracted subsystems)
     ShadowPass mShadowPass;
     PostProcPass mPostProcPass;
+    DisplayRamp mDisplayRamp;   // rndshape::DisplayGamma(): the RB3 Xbox 360 display ramp
     DrawRect2D mDrawRect2D;
 
     // GPU resource initialization tracking

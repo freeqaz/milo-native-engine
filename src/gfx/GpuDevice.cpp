@@ -280,6 +280,10 @@ void GpuDevice::ConfigureSurface() {
     config.width = mWidth;
     config.height = mHeight;
     config.usage = wgpu::TextureUsage::RenderAttachment;
+    // CopySrc where the surface offers it: a full-frame pass that reads the
+    // finished frame (gfx/DisplayRamp) copies it out first.
+    if (caps.usages & wgpu::TextureUsage::CopySrc)
+        config.usage = config.usage | wgpu::TextureUsage::CopySrc;
     config.presentMode = wgpu::PresentMode::Fifo; // VSync
     config.alphaMode = wgpu::CompositeAlphaMode::Opaque;
     mSurface.Configure(&config);

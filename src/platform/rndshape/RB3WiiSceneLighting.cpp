@@ -55,8 +55,8 @@ bool WhiteGuard()          { static int v = EnvFlag("RB3_VENUE_WHITE_GUARD") ? 1
 bool CharRealLight()       { static int v = EnvFlag("RB3_CHAR_REAL_LIGHT_OFF") ? 0 : 1; return v != 0; }
 bool FallbackFix()         { static int v = EnvFlag("RB3_VENUE_FALLBACK_FIX") ? 1 : 0; return v != 0; }
 // The standard shader shades RB3 in gamma space (rndshape::kGammaSpaceShading):
-// it decodes the lit term before multiplying it into the decoded texture, so a
-// lighting value v now darkens a texel exactly as much as retail's v does. The
+// it multiplies the lit term into the texel as stored, so a lighting value v
+// darkens a texel exactly as much as retail's v does. The
 // four ambient fallbacks below were fitted under the old linear shading, where
 // the output encode lifted a lit term v to about linearToSrgb(v); they are
 // re-expressed through that curve so they keep the brightness they were fitted

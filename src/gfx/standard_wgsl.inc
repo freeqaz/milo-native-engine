@@ -135,7 +135,7 @@ struct MaterialUniforms {
     hasSpecularMap: f32,     // 1.0 when specular map is bound
     unlit: f32,              // 1.0 = Wii mUseEnviron==0 && !mPreLit: register color only (no ambient/lights/vertex tint)
     bloomMaskScale: f32,     // >0: alpha = luma(rgb) * this (RB3 pseudo-HDR bloom mask)
-    gammaShading: f32,       // 1.0: material colour + lighting sum are gamma-space (RB3 retail)
+    gammaShading: f32,       // 1.0: shade in gamma space, texel * colour * lighting as stored, no encode (RB3 retail)
 };
 
 @group(1) @binding(0) var<uniform> material: MaterialUniforms;
@@ -699,15 +699,6 @@ fn compressHighlightsLuma(color: vec3f) -> vec3f {
 // vs Wii reference ~90). Apply the sRGB transfer function at the fragment
 // output so the displayed pixels carry the correct perceptual brightness, the
 // same encode the GPU would do for free on an *_UnormSrgb surface.
-// sRGB EOTF (sRGB -> linear), the inverse of linearToSrgb below. Used to
-// bring gamma-space factors (material.gammaShading) into the linear working
-// space; extends as a power law above 1 so a hot lighting sum stays monotonic.
-fn srgbToLinear(color: vec3f) -> vec3f {
-    let lo = color / 12.92;
-    let hi = pow((max(color, vec3f(0.0)) + 0.055) / 1.055, vec3f(2.4));
-    return select(lo, hi, color > vec3f(0.04045));
-}
-
 fn linearToSrgb(color: vec3f) -> vec3f {
     let lo = color * 12.92;
     let hi = 1.055 * pow(max(color, vec3f(0.0)), vec3f(1.0 / 2.4)) - 0.055;
@@ -825,26 +816,21 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
     if (retailLight) {
         if (isEnabled(material.prelit) && !prelitAmbient) {
             vertexTint = rawVtx;
-            if (isEnabled(material.gammaShading)) {
-                vertexTint = srgbToLinear(rawVtx);
-            }
         }
     } else if (isEnabled(material.prelit)) {
         vertexTint = rawVtx;                          // prelit: authored colour verbatim
     } else if (isEnabled(surfaceInput.isSkinned)) {
         vertexTint = skinnedTint;                     // skinned char: desaturated shading
     }                                                 // static non-prelit venue: white (suppress)
-    // RB3 shades in gamma space (material.gammaShading): retail multiplies the
-    // gamma-encoded texture by the material colour and the lighting sum as they
-    // are authored, and writes the product to an 8-bit gamma target. The
-    // texture is decoded here (sRGB views) and the result re-encoded at the
-    // end, so the factors must be decoded too, or every one of them is
-    // brightened by the encode: enc(dec(t) * dec(c)) == t * c.
+    // RB3 shades in gamma space (material.gammaShading): retail's standard.ps
+    // multiplies the texel, the material colour and the lighting sum exactly
+    // as stored and authored, and writes the product to an 8-bit
+    // D3DFMT_A8R8G8B8 target. Nothing is decoded on the way in (the bitmap
+    // formats carry no gamma sign, and textures upload as *Unorm here) and
+    // nothing is encoded on the way out (see the end of this function), so
+    // the whole computation below runs on those raw values: t * c * L.
     let gammaShading = isEnabled(material.gammaShading);
-    var matRgb = material.color.rgb;
-    if (gammaShading) {
-        matRgb = srgbToLinear(matRgb);
-    }
+    let matRgb = material.color.rgb;
     var baseColor = vec4f(matRgb * vertexTint, materialAlpha * surfaceInput.color.a);
 
     if (isEnabled(material.useTexture)) {
@@ -957,9 +943,6 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
         } else {
             litTerm = softClipLighting(ambientLight + totalLighting.diffuse * shadowFactor);
         }
-        if (gammaShading) {
-            litTerm = srgbToLinear(litTerm);
-        }
         finalColor =
             baseColor.rgb * litTerm +
             totalLighting.specular * shadowFactor;
@@ -988,7 +971,10 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
         finalColor = mix(scene.fogColor, finalColor, fogFactor);
     }
 
-    if (scene.venueHighlightLumaMode > 0.5) {
+    if (gammaShading) {
+        // Retail: the 8-bit target saturates the product; no shoulder.
+        finalColor = clamp(finalColor, vec3f(0.0), vec3f(1.0));
+    } else if (scene.venueHighlightLumaMode > 0.5) {
         finalColor = compressHighlightsLuma(finalColor);
     } else {
         finalColor = compressHighlights(finalColor);
@@ -1001,9 +987,10 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
 
     // W9: encode linear -> sRGB for the non-sRGB web surface (see linearToSrgb).
     // Except into a render target whose consumer re-encodes on sampling
-    // (scene.outputLinear, set only for the RB3-Wii shape): encoding twice
-    // brightens everything drawn through the target.
-    if (scene.outputLinear < 0.5) {
+    // (scene.outputLinear): encoding twice brightens everything drawn through
+    // the target. A gamma-space draw (RB3) is already in the target's units,
+    // in the frame and in a render target alike, so it is never encoded.
+    if (!gammaShading && scene.outputLinear < 0.5) {
         finalColor = linearToSrgb(finalColor);
     }
 
