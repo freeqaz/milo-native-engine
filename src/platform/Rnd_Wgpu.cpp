@@ -1382,7 +1382,10 @@ void WgpuRnd::WriteSceneUniforms() {
 
     // Environment (fog, ambient, lights)
     RndEnviron* env = rndshape::CurrentEnv();
-    if (env && rndshape::EnvHasAmbientFogOwner(env)) {
+    if (rndshape::WriteSceneLighting(scene, cam)) {
+        // The content's own lighting model (RB3-Wii: rndshape/RB3WiiSceneLighting.cpp).
+        mProjLightTexView = nullptr;
+    } else if (env && rndshape::EnvHasAmbientFogOwner(env)) {
         // Ambient color (with minimum floor for visibility)
         const Hmx::Color& amb = env->AmbientColor();
         float minAmbient = 0.08f;

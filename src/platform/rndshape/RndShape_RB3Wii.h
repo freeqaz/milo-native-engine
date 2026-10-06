@@ -372,4 +372,13 @@ inline float PostProcGrain(const RndPostProc *pp) {
     return (n < 3.0f ? n : 3.0f) * 0.04f;
 }
 
+// ---- scene lighting --------------------------------------------------------
+// RB3 lights for the Wii's GX pipeline, not DC3's venue rig: world.cam reads
+// the environ's lights with real point lights, a clamped near-white ambient and
+// exposure scaling; every other camera gets a flat key. Defined in
+// rndshape/RB3WiiSceneLighting.cpp (built only for this shape under the dc3
+// backend). Writes ambient, directional and point lights; returns true, so
+// WgpuRnd skips its DC3 lighting block.
+bool WriteSceneLighting(SceneUniforms &s, RndCam *cam);
+
 } // namespace rndshape

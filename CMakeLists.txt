@@ -386,6 +386,11 @@ set(MILO_ENGINE_PLATFORM_SOURCES
 )
 if(MILO_ENGINE_GPU_BACKEND STREQUAL "dc3")
     list(APPEND MILO_ENGINE_PLATFORM_SOURCES ${MILO_ENGINE_GPU_PLATFORM_SOURCES})
+    if(MILO_ENGINE_RNDOBJ_SHAPE STREQUAL "rb3wii")
+        # RB3-Wii scene lighting behind the rndshape seam (the DC3 shape's
+        # WriteSceneLighting is an inline no-op, so DC3/xenon never build it).
+        list(APPEND MILO_ENGINE_PLATFORM_SOURCES src/platform/rndshape/RB3WiiSceneLighting.cpp)
+    endif()
 elseif(MILO_ENGINE_GPU_BACKEND STREQUAL "rb3")
     list(APPEND MILO_ENGINE_PLATFORM_SOURCES ${MILO_ENGINE_GPU_PLATFORM_SOURCES_RB3})
 endif()

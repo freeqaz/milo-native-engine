@@ -108,4 +108,8 @@ constexpr bool kRenderTargetForcesAlphaWrite = false;
 // The grain strength the post-process shader adds per pixel, as authored.
 inline float PostProcGrain(const RndPostProc *pp) { return pp->GetNoiseIntensity(); }
 
+// ---- scene lighting --------------------------------------------------------
+// DC3 lights through WgpuRnd::WriteSceneUniforms' own environ block.
+inline bool WriteSceneLighting(SceneUniforms &, RndCam *) { return false; }
+
 } // namespace rndshape
