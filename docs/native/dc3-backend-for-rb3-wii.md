@@ -1950,7 +1950,7 @@ configured with `-DMILO_ENGINE_PATH` at the `w16-rh` engine worktree
 | dc3-decomp (on `e992ee9b5`) | `scripts/native_test.sh` | 626 registered, 557 executed, 557 passed, 0 failed, 69 skipped (budget 69), rc=0 |
 | rb3-xenon (on `dd88a0ee7`) | `tools/native_health.sh` | `NATIVE_HEALTH_RESULT verdict=PASS link=PASS link_verified=18 link_expected=18 link_skipped=0 runtime=PASS runtime_ran=18 runtime_total=18 gates_pass=77 gates_fail=0 unrunnable=none selftest=SKIPPED scatter_unlinked=16 scatter_dirb=0 scatter_multihost=17 rc=0 handpose_controls=- handpose_baseline_fail=- runtime_crashed=0 runtime_failed=none` (embedded link gate: `verdict=PASS expected=18 verified=18 skipped=0 partial=0 failed=0 rc=0`) |
 | rb3-xenon | `tools/native_build_gate.sh` | run as the lane's last action; its `NATIVE_GATE_RESULT` line is in the lane report |
-| rb3 (Wii) `w16-rh` (`763ef1efc`), dc3 flavor | `ctest` | 123 tests: 116 passed, 7 skipped (six fixture-gated oracles plus `PopulatesFromRealDrawMesh`), 0 failed |
+| rb3 (Wii) `w16-rh` (`763ef1efc`), dc3 flavor | `ctest` | 123 tests: 116 passed, 7 skipped (six fixture-gated tests plus `PopulatesFromRealDrawMesh`), 0 failed |
 | rb3 (Wii) `w16-rh`, rb3 flavor | `ctest` | 123 tests: 116 passed, the same 7 skipped, 0 failed (10 exit SegFaults before 14.5) |
 | rb3 (Wii), dc3 flavor | title and Quickplay | title rc=0 (f400 11.5 / 11.7 / 0.912); Quickplay reaches `game_screen` at frame 759, rc=0 (14.6) |
 
@@ -2116,7 +2116,7 @@ fixed build (`6f308bf8`).
 
 | consumer | instrument | result |
 |---|---|---|
-| rb3 `w16-rj`, desktop, flavor from the default (`dc3`) | `ctest` | 123 tests: 116 passed, 7 skipped (the six fixture-gated oracles plus `PopulatesFromRealDrawMesh`), 0 failed, rc=0; same counts as 14.7 |
+| rb3 `w16-rj`, desktop, flavor from the default (`dc3`) | `ctest` | 123 tests: 116 passed, 7 skipped (the six fixture-gated tests plus `PopulatesFromRealDrawMesh`), 0 failed, rc=0; same counts as 14.7 |
 | rb3 `w16-rj`, web, dc3 | `smoke-test.mjs` (with check 5), `keyboard-to-gameplay.mjs` | PASS, PASS (15.2) |
 | rb3 `w16-rj`, web, rb3 flavor | `smoke-test.mjs` (with check 5) | PASS |
 | rb3-xenon, dc3-decomp (desktop) | preprocessed-source identity (15.2) | the changed TU preprocesses byte-identically; their desktop suites were not rerun |
