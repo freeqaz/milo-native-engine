@@ -70,10 +70,32 @@ struct VOut {
     return out;
 }
 
+// Pipeline-overridable (RB3 shape only; both 0 for DC3):
+//  kGammaColor  the particle colour is a gamma-space value, as RB3 retail
+//               multiplies it into the (gamma) texture; decode it to match the
+//               decoded texture (see standard_wgsl.inc, gammaShading).
+//  kMaskScale   >0: write the pseudo-HDR bloom mask, alpha = luma(rgb) * this,
+//               as retail's particle shader does for an AllowHDR material.
+override kGammaColor: f32 = 0.0;
+override kMaskScale: f32 = 0.0;
+
+fn decodeSrgb(c: vec3f) -> vec3f {
+    let lo = c / 12.92;
+    let hi = pow((max(c, vec3f(0.0)) + 0.055) / 1.055, vec3f(2.4));
+    return select(lo, hi, c > vec3f(0.04045));
+}
+
 @fragment fn fs_particle(in: VOut) -> @location(0) vec4f {
     let tex = textureSample(particleTex, particleSampler, in.uv);
-    let c = tex * in.color;
+    var col = in.color;
+    if (kGammaColor > 0.5) {
+        col = vec4f(decodeSrgb(col.rgb), col.a);
+    }
+    var c = tex * col;
     if (c.a < 0.004) { discard; }
+    if (kMaskScale > 0.0) {
+        c.a = clamp(dot(c.rgb, vec3f(0.3, 0.59, 0.11)) * kMaskScale, 0.0, 1.0);
+    }
     return c;
 }
 )WGSL";
@@ -300,10 +322,28 @@ void DrawParticlesBillboard(RndParticleSys* sys) {
     ct.format = gWgpuRnd->CurrentTargetFormat();
     ct.blend = &bs;
     ct.writeMask = wgpu::ColorWriteMask::All;
+    // RB3's retail post chain reads the frame's alpha as its bloom mask: in the
+    // main frame a particle writes the mask (AllowHDR material) or leaves alpha
+    // alone. Both are no-ops for DC3 (rndshape::RetailBloomMaskActive false).
+    float maskScale = 0.0f;
+    if (rndshape::RetailBloomMaskActive() && gWgpuRnd->CurrentPassHasDepth() &&
+        !gWgpuRnd->ActiveTargetTex()) {
+        maskScale = rndshape::BloomMaskScale(rndshape::Mat(mat));
+        if (maskScale <= 0.0f)
+            ct.writeMask = wgpu::ColorWriteMask::Red | wgpu::ColorWriteMask::Green |
+                           wgpu::ColorWriteMask::Blue;
+    }
+    wgpu::ConstantEntry consts[2] = {};
+    consts[0].key = "kGammaColor";
+    consts[0].value = rndshape::kGammaSpaceShading ? 1.0 : 0.0;
+    consts[1].key = "kMaskScale";
+    consts[1].value = maskScale;
 
     wgpu::FragmentState frag{};
     frag.module = sParticleShader;
     frag.entryPoint = "fs_particle";
+    frag.constantCount = 2;
+    frag.constants = consts;
     frag.targetCount = 1;
     frag.targets = &ct;
 

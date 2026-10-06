@@ -188,6 +188,11 @@ public:
     // to the framebuffer (bypassing post-proc). Used for HUD overlay that
     // should not be affected by bloom/DOF.
     void FlushPostProcessingForOverlay();
+    // RB3 (rndshape::kRetailPostChain): grade the world now, at Rnd::EndWorld,
+    // as retail NgRnd does, and carry on drawing the rest of the frame (note
+    // highway, HUD, menus) over the graded image in the same MSAA + depth
+    // frame pass. A no-op for DC3 and when post-processing is off or done.
+    void FlushWorldPost();
     void CreateDepthTexture(int w, int h);
     void CreateDefaultTextures();
     void WriteSceneUniforms();
@@ -252,6 +257,11 @@ public:
     int mIntermediateWidth = 0;
     int mIntermediateHeight = 0;
     bool mFramePassValid = false;
+    // FlushWorldPost's graded frame, copied back over the main pass.
+    wgpu::Texture mPostOutTex;
+    wgpu::TextureView mPostOutView;
+    int mPostOutWidth = 0;
+    int mPostOutHeight = 0;
 
 #ifdef __EMSCRIPTEN__
     // On web, the swapchain surface texture may not reliably support

@@ -321,8 +321,8 @@ cloud layer, billboard posters, the rooftop band, skyline, Capitol marquee and
 cars are present. **The rooftop characters are correct**: retail shows the
 guitarist and singer on the left roof and the drummer/keys on the right; BandRnd
 does not draw them, so "extra characters" was a BandRnd defect, not a dc3 one.
-Remaining differences, all present under BandRnd too: the sky is about twice
-retail's luma (the clouds read grey-lavender rather than dark purple), there is
+Remaining differences, all present under BandRnd too (the first three are
+fixed in section 8): the sky is about twice retail's luma (the clouds read grey-lavender rather than dark purple), there is
 no bloom/glow around lights, and the logo outline is grey-white rather than
 lavender.
 
@@ -386,7 +386,8 @@ cell is empty because its `hair_straight.bmp` is absent from `wii-extracted`.
 - **Crowd recolouring.** `Crowd.cpp` sets `kColorModModulate` with three random
   colours per crowd character; no backend implements `mColorMod`, and the Wii
   `WiiMat` decomp has no consumer of it to copy, so its semantics are unknown.
-- **Sky brightness and logo colour** (7.2) — shared with BandRnd.
+- **Sky brightness and logo colour** (7.2) — shared with BandRnd. Fixed in
+  section 8 (gamma-space shading).
 - **`PresyncBitmap`** fingerprints every texture on every draw (~170k calls in
   220 title frames); a performance issue, untouched.
 
@@ -410,3 +411,201 @@ ratchet); with `archive/` but without `orig-assets/`, the two `XeniaGolden`
 tests and `HttpInputTest.PressReachesTheUIAsAPad0Button` launch `dc3-native`
 with no game data and fail ("could not find game data", SIGFPE before ready).
 With both links all three pass.
+
+## 8. Bloom and colour grading (lane W16-QN, 2026-10-06)
+
+Section 7.5 left bloom/halo as the most visible gap against retail, followed by
+RB3's colour grading. Both are now ported for RB3 content, behind the rndshape
+seam, together with the shading fix that made a faithful port possible.
+
+| repo | branch | base |
+|---|---|---|
+| milo-native-engine | `w16-qn` | `14b3c2d` (engine `main`, the W16-QE merge) |
+| rb3, rb3-xenon, dc3-decomp | none — no consumer change was needed | |
+
+### 8.1 Method: the retail shaders, not BandRnd
+
+`RB3PostProc` (BandRnd's halo bloom and grade) is a hand-tuned approximation,
+so it was not the source. RB3 ships its Xbox 360 shaders in one container,
+`xbox_shaders` (XOBX v1). `tools/rb3-dc3-parity/xobx.py` parses it the way
+`DxShaderMgr::LoadShaderFile` reads it and dumps each permutation's microcode;
+xenia's `xenia-gpu-shader-compiler --shader_output_type=ucode` disassembles
+them. The constants come from rb3-xenon's `rndobj/PostProc_NG.cpp`
+(`DoBloom`, `SetBloomColor`, `ModulateColorXfm`). The chain, now in
+`gfx/RB3RetailPost`:
+
+1. **Mask.** Materials that `NgMat::AllowHDR()` admits (not alpha-blended,
+   alpha-cut or alpha-writing) are drawn with `standard.ps`'s pseudo-HDR bit,
+   which writes `a = dot(rgb, c7)` with `c7 = (0.3, 0.59, 0.11) × s`, where
+   `s = 1/threshold` when the threshold is above 1, else 1. Other draws leave
+   alpha alone, and the clear writes alpha 0.
+2. **bloom.ps.** Averages `rgb × a` over the scene into a quarter-size target.
+3. **Blur.** 15 taps, offsets −6.5 to 7.5 texels, horizontal then vertical,
+   with `SetBloomBlurWeights`' Gaussian.
+4. **downsample_4x.** A 4×4 box into the next set. There are three sets in all.
+5. **postprocess.ps.** A screen blend `1 − (1 − b·c6)(1 − scene)`, where `b` is
+   the sum of the three sets and `c6 = bloomColor × BloomIntensity()`. Then the
+   `RndColorXfm` matrix (its 3×3 scaled by the flicker modulation) is applied
+   as `sat(dp4)`.
+
+Vignette, posterize, chromatic aberration and grain are kept from the generic
+composite and applied after the transform.
+
+### 8.2 Why the first faithful port failed: RB3 shades in gamma space
+
+The first port (`c942ad9`) made the title far worse. Sky_dE went
+**46.8 → 102.0** and city_dE **20.8 → 46.5** at frame 400. Venues washed out:
+mean luma rose from 52.9 to 130.6 over 4 random shots, against retail's 54.
+
+The cause was upstream of the post chain. Retail renders into a
+`D3DFMT_A8R8G8B8` target with no linearization (`DxRnd::CreateEDRAMSurfaces`).
+`standard.ps` multiplies the gamma-space texel by the material colour and the
+lighting sum exactly as authored. The dc3 standard shader instead decodes
+textures through sRGB views and encodes its output, so every factor it does
+not decode is brightened. A material colour of 0.3 acts like about 0.58. The
+title sky's ~2× brightness (7.2), which BandRnd shares, is this effect, and the
+bloom mask is driven by the same over-bright luma.
+
+For RB3 (`rndshape::kGammaSpaceShading`), `standard_wgsl` now decodes the
+material colour and the lit term. Then `enc(dec(t) · dec(c)) = t · c`, which
+is what retail computes. Particles decode their colour the same way
+(`Part_Wgpu`).
+
+### 8.3 The other pieces
+
+| change | where | DC3 entry |
+|---|---|---|
+| retail chain (8.1), used instead of the generic composite when an RB3 postproc is current | `gfx/RB3RetailPost`, `PostProcPass::Run`, `rndshape/RB3WiiPostChain.cpp` | `kRetailPostChain = false` |
+| gamma-space shading (8.2) | `standard_wgsl.inc` (`MaterialUniforms.gammaShading`, replacing a pad float), `MaterialSetup`, `Part_Wgpu` | `kGammaSpaceShading = false` |
+| bloom mask into scene alpha: `MaterialUniforms.bloomMaskScale` (the other pad float), `alphaWrite` keyed on for those draws, particles write the mask or keep RGB-only writes, frame clear alpha 0 | `Mesh_Wgpu`, `Part_Wgpu`, `Rnd_Wgpu::BeginFramePass` | `BloomMaskScale() = 0` |
+| **world-end flush.** RB3 draws the note highway, gems and HUD *after* `Rnd::EndWorld`, which runs the postproc, so on retail they are neither bloomed nor graded. `WgpuRndBase::DoPostProcess` now ends the main pass, grades the world into a frame-sized texture, resumes the pass and blits the result back. Later draws land on top, and `EndDrawing` skips the post chain for that frame | `Rnd_Wgpu.cpp` `FlushWorldPost`, `RB3RetailPost::Blit` | not compiled (`#ifndef MILO_RNDOBJ_SHAPE_HAS_NGRND`) |
+| ambient fallbacks re-expressed (8.5) | `RB3WiiSceneLighting.cpp` | not built for DC3 |
+
+Inspection: `MILO_RB3_RETAIL_POST=0` uses the generic dc3 composite, `raw`
+applies no post at all, `mask` shows the bloom mask, `bloom` shows the bloom
+term, and `grade` applies the colour transform without bloom. Unset means the
+full retail chain.
+
+### 8.4 Title screen against retail
+
+Same instrument as 7.2 (`title_capture.sh` + `title_fidelity.py`, sky_dE /
+city_dE, lower is better). Run-to-run noise is about ±0.4.
+
+| frame | base `14b3c2d` | `w16-qn` |
+|---|---|---|
+| 60 | 49.1 / 20.8 | **21.6 / 18.5** |
+| 200 | 44.2 / 23.4 | **20.6 / 22.1** |
+| 400 | 46.8 / 20.8 | **18.6 / 18.3** |
+
+Sky_dE is better by more than half at every frame, and city_dE is better at
+every frame. Frame 400's sky luma is now 54.4 (retail 44.8; base 89.2), and its
+city luma is 52.1 (retail 52.4). By eye: the sky is dark purple rather than
+grey-lavender, the logo outline is lavender, and lights glow. The 7.2 / 7.5
+items "sky about twice retail's luma" and "logo outline grey-white" are fixed.
+`frame_stats.py` at frame 400:
+
+| | luma | p10 | dark % |
+|---|---|---|---|
+| retail | 50.1 | 11.8 | 25.7 |
+| base | 60.0 | 9.6 | 18.0 |
+| `w16-qn` | 52.8 | 21.1 | 8.6 |
+
+Mean luma moved closer to retail. The darkest tenth moved away: shadows are
+lifted. Two candidates were not separated: the bloom term adds light to dark
+pixels near lights, and the lighting fallbacks (8.5) keep a floor.
+
+Frame 400, steps and ablations (sky_dE / city_dE):
+
+| build | f400 |
+|---|---|
+| base | 46.8 / 20.8 |
+| faithful chain, linear shading (`c942ad9`) | 102.0 / 46.5 |
+| + gamma-space shading, alpha mask, world-end flush | 18.4 / 18.5 |
+| + ambient re-expression (shipped) | 18.6 / 18.3 |
+| shipped, `MILO_RB3_RETAIL_POST=0` (generic composite instead of the chain) | 16.7 / 28.6 |
+| shipped, `raw` (no post) | 17.1 / 28.4 |
+| decoding the material colour but not the lit term | 43.4 / 37.6 |
+| decoding only the directional-light part of the lit term | 43.0 / — |
+
+Gamma shading fixes the sky. The retail chain is what fixes the city
+(28.6 → 18.3): its grade and glow.
+
+### 8.5 Venue lighting under gamma shading
+
+The venue lighting model (7.1 #4) is a heuristic, not retail. Its ambient
+fallbacks were fitted under linear shading, where the output encode lifted a
+lit term v to about linearToSrgb(v). With gamma shading they darkened every
+venue: mean luma fell to 26.6.
+
+There are four fallbacks:
+- the scale for an unauthored near-white ambient (0.09);
+- the ambient floor (0.008);
+- the character approx-ambient share (0.11) and its cap (0.14).
+
+They are now passed through linearToSrgb (0.332, 0.086, 0.366, 0.410), so they
+keep the brightness they were fitted to. They are still read in BandRnd's
+units and under its env-var names. The light exposures (0.70/0.80) and the grey
+key were tried both ways and left unchanged. Authored light colours are used as
+authored, and re-expressing or raising them pushed the title further from
+retail.
+
+Instrument: `venue_capture.py` with `RB3_FIXED_CLOCK=1`, frames
+60/180/300/420/600/780/900/1020, 8 shots. Camera cuts still differ run to run:
+the same build has read 32.5, 34.8 and 35.0. The retail row is the five
+gameplay captures in `retail-screenshots/`, which are different songs and
+venues, so only the distributions compare. (7.3 quoted their mean as 54.0;
+`frame_stats.py` gives 57.7.)
+
+| config | title f60 / f200 / f400 | venue luma | p10 | dark % |
+|---|---|---|---|---|
+| retail | — | 57.7 | 9.4 | 30.5 |
+| base `14b3c2d` | 49.1/20.8 · 44.2/23.4 · 46.8/20.8 | 68.1 | 25.4 | 11.3 |
+| BandRnd ambients | 21.3/18.3 · 20.3/20.4 · 18.6/18.4 | 26.6, 27.7 | 7.7 | 64.9 |
+| **shipped**: ambients re-expressed | 21.6/18.5 · 20.6/22.1 · 18.6/18.3 | 32.5–35.0 | 11.2–12.9 | 46–52 |
+| + all constants re-expressed (exposures 0.854/0.906, grey key 0.506) | 22.4/21.4 · 21.8/26.1 · 18.8/20.8 | 34.8 | — | 49.7 |
+| + exposures 1.0 (env `RB3_VENUE_POINT_EXPOSURE=1 RB3_VENUE_DIR_EXPOSURE=1`) | 22.5/21.8 · 22.1/27.4 · 19.1/21.4 | 42.2, 51.1 | 19.2 | 23.0 |
+
+**Venues are a mixed result.**
+- Mean luma is now further from retail than the base was (|Δ| about 24 vs 10).
+- The shadow statistics are closer: p10 is 12 vs base 25.4 (retail 9.4), and
+  dark % is about 48 vs base 11.3 (retail 30.5).
+- By eye, the base showed a pale grey crowd washed over the whole frame. Now
+  the crowd sits in shadow and the band and highway carry the light, as in the
+  retail captures, but the whole frame is darker than retail.
+- The exposure-1.0 row is the closest venue configuration on every venue
+  statistic, but it costs the title 1–4 city_dE.
+
+That trade is a question about the lighting model, not the post chain. The
+model ships projected lights off (`RB3_ENV_PROJLIGHT`), and its exposures are
+fitted rather than taken from retail. It is left to a lighting lane. The env
+vars let a consumer choose the other trade-off without a rebuild.
+
+### 8.6 Not done
+
+- **BandRnd's highway halo / track-light block** was not ported. Retail draws
+  the track after `EndWorld`, unbloomed (8.3), so a halo there would not be
+  retail.
+- **Frames that never call `EndWorld`** (menus) still run the chain at
+  `EndDrawing` over the UI too. Whether retail grades those was not verified.
+- **Venue lighting** (8.5): projected lights, and a retail-derived exposure.
+- `PresyncBitmap`'s per-draw fingerprinting (7.5) — untouched.
+- No merge, pin bump or push.
+
+### 8.7 Consumer verification (engine `w16-qn`)
+
+Each consumer was built in its own `~/tmp` worktree against the engine
+worktree (`MILO_ENGINE_PATH`, confirmed in each `CMakeCache.txt`).
+
+| consumer | instrument | result |
+|---|---|---|
+| rb3-xenon (on `ca61b767f`) | `tools/native_health.sh` | `NATIVE_HEALTH_RESULT verdict=PASS link=PASS link_verified=18 link_expected=18 link_skipped=0 runtime=PASS runtime_ran=18 runtime_total=18 gates_pass=77 gates_fail=0 unrunnable=none selftest=SKIPPED scatter_unlinked=16 scatter_dirb=0 scatter_multihost=17 rc=0 handpose_controls=- handpose_baseline_fail=- runtime_crashed=0 runtime_failed=none` (embedded link gate: `verdict=PASS expected=18 verified=18 skipped=0 partial=0 failed=0 rc=0`; layout-ODR `PASS`, x360 1,266 TUs, native 1,713) |
+| rb3-xenon | `tools/native_build_gate.sh` | run as the lane's last action; its `NATIVE_GATE_RESULT` line is in the lane report |
+| rb3-xenon | `rb3-render` default cells, branch vs base engine `14b3c2d` | both `RESULT: ALL GATES PASSED (0 gate failure(s))`; both PNGs (`tracksystem_meshes`, `crowd_female01`) byte-identical |
+| dc3-decomp (on `e992ee9b5`) | `scripts/native_configure.sh` + `scripts/native_test.sh` | 626 registered, 557 executed, 557 passed, 0 failed, 69 skipped (budget 69), rc=0 |
+| rb3 (Wii), dc3 flavor (default) | title (8.4) and venues (8.5) | renders title and Quickplay to `game_screen`, exits cleanly |
+
+One environment trap, not an engine problem: the gate's layout-ODR check
+compiles the X360 TUs from `build.ninja`. A plain `git worktree add` of
+rb3-xenon has none, so the check reports UNRUNNABLE and the gate goes
+INCOMPLETE (rc=3). In a worktree made with `scripts/setup_worktree.sh` it
+passes.

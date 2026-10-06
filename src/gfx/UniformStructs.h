@@ -90,7 +90,8 @@ struct MaterialUniforms {
     float useAlphaAsRGB;        // f32 — 1.0 to use texture alpha as grayscale RGB (font textures)
     float hasSpecularMap;       // f32 — 1.0 when specular map bound
     float unlit;                // f32 — 1.0 if material ignores environ (Wii RndMat::mUseEnviron==0 && !mPreLit): register color only, no ambient/lights/vertex tint
-    float _padMat[2];           // pad to 16-byte boundary
+    float bloomMaskScale;       // f32 — >0: write alpha = luma(rgb) * this (RB3 pseudo-HDR bloom mask, rndshape::BloomMaskScale)
+    float gammaShading;         // f32 — 1.0: material colour and lighting are gamma-space values (rndshape::kGammaSpaceShading)
 };
 static_assert(sizeof(MaterialUniforms) == 192, "MaterialUniforms must match WGSL layout");
 

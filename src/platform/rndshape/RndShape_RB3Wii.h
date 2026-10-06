@@ -27,6 +27,8 @@
 
 #include <cmath>
 
+struct RetailPostParams;   // gfx/RB3RetailPost.h
+
 // ---------------------------------------------------------------------------
 // Names DC3 declares that RB3-Wii does not
 // ---------------------------------------------------------------------------
@@ -113,6 +115,10 @@ public:
         const Hmx::Rect &, RndMat *, ShaderType, const Hmx::Color &, const Hmx::Color *,
         const Hmx::Color *
     ) {}
+
+    // Rnd::EndWorld's post step: also grades the world on the GPU
+    // (WgpuRnd::FlushWorldPost). Defined in platform/Rnd_Wgpu.cpp.
+    void DoPostProcess() override;
 
     Viewport mViewport;
 };
@@ -414,6 +420,48 @@ inline float PostProcGrain(const RndPostProc *pp) {
     float n = std::fabs(pp->GetNoiseIntensity());
     return (n < 3.0f ? n : 3.0f) * 0.04f;
 }
+// RB3 grades through its retail Xbox 360 post chain (gfx/RB3RetailPost: the
+// pseudo-HDR luminance bloom mask, three quarter-size blurred bloom sets
+// screen-blended at bloomColor * BloomIntensity(), then the RndColorXfm matrix)
+// instead of PostProcPass's DC3 composite, which clamps RB3's bloom to almost
+// nothing (intensity <= 1, threshold >= 0.7, a quarter-strength screen) and
+// grades from contrast/brightness/saturation/levels alone, dropping hue and
+// lightness (the title's drop_fade.pp fades in through lightness -100).
+// FillRetailPost is defined in rndshape/RB3WiiPostChain.cpp; `flickerMul` is
+// PostProcPass's flicker modulation, applied as NgPostProc::ModulateColorXfm
+// applies mColorModulation (to the 3x3 part only).
+constexpr bool kRetailPostChain = true;
+void FillRetailPost(const RndPostProc *pp, float flickerMul, ::RetailPostParams &out);
+// MILO_RB3_RETAIL_POST: unset or anything else = 1 (retail chain), "0" = 0
+// (PostProcPass's DC3 composite, as before the chain existed), "raw" = 2
+// (scene passed through ungraded), "mask" = 3 / "bloom" = 4 (the retail chain,
+// showing the bloom mask or the bloom term instead; for inspection).
+int RetailPostMode();
+// The frame's alpha carries the bloom mask this frame (the retail chain, or
+// its mask/bloom inspection views).
+inline bool RetailBloomMaskActive() {
+    const int m = RetailPostMode();
+    return m == 1 || m == 3 || m == 4;
+}
+// The pseudo-HDR bloom mask (ShaderOptions bit 22): retail's standard.ps writes
+// a = dot(rgb, c7.rgb) for a material whose NgMat::AllowHDR() holds, drawn into
+// the main frame (CalcShaderOpts: !fadeOut && !offscreen && AllowHDR()); every
+// other material leaves the destination alpha alone, and the frame clears it to
+// 0 (DxRnd::BeginDrawing packs only the clear colour's RGB). bloom.ps then
+// weights the scene by that alpha. Returns c7's scale (SetBloomColor:
+// 1/threshold above 1, else 1) for such a material while the retail chain runs
+// with a current RndPostProc, else 0 (no mask). The caller decides "main frame".
+float BloomMaskScale(const MatView &m);
+// RB3 shades in gamma space: retail's standard.ps multiplies the (gamma)
+// texture by the material colour and the ambient + diffuse lighting sum as
+// authored and writes the product straight to an 8-bit gamma target
+// (D3DFMT_A8R8G8B8, DxRnd::CreateEDRAMSurfaces). The dc3 shader decodes
+// textures and encodes its output, so it must decode those factors as well
+// (standard_wgsl.inc, material.gammaShading). Without it every material
+// colour and light is brightened by the encode (a 0.3 factor acts as 0.58),
+// which is most of the title sky's excess luma and why the retail bloom
+// (which weights the scene by its own luma) washed the frame out.
+constexpr bool kGammaSpaceShading = true;
 
 // ---- scene lighting --------------------------------------------------------
 // RB3 lights for the Wii's GX pipeline, not DC3's venue rig: world.cam reads

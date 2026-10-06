@@ -187,6 +187,7 @@ MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh) {
     // vertex colour, which an unlit Wii material never sees.
     const bool unlit = rndshape::MatUnlit(mat);
     matUni.unlit = unlit ? 1.0f : 0.0f;
+    matUni.gammaShading = rndshape::kGammaSpaceShading ? 1.0f : 0.0f;
     bool isMultiplyBlend = (matBlend == BaseMaterial::kBlendMultiply) && !unlit;
     bool forcePrelit = IsSimpleRender() || isOverlayPass || isMultiplyBlend;
     if (isMultiplyBlend) heuristics |= kHeuristicMultiplyPrelit;
@@ -287,6 +288,7 @@ MaterialParams BuildPassMaterialParams(BaseMaterial* rawNextPass) {
     // Force prelit for multiply-blend passes (same rationale as primary material)
     const bool npUnlit = rndshape::MatUnlit(nextPass);
     npMatUni.unlit = npUnlit ? 1.0f : 0.0f;
+    npMatUni.gammaShading = rndshape::kGammaSpaceShading ? 1.0f : 0.0f;
     bool npMultiply = (nextPass->GetBlend() == BaseMaterial::kBlendMultiply) && !npUnlit;
     npMatUni.prelit = (nextPass->Prelit() || npMultiply) ? 1.0f : 0.0f;
     FillTexGen(nextPass, npMatUni);

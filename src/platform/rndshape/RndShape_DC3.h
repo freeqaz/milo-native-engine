@@ -129,6 +129,17 @@ constexpr bool kRectModulatesMatColor = false;
 // ---- post-processing -------------------------------------------------------
 // The grain strength the post-process shader adds per pixel, as authored.
 inline float PostProcGrain(const RndPostProc *pp) { return pp->GetNoiseIntensity(); }
+// DC3 and rb3-xenon grade through gfx/PostProcPass's own composite; the RB3
+// retail chain (gfx/RB3RetailPost) never runs for them.
+constexpr bool kRetailPostChain = false;
+template <class Params>
+inline void FillRetailPost(const RndPostProc *, float, Params &) {}
+inline int RetailPostMode() { return 0; }
+inline bool RetailBloomMaskActive() { return false; }
+// DC3 materials and lights are linear-space values (the dc3 shader's model).
+constexpr bool kGammaSpaceShading = false;
+template <class M>
+inline float BloomMaskScale(const M &) { return 0.0f; }
 
 // ---- scene lighting --------------------------------------------------------
 // DC3 lights through WgpuRnd::WriteSceneUniforms' own environ block.
