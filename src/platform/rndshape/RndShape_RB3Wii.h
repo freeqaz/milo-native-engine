@@ -350,6 +350,16 @@ constexpr int kDrawModeReflection = 7;
 // first, hid the whole skyline.
 constexpr bool kCamSelectSetsViewport = false;
 
+// ---- render-to-texture -----------------------------------------------------
+// RB3's RndTexRenderer::DrawToTexture brackets the draw into its output texture
+// with WiiMat::SetOverrideAlphaWrite(true) / (false) (rndobj/TexRenderer.cpp,
+// the #ifndef HX_NATIVE block): every material writes destination alpha while
+// a render target is bound. The title screen depends on it: clouds_rnd.tex is
+// painted by difference_clouds.mat (alpha write off) and composited onto the
+// sky by sky_dome.mat with SrcAlpha blending, so without the override the
+// target's alpha stays at the clear value 0 and the cloud layer is invisible.
+constexpr bool kRenderTargetForcesAlphaWrite = true;
+
 // ---- post-processing -------------------------------------------------------
 // RB3's mNoiseIntensity is a gain on a tiled noise TEXTURE (mNoiseMap scaled by
 // mNoiseBaseScale), not a per-pixel screen-space add: the menu and venue

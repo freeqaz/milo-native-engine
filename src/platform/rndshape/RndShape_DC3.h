@@ -99,6 +99,11 @@ constexpr int kDrawModeReflection = 8;
 // TheNgRnd.SetViewport (rndobj/Cam.cpp), so WgpuRnd receives it on every select.
 constexpr bool kCamSelectSetsViewport = true;
 
+// ---- render-to-texture -----------------------------------------------------
+// DC3's RndTexRenderer::DrawToTexture leaves each material's alpha-write state
+// alone while it draws into the output texture.
+constexpr bool kRenderTargetForcesAlphaWrite = false;
+
 // ---- post-processing -------------------------------------------------------
 // The grain strength the post-process shader adds per pixel, as authored.
 inline float PostProcGrain(const RndPostProc *pp) { return pp->GetNoiseIntensity(); }

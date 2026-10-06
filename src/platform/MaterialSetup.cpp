@@ -49,6 +49,23 @@ static wgpu::TextureView ResolveMap(RndTex* tex, wgpu::TextureView& fallback) {
     return v ? v : fallback;
 }
 
+// TexGen mode + the 2x3 texture transform the vertex shader applies for the
+// transform-driven modes. Shared by the primary material and every NextPass
+// material: a pass whose mode is kTexGenXfm but whose rows are left zero maps
+// every vertex to the same texel.
+template <class MatT>
+static void FillTexGen(const MatT& mat, MaterialUniforms& uni) {
+    uni.texGenMode = (float)mat->GetTexGen();
+    if (mat->GetTexGen() == kTexGenXfm || mat->GetTexGen() == kTexGenXfmOrigin ||
+        mat->GetTexGen() == kTexGenProjected) {
+        const Transform& xfm = mat->TexXfm();
+        uni.texXfmRow0[0] = xfm.m.x.x; uni.texXfmRow0[1] = xfm.m.x.y;
+        uni.texXfmRow0[2] = xfm.v.x;   uni.texXfmRow0[3] = xfm.v.z;
+        uni.texXfmRow1[0] = xfm.m.y.x; uni.texXfmRow1[1] = xfm.m.y.y;
+        uni.texXfmRow1[2] = xfm.v.y;   uni.texXfmRow1[3] = 0.0f;
+    }
+}
+
 MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh) {
     // DC3 BaseMaterial getters, whatever the rndobj shape (platform/rndshape/).
     auto mat = rndshape::Mat(rawMat);
@@ -181,15 +198,7 @@ MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh) {
     matUni.hasNormDetailMap = mat->GetNormDetailMap() ? 1.0f : 0.0f;
 
     // --- TexGen mode and transform ---
-    matUni.texGenMode = (float)mat->GetTexGen();
-    if (mat->GetTexGen() == kTexGenXfm || mat->GetTexGen() == kTexGenXfmOrigin ||
-        mat->GetTexGen() == kTexGenProjected) {
-        const Transform& xfm = mat->TexXfm();
-        matUni.texXfmRow0[0] = xfm.m.x.x; matUni.texXfmRow0[1] = xfm.m.x.y;
-        matUni.texXfmRow0[2] = xfm.v.x;   matUni.texXfmRow0[3] = xfm.v.z;
-        matUni.texXfmRow1[0] = xfm.m.y.x; matUni.texXfmRow1[1] = xfm.m.y.y;
-        matUni.texXfmRow1[2] = xfm.v.y;   matUni.texXfmRow1[3] = 0.0f;
-    }
+    FillTexGen(mat, matUni);
 
     // --- Resolve all material texture views ---
     WgpuRnd::MaterialTexViews& texViews = result.texViews;
@@ -273,7 +282,7 @@ MaterialParams BuildPassMaterialParams(BaseMaterial* rawNextPass) {
     // Force prelit for multiply-blend passes (same rationale as primary material)
     bool npMultiply = (nextPass->GetBlend() == BaseMaterial::kBlendMultiply);
     npMatUni.prelit = (nextPass->Prelit() || npMultiply) ? 1.0f : 0.0f;
-    npMatUni.texGenMode = (float)nextPass->GetTexGen();
+    FillTexGen(nextPass, npMatUni);
     npMatUni.shaderVariation = (float)nextPass->GetShaderVariation();
 
     // --- Resolve textures ---

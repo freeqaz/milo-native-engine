@@ -197,6 +197,10 @@ bool GpuDevice::ReadbackHeadlessFrame(uint8_t*, size_t) {
     return false;
 }
 
+bool GpuDevice::ReadbackTexture(const wgpu::Texture&, int, int, uint8_t*, size_t) {
+    return false;
+}
+
 bool GpuDevice::ShouldClose() const { return false; }
 
 void GpuDevice::PollEvents() {

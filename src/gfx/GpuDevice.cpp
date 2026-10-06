@@ -326,13 +326,19 @@ wgpu::TextureView GpuDevice::AcquireHeadlessFrame() {
 
 bool GpuDevice::ReadbackHeadlessFrame(uint8_t* outPixels, size_t outSize) {
     if (!mHeadlessTex) return false;
+    return ReadbackTexture(mHeadlessTex, mWidth, mHeight, outPixels, outSize);
+}
 
-    uint32_t bytesPerRow = (uint32_t)mWidth * 4;
+bool GpuDevice::ReadbackTexture(const wgpu::Texture& tex, int w, int h,
+                                uint8_t* outPixels, size_t outSize) {
+    if (!tex || w <= 0 || h <= 0) return false;
+
+    uint32_t bytesPerRow = (uint32_t)w * 4;
     uint32_t alignedBytesPerRow = (bytesPerRow + 255) & ~255u;
-    size_t bufSize = alignedBytesPerRow * (uint32_t)mHeight;
+    size_t bufSize = alignedBytesPerRow * (uint32_t)h;
 
     wgpu::BufferDescriptor readbackDesc{};
-    readbackDesc.label = "HeadlessReadback";
+    readbackDesc.label = "TextureReadback";
     readbackDesc.usage = wgpu::BufferUsage::CopyDst | wgpu::BufferUsage::MapRead;
     readbackDesc.size = bufSize;
     wgpu::Buffer readbackBuf = mDevice.CreateBuffer(&readbackDesc);
@@ -340,12 +346,12 @@ bool GpuDevice::ReadbackHeadlessFrame(uint8_t* outPixels, size_t outSize) {
     wgpu::CommandEncoder encoder = mDevice.CreateCommandEncoder();
 
     wgpu::TexelCopyTextureInfo src{};
-    src.texture = mHeadlessTex;
+    src.texture = tex;
     wgpu::TexelCopyBufferInfo dst{};
     dst.buffer = readbackBuf;
     dst.layout.bytesPerRow = alignedBytesPerRow;
-    dst.layout.rowsPerImage = mHeight;
-    wgpu::Extent3D copySize = {(uint32_t)mWidth, (uint32_t)mHeight, 1};
+    dst.layout.rowsPerImage = (uint32_t)h;
+    wgpu::Extent3D copySize = {(uint32_t)w, (uint32_t)h, 1};
     encoder.CopyTextureToBuffer(&src, &dst, &copySize);
 
     wgpu::CommandBuffer cmd = encoder.Finish();
@@ -367,7 +373,7 @@ bool GpuDevice::ReadbackHeadlessFrame(uint8_t* outPixels, size_t outSize) {
         readbackBuf.GetConstMappedRange(0, bufSize));
 
     // Copy with potential row stride adjustment
-    for (int y = 0; y < mHeight; y++) {
+    for (int y = 0; y < h; y++) {
         size_t srcOff = y * alignedBytesPerRow;
         size_t dstOff = y * bytesPerRow;
         if (dstOff + bytesPerRow <= outSize) {

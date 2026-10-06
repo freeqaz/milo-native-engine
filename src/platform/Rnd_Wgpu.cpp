@@ -1821,6 +1821,10 @@ void WgpuRnd::MaybeCaptureFrame() {
         snprintf(path, sizeof(path), "%s/frame_%05d.png", mScreenshotDir.c_str(), mFrameID);
         if (WriteScreenshot(path, pixels, w, h)) {
             printf("DC3 Native: captured frame %d -> %s\n", mFrameID, path);
+            if (getenv("MILO_DUMP_RT")) {
+                void DumpGpuRenderTargets(const char* dir, int frame);
+                DumpGpuRenderTargets(mScreenshotDir.c_str(), mFrameID);
+            }
         } else {
             fprintf(stderr, "DC3 Native: failed to write screenshot %s\n", path);
         }
