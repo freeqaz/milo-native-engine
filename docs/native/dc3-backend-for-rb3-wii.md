@@ -1739,6 +1739,8 @@ restore at 19:44:29). rb3-xenon's health run was restarted on the clean tree.
   references. The theater facade's env, `theater.env`, has a real point light
   (`theater.lit`, 2.0 / 1.435 / 0.557, range 500) and four approx lights.
   Whether retail lights that region brighter was not examined.
+  *Resolved in section 19:* the lights are lit as retail lights them. The
+  gap was the title's eight flares, which never drew.
 - **The DC3 light model's vertex tint** (prelit: as authored; skinned:
   `kSkinnedVtxChroma` of the chroma; lit static: none) is a native heuristic.
   It was not compared against DC3's retail standard shader. The 12 coloured
@@ -2640,3 +2642,287 @@ Scratch paths (not committed): `~/tmp/w16ro/` (`venue-{base,before,probe,after}`
 - rb3's rb3 flavor (no `DofPass`; the weak hook stays unset), the web build,
   rb3-xenon's native gate and dc3-decomp were not built or run.
 - No merge, pin bump or push.
+
+## 19. The middle city: eight flares that never drew (lane W16-RS, 2026-10-06)
+
+Section 13.4 left the title's middle city (the theater roof and upper facade
+under the logo) at about 40 luma with AO, against 52–55 in both references,
+and named `theater.env`'s lights as the lead. Those lights are lit the way
+retail lights them. The missing light was the title's eight `RndFlare`s, which
+the native build never drew. The fix is in rb3, not the engine.
+
+| repo | branch | commit |
+|---|---|---|
+| rb3 | `w16-rs` | `e6b31ba95` (on `169e1bb3a`) |
+| milo-native-engine | `w16-rs` | this section only (on `806a8db`) |
+
+Region figures use 13.2's regions (640×360; `city_mid` is
+x 190–330, y 205–265). All title runs are `title_capture.sh` with
+`RB3_FIXED_CLOCK=1`.
+
+### 19.1 Where the region's light comes from
+
+The `MILO_RB3_RETAIL_POST` inspection views (8.3) at f400, engine `806a8db`:
+
+| f400 view | frame luma | `city_mid` |
+|---|---|---|
+| full chain | 43.6 | 40.2 |
+| `raw` (no post) | 27.0 | 16.4 |
+| `grade` (no bloom) | 26.6 | 16.3 |
+| `bloom` (the term the screen blend adds) | 21.9 | 26.9 |
+
+The grade does not change luma here. Bloom takes the region from 16 to 40, so
+the region's brightness depends on bright sources nearby, not only on the
+surfaces in it. The 1/64-size bloom set covers most of the screen, so
+"nearby" is wide.
+
+By eye (contrast-boosted crops), TCRF and xenia show a smooth warm haze over
+the roof and the dark building to its left, with about the same texture
+contrast as ours. A luma-difference map of TCRF minus the native frame
+(box-blurred, 640×360) has four bright blobs, at about (90, 210), (211, 326),
+(330, 250) and (450, 210). Section 19.3 places the four lamp flares at
+those points.
+
+### 19.2 What was checked and is not the cause
+
+- **`theater.env`'s lights.** A temporary probe dumped every env's lights on
+  the title:
+
+  | light | list | colour | position (x, y, z) | range |
+  |---|---|---|---|---|
+  | `theater.lit` | real, point | 2.0, 1.435, 0.557 | −1386, 662, −841 | 500 |
+  | `theaterred` | approx, point | 1.189, 0, 0 | −1297, 946, −1019 | 700 |
+  | `theater02` | approx, point | 0, 0.620, 0.878 | −1503, 1213, −1083 | 1500 |
+  | `theaterpurp` | approx, point | 0.396, 0, 0.675 | −1350, 1900, −941 | 1000 |
+  | `theaterwhite` | approx, point | 0.902, 0.569, 0 | −1297, 2036, −946 | 800 |
+
+  All falloff starts are 0 and the env's ambient is 0. `theaterroof.mesh`'s
+  world sphere is centred at (−1617, 968, −437), radius 410. `theater.lit` is
+  557 from that centre (range 500) and 400 below it, so the roof's upward
+  faces get almost none of it. All four approx lights sit below the roof.
+  At the centre, `theaterwhite` (1,225 away) and `theaterpurp` (1,092) are
+  out of range. `theaterred` contributes 5%. `theater02` lands mostly on the
+  box's −Z face.
+  The engine picks the real lights as retail `NgEnviron::Select` does (the
+  first two lit point lights in list order; `ReclassifyLights` only migrates
+  the legacy list). The approx lights go through `BoxMapLighting` at the
+  sphere centre, as `UpdateApproxLighting` does. Under retail's own rules the
+  roof is barely lit by these lights. No light ablation was run.
+- **Bloom parameters.** `sv8_a.milo_xbox` (the title city) holds one
+  postproc, `drop_fade.pp`. A probe in `FillRetailPost` read intensity 1.5,
+  colour (0.973, 0.961, 0.961), threshold 0.1, no glare or streak, for the
+  whole run. The engine's blur weights and offsets equal retail
+  `SetBloomBlurWeights`'s, and the three sets are ¼, 1/16 and 1/64 of the
+  pre-process texture, as in `BloomTextures::AllocateTextures`.
+- **The bloom mask.** Retail permutation `standard_0000014000430090` (diffuse,
+  glow, real and approx lights, pseudo-HDR, AO, one point light, vertex-lit)
+  disassembles to
+
+  ```
+  mad r2.xyz_, r0.xyzz, r2.xyzz, r3.xyzz     ; texel * lit + additive
+  mad r2.xyz_, r1.xyzz, c5.xxxx, r2.xyzz     ; + emissive * c5.x
+  dp3 r2.___w, r2.zxyy, c7.zxyy              ; alpha = dot(rgb, c7)
+  max oC0, r2, r2
+  ```
+
+  Retail takes the dot of the unclamped colour; the engine takes it of the
+  clamped one. That differs only where a channel is above 1, and both
+  saturate alpha at 1. Not changed. (Its vertex shader does not disassemble
+  with xenia's tool, as 11.1 found for other glow permutations.)
+- **Haze particles.** The particle path scales translucent "haze" systems'
+  alpha by 0.35 and fades them near the camera (7.1 #6, BandRnd's tuning). An
+  env switch on that factor, one binary: `city_mid` reads 40.2 with the
+  factor at 0, 40.3 at 0.35 (shipped), 40.3 at 1.0 and 40.3 at 1.0 with no
+  fade. Haze is not the cause, and the factor is unchanged.
+
+### 19.3 Cause: point-tested flares never drew
+
+`sv8_a` carries eight `RndFlare`s:
+
+- `Flare_lamp01`–`04`, material `flare_lamp01.mat`, texture
+  `flare_light_can_star.tex`;
+- `Flare_red_blink`, `_blink01`, `_blink02` and `_blink_slow`.
+
+`RndFlare::DrawShowing` (the Wii source and the 360 one agree here) scales
+the flare by `step/steps`. When `mAreaTest` is set, it also multiplies by
+`mOcclusionResult / (rect.w · rect.h)`, the field rb3's header calls `unkec`.
+`mAreaTest` is not loaded: the constructor sets it, so it is always on. The
+flare assigns that field itself only when it does not point-test. For a
+point-tested flare it comes from retail `DxRnd::DoPointTests` (rb3-xenon
+`rnddx9/Rnd_Xbox.cpp`), which draws the flare's rect as an occlusion query
+and stores the visible pixel count (`SetOcclusionResult`).
+
+rb3's native `Rnd::TestPoint` stood in for the query with `SetVisible(true)`
+alone. Its comment says to treat in-frustum flares as fully visible, but it
+never stored the area, so the ratio was 0. A temporary probe in
+`DrawShowing` logged `ratio=0.000 unkec=0.0` for all eight flares on every
+logged frame (frames 1–53, 50 lines each).
+
+With the area stored, the same probe gives ratio 1.000 for all eight, at
+these positions (1280×720 frame):
+
+| flare | screen x, y | rect | 640×360 point |
+|---|---|---|---|
+| `Flare_lamp01` | 0.330, 0.905 | 128×128 | (211, 326), the marquee's left end |
+| `Flare_lamp02` | 0.545, 0.736 | 128×128 | (349, 265), beside the theater |
+| `Flare_lamp03` | 0.146, 0.608 | 64×64 | (93, 219) |
+| `Flare_lamp04` | 0.707, 0.617 | 128×128 | (452, 222) |
+| red blinks | 0.13–0.19, 0.23; 0.76, 0.20 | 32×32, 64×64 | tower tops in the sky band |
+
+These are the four blobs of the TCRF difference map (19.1). TCRF also shows a
+glow on the left tower top and the skyscraper top, where the red blinks are.
+
+### 19.4 Change
+
+rb3 `e6b31ba95`, `src/system/rndobj/Rnd.cpp`, inside `#ifdef HX_NATIVE`.
+`TestPoint` now also stores the on-screen area of the flare's rect: `mArea`
+from the `CalcRect` that `DrawShowing` ran just before, clipped to the
+screen. That is what retail's area query returns for an unoccluded flare.
+The Wii build is unchanged. The engine is unchanged.
+
+Before the change I expected `city_mid` to rise by several luma, with the
+largest gains at the four blob positions and little change in the sky.
+
+### 19.5 Title, before and after
+
+Base and fix binaries were built from one rb3 worktree, with the change
+reverted for the base. Both use engine `806a8db`. Two runs per leg; the runs
+agree to 0.2 or better on every figure. `title_fidelity.py` against TCRF
+(sky_dE / city_dE / city_edge):
+
+| frame | base | **fix** |
+|---|---|---|
+| 60 | 13.4 / 11.8 / 0.908 | 14.2 / **10.3 / 0.924** |
+| 200 | 14.8 / 13.2 / 0.870 | 15.3 / **12.3 / 0.886** |
+| 400 | 11.4 / 11.8 / 0.913 | 11.9 / **10.3 / 0.926** |
+
+| f400 | luma | city luma | p10 | dark % |
+|---|---|---|---|---|
+| retail (TCRF) | 50.1 | 52.4 | 11.8 | 25.7 |
+| base | 43.6 | 43.1 | 13.0 | 28.0 |
+| **fix** | **50.1** | **52.1** | 15.3 | 20.6 |
+
+Regions, f400:
+
+| region | TCRF | xenia | base | **fix** |
+|---|---|---|---|---|
+| sky, left | 22.1 | 33.6 | 22.5 | 22.7 |
+| sky, right | 50.5 | 29.9 | 42.4 | 43.5 |
+| city, right | 40.4 | 41.0 | 42.0 | 43.1 |
+| **city, middle** | **55.0** | **51.9** | **40.2** | **49.6** |
+| city, right-middle | 66.4 | 39.0 | 39.4 | 61.2 |
+| left roof | 12.1 | 29.1 | 13.7 | 15.0 |
+
+`city_mid` split into 3×4 cells (20×35 px each, rows top to bottom):
+
+| | row 1 | row 2 | row 3 |
+|---|---|---|---|
+| TCRF | 32.2 24.8 36.8 44.5 | 26.3 47.7 62.7 77.1 | 35.9 62.5 108.4 101.6 |
+| base | 29.1 18.0 26.2 31.0 | 20.7 37.9 46.1 53.1 | 25.2 45.2 85.4 65.1 |
+| **fix** | 32.8 22.2 31.4 40.1 | 25.5 42.7 52.8 72.8 | 33.0 52.6 92.5 97.2 |
+| xenia | 48.7 29.8 37.7 41.3 | 36.9 49.7 54.4 59.4 | 44.5 60.3 93.4 66.9 |
+
+Mean |Δluma| against TCRF, box-blurred, 640×360: whole frame 13.6 → 12.6,
+city 13.5 → 11.9, `city_mid` 14.8 → 6.1.
+
+- **The middle city moves 40.2 → 49.6.** The gap to TCRF goes from 14.8 to
+  5.4, and to xenia from 11.7 to 2.3. Cell by cell, the region now has
+  TCRF's shape, brightest at the lower right toward `Flare_lamp02`.
+- **The city improves at every frame**: city_dE by 0.8 to 1.5, city_edge by
+  0.013 to 0.016. Frame luma now equals TCRF's (50.1). City luma is 52.1
+  against 52.4.
+- **Costs.** sky_dE is 0.4 to 0.8 worse. The increase is in columns
+  x ≈ 320–560 of the lower sky rows: lamp04's halo and the slow red blink add
+  1.0–1.6 luma to a sky whose hue already differs from TCRF (grey-green
+  against purple). TCRF's flares there are, if anything, brighter than ours.
+  Shadows lift: p10 goes 13.0 → 15.3 (TCRF 11.8) and dark % goes 28.0 → 20.6
+  (TCRF 25.7). Dark % moves from 2.3 above TCRF to 5.1 below it.
+- City, right moves 1.1 away from both references, which agree with each
+  other there.
+
+**The 360 flare colour.** The 360 `DrawShowing` sets the material colour to
+`alpha`; the Wii source, which rb3 builds, sets `alpha · 0.6`. With 1.0 (env
+switch, one run, f400): `city_mid` 52.1, right-middle 69.6, frame luma
+52.3, city luma 55.0, and sky_dE / city_dE / city_edge 12.0 / 12.0 / 0.909.
+Against the 0.6 build, the middle region gets closer to TCRF and every other
+city figure gets worse. By eye the flares are over-bright at 1.0. Not
+adopted; see 19.8.
+
+### 19.6 xenia is not a reference for flares
+
+xenia answers every occlusion query with a fixed sample count
+(`query_occlusion_fake_sample_count`, default 1000;
+`xenia/gpu/command_processor.cc`). A 128×128 lamp flare reads
+1000 / 16384 ≈ 0.06 of its strength there, a 64×64 one 0.24, and a 32×32 red
+blink about 1. So xenia's front buffer (10.2) has the lamp flares at about 6%
+of their strength. That is why the region ratio against xenia
+(`city_lum/x`) moves away, 0.94 → 1.19, while TCRF, a hardware capture,
+agrees. It is mostly `city_rmid`, where xenia reads 39.0 and TCRF 66.4. The
+same applies to any xenia comparison near a flare.
+
+It also means xenia's 51.9 in `city_mid` comes from something other than
+flares. The cell table shows xenia brighter than TCRF on the region's left
+(48.7 vs 32.2) and dimmer at the lamp corner (66.9 vs 101.6). That is
+consistent with its missing flares and the hub's different camera (13.2).
+
+### 19.7 Venues and the hub
+
+The change applies wherever a flare point-tests, so it was also checked away
+from the title. A temporary probe in `TestPoint` counted the flares it
+answered on each frame. A second probe zeroed the stored area whenever a
+marker file existed, so flares could be switched off and on in one running
+process.
+
+- **Flares answered by frame.** In a `venue_capture.py` run, `TestPoint`
+  answered 8 flares per frame up to about frame 30 (the title), then 2 large
+  ones (about 195,000 px each, the hub) up to frame 240, and none after that.
+  Gameplay began at about frame 1,676. **No flare was answered in any
+  gameplay frame of these runs**, so the gameplay venue frames they captured
+  do not depend on this change. The venue files still carry flares (`.flare`
+  name references: arena 1,443, big_club 68, small_club 10, festival 4).
+  Whether those point-test in other shots or songs was not checked.
+- **Pooled venue luma does not answer the question.** Two runs per leg gave
+  59.2 / 68.9 (base) and 44.7 / 56.8 (fix). The two legs never captured the
+  same shot: the closest pair of frames still differs by 17.7 mean |ΔRGB|. So
+  the gap is shot selection, not the change, which (above) touched no
+  gameplay frame.
+- **Hub, flares off and on in one process** (`screen_toggle.py`, frames
+  100–300; the probe counted 2 flares at frames 90–120 and 1 at 150 and 300).
+  On minus off, frame luma: +1.8 (f100), −0.7 (f130), +11.5 (f160),
+  +0.1 (f200), −3.4 (f240), +2.3 (f300). Each pair is about five frames apart
+  and the hub camera is moving: 7–30% of pixels differ by more than 20 in both
+  directions. The pairs are therefore dominated by animation and inconclusive
+  as numbers. Side by side (f100 and f160), the f160 legs show different
+  camera positions, so the +11.5 is not flare light. Neither pair shows a
+  flare drawn over geometry or a blown-out blob, and the lamp glows look the
+  same in both legs.
+
+### 19.8 Not done
+
+- **The 360 flare colour factor** (`alpha` against the Wii source's
+  `alpha · 0.6`, 19.5). rb3 builds the Wii source and keeps 0.6. On the
+  title, 1.0 trades the middle region against every other city figure.
+- **Occlusion.** Native has no occlusion query. Every flare whose point test
+  passes is treated as fully visible, including one behind geometry that
+  retail's query would have dimmed or hidden. That matches what the native
+  path already did for visibility; it only now applies to brightness as well.
+- **The bloom mask's dot product** is taken of the clamped colour, not the
+  unclamped one as retail does (19.2).
+- **The rest of the title gap.** TCRF's greenish street haze and the
+  star-shaped flare highlights, and the sky hue (grey-green against purple),
+  are untouched. `city_mid` is 49.6 against TCRF's 55.0.
+- **Other consumers.** BandRnd (the rb3 flavor) also runs this `Rnd.cpp` and
+  was not built or run. rb3-web, rb3-xenon and dc3-decomp were not run.
+- **No merge, pin bump or push.** That is for the coordinator.
+
+### 19.9 Consumer verification
+
+- rb3 `native/build-native` was configured with
+  `MILO_ENGINE_PATH=/home/free/tmp/wt-w16rs-eng` (read back from
+  `CMakeCache.txt`), dc3 GPU backend, all targets built.
+- `ctest`: **100% tests passed out of 128**, 7 skipped (the same seven
+  fixture-gated tests as 16.4 and 18.6), rc=0.
+- The `rb3-native` binary rebuilt after the probes were removed is
+  byte-identical (`cmp`) to the `fix` binary measured in 19.5.
+- The change is inside `#ifdef HX_NATIVE`, so the Wii match build compiles
+  the same code as before.
