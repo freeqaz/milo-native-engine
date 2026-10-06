@@ -252,13 +252,25 @@ void WgpuRnd::Init() {
     // Create GPU device and window
     GpuDeviceDesc desc{};
 #ifdef __EMSCRIPTEN__
-    // On web: always init GPU (canvas surface, async adapter/device request).
-    // InitGpuResources() must be called after mGpu.IsReady().
-    desc.headless = false;
-    desc.width = 1280;
-    desc.height = 720;
-    mGpu.Init(desc);
-    printf("DC3 Web: WgpuRnd::Init() — GPU init started (async)\n");
+    if (mGpu.IsReady()) {
+        // The consumer brought the device up before Init, as on desktop below.
+        // rb3-web does: its boot runs the async StartGpuInit, waits for
+        // IsReady, calls InitGpuResources, and only then constructs the App,
+        // whose ctor calls TheRnd->Init(). A second mGpu.Init here replaced the
+        // instance and, once its adapter callback ran, the device, so every
+        // pipeline, ring and texture already made belonged to a dead device:
+        // each frame raised WebGPU validation errors and drew nothing.
+        // InitGpuResources is idempotent.
+        InitGpuResources();
+    } else {
+        // DC3's web boot: start the async adapter/device request here; the
+        // consumer calls InitGpuResources() once mGpu.IsReady().
+        desc.headless = false;
+        desc.width = 1280;
+        desc.height = 720;
+        mGpu.Init(desc);
+        printf("DC3 Web: WgpuRnd::Init() — GPU init started (async)\n");
+    }
 #else
     // GPU rendering is enabled by default. Set MILO_NORENDER=1 to disable.
     // Legacy MILO_RENDER=1 still works for backwards compat.
@@ -1004,10 +1016,13 @@ void WgpuRnd::BeginDrawing() {
     // Web: poll canvas buffer size and sync GPU surface.
     // The JS ResizeObserver may fire before WASM is ready, leaving the
     // surface at its initial 1280x720 while the canvas is CSS-sized.
+    // The canvas is the consumer's (MILO_WEB_CANVAS_SELECTOR), so GpuDevice
+    // reads it. This used to name "#dc3-canvas" here and ignore the result;
+    // on rb3-web ("#rb3-canvas") the lookup failed, left both ints unwritten,
+    // and every frame resized the surface to stack garbage.
     {
         int canvasW, canvasH;
-        emscripten_get_canvas_element_size("#dc3-canvas", &canvasW, &canvasH);
-        if (canvasW > 0 && canvasH > 0 &&
+        if (mGpu.CanvasSize(canvasW, canvasH) && canvasW > 0 && canvasH > 0 &&
             (canvasW != mGpu.WindowWidth() || canvasH != mGpu.WindowHeight())) {
             mGpu.ResizeSurface(canvasW, canvasH);
         }

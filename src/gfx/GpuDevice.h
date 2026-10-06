@@ -94,6 +94,13 @@ public:
     int WindowWidth() const { return mWidth; }
     int WindowHeight() const { return mHeight; }
     bool IsHeadless() const { return mHeadless; }
+#ifdef __EMSCRIPTEN__
+    // The backing-store size of the consumer's canvas (MILO_WEB_CANVAS_SELECTOR,
+    // which only TUs compiled into the consumer's web target see, so callers in
+    // libmilo-engine.a ask here). False, with both sizes 0, when the page has no
+    // such canvas.
+    bool CanvasSize(int& width, int& height) const;
+#endif
 
 private:
 #ifndef __EMSCRIPTEN__
