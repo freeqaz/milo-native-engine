@@ -253,7 +253,7 @@ Branches (not pushed):
 
 | repo | branch | commits |
 |---|---|---|
-| milo-native-engine | `w16-qe-dc3-parity` | 10 commits on `5d5b02e` (engine `main` at the time), including the merge of `w16-qe-wii-tex` |
+| milo-native-engine | `w16-qe-dc3-parity` | 10 code commits (including the merge of `w16-qe-wii-tex`) plus 3 doc commits on `5d5b02e`, engine `main` at the time |
 | rb3 | `w16-qe-dc3-parity` | `5440427c7` on `04b189fcc` (`master`) |
 | rb3-xenon, dc3-decomp | none — no consumer change was needed | |
 
