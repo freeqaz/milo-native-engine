@@ -20,10 +20,19 @@ struct ParticleVertex {
     float color[4];
 };
 
-// Shared dynamic vertex/index buffers for particle rendering
+// Shared dynamic vertex/index buffers for particle rendering.
+//
+// The vertex buffer is a per-frame arena: each system's quads are appended at
+// sParticleVBUsed and drawn from that offset. Queue::WriteBuffer runs at the
+// next Submit, ahead of every command in the frame encoder, so writing each
+// system's quads to offset 0 left every particle draw of the frame reading the
+// LAST system's vertices (the title screen's rooftop fire showed up inside the
+// cloud render target and on every other emitter).
 static wgpu::Buffer sParticleVB;
 static wgpu::Buffer sParticleIB;
 static int sParticleVBCapacity = 0;  // in vertices
+static int sParticleVBUsed = 0;      // vertices appended this frame
+static int sParticleVBFrame = -1;    // WgpuRnd::FrameID() the arena belongs to
 static int sParticleIBCapacity = 0;  // in indices
 
 // Particle pipeline state — reuses main renderer's SceneBGL at group 0
@@ -108,17 +117,32 @@ static void EnsureParticlePipeline() {
     sParticlePipelineReady = true;
 }
 
-static void EnsureBuffers(int maxParticles) {
+// Reserve room for maxParticles quads in this frame's vertex arena and return
+// the first vertex index. When the arena is full a larger buffer replaces it;
+// draws already recorded keep the old buffer alive through the encoder.
+static int EnsureBuffers(int maxParticles) {
     int neededVerts = maxParticles * 4;
     int neededIndices = maxParticles * 6;
 
-    if (neededVerts > sParticleVBCapacity) {
+    int frame = gWgpuRnd->FrameID();
+    if (frame != sParticleVBFrame) {
+        sParticleVBFrame = frame;
+        sParticleVBUsed = 0;
+    }
+    if (sParticleVBUsed + neededVerts > sParticleVBCapacity) {
+        int cap = sParticleVBCapacity * 2;
+        if (cap < sParticleVBUsed + neededVerts) cap = sParticleVBUsed + neededVerts;
+        if (cap < 4096) cap = 4096;
         wgpu::BufferDescriptor desc{};
-        desc.size = neededVerts * sizeof(ParticleVertex);
+        desc.size = (uint64_t)cap * sizeof(ParticleVertex);
         desc.usage = wgpu::BufferUsage::Vertex | wgpu::BufferUsage::CopyDst;
         sParticleVB = gWgpuRnd->Gpu().Device().CreateBuffer(&desc);
-        sParticleVBCapacity = neededVerts;
+        sParticleVBCapacity = cap;
+        sParticleVBUsed = 0;
     }
+    int first = sParticleVBUsed;
+    sParticleVBUsed += neededVerts;
+
     if (neededIndices > sParticleIBCapacity) {
         // Generate index data: 0,1,2, 2,1,3, 4,5,6, 6,5,7, ...
         std::vector<uint16_t> indices(neededIndices);
@@ -140,6 +164,7 @@ static void EnsureBuffers(int maxParticles) {
                                              neededIndices * sizeof(uint16_t));
         sParticleIBCapacity = neededIndices;
     }
+    return first;
 }
 
 void DrawParticlesBillboard(RndParticleSys* sys) {
@@ -231,15 +256,20 @@ void DrawParticlesBillboard(RndParticleSys* sys) {
     int numParticles = (int)verts.size() / 4;
     if (numParticles == 0) return;
 
+    // Project with the camera that is current now (a particle system can be the
+    // first draw after a camera change, e.g. inside a render-target pass).
+    gWgpuRnd->EnsureSceneUniformsCurrent();
+
     EnsureParticlePipeline();
-    EnsureBuffers(numParticles);
+    int firstVert = EnsureBuffers(numParticles);
 
     auto& dev = gWgpuRnd->Gpu().Device();
     auto& queue = gWgpuRnd->Gpu().Queue();
     auto& pass = gWgpuRnd->CurrentPass();
 
     // Upload vertex data
-    queue.WriteBuffer(sParticleVB, 0, verts.data(), verts.size() * sizeof(ParticleVertex));
+    uint64_t vbOffset = (uint64_t)firstVert * sizeof(ParticleVertex);
+    queue.WriteBuffer(sParticleVB, vbOffset, verts.data(), verts.size() * sizeof(ParticleVertex));
 
     // Create pipeline for this blend mode
     wgpu::BlendState bs = gWgpuRnd->Pipelines().MapBlend((WgpuBlend)mat->GetBlend());
@@ -317,7 +347,7 @@ void DrawParticlesBillboard(RndParticleSys* sys) {
     pass.SetPipeline(pipe);
     pass.SetBindGroup(0, sceneBG);
     pass.SetBindGroup(1, texBG);
-    pass.SetVertexBuffer(0, sParticleVB, 0, verts.size() * sizeof(ParticleVertex));
+    pass.SetVertexBuffer(0, sParticleVB, vbOffset, verts.size() * sizeof(ParticleVertex));
     pass.SetIndexBuffer(sParticleIB, wgpu::IndexFormat::Uint16, 0,
                         numParticles * 6 * sizeof(uint16_t));
     pass.DrawIndexed(numParticles * 6);
@@ -326,6 +356,10 @@ void DrawParticlesBillboard(RndParticleSys* sys) {
 void PartTerminate() {
     sParticleVB = nullptr;
     sParticleIB = nullptr;
+    sParticleVBCapacity = 0;
+    sParticleVBUsed = 0;
+    sParticleVBFrame = -1;
+    sParticleIBCapacity = 0;
     sParticleShader = nullptr;
     sParticleBGL = nullptr;
     sParticlePipelineLayout = nullptr;

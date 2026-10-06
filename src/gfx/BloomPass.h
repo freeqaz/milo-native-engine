@@ -34,7 +34,13 @@ private:
     wgpu::RenderPipeline mBloomBlurVPipeline;
     wgpu::RenderPipeline mBloomDownsamplePipeline;
     wgpu::RenderPipeline mBloomUpsamplePipeline;
+    // One 256-byte slot per bloom sub-pass (kUniformSlots, used round-robin).
+    // Queue::WriteBuffer executes at Submit, before the frame's passes run, so
+    // sub-passes sharing one slot would all read the last parameters written.
+    static constexpr int kUniformSlots = 64;
+    static constexpr int kUniformSlotStride = 256;
     wgpu::Buffer mBloomUniformBuffer;
+    int mUniformSlot = 0;
     wgpu::Sampler mDefaultSampler;
     bool mBloomReady = false;
 };
