@@ -354,6 +354,13 @@ constexpr bool kPartMaterialTint = true;
 // ---- cube texture ----------------------------------------------------------
 inline RndBitmap *CubeFaceBitmap(RndCubeTex *c, int face) { return &c->mBitmap[face]; }
 
+// ---- texture layout --------------------------------------------------------
+// RB3 Wii bitmaps (.milo_wii inline textures and .png_wii files) carry GX pixel
+// layouts, marked by the 0x40 order bit (RndTex::PlatformBppOrder on Wii):
+// CMPR, two-plane CMPR colour + alpha, RGBA8 and I8 tiles. The Wii decoded them
+// in hardware; TextureConvert decodes them to RGBA8 (gfx/GxTextureDecode).
+constexpr bool kGxTextureLayout = true;
+
 // ---- draw modes ------------------------------------------------------------
 // RB3's WorldReflection::DrawShowing sets mode 7 for the mirrored pass
 // (world/Reflection.cpp: SetDrawMode((Mode)7)); DC3 renumbered it to 8 when it
