@@ -1229,7 +1229,16 @@ the city's gap, and each needs an input this lane could not establish.
 
 ### 11.6 Consumer verification (engine `w16-qy`)
 
-See the lane report for this section's results.
+Fresh `~/tmp` worktrees made with each repo's `scripts/setup_worktree.sh`,
+configured with `-DMILO_ENGINE_PATH` at the `w16-qy` engine worktree
+(confirmed in each `CMakeCache.txt`), built after `b7f8f67`.
+
+| consumer | instrument | result |
+|---|---|---|
+| dc3-decomp (on `e992ee9b5`) | `scripts/native_configure.sh` + `scripts/native_test.sh` | 626 registered, 557 passed, 0 failed, 69 skipped (budget 69), rc=0 |
+| rb3-xenon (on `d5d873c95`) | `tools/native_health.sh` | `NATIVE_HEALTH_RESULT verdict=PASS link=PASS link_verified=18 link_expected=18 link_skipped=0 runtime=PASS runtime_ran=18 runtime_total=18 gates_pass=77 gates_fail=0 unrunnable=none selftest=SKIPPED scatter_unlinked=16 scatter_dirb=0 scatter_multihost=17 rc=0 handpose_controls=- handpose_baseline_fail=- runtime_crashed=0 runtime_failed=none` (embedded link gate: `verdict=PASS expected=18 verified=18 skipped=0 partial=0 failed=0 rc=0`) |
+| rb3-xenon | `tools/native_build_gate.sh` | run as the lane's last action; its `NATIVE_GATE_RESULT` line is in the lane report |
+| rb3 (Wii), dc3 flavor | title (11.3) and venues (11.4), plus a clean rebuild at `b7f8f67` | title exits rc=0 (f400 city_dE 12.2, as 11.3); Quickplay reaches `game_screen` in all 10 runs with this engine (and in the 8 base runs) |
 
 ### 11.7 Not done
 
