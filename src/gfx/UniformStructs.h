@@ -97,7 +97,7 @@ struct MaterialUniforms {
     float hasSpecularMap;       // f32 — 1.0 when specular map bound
     float unlit;                // f32 — 1.0 if material ignores environ (Wii RndMat::mUseEnviron==0 && !mPreLit): register color only, no ambient/lights/vertex tint
     float bloomMaskScale;       // f32 — >0: write alpha = luma(rgb) * this (RB3 pseudo-HDR bloom mask, rndshape::BloomMaskScale)
-    float gammaShading;         // f32 — 1.0: material colour and lighting are gamma-space values (rndshape::kGammaSpaceShading)
+    float gammaShading;         // f32 — 1.0: shade in gamma space, texel * colour * lighting as stored, no output encode (rndshape::kGammaSpaceShading)
 };
 static_assert(sizeof(MaterialUniforms) == 192, "MaterialUniforms must match WGSL layout");
 

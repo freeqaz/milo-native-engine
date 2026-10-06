@@ -70,28 +70,17 @@ struct VOut {
     return out;
 }
 
-// Pipeline-overridable (RB3 shape only; both 0 for DC3):
-//  kGammaColor  the particle colour is a gamma-space value, as RB3 retail
-//               multiplies it into the (gamma) texture; decode it to match the
-//               decoded texture (see standard_wgsl.inc, gammaShading).
+// The particle colour and the texel are multiplied as stored and written as
+// is, which is RB3 retail's particles.ps (gamma space, like the standard
+// shader under material.gammaShading).
+// Pipeline-overridable (RB3 shape only; 0 for DC3):
 //  kMaskScale   >0: write the pseudo-HDR bloom mask, alpha = luma(rgb) * this,
 //               as retail's particle shader does for an AllowHDR material.
-override kGammaColor: f32 = 0.0;
 override kMaskScale: f32 = 0.0;
-
-fn decodeSrgb(c: vec3f) -> vec3f {
-    let lo = c / 12.92;
-    let hi = pow((max(c, vec3f(0.0)) + 0.055) / 1.055, vec3f(2.4));
-    return select(lo, hi, c > vec3f(0.04045));
-}
 
 @fragment fn fs_particle(in: VOut) -> @location(0) vec4f {
     let tex = textureSample(particleTex, particleSampler, in.uv);
-    var col = in.color;
-    if (kGammaColor > 0.5) {
-        col = vec4f(decodeSrgb(col.rgb), col.a);
-    }
-    var c = tex * col;
+    var c = tex * in.color;
     if (c.a < 0.004) { discard; }
     if (kMaskScale > 0.0) {
         c.a = clamp(dot(c.rgb, vec3f(0.3, 0.59, 0.11)) * kMaskScale, 0.0, 1.0);
@@ -333,16 +322,14 @@ void DrawParticlesBillboard(RndParticleSys* sys) {
             ct.writeMask = wgpu::ColorWriteMask::Red | wgpu::ColorWriteMask::Green |
                            wgpu::ColorWriteMask::Blue;
     }
-    wgpu::ConstantEntry consts[2] = {};
-    consts[0].key = "kGammaColor";
-    consts[0].value = rndshape::kGammaSpaceShading ? 1.0 : 0.0;
-    consts[1].key = "kMaskScale";
-    consts[1].value = maskScale;
+    wgpu::ConstantEntry consts[1] = {};
+    consts[0].key = "kMaskScale";
+    consts[0].value = maskScale;
 
     wgpu::FragmentState frag{};
     frag.module = sParticleShader;
     frag.entryPoint = "fs_particle";
-    frag.constantCount = 2;
+    frag.constantCount = 1;
     frag.constants = consts;
     frag.targetCount = 1;
     frag.targets = &ct;

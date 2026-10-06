@@ -472,6 +472,10 @@ material colour and the lit term. Then `enc(dec(t) · dec(c)) = t · c`, which
 is what retail computes. Particles decode their colour the same way
 (`Part_Wgpu`).
 
+(Superseded, section 10: since the texel is not decoded, that decode gave
+`enc(t) · c · L`, not `t · c · L`. Under `kGammaSpaceShading` the shader now
+does no decode and no encode at all.)
+
 ### 8.3 The other pieces
 
 | change | where | DC3 entry |
@@ -795,7 +799,10 @@ not.**
   8.4), now more visible.
 
 Decoding the texel as well should then give retail's formula. **Measured, it
-makes everything far too dark:**
+makes everything far too dark** (section 10.3: that probe was not retail's
+formula either. It still stored linear values in render targets, so a texel
+read back from one was decoded twice, and it kept the tanh highlight
+shoulder):
 
 | f400 | luma | sky luma | city luma | p10 | dark % | sky_dE / city_dE |
 |---|---|---|---|---|---|---|
@@ -843,3 +850,219 @@ the `w16-qs` engine worktree. The setting was confirmed in each
 DC3 and rb3-xenon use the DC3 shape, so for them the change compiles to the
 no-op `FillMeshApproxLighting`, a never-set `retailLighting`, and a larger
 `ObjectUniforms`.
+
+## 10. Texture and display gamma, settled from retail (lane W16-QT, 2026-10-06)
+
+9.5 left the textures between "raw" (too bright) and "decoded" (too dark).
+This lane read what the Xbox 360 build does with a texel and with display
+gamma, from rb3-xenon's matched code, the retail shaders, and a xenia capture
+of the retail XEX. Engine branch `w16-qt`: `72f38c6` (shading and ramp),
+`246264c` (ramp only on a presented frame), on `b18b088`.
+
+### 10.1 What retail does
+
+**Texels are not linearized, and nothing is decoded or encoded in a shader.**
+- `DxRnd::D3DFormatForBitmap` (rb3-xenon `rnddx9/Rnd.cpp`, matched 100%
+  against retail) returns `D3DFMT_DXT1` (`0x1a200152`), `DXT3`, `DXT5`, `DXN`,
+  `A8R8G8B8` (`0x18280186`) or `A1R5G5B5`. The Xenos format word's four sign
+  fields (bits 9–16), which select a gamma fetch, are 0 in every one of them.
+  The fetch returns the stored value.
+- The frame and render targets are `D3DFMT_A8R8G8B8`
+  (`DxRnd::CreateEDRAMSurfaces`), sampled back as stored.
+- Of 4,046 `standard` pixel shaders in the Xbox ark's `xbox_shaders`, 400 were
+  run through `xenia-gpu-shader-compiler` and 61 disassembled. None contains a
+  `log` or `exp` (the only way to compute a power). Each fetches the texel and
+  multiplies it. The 27 `particles` pixel shaders (11 disassembled) are the
+  same; the textured one is `tfetch2D r0, r0.xy, tf0` then `mul oC0, r0, r2`,
+  i.e. texel × vertex colour.
+
+So retail computes `t · c · L` on the stored values and writes the product,
+saturated, to an 8-bit target.
+
+**The display has a gamma ramp.** `DxRnd::InitRenderState` ends in
+`DxRnd::SetupGamma` (`rnddx9/Rnd_Xbox.cpp`, matched 100%). When the system
+config has `(rnd (gamma g))` it builds, for i = 0..255,
+`entry = (u16)(pow(i / 256, g) * 1024) * 64` for red, green and blue, and calls
+`D3DDevice_SetGammaRamp`. The Xbox config (`system/run/config/default.dta`)
+has `(gamma 0.85)`. The scanned-out image is therefore about `x^0.85` of the
+frame buffer, i.e. brighter than the frame.
+
+**The Wii build has no ramp.** Its `default.dtb` carries the same
+`(gamma 0.85)` (decrypted with the Rand2 LCG, seed = first int32), but no game
+code reads it: in rb3 `src/`, `GXSetDispCopyGamma` and the VI gamma calls exist
+only inside the RVL SDK, and `rndwii/Rnd.cpp`'s `CopyBuffer` only calls
+`GXCopyDisp`. GX's TEV also multiplies stored values, so Wii shading is the
+same `t · c · L`.
+
+**Wii and Xbox texture data have the same tone.** 54 textures present in both
+`.milo_wii` and `.milo_xbox` were decoded by the engine's own upload path (a
+probe, not committed) and compared at the Wii size: Wii minus Xbox luma, mean
+−0.56 and median +1.03 (8-bit); the median per-channel exponent fitted from
+Xbox to Wii is 0.975. The Wii textures are downscaled, not regraded. (The
+title and venue instruments here load the Xbox ark extract, so they render
+Xbox textures either way.)
+
+### 10.2 Which image the references are
+
+A retail screenshot is the front buffer, before the ramp. This was measured,
+not assumed: xenia (`xenia-headless`, Checked, Vulkan) ran clean TU5
+(`fork-regress-content/rb3/tu5-clean-nodd/default.xex`) with
+
+```
+--protect_zero=false --rb3_tu5_app_run_direct=true --rb3_no_char_preview=true
+--rb3dx_offline_join=true --rb3dx_skip_calibration=true --rb3dx_ui_probe=true
+--local_user_count=2 --dump_frames_path=<dir> --headless_capture_interval=300
+```
+
+Its `frame_N_raw.ppm` is the guest front buffer with red and blue swapped
+(swap them back). Ignore the non-raw `.ppm`, which xenia sRGB-encodes. Vanilla
+TU5 shows a movie behind the title, so the rooftop city appears at
+`main_hub_screen`, frame 1800: same city, same camera as the TCRF title shot.
+
+| image | luma | sky_dE / city_dE vs TCRF |
+|---|---|---|
+| TCRF title (360) | 50.1 | — |
+| xenia, front buffer | 53.3 | **16.2 / 17.7** |
+| xenia, front buffer through the 0.85 ramp | 64.4 | 21.4 / 21.3 |
+
+Luma by region (640×360, 8-bit):
+
+| region | TCRF | xenia | xenia + ramp | this lane | forced ramp | base `b18b088` |
+|---|---|---|---|---|---|---|
+| sky, right | 32.8 | 32.5 | 42.3 | 35.9 | 47.0 | 50.2 |
+| city, right | 37.5 | 38.3 | 48.9 | 27.0 | 35.7 | 51.5 |
+| city, middle | 84.9 | 62.6 | 74.7 | 44.0 | 53.5 | 80.4 |
+| left roof | 27.3 | 35.5 | 46.2 | 20.6 | 28.6 | 36.2 |
+
+TCRF agrees with xenia's front buffer, not with the ramped image, so TCRF is
+pre-ramp. The other retail stills are of unknown provenance (YouTube video and
+fandom wiki).
+
+### 10.3 What changed
+
+- **Shading** (`72f38c6`). Under `kGammaSpaceShading`, `standard_wgsl` no
+  longer decodes the prelit vertex colour, the material colour or the lit
+  term, and does not encode its output. It computes `t · c · L` and clamps to
+  [0, 1] (retail's saturating 8-bit write) instead of the tanh highlight
+  shoulder. `Part_Wgpu` drops its colour decode (`tex * in.color`, as
+  retail's particle shader). `srgbToLinear` is gone from the standard shader.
+  Render targets are unaffected in practice: no RB3 draw encodes, so frame and
+  target hold the same values, as on retail.
+- **Why 9.5's decode was too dark.** It decoded the texel, the colour and the
+  lit term, and encoded the result, which is `t · c · L` for an ordinary
+  texture. But draws into a render target skip the encode
+  (`kRenderTargetStoresLinear`), so they stored the linear product, and a
+  texel read back from such a target (the title's `clouds_rnd.tex`, outfit
+  composites) was decoded a second time. It also kept the tanh shoulder.
+- **Display ramp** (`72f38c6`, `246264c`). `gfx/DisplayRamp` evaluates
+  `SetupGamma`'s table per pixel (round to 8 bits, table entry, /65535) over
+  the finished frame, UI included, after the post chain and before the ImGui
+  overlay. `rndshape::DisplayGamma(presenting)` (`RB3WiiPostChain.cpp`) reads
+  `(rnd (gamma))` from the system config, so it is 0.85 for RB3 data. It
+  applies only to a frame presented to a window surface or the web canvas. A
+  headless frame is the front buffer, which is what the references above are.
+  `MILO_RB3_DISPLAY_GAMMA=<g>` forces the ramp for every output, headless
+  included; `off` disables it. `GpuDevice::ConfigureSurface` adds `CopySrc` to
+  the surface usage when the surface allows it (the pass copies the frame to a
+  scratch texture); without it the pass warns once and is skipped.
+- **DC3 shape**: `DisplayGamma` is an inline 0, so DC3 and rb3-xenon are
+  unchanged.
+- **Tool**: `tools/rb3-dc3-parity/screen_capture.py` takes screenshots on any
+  UI screen (default `main_hub_screen`, navigation from `RB3_SCREEN_NAV`), for
+  comparison with a xenia capture.
+
+### 10.4 Title screen
+
+sky_dE / city_dE against TCRF, lower is better. "This lane" is the default
+headless output (no ramp). The ramp row is `MILO_RB3_DISPLAY_GAMMA=0.85`.
+Both are the final `246264c` binary; the earlier always-on-ramp build read
+the same within 0.2.
+
+| frame | base `b18b088` | **this lane** | forced ramp |
+|---|---|---|---|
+| 60 | 29.8 / 19.1 | **14.9 / 18.8** | 17.3 / 15.4 |
+| 200 | 33.0 / 21.2 | **15.6 / 19.2** | 16.7 / 17.1 |
+| 400 | 24.8 / 18.9 | **13.6 / 19.2** | 15.0 / 15.6 |
+
+| f400 | luma | sky luma | city luma | p10 | dark % |
+|---|---|---|---|---|---|
+| retail (TCRF) | 50.1 | 44.8 | 52.4 | 11.8 | 25.7 |
+| base `b18b088` | 62.1 | 64.9 | 60.9 | 24.7 | 3.6 |
+| **this lane** | 35.4 | 39.8 | 33.6 | 10.9 | 35.0 |
+| forced ramp | 44.9 | 50.9 | 42.4 | 16.9 | 17.7 |
+
+Prediction before the first run: f400 luma 45–55 and sky luma 40–50 for the
+ramped build. Measured 45.1 and 51.2; sky luma was 1 over.
+
+- **Sky_dE drops by about half at every frame** (24.8–33.0 → 13.6–15.6), and
+  sky luma is now within 5 of retail instead of 20 over. p10 moves from 24.7 to
+  10.9 against retail's 11.8.
+- **City_dE is unchanged** (mean over the three frames 19.7 → 19.1). City luma,
+  though, falls from 8.5 over retail to 18.8 under it, and dark % overshoots
+  (35.0 against 25.7).
+- The city deficit is lighting, not gamma. The region table shows the sky
+  matching xenia's front buffer while the city is about 30% dark in the middle
+  and right. The city buildings are lit materials (`prelit` 0 in the per-draw
+  report), so their brightness is the lit term, which on retail includes the
+  Xbox material features the Wii loader drops (9.3). The old encode hid this
+  by brightening every factor.
+
+### 10.5 Venues
+
+Same instrument as 9.3 (`venue_capture.py`, `RB3_FIXED_CLOCK=1`, 8 shots per
+run). Camera cuts differ between runs even with `RB3_LOAD_DETERMINISM=1`, so
+runs are pooled: 8 runs per build, mean ± standard error over runs.
+
+| config | runs | luma | p10 | dark % |
+|---|---|---|---|---|
+| retail, 5 gameplay stills (3 Wii YouTube, 2 360 fandom) | — | 54.0 | 9.0 | 34.4 |
+| retail, Wii only | — | 47.2 | 2.7 | 50.2 |
+| retail, 360 only | — | 64.2 | 18.6 | 10.7 |
+| base `b18b088` | 8 | 46.0 ± 1.2 | 13.1 ± 1.3 | 34.2 ± 2.1 |
+| **this lane** | 8 | **52.8 ± 3.8** | 16.3 ± 1.2 | 32.8 ± 2.9 |
+| forced ramp | 3 | 76.1 ± 7.1 | 22.7 ± 1.7 | 15.6 ± 1.7 |
+
+(The retail row is these five stills through `frame_stats.py`; 9.3's 57.7 /
+9.4 / 30.5 was a different five.)
+
+- **Mean luma moves toward retail**: |Δ| 8.0 → 1.2. A bootstrap over runs gives
+  the change a 95% interval of [−0.6, +14.1], so it is likely but not proven.
+- Dark % is within noise (interval [−8.1, +5.1]); |Δ| 0.2 → 1.6.
+- p10 rises by 3.2 (interval [−0.1, +6.2]), away from the five-still mean.
+  The retail stills disagree with each other by platform there (2.7 against
+  18.6), so p10 does not separate the builds.
+- The ramp overshoots the venues by about 22 luma against the five stills, as
+  it overshoots the title against TCRF. That is consistent with the references
+  being front-buffer images.
+
+### 10.6 Consumer verification (engine `w16-qt`)
+
+Fresh `~/tmp` worktrees, configured with `-DMILO_ENGINE_PATH` at the `w16-qt`
+engine worktree (confirmed in each `CMakeCache.txt`), built after `246264c`.
+
+| consumer | instrument | result |
+|---|---|---|
+| dc3-decomp (on `e992ee9b5`) | `scripts/native_configure.sh` + `scripts/native_test.sh` | 626 registered, 557 passed, 0 failed, 69 skipped (budget 69), rc=0 |
+| rb3-xenon (on `442f01984`, a `scripts/setup_worktree.sh` worktree) | `tools/native_health.sh` | `NATIVE_HEALTH_RESULT verdict=PASS link=PASS link_verified=18 link_expected=18 link_skipped=0 runtime=PASS runtime_ran=18 runtime_total=18 gates_pass=77 gates_fail=0 unrunnable=none selftest=SKIPPED scatter_unlinked=16 scatter_dirb=0 scatter_multihost=17 rc=0 handpose_controls=- handpose_baseline_fail=- runtime_crashed=0 runtime_failed=none` (embedded link gate: `verdict=PASS expected=18 verified=18 skipped=0 partial=0 failed=0 rc=0`) |
+| rb3-xenon | `tools/native_build_gate.sh` | run as the lane's last action; its `NATIVE_GATE_RESULT` line is in the lane report |
+| rb3 (Wii), dc3 flavor | title (10.4) and venues (10.5) | title exits rc=0; Quickplay reaches `game_screen` in every run |
+
+Two environment traps hit on the way, neither an engine problem:
+- The first `native_health.sh` run read `FAIL 16/18`, with `rb3-frame` and
+  `rb3-render` STALE. `246264c` was committed while that build ran, so ninja
+  saw newer engine sources afterwards. The rerun above passes.
+- A plain `git worktree add` of dc3-decomp skips 72 tests against a budget
+  of 69. Its `scripts/setup_worktree.sh` symlinks `orig-assets/`, `archive/`,
+  `native/third_party/` and `native/models/`; with those links the count is 69.
+
+### 10.7 Not done
+
+- **City and venue lighting.** The remaining title gap is the lit term
+  (10.4), i.e. the Xbox-only material features listed in 9.6.
+- **A retail venue reference.** Xenia was not driven into gameplay, so the
+  venue comparison rests on five stills of unknown capture path. A xenia
+  gameplay capture of the same song would allow a paired comparison.
+- **The ramp on a real display** was not checked by eye; it is exercised
+  headless only through `MILO_RB3_DISPLAY_GAMMA`, and on the web build not at
+  all.
+- No merge, pin bump or push.

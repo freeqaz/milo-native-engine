@@ -1148,6 +1148,20 @@ void WgpuRnd::EndDrawing() {
                               mDepthView, FrameTarget(), mBlackTexView, mGpu);
         }
 
+        // The display gamma ramp (RB3: DxRnd::SetupGamma's D3DDevice_SetGammaRamp),
+        // over the finished frame, UI included, when the frame is presented.
+        // DC3 has none.
+        if (const float displayGamma = rndshape::DisplayGamma(!mGpu.IsHeadless());
+            displayGamma > 0.0f) {
+#ifdef __EMSCRIPTEN__
+            const wgpu::Texture& frameTex = mFrameResolvedTex;
+#else
+            const wgpu::Texture& frameTex =
+                mGpu.IsHeadless() ? mGpu.HeadlessTex() : mGpu.SurfaceTexture();
+#endif
+            mDisplayRamp.Apply(mEncoder, frameTex, FrameTarget(), displayGamma, mGpu);
+        }
+
 #ifdef HX_IMGUI
         // ImGui overlay pass — rendered after post-processing, on top of everything
         RenderImGuiOverlay();

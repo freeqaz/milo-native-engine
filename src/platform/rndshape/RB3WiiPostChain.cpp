@@ -7,6 +7,8 @@
 
 #include "rndobj/PostProc.h"
 #include "rndobj/ColorXfm.h"
+#include "obj/Data.h"
+#include "os/System.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -21,6 +23,34 @@ int RetailPostMode() {
             : (strcmp(e, "mask") == 0) ? 3 : (strcmp(e, "bloom") == 0) ? 4
             : (strcmp(e, "grade") == 0) ? 5 : 1;
     }
+    return s;
+}
+
+float DisplayGamma(bool presenting) {
+    // An explicit override applies to every output, headless included.
+    static int envState = -1;   // -1 unread, 0 unset, 1 set
+    static float envGamma = 0.0f;
+    if (envState < 0) {
+        const char *e = getenv("MILO_RB3_DISPLAY_GAMMA");
+        envState = e ? 1 : 0;
+        if (e) {
+            const float v = (strcmp(e, "off") == 0) ? 0.0f : (float)atof(e);
+            envGamma = v > 0.0f ? v : 0.0f;
+        }
+    }
+    if (envState == 1) return envGamma;
+    // Without one, only a presented frame goes through the ramp. A headless
+    // frame is the front buffer, which is what a retail screenshot is.
+    if (!presenting) return 0.0f;
+    // DxRnd::SetupGamma: SystemConfig("rnd")->FindData("gamma", gamma, false).
+    // Not cached until the system config exists.
+    static float s = -1.0f;
+    if (s >= 0.0f) return s;
+    DataArray *root = SystemConfig();
+    if (!root) return 0.0f;
+    DataArray *rnd = root->FindArray("rnd", false);
+    float g = 0.0f;
+    s = (rnd && rnd->FindData("gamma", g, false) && g > 0.0f) ? g : 0.0f;
     return s;
 }
 

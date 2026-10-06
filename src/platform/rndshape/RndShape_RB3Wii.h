@@ -402,9 +402,11 @@ constexpr bool kRenderTargetForcesAlphaWrite = true;
 // The standard shader sRGB-encodes its output (gfx/standard_wgsl.inc,
 // linearToSrgb) for the non-sRGB surface, and a render target (RGBA8Unorm on
 // that surface) is sampled back as raw data, so a material drawn through a
-// target is encoded twice. On the title screen that lifts the cloud target
-// (clouds_rnd.tex, difference_clouds.mat colour 0.12) from about 0.12 to 0.38
-// and washes the sky. Draws into a target therefore write linear values.
+// target would be encoded twice. Draws into a target therefore skip the
+// encode. Under kGammaSpaceShading (below) no RB3 draw encodes at all, in a
+// target or in the frame, so this only matters to a draw that is not
+// gamma-shaded; the cloud target (clouds_rnd.tex) holds the same values as on
+// retail either way.
 constexpr bool kRenderTargetStoresLinear = true;
 
 // ---- 2D rects --------------------------------------------------------------
@@ -458,16 +460,36 @@ inline bool RetailBloomMaskActive() {
 // 1/threshold above 1, else 1) for such a material while the retail chain runs
 // with a current RndPostProc, else 0 (no mask). The caller decides "main frame".
 float BloomMaskScale(const MatView &m);
-// RB3 shades in gamma space: retail's standard.ps multiplies the (gamma)
-// texture by the material colour and the ambient + diffuse lighting sum as
-// authored and writes the product straight to an 8-bit gamma target
-// (D3DFMT_A8R8G8B8, DxRnd::CreateEDRAMSurfaces). The dc3 shader decodes
-// textures and encodes its output, so it must decode those factors as well
-// (standard_wgsl.inc, material.gammaShading). Without it every material
-// colour and light is brightened by the encode (a 0.3 factor acts as 0.58),
-// which is most of the title sky's excess luma and why the retail bloom
-// (which weights the scene by its own luma) washed the frame out.
+// RB3 shades in gamma space: retail's standard.ps multiplies the texel by the
+// material colour and the ambient + diffuse lighting sum as stored and
+// authored, and writes the product straight to an 8-bit target
+// (D3DFMT_A8R8G8B8, DxRnd::CreateEDRAMSurfaces); render targets are the same
+// format and are sampled back as stored. The bitmap formats
+// (DxRnd::D3DFormatForBitmap: D3DFMT_DXT1/3/5, A8R8G8B8, ...) carry no gamma
+// sign, so the texture fetch does not linearize either. The dc3 shader works
+// in linear light and encodes its output; under this flag it skips both the
+// decodes and the encode and computes retail's t * c * L directly
+// (standard_wgsl.inc, material.gammaShading; particles likewise, Part_Wgpu).
+// Display gamma is separate: see DisplayGamma below.
 constexpr bool kGammaSpaceShading = true;
+// The display gamma ramp. DxRnd::InitRenderState ends in DxRnd::SetupGamma,
+// which reads the system config's (rnd (gamma g)) and, when present, sets
+// D3DDevice_SetGammaRamp with entry i = (u16)(pow(i / 256, g) * 1024) * 64
+// for all three channels. Every shipped default.dtb (Xbox and Wii) carries
+// (gamma 0.85), so the Xbox 360 scans the frame out through x^0.85 and the
+// frame buffer itself stays darker than what is seen. The Wii renderer has no
+// equivalent: no GXSetDispCopyGamma or VI gamma call outside the SDK, so a Wii
+// frame is displayed as rendered. The ramp sits between the front buffer and
+// the screen, so it applies only to a frame that is `presenting` (a window
+// surface or the web canvas). A headless frame is the front buffer, which is
+// what a retail screenshot is: xenia's raw frame dump of the retail XEX is
+// also pre-ramp and matches the TCRF title screenshot better than the ramped
+// one does (dc3-backend-for-rb3-wii.md, section 10). Returns g, or 0 for no
+// ramp. MILO_RB3_DISPLAY_GAMMA overrides it for every output, headless
+// included ("off" or "0" = no ramp, else the value). Defined in
+// rndshape/RB3WiiPostChain.cpp; applied by WgpuRnd::EndDrawing
+// (gfx/DisplayRamp) to the whole frame, after everything else is drawn.
+float DisplayGamma(bool presenting);
 
 // ---- scene lighting --------------------------------------------------------
 // RB3 lights with its own (Xbox 360 retail) model, not DC3's venue rig:
