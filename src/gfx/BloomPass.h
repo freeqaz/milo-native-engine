@@ -7,7 +7,7 @@ class GpuDevice;
 class BloomPass {
 public:
     void Init(GpuDevice& gpu);
-    void Run(wgpu::CommandEncoder& encoder, wgpu::TextureView& intermediateView,
+    void Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& intermediateView,
              int sceneW, int sceneH, float intensity, float threshold,
              const Hmx::Color& tint, GpuDevice& gpu);
     void Terminate();

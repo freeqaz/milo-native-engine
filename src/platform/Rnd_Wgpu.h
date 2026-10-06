@@ -245,6 +245,7 @@ public:
     // Depth texture
     wgpu::Texture mDepthTex;
     wgpu::TextureView mDepthView;
+    wgpu::TextureView mDepthSampleView;  // depth aspect only, for sampling
     int mDepthWidth = 0;
     int mDepthHeight = 0;
 

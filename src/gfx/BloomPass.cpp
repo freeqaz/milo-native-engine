@@ -209,7 +209,7 @@ void BloomPass::EnsureTextures(int sceneW, int sceneH, GpuDevice& gpu) {
     }
 }
 
-void BloomPass::Run(wgpu::CommandEncoder& encoder, wgpu::TextureView& intermediateView,
+void BloomPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& intermediateView,
                     int sceneW, int sceneH, float intensity, float threshold,
                     const Hmx::Color& tint, GpuDevice& gpu) {
     EnsurePipelines(gpu);
@@ -218,7 +218,7 @@ void BloomPass::Run(wgpu::CommandEncoder& encoder, wgpu::TextureView& intermedia
     auto& queue = gpu.Queue();
     auto& dev = gpu.Device();
 
-    auto bloomPass = [&](wgpu::TextureView& srcView, wgpu::TextureView& dstView,
+    auto bloomPass = [&](const wgpu::TextureView& srcView, wgpu::TextureView& dstView,
                          wgpu::RenderPipeline& pipeline, int targetW, int targetH,
                          float param = 0.0f) {
         BloomUniforms uni{};

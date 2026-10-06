@@ -1857,6 +1857,9 @@ through a filtering sampler. That is a bind-group-layout question that shader
 compilation cannot see. Only creating the DoF pipeline with DoF enabled would
 show it.
 
+(Examined in section 18: it was a real validation error, and the pass was
+rewritten from retail.)
+
 ### 14.4 Crowd colour modulation, from retail
 
 RB3's `RndMat` carries `mColorModFlags` and three `mColorMod` colours.
@@ -1969,7 +1972,7 @@ base engine it ran 104 tests. It now runs the same 123 as the rb3 flavor; the
   post-modulation colour; retail computes it before. This matters only for a
   material with a non-zero mode, and shipped content has none.
 - **DoF depth binding** (14.3): unfilterable depth through a filtering sampler,
-  not examined.
+  not examined. Done in section 18.
 - The colour-mod probe was temporary and is not committed.
 - No merge, pin bump or push.
 
@@ -2276,22 +2279,6 @@ These are scratch paths, not committed.
   targets compile.
 - rb3's rb3-flavor `ctest` and the native gate were not run.
 - No merge, pin bump or push.
-p='docs/native/dc3-backend-for-rb3-wii.md'
-s=open(p).read()
-old='''- **Shared skin materials.** One `head_naked.mat` instance serves every band
-  member natively (the native milo merge; see the black-head comment in rb3's
-  `OutfitConfig.cpp`). The last member to run `SetSkinTextures` sets its
-  gender's spec and normal maps for all. A mixed-gender cast shares one set,
-  just as it already shares one head diffuse.'''
-new='''- **Shared skin materials.** One `head_naked.mat` instance serves every band
-  member natively (the native milo merge; see the black-head comment in rb3's
-  `OutfitConfig.cpp`). The last member to run `SetSkinTextures` sets its
-  gender's spec and normal maps for all. A mixed-gender cast shares one set,
-  just as it already shares one head diffuse. **Fixed in section 17.**'''
-assert s.count(old)==1
-s=s.replace(old,new)
-s=s.rstrip('\n')+'\n'+open('/dev/stdin').read()
-open(p,'w').write(s)
 
 ## 17. One skin material per band member (lane W16-RP, 2026-10-06)
 
@@ -2439,4 +2426,217 @@ landed on the close-up in both legs.
   false. This was not run.
 - **colorpalettes.milo's `head_naked.mat`** (the texblender copy) is still one
   instance for all members.
+
+### 17.6 Other flavors and web (lane W16-RR, 2026-10-06)
+
+rb3 master `e90f93e6d` with the engine at `bbbf9c1` (the 16 and 17 fixes),
+measured with the probe `RB3_SKIN_MAT_ADOPT_PROBE`; "before" sets all three
+opt-outs (`RB3_NO_OUTFIT_CHAIN_ANCHOR`, `RB3_NO_SKIN_MAT_ADOPT`,
+`RB3_NO_SKIN_MAPS`). No code change was needed.
+
+| combination | test | own-material skin meshes, before / after |
+|---|---|---|
+| desktop, rb3 flavor | `ctest` 125: 118 passed, 7 skipped, 0 failed | 0/66 / 66/66 |
+| web, dc3 (`build.sh --release`) | smoke PASS, 0 WebGPU errors, 73.31% painted | 0/63 / 65/65 |
+| web, rb3 flavor | smoke PASS, 0 WebGPU errors, 86.45% painted | 0/65 / 66/66 |
+
+All four members have hair in every "after" frame. On web dc3 the "before"
+frame also shows the white specular hot spots of 16; they are gone after.
+A web smoke run from a `~/tmp` worktree needs the four asset directories
+passed explicitly (`--assets-dir`, `--assets-fallback`, `--sidecar-dir`,
+`--downscale-dir`): otherwise the intro video 404s and boot stalls before the
+splash screen. 15.5 noted the same path problem for sound files only.
+
+## 18. Depth of field, from retail (lane W16-RO, 2026-10-06)
+
+Section 14.3 left one DoF question open: the depth texture was bound as
+`UnfilterableFloat` and sampled through a filtering sampler. It was a real
+validation error, and the pass around it was not retail's, so `gfx/DofPass` was
+rewritten from the retail shaders.
+
+| repo | branch | commit |
+|---|---|---|
+| milo-native-engine | `w16-ro` | this commit (on `f99c1f2`) |
+| rb3 | `w16-ro` | `89b6e0804` (on `f71e9e036`) |
+
+### 18.1 Nothing could reach the pass
+
+RB3's base `DOFProc` ignores `Set` and returns `Enabled()` false, and the Wii
+`WiiDOFProc::Set` is empty. `CameraManager::Init` creates `TheDOFProc` from the
+base factory, so under the dc3 flavor `DofPass::Run` returned on its first line
+every frame. In retail Xbox gameplay DoF is common: `CameraShot` sets it every
+frame for any shot with a focal target (`mUseDepthOfField` defaults true,
+`max_blur` 1).
+
+rb3 now gives the dc3 flavor a `DOFProc` that keeps what retail
+`NgDOFProc::Set` (`0x82B8BF78`) keeps: focal plane, blur depth and blur range
+after `RndPostProc::DOFOverrides`, and `Enabled = maxBlur > 0`. `DOFProc::Init`
+reaches it through a weak `RB3RegisterNativeDOFProc()`, called after
+`Rnd::PreInit` registers the base class. Targets without the hook keep the base
+class.
+
+### 18.2 The old pass, with DoF reachable
+
+The rb3 change built against the unmodified engine, Quickplay
+(`venue_capture.py`, `RB3_FIXED_CLOCK=1`):
+
+| error | count |
+|---|---|
+| `Texture binding (group:0, binding:1) is TextureSampleType::UnfilterableFloat but used statically with a sampler (group:0, binding:2) that's SamplerBindingType::Filtering`, at `CreateRenderPipeline` (`fs_dof`) | 1 |
+| `Multiple aspects (Depth\|Stencil) selected in [TextureView "defaulted from [Texture "DepthStencil"]"]`, the depth-resolve bind group | 2,395 |
+| `[Invalid BindGroup]` | 2,395 |
+| `[Invalid CommandBuffer from CommandEncoder "FrameEncoder"]` | 2,395 |
+
+So it was not wrong sampling but three defects. The DoF pipeline was invalid.
+The scene depth had no `TextureBinding` usage, and its default view selects
+both aspects. A bad bind group invalidates the frame's single command buffer,
+so every DoF frame submitted nothing: the four gameplay shots (game frames
+60, 300, 600, 900) are byte-identical, the screen frozen on the last frame
+before the first DoF shot. The title raised 0 errors; no title shot sets DoF.
+
+### 18.3 What retail does
+
+`NgDOFProc::DoPost` and the shaders it drives, read from `xbox_shaders` with
+`tools/rb3-dc3-parity/xobx.py` and xenia's ucode disassembler:
+
+1. **`downsample_4x`** (one permutation): four bilinear taps averaged (literal
+   c255.x = 0.25) into the blur target, a quarter of the pre-process texture
+   each way. Color only.
+2. **`blur`**, permutation `0x1c000` (`SetNumTaps(8)`): `Σ c(47+i) ·
+   tex(uv + c(31+i).xy)` over eight taps, no centre tap. `SetVHBlurWeights`
+   loads every weight as 0.125 and the offsets as `tap · w·0.666·s/204800 · 5`
+   (x) and `tap · h·0.666·s/64800 · 5` (y), where w × h is the blur target
+   and s is `DOFOverrides().mBlurWidthScale`. That is 1.67 texels per unit tap
+   at 320 × 180. The "horizontal" pass (blur A to B) and the "vertical" pass
+   (B to A) use two different 2D tap tables.
+3. **`postprocess`, bit `0x8`** (`ShaderMgr.unk26`, set by `DoPost`):
+
+   ```
+   tfetch2D r2, r0.xy, tf8           blur, linear, clamp
+   tfetch2D r1, r0.xy, tf6           scene
+   tfetch2D r0._x__, r0.xy, tf9      depth
+   subsc  r0.x, c255.x, r0.y         c255.x = 1.0
+   mad    r0.x, r0.x, c24.x, c24.y
+   max    r0.x, |r0.x|, c24.z
+   min    r0.x, r0.x, c24.w
+   add    r2, r2, -r1  + maxs_sat r0.x, |r0.x|
+   mad_sat oC0, r2, r0.x, r1
+   ```
+
+   c24 = (range, −scale·range, min(minBlur, maxBlur), maxBlur or 1 if
+   negative), range = 1/(scale − bias). `scale` and `bias` are the projected
+   depths, through the camera's ZRange, of the focal plane and of
+   `focal · (1 − blurDepth)`, as `NgDOFProc::Set` computes them. Retail runs
+   reverse-Z (`DxRnd::mReverseZ(1)`, `D3DCMP_GREATER`, `DxCam::ProjectZ`), so
+   `1 − z` is the standard [0 near, 1 far] depth. The depth is read once per
+   pixel at the texel centre of a same-size texture, so no filter applies to it.
+
+The old pass had none of this. It linearised depth, used its own
+`|depth − focal| / blurDepth` circle of confusion, and ran one full-resolution
+Poisson pass.
+
+### 18.4 The port
+
+`gfx/DofPass.cpp`:
+
+- Quarter-size A, B and a full-size output in the scene's format. Downsample
+  is the exact 4×4 box (as `RB3RetailPost`'s `downsample_4x`). The two blurs use
+  the retail tables and scales, with a linear, clamp sampler. The composite is
+  the bit-`0x8` mix with `z` read as stored, since this renderer is standard-Z.
+- The depth is a `texture_depth_multisampled_2d` read with `textureLoad`
+  (sample 0, as a Xenos depth resolve keeps). No sampler touches it, so no
+  filterable sample type is needed. The separate depth-resolve pass and its
+  module are gone; the dc3 module table is 9 entries, not 10.
+- `WgpuRnd::CreateDepthTexture` adds `TextureBinding` and a `DepthOnly` view,
+  `mDepthSampleView`. The attachment view keeps both aspects.
+- The pass no longer swaps the renderer's intermediate texture with its own.
+  `PostProcPass` hands its output to the composite as the scene. Bloom still
+  reads the sharp scene (`RB3RetailPost::Run` takes the bloom source
+  separately), as retail's bloom reads the pre-process texture. Frames without
+  DoF pass the same view for both.
+- Each blur pass has its own uniform buffer: `Queue::WriteBuffer` lands at
+  Submit, ahead of every pass in the frame.
+- `scale`/`bias` are derived in the pass from `TheDOFProc`'s values and
+  `RndCam::Current()`. A temporary probe showed the camera there is the camera
+  `DOFProc::Set` received in 22 of 22 samples across a Quickplay run (ZRange
+  0.1 to 1, near 10, far 10,000).
+
+The tap tables (16 + 16 values) and the four scale constants were compared
+mechanically with rb3-xenon's `rndobj/DOFProc_NG.cpp`: identical.
+
+### 18.5 Measurements
+
+**Validation.** Quickplay through `game_screen` and four gameplay offsets, twice
+(the probe build, then the final build): 0 WebGPU errors each. Title: 0 on all
+three legs.
+
+**GPU test** (`rb3 native/tests/test_dof_pass.cpp`, dc3 flavor). This drives
+`DofPass::Run` on the device at 1280 × 720 inside a validation error scope. It
+compares the output with a CPU model of the chain (box, two 8-tap bilinear
+blurs, the bit-`0x8` mix, 8-bit targets between passes):
+
+| depth | f | max \|gpu − model\| (of 255) |
+|---|---|---|
+| focal plane (z = scale) | 0 | 0 |
+| near plane (z = 0) | 1 (maxBlur) | 2 |
+| half way (z = (scale + bias)/2) | 0.5 | 1 |
+
+The tolerance is 3. Replacing `abs(t)` with `t` in the composite reads 185 and
+92 and fails. A third case feeds the old depth+stencil view and requires the
+scope to report the aspect error. The model shares `RetailBlurOffsets` and
+`RetailConstants` with the pass, so the test checks the shaders against those
+functions; the functions' constants are the ones compared with rb3-xenon above.
+
+**Before / after.** Base is rb3 without the DOFProc (DoF never on); before is
+the DOFProc on the old engine; after is the final build:
+
+| leg | gameplay errors | the four gameplay shots |
+|---|---|---|
+| base | 0 | four distinct frames, no DoF |
+| before | 7,186 | byte-identical: frozen |
+| after | 0 | four distinct frames with DoF |
+
+A same-run toggle (`/api/dta/eval {rnd set_dof_max_scale 0}`, which makes
+`maxBlur` 0 and `Enabled()` false, a shot 4 to 6 frames later, then restore)
+gives a DoF-on/DoF-off pair at each offset. Mean horizontal gradient, as a
+sharpness figure, is lower with DoF on in all four pairs: 4.27 / 5.35,
+10.58 / 11.93, 1.49 / 1.67, 2.84 / 3.40. By eye, near crowd silhouettes and
+the venue behind the subject soften while the track stays sharp, consistent
+with a retail 360 gameplay capture
+(`rb3/images/retail-screenshots/yt_qRagnZCIMzk_gameplay_guitar.png`), whose
+venue is heavily blurred behind the highway. That capture is a different song
+and shot, so it supports the effect, not its exact strength. At offset 60 the
+camera cut between the two shots, so that pair is not the same content.
+
+Title, `title_fidelity.py` against TCRF, frame 400 (sky_dE / city_dE /
+city_edge): base 11.4 / 11.8 / 0.910, before 11.5 / 11.8 / 0.912, after
+11.4 / 11.9 / 0.910. These are within run-to-run noise, as expected for a
+screen with no DoF.
+
+Scratch paths (not committed): `~/tmp/w16ro/` (`venue-{base,before,probe,after}`,
+`title-*`, `sheet-*.png`, the disassembly under `sh/`).
+
+### 18.6 Consumer verification (engine `w16-ro`)
+
+| consumer | instrument | result |
+|---|---|---|
+| rb3 `w16-ro`, desktop, dc3 (`-DMILO_ENGINE_PATH` at this worktree, confirmed in `CMakeCache.txt`) | `ctest` | 128 tests: 121 passed, 7 skipped (the seven of 16.4), 0 failed, rc=0. The three added are `DofPassTest.*`; base was 125 (123 + the two census tests) |
+| rb3-xenon (DC3 shape) | its `native/build` compile commands, engine paths pointed at this worktree | `DofPass`, `PostProcPass`, `RB3RetailPost`, `BloomPass`, `Rnd_Wgpu`, `ShippedWgsl_DC3` compile with 0 errors; the object defines `DofPass::RetailConstants`, so the worktree source was compiled |
+
+### 18.7 Not done
+
+- **Retail's downsample taps.** Retail averages four bilinear taps at
+  ±2·c15 (c15 is set outside the shader and was not traced). The port takes
+  the exact 4×4 box, as `RB3RetailPost` does.
+- **DoF with other post bits.** Only permutation `0x8` alone was read. How
+  retail orders the DoF mix against chromatic aberration in one `postprocess`
+  permutation was not examined. Here the aberration taps read the DoF image.
+- **No pixel comparison with retail** at the same shot (no xenia gameplay
+  capture of the same frame).
+- **DC3 content and rb3-xenon at runtime.** Their `NgDOFProc` drives the same
+  pass. rb3-xenon's native `Set` only enables on the game screen. Neither
+  consumer was run; DoF frames there would have hit the same invalid command
+  buffer before this change.
+- rb3's rb3 flavor (no `DofPass`; the weak hook stays unset), the web build,
+  rb3-xenon's native gate and dc3-decomp were not built or run.
 - No merge, pin bump or push.

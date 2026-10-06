@@ -413,6 +413,7 @@ void WgpuRnd::Terminate() {
     // use-after-free in static destructor (Dawn/Vulkan teardown ordering)
     mDepthTex = nullptr;
     mDepthView = nullptr;
+    mDepthSampleView = nullptr;
     mWhiteTex = nullptr;
     mWhiteTexView = nullptr;
     mFlatNormalTex = nullptr;
@@ -552,7 +553,7 @@ void WgpuRnd::FlushPostProcessingForOverlay() {
     if (mIntermediateView && RndPostProc::Current() && !mPostProcFlushed) {
         mPostProcPass.Run(mEncoder, mIntermediateView, mIntermediateTex,
                           mIntermediateWidth, mIntermediateHeight,
-                          mDepthView, FrameTarget(), mBlackTexView, mGpu);
+                          mDepthSampleView, kMSAASamples, FrameTarget(), mBlackTexView, mGpu);
     }
 
     int curW = mGpu.WindowWidth();
@@ -628,7 +629,7 @@ void WgpuRnd::FlushWorldPost() {
             mPostOutHeight = h;
         }
         mPostProcPass.Run(mEncoder, mIntermediateView, mIntermediateTex, w, h,
-                          mDepthView, mPostOutView, mBlackTexView, mGpu);
+                          mDepthSampleView, kMSAASamples, mPostOutView, mBlackTexView, mGpu);
         mPostProcFlushed = true;
 
         // Resume the frame pass (now resolving to the frame target) and lay the
@@ -1166,7 +1167,7 @@ void WgpuRnd::EndDrawing() {
         if (mIntermediateView && RndPostProc::Current() && !mPostProcFlushed) {
             mPostProcPass.Run(mEncoder, mIntermediateView, mIntermediateTex,
                               mIntermediateWidth, mIntermediateHeight,
-                              mDepthView, FrameTarget(), mBlackTexView, mGpu);
+                              mDepthSampleView, kMSAASamples, FrameTarget(), mBlackTexView, mGpu);
         }
 
         // The display gamma ramp (RB3: DxRnd::SetupGamma's D3DDevice_SetGammaRamp),
@@ -1263,12 +1264,18 @@ void WgpuRnd::CreateDepthTexture(int w, int h) {
         desc.size.height = h;
         desc.size.depthOrArrayLayers = 1;
         desc.format = wgpu::TextureFormat::Depth24PlusStencil8;
-        desc.usage = wgpu::TextureUsage::RenderAttachment;
+        // TextureBinding: depth of field reads it (gfx/DofPass.cpp).
+        desc.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding;
         desc.mipLevelCount = 1;
         desc.sampleCount = kMSAASamples;
 
         mDepthTex = mGpu.Device().CreateTexture(&desc);
         mDepthView = mDepthTex.CreateView();
+        // A binding may select one aspect only; the attachment view keeps both.
+        wgpu::TextureViewDescriptor dv{};
+        dv.label = "DepthSample";
+        dv.aspect = wgpu::TextureAspect::DepthOnly;
+        mDepthSampleView = mDepthTex.CreateView(&dv);
         mDepthWidth = w;
         mDepthHeight = h;
     }

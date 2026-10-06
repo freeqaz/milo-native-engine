@@ -271,18 +271,25 @@ float PostProcPass::StepFlicker(RndPostProc* pp, float dt) {
     return 1.0f;
 }
 
-void PostProcPass::Run(wgpu::CommandEncoder& encoder, wgpu::TextureView& intermediateView,
-                       wgpu::Texture& intermediateTex, int intermediateW, int intermediateH,
-                       wgpu::TextureView& depthView, wgpu::TextureView& frameView,
-                       wgpu::TextureView& blackTexView, GpuDevice& gpu) {
+void PostProcPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& intermediateView,
+                       const wgpu::Texture& intermediateTex, int intermediateW, int intermediateH,
+                       const wgpu::TextureView& depthView, uint32_t depthSamples,
+                       wgpu::TextureView& frameView, wgpu::TextureView& blackTexView,
+                       GpuDevice& gpu) {
     EnsurePipeline(gpu);
 
     RndPostProc* pp = RndPostProc::Current();
     if (!pp) return;
 
-    // Run DOF before bloom/composite
-    mDof.Run(encoder, intermediateView, intermediateTex, depthView,
-             intermediateW, intermediateH, gpu);
+    // Depth of field first. As in retail, where the blur is mixed in by the
+    // post-process shader and bloom reads the pre-process texture, the
+    // depth-of-field image replaces the scene in the composite only; bloom
+    // still reads the sharp scene.
+    wgpu::TextureView sceneView = intermediateView;
+    if (mDof.Run(encoder, intermediateView, intermediateTex.GetFormat(), depthView, depthSamples,
+                 intermediateW, intermediateH, gpu)) {
+        sceneView = mDof.OutputView();
+    }
 
     if constexpr (rndshape::kRetailPostChain) {
         if (const int mode = rndshape::RetailPostMode()) {
@@ -292,7 +299,8 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, wgpu::TextureView& interme
             if (mode == 3 || mode == 4) rp.debugView = mode - 2;
             if (mode == 5) rp.bloom = false;
             rp.time = mNoiseTime;
-            mRetail.Run(encoder, intermediateView, intermediateW, intermediateH, frameView, rp, gpu);
+            mRetail.Run(encoder, sceneView, intermediateView, intermediateW, intermediateH, frameView, rp,
+                        gpu);
             return;
         }
     }
@@ -355,7 +363,7 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, wgpu::TextureView& interme
 
     wgpu::BindGroupEntry bgEntries[4] = {};
     bgEntries[0].binding = 0;
-    bgEntries[0].textureView = intermediateView;
+    bgEntries[0].textureView = sceneView;
     bgEntries[1].binding = 1;
     bgEntries[1].sampler = mDefaultSampler;
     bgEntries[2].binding = 2;

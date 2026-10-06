@@ -8,8 +8,7 @@ const ShippedWgslModule* ShippedWgslModules(int* count) {
     static const ShippedWgslModule kModules[] = {
         {"gfx/standard_wgsl.inc", StandardWgslSource()},
         {"gfx/BloomPass.cpp", BloomPassWgslSource()},
-        {"gfx/DofPass.cpp (dof)", DofPassWgslSource()},
-        {"gfx/DofPass.cpp (depth resolve)", DofDepthResolveWgslSource()},
+        {"gfx/DofPass.cpp", DofPassWgslSource()},
         {"gfx/DrawRect2D.cpp", DrawRect2DWgslSource()},
         {"gfx/PostProcPass.cpp", PostProcPassWgslSource()},
         {"gfx/RB3RetailPost.cpp", RB3RetailPostWgslSource()},
