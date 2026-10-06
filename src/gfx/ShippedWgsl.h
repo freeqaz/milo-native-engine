@@ -29,5 +29,6 @@ const char* DrawRect2DWgslSource();    // gfx/DrawRect2D.cpp
 const char* PostProcPassWgslSource();  // gfx/PostProcPass.cpp
 const char* RB3RetailPostWgslSource(); // gfx/RB3RetailPost.cpp
 const char* DisplayRampWgslSource();   // gfx/DisplayRamp.cpp
+const char* PointTestPassWgslSource(); // gfx/PointTestPass.cpp, flare occlusion queries
 const char* ShadowPassWgslSource();    // gfx/ShadowPass.cpp
 const char* ParticleWgslSource();      // platform/Part_Wgpu.cpp

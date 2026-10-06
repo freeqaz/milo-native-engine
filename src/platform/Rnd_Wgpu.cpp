@@ -335,6 +335,10 @@ void WgpuRnd::InitGpuResources() {
     mShadowPass.Init(mGpu);
     mPostProcPass.Init(mGpu);
 
+    // Answer flare point tests with occlusion queries (PointTestHook.h).
+    mPointTester.rnd = this;
+    SetNativePointTester(&mPointTester);
+
     // Native port: disable Xbox 360 safe area shrink (TVs need overscan
     // compensation, but PC/Mac monitors don't).
     SetShrinkToSafeArea(false);
@@ -439,6 +443,9 @@ void WgpuRnd::Terminate() {
 
     // Render passes
     mDrawRect2D.Terminate();
+    if (GetNativePointTester() == &mPointTester) SetNativePointTester(nullptr);
+    mPointTestQueue.clear();
+    mPointTestPass.Terminate(&mGpu);
     mPostProcPass.Terminate();
     mShadowPass.Terminate();
 
@@ -653,7 +660,121 @@ void WgpuRndBase::DoPostProcess() {
     Rnd::DoPostProcess();
     static_cast<WgpuRnd*>(this)->FlushWorldPost();
 }
+
+// Retail DxRnd::DoWorldEnd: Rnd::DoWorldEnd, then DoPointTests (then
+// SavePreBuffer, which has no native counterpart).
+void WgpuRndBase::DoWorldEnd() {
+    Rnd::DoWorldEnd();
+    static_cast<WgpuRnd*>(this)->RunPointTests();
+}
 #endif
+
+// ----------------------------------------------------------------------------
+// Flare point tests (platform/PointTestHook.h, gfx/PointTestPass.h)
+// ----------------------------------------------------------------------------
+
+static void CamSceneMatrices(RndCam* cam, float* viewProj, float* viewOut);
+
+namespace {
+void DeliverPointTestAnswer(const PointTestPass::Answer& a, void*) {
+    NativePointTestResultFn fn = GetNativePointTestResultFn();
+    if (!fn) return;
+    NativePointTestResult r;
+    r.key = a.key;
+    r.pointDone = a.pointDone;
+    r.visible = a.visible;
+    r.areaDone = a.areaDone;
+    r.area = a.area;
+    fn(r);
+}
+}  // namespace
+
+bool WgpuRnd::QueuePointTest(const NativePointTest& t) {
+    if (!mGpuResourcesReady || !mGpu.IsReady() || !mFrameView || !mDrawing) return false;
+    if (!t.pointTest && !t.areaTest) return false;
+    RndCam* cam = RndCam::Current();
+    if (!cam || t.screenW <= 0.0f || t.screenH <= 0.0f) return false;
+
+    // Retail stores cam->ProjectZ(depth), the point's depth-buffer value under
+    // the camera's z range. Here: the same projection the scene draws with,
+    // through the camera's viewport depth range (ApplyCameraViewport).
+    float vp[16];
+    CamSceneMatrices(cam, vp, nullptr);
+    float clip[4];
+    for (int j = 0; j < 4; j++)
+        clip[j] = t.world[0] * vp[0 * 4 + j] + t.world[1] * vp[1 * 4 + j] +
+                  t.world[2] * vp[2 * 4 + j] + vp[3 * 4 + j];
+    if (!(clip[3] > 0.0f)) return false;
+    const Vector2& zr = rndshape::CamZRange(cam);
+    const float ndcZ = clip[2] / clip[3];
+    const float z = zr.x + ndcZ * (zr.y - zr.x);
+
+    const int w = mGpu.WindowWidth(), h = mGpu.WindowHeight();
+    if (w <= 0 || h <= 0) return false;
+    const float kx = (float)w / t.screenW, ky = (float)h / t.screenH;
+    PointTestPass::Query q;
+    q.key = t.key;
+    // Retail: x = (int)(screen.x * width), drawn as a one-pixel point.
+    q.px = std::floor(t.screenX * (float)w) + 0.5f;
+    q.py = std::floor(t.screenY * (float)h) + 0.5f;
+    q.rx = t.rect[0] * kx;
+    q.ry = t.rect[1] * ky;
+    q.rw = t.rect[2] * kx;
+    q.rh = t.rect[3] * ky;
+    q.z = z;
+    q.point = t.pointTest;
+    q.area = t.areaTest;
+    // Report visible pixels in the consumer's pixels.
+    q.areaScale = (t.screenW * t.screenH) / ((float)w * (float)h);
+    mPointTestQueue.push_back(q);
+    return true;
+}
+
+void WgpuRnd::CancelPointTests(const void* key) {
+    for (size_t i = 0; i < mPointTestQueue.size();) {
+        if (mPointTestQueue[i].key == key)
+            mPointTestQueue.erase(mPointTestQueue.begin() + i);
+        else
+            i++;
+    }
+    mPointTestPass.Cancel(key);
+}
+
+void WgpuRnd::RunPointTests() {
+    if (mPointTestsRan) return;
+    mPointTestsRan = true;
+    if (!mGpuResourcesReady || !mGpu.IsReady()) {
+        mPointTestQueue.clear();
+        return;
+    }
+
+    // Retail first reads back the queries it issued last frame, after blocking
+    // on that frame's fence. The web cannot block, so it takes what is ready.
+#ifdef __EMSCRIPTEN__
+    const bool wait = false;
+#else
+    const bool wait = true;
+#endif
+    mPointTestPass.Collect(wait, DeliverPointTestAnswer, nullptr, mGpu);
+
+    if (mPointTestQueue.empty()) return;
+    // The tests read the frame's depth: only while the frame (not a render
+    // target) is being drawn.
+    if (!mFrameView || !mFramePassValid || mActiveTargetTex || !mDepthView) {
+        mPointTestQueue.clear();
+        return;
+    }
+    const bool resume = mInPass;
+    EndActivePass();
+    mPointTestPass.Record(mEncoder, mDepthView, wgpu::TextureFormat::Depth24PlusStencil8,
+                          kMSAASamples, (uint32_t)mDepthWidth, (uint32_t)mDepthHeight,
+                          mPointTestQueue.data(), mPointTestQueue.size(), mGpu);
+    mPointTestQueue.clear();
+    if (resume) {
+        BeginFramePass(false);
+        mLastSceneCam = nullptr;  // the new pass has no scene bind group yet
+    }
+}
 
 void WgpuRnd::SetViewport(const Viewport& v) {
     WgpuRndBase::SetViewport(v);
@@ -911,6 +1032,11 @@ void WgpuRnd::MakeDrawTarget() {
 }
 
 void WgpuRnd::BeginDrawing() {
+    // Retail Rnd::BeginDrawing clears the queued point tests; a batch recorded
+    // into an encoder that was never submitted has no answers coming.
+    mPointTestQueue.clear();
+    mPointTestsRan = false;
+    mPointTestPass.DiscardUnsubmitted();
     RndMesh_ResetFrameStats();
     rndshape::DrawLogFrameBegin();
     mPostProcFlushed = false;
@@ -1159,6 +1285,10 @@ void WgpuRnd::EndDrawing() {
         return;
     }
 
+    // Retail Rnd::EndDrawing ends the world first, and DoWorldEnd runs the
+    // point tests; a frame that never called EndWorld runs them here.
+    RunPointTests();
+
     if (mInPass) {
         EndActivePass();
 
@@ -1206,6 +1336,7 @@ void WgpuRnd::EndDrawing() {
 
         wgpu::CommandBuffer cmd = mEncoder.Finish();
         mGpu.Queue().Submit(1, &cmd);
+        mPointTestPass.Submitted();
 
         MaybeCaptureFrame();
         MaybeEncodeVideoFrame();
@@ -1382,6 +1513,79 @@ void WgpuRnd::CreateDefaultTextures() {
     }
 }
 
+// The view-projection a scene draw under `cam` uses (SceneUniforms.viewProj,
+// row-major, row vectors), and its view part where it computes one. Shared
+// by WriteSceneUniforms and the point tests, which must project a flare the
+// way its surroundings were drawn.
+static void CamSceneMatrices(RndCam* cam, float* viewProj, float* viewOut) {
+    // Check if mViewProjMatrix was externally set (milo-viewer does this).
+    const Hmx::Matrix4& vp = rndshape::CamViewProjMatrix(cam);
+    bool isIdentity = (vp.x.x == 1 && vp.x.y == 0 && vp.x.z == 0 && vp.x.w == 0 &&
+                       vp.y.x == 0 && vp.y.y == 1 && vp.y.z == 0 && vp.y.w == 0 &&
+                       vp.z.x == 0 && vp.z.y == 0 && vp.z.z == 1 && vp.z.w == 0 &&
+                       vp.w.x == 0 && vp.w.y == 0 && vp.w.z == 0 && vp.w.w == 1);
+
+    if (!isIdentity) {
+        // Use externally-set viewProj (milo-viewer orbit cam path)
+        memcpy(viewProj, &vp, 64);
+    } else {
+        // Use engine's GetViewProjectXfms which accounts for mLocalProjectXfm,
+        // screen rect, and the Y/Z axis flip (Milo Y-forward → D3D/WebGPU Z-forward).
+        // Ensure mInvWorldXfm is up to date (may be zero if camera was never dirty).
+        cam->UpdatedWorldXfm();
+
+        Transform viewXfm;
+        Hmx::Matrix4 projMtx;
+        rndshape::CamViewProjectXfms(cam, viewXfm, projMtx);
+
+        // Convert Transform (3x4 row-major) to 4x4 view matrix
+        float view[16] = {
+            viewXfm.m.x.x, viewXfm.m.x.y, viewXfm.m.x.z, 0,
+            viewXfm.m.y.x, viewXfm.m.y.y, viewXfm.m.y.z, 0,
+            viewXfm.m.z.x, viewXfm.m.z.y, viewXfm.m.z.z, 0,
+            viewXfm.v.x,   viewXfm.v.y,   viewXfm.v.z,   1
+        };
+
+        // Projection from engine (already handles FOV, aspect, screen rect, axis flip)
+        float proj[16] = {
+            projMtx.x.x, projMtx.x.y, projMtx.x.z, projMtx.x.w,
+            projMtx.y.x, projMtx.y.y, projMtx.y.z, projMtx.y.w,
+            projMtx.z.x, projMtx.z.y, projMtx.z.z, projMtx.z.w,
+            projMtx.w.x, projMtx.w.y, projMtx.w.z, projMtx.w.w,
+        };
+
+        // ViewProj = View * Proj (row-major multiply).
+        // WGSL reads this row-major data as column-major mat4x4f, effectively
+        // seeing the transpose. The shader computes VP_wgsl * pos, which equals
+        // (VP_rowmajor)^T * pos = pos^T * VP_rowmajor in row-vector form — the
+        // same result as D3D's mul(pos, VP).
+        for (int i = 0; i < 4; i++) {
+            for (int j = 0; j < 4; j++) {
+                float sum = 0;
+                for (int k = 0; k < 4; k++) {
+                    sum += view[i * 4 + k] * proj[k * 4 + j];
+                }
+                viewProj[i * 4 + j] = sum;
+            }
+        }
+        if (viewOut) memcpy(viewOut, view, sizeof(view));
+
+        // HUD projection: no scaling needed. The gameplay HUD uses a
+        // cylindrical 3D layout with meshes at world X=±700 (view
+        // distance ~670), giving NDC_x = ±1.88 — beyond the clip
+        // volume [-1,1]. On Xbox 360, the Xenos GPU guard-band
+        // rasterizes these triangles without clipping; the viewport
+        // scissor clips pixels outside the render target, so panels
+        // appear partially off-screen at the edges.
+        //
+        // On native (WebGPU/Vulkan/Metal), desktop GPUs have a
+        // similarly large guard band (typically ±4096+ in viewport
+        // coords). Triangles with vertices beyond NDC ±1 are
+        // rasterized and viewport-clipped, matching Xbox behavior
+        // exactly — no projection hack required.
+    }
+}
+
 void WgpuRnd::WriteSceneUniforms() {
     SceneUniforms scene{};
     memset(&scene, 0, sizeof(scene));
@@ -1400,72 +1604,7 @@ void WgpuRnd::WriteSceneUniforms() {
             return;  // keep previous good uniforms
         }
 
-        // Check if mViewProjMatrix was externally set (milo-viewer does this).
-        const Hmx::Matrix4& vp = rndshape::CamViewProjMatrix(cam);
-        bool isIdentity = (vp.x.x == 1 && vp.x.y == 0 && vp.x.z == 0 && vp.x.w == 0 &&
-                           vp.y.x == 0 && vp.y.y == 1 && vp.y.z == 0 && vp.y.w == 0 &&
-                           vp.z.x == 0 && vp.z.y == 0 && vp.z.z == 1 && vp.z.w == 0 &&
-                           vp.w.x == 0 && vp.w.y == 0 && vp.w.z == 0 && vp.w.w == 1);
-
-        if (!isIdentity) {
-            // Use externally-set viewProj (milo-viewer orbit cam path)
-            memcpy(scene.viewProj, &vp, 64);
-        } else {
-            // Use engine's GetViewProjectXfms which accounts for mLocalProjectXfm,
-            // screen rect, and the Y/Z axis flip (Milo Y-forward → D3D/WebGPU Z-forward).
-            // Ensure mInvWorldXfm is up to date (may be zero if camera was never dirty).
-            cam->UpdatedWorldXfm();
-
-            Transform viewXfm;
-            Hmx::Matrix4 projMtx;
-            rndshape::CamViewProjectXfms(cam, viewXfm, projMtx);
-
-            // Convert Transform (3x4 row-major) to 4x4 view matrix
-            float view[16] = {
-                viewXfm.m.x.x, viewXfm.m.x.y, viewXfm.m.x.z, 0,
-                viewXfm.m.y.x, viewXfm.m.y.y, viewXfm.m.y.z, 0,
-                viewXfm.m.z.x, viewXfm.m.z.y, viewXfm.m.z.z, 0,
-                viewXfm.v.x,   viewXfm.v.y,   viewXfm.v.z,   1
-            };
-
-            // Projection from engine (already handles FOV, aspect, screen rect, axis flip)
-            float proj[16] = {
-                projMtx.x.x, projMtx.x.y, projMtx.x.z, projMtx.x.w,
-                projMtx.y.x, projMtx.y.y, projMtx.y.z, projMtx.y.w,
-                projMtx.z.x, projMtx.z.y, projMtx.z.z, projMtx.z.w,
-                projMtx.w.x, projMtx.w.y, projMtx.w.z, projMtx.w.w,
-            };
-
-            // ViewProj = View * Proj (row-major multiply).
-            // WGSL reads this row-major data as column-major mat4x4f, effectively
-            // seeing the transpose. The shader computes VP_wgsl * pos, which equals
-            // (VP_rowmajor)^T * pos = pos^T * VP_rowmajor in row-vector form — the
-            // same result as D3D's mul(pos, VP).
-            for (int i = 0; i < 4; i++) {
-                for (int j = 0; j < 4; j++) {
-                    float sum = 0;
-                    for (int k = 0; k < 4; k++) {
-                        sum += view[i * 4 + k] * proj[k * 4 + j];
-                    }
-                    scene.viewProj[i * 4 + j] = sum;
-                }
-            }
-            memcpy(scene.view, view, sizeof(view));
-
-            // HUD projection: no scaling needed. The gameplay HUD uses a
-            // cylindrical 3D layout with meshes at world X=±700 (view
-            // distance ~670), giving NDC_x = ±1.88 — beyond the clip
-            // volume [-1,1]. On Xbox 360, the Xenos GPU guard-band
-            // rasterizes these triangles without clipping; the viewport
-            // scissor clips pixels outside the render target, so panels
-            // appear partially off-screen at the edges.
-            //
-            // On native (WebGPU/Vulkan/Metal), desktop GPUs have a
-            // similarly large guard band (typically ±4096+ in viewport
-            // coords). Triangles with vertices beyond NDC ±1 are
-            // rasterized and viewport-clipped, matching Xbox behavior
-            // exactly — no projection hack required.
-        }
+        CamSceneMatrices(cam, scene.viewProj, scene.view);
 
         // Camera position (in world space, before axis flip)
         const Transform& worldXfm = cam->WorldXfm();

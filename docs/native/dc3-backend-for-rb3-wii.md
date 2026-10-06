@@ -2906,6 +2906,7 @@ process.
   passes is treated as fully visible, including one behind geometry that
   retail's query would have dimmed or hidden. That matches what the native
   path already did for visibility; it only now applies to brightness as well.
+  **Done for the rb3 consumer on the dc3 backend in section 20 (W16-RU).**
 - **The bloom mask's dot product** is taken of the clamped colour, not the
   unclamped one as retail does (19.2).
 - **The rest of the title gap.** TCRF's greenish street haze and the
@@ -2926,3 +2927,289 @@ process.
   byte-identical (`cmp`) to the `fix` binary measured in 19.5.
 - The change is inside `#ifdef HX_NATIVE`, so the Wii match build compiles
   the same code as before.
+
+## 20. Flare occlusion queries, from retail (lane W16-RU, 2026-10-06)
+
+Section 19 made the title's flares draw, but with no occlusion test: native
+`Rnd::TestPoint` treated every in-frustum flare as visible and unoccluded
+(19.8). A flare behind geometry therefore drew at full strength. This section
+adds retail's point test to the dc3 backend as WebGPU occlusion queries, and
+rb3's `TestPoint` now uses it.
+
+| repo | branch | commit |
+|---|---|---|
+| milo-native-engine | `w16-ru` | `f40a970` (on `a78f844`), and this section |
+| rb3 | `w16-ru` | `104d2ab0a` (on `48f4f734f`) |
+
+### 20.1 What retail does
+
+`DxRnd::DoPointTests` (rb3-xenon `rnddx9/Rnd_Xbox.cpp`) runs from
+`DoWorldEnd`, after the world and before post-processing.
+
+1. It blocks on the previous frame's fence and reads back the queries it
+   issued then. The point query gives `flare->SetVisible(samples != 0)`; the
+   area query gives `flare->SetOcclusionResult(samples)`.
+2. It issues this frame's queries for every test `Rnd::TestPoint` queued: a
+   one-pixel point at the flare's screen position and the flare's `mArea`
+   rect. Both are drawn at the point's projected depth (`ProjectZ`), with
+   depth test LESS, depth and colour writes off and the viewport disabled.
+
+`RndFlare::DrawShowing` multiplies the flare's strength by
+`mOcclusionResult / (rect.w · rect.h)` (always on, 19.3), and a flare whose
+point test fails fades out. The answer a flare draws with is therefore one
+frame old.
+
+### 20.2 Change
+
+**The seam** (`src/platform/PointTestHook.h`, always built, no Milo or WebGPU
+types):
+
+- `NativePointTester` is implemented by a backend with occlusion queries.
+  `QueuePointTest(NativePointTest)` returns false when it cannot test now,
+  and the consumer then uses its own fallback. `CancelPointTests(key)`
+  guarantees that no answer for that key is delivered afterwards.
+- `NativePointTest` holds the flare (an opaque key), the tested world point,
+  its 0..1 screen position, `mArea` in the consumer's screen pixels and those
+  pixels' size, and the point/area flags.
+- The consumer registers a `NativePointTestResultFn`. It receives
+  `{key, pointDone, visible, areaDone, area}`, with `area` in the consumer's
+  pixels.
+- `Set/GetNativePointTester` and `Set/GetNativePointTestResultFn` hold the
+  two pointers. With no tester registered (headless builds, the rb3 BandRnd
+  flavor) the consumer keeps its fallback.
+
+**The pass** (`src/gfx/PointTestPass.{h,cpp}`, rndobj-free, WGSL
+`vs_point_test` in the dc3 shipped-WGSL table):
+
+- `Record` draws a batch as one render pass with no colour attachments over
+  the frame's depth target (`Depth24PlusStencil8`, 4x MSAA). It loads and
+  keeps the depth, and attaches an occlusion `QuerySet` with two queries per
+  test.
+- The draws are a point list and a 4-vertex strip from a per-batch vertex
+  buffer. The pipelines have a vertex stage only, depth compare `Less`, depth
+  write off and stencil masks 0. The viewport is the whole target with depth
+  range 0..1, and the vertices carry window depth directly.
+- It then resolves the query set and copies it to a `MapRead` buffer.
+  `Submitted()` maps that buffer after the frame's submit.
+- `Collect(wait)` delivers finished batches oldest first. With `wait` it
+  blocks in `Instance::WaitAny` for up to 1 s per batch, as retail blocks on
+  the fence; without it (`__EMSCRIPTEN__`) it calls `ProcessEvents` and takes
+  what is ready.
+- Counts are in samples, so `area = samples / sampleCount · areaScale`.
+  `areaScale` converts target pixels back to the consumer's pixels.
+- At most 3 batches are in flight. `Cancel(key)` nulls the key in every
+  in-flight batch, and `Terminate` unmaps before freeing.
+
+**The backend** (`src/platform/Rnd_Wgpu.{h,cpp}`):
+
+- `QueuePointTest` computes the window depth the way the scene draws:
+  - `CamSceneMatrices` is factored out of `WriteSceneUniforms` (a pure
+    refactor, still used there);
+  - the result goes through the camera's z range:
+    `z = zr.x + ndcZ · (zr.y − zr.x)`, as `ApplyCameraViewport` sets it.
+
+  The point is placed at `floor(screenX · w) + 0.5`, matching retail's
+  `(int)(x · width)`, and the rect is scaled from the consumer's pixels to
+  the target's.
+- `RunPointTests` runs once per frame:
+  1. collect the previous frames' answers;
+  2. if tests are queued and the frame (not a render target) is being drawn,
+     end the active pass, record the batch against `mDepthView`, and resume
+     the frame pass.
+- It is called from `WgpuRndBase::DoWorldEnd` (new override, RB3-Wii shape;
+  retail's order is `Rnd::DoWorldEnd`, then `DoPointTests`). `EndDrawing`
+  also calls it as a fallback for frames that never end a world, and on the
+  DC3 shape it is a no-op with an empty queue.
+- `BeginDrawing` drops anything queued but never recorded.
+
+**The consumer** (rb3 `src/system/rndobj/Rnd.cpp`, `#ifdef HX_NATIVE`):
+
+- `TestPoint` fills a `NativePointTest` from the flare (`mArea`, `mPointTest`,
+  `mAreaTest`, `Width()`/`Height()`) and queues it, keeping W16-RS's
+  "visible, clipped area" fallback when there is no tester or it declines.
+- The result handler mirrors retail: `SetVisible(visible)` for an answered
+  point, and the area into the occlusion-result field (`unkec`) for an
+  answered area.
+- `RemovePointTest` also cancels the flare's tests, so a deleted flare is
+  never answered.
+
+Before the change I expected:
+- flares wholly behind geometry to stop drawing;
+- partly covered ones to dim in proportion to their hidden area;
+- unoccluded ones (`Flare_lamp01`, `Flare_red_blink01`) to keep their W16-RS
+  brightness;
+- frame luma to drop slightly, since 19.5 found TCRF's flares about as bright
+  as ours.
+
+### 20.3 What the queries answer on the title
+
+A temporary probe (removed before commit) logged each flare's area ratio
+(`unkec / (rect.w · rect.h)`) and its point answer. The values were constant
+from frame 30 to 400:
+
+| flare | ratio | point | what covers it |
+|---|---|---|---|
+| `Flare_lamp01` | 1.000 (16383 / 16384) | visible | nothing |
+| `Flare_red_blink01` | 1.000 | visible | nothing |
+| `Flare_lamp02` | 0.880 | visible | the theater's edge |
+| `Flare_lamp03` | 0.875 | visible | a building edge |
+| `Flare_blink_slow` | 0.813 | visible | a tower edge |
+| `Flare_lamp04` | 0.409 | visible | the roof in front of it |
+| `Flare_red_blink02` | 0.150 | **hidden** | the 3D logo |
+| `Flare_red_blink` | 0 | **hidden** | the 3D logo |
+
+The two point-hidden blinks sit behind the logo's left glyphs. With the point
+hidden, `DrawShowing` fades them out.
+
+### 20.4 Title, before and after
+
+Base: rb3 `48f4f734f` (W16-RS), built against this engine worktree before the
+change. Fix: `104d2ab0a` + `f40a970`. Both use `title_capture.sh` with
+`RB3_FIXED_CLOCK=1`, frames 60/200/400, two runs per leg. The final
+`rb3-native`, rebuilt after the probe was removed, is byte-identical (`cmp`)
+to the measured fix binary.
+
+Mean luma in each flare's rect (1280×720, box blur 2, mean of both runs):
+
+| flare (ratio) | f60 base → fix | f200 | f400 |
+|---|---|---|---|
+| `lamp01` (1.000) | 149.1 → 148.4 | 148.7 → 148.1 | 148.7 → 148.8 |
+| `red_blink01` (1.000) | 41.3 → 40.6 | 40.4 → 40.7 | 42.9 → 43.8 |
+| `lamp02` (0.880) | 163.8 → 160.0 | 162.3 → 159.4 | 163.0 → 159.1 |
+| `lamp03` (0.875) | 90.1 → 86.2 | 93.6 → 89.7 | 91.0 → 87.2 |
+| `blink_slow` (0.813) | 81.2 → 79.4 | 58.2 → 57.8 | 58.9 → 57.9 |
+| **`lamp04` (0.409)** | **82.2 → 57.6** | **81.5 → 57.2** | **81.7 → 57.3** |
+| **`red_blink02` (hidden)** | **66.7 → 60.2** | **66.4 → 60.1** | **62.0 → 60.2** |
+| **`red_blink` (hidden)** | **40.8 → 36.4** | **42.0 → 38.0** | **36.4 → 35.3** |
+
+- The unoccluded flares are unchanged. They move by 0.9 or less, within the
+  run-to-run spread: the two base runs alone differ by up to 1.8 at
+  `lamp01`.
+- The hidden blinks lose their glow. The amplified difference image (below)
+  puts all the removed light inside their two rects.
+- `lamp04` loses 30% of its rect's luma, the largest change on the screen.
+  The partly covered lamps lose about 4.
+
+`title_fidelity.py` against TCRF (sky_dE / city_dE / city_edge, both runs):
+
+| frame | base | **fix** |
+|---|---|---|
+| 60 | 14.2–14.3 / 10.3–10.4 / 0.924–0.927 | 14.0–14.1 / **9.5–9.7 / 0.933–0.934** |
+| 200 | 15.3 / 12.2–12.3 / 0.884 | 15.2–15.3 / **11.5–11.6 / 0.887–0.889** |
+| 400 | 11.8 / 10.1–10.2 / 0.925 | 11.7 / **9.4 / 0.932** |
+
+| f400 (mean of runs) | frame luma | city luma | `city_mid` |
+|---|---|---|---|
+| retail (TCRF) | 50.1 | 52.4 | 55.0 |
+| base (W16-RS) | 50.1 | 52.0 | 49.6 |
+| **fix** | 49.15 | 50.75 | 49.0 |
+
+- city_dE improves by 0.6–0.8 at every frame and city_edge by 0.003–0.009;
+  sky_dE is unchanged or 0.1 better.
+- Frame luma drops by 0.9 at every frame (51.92 → 51.01, 53.22 → 52.37,
+  50.04 → 49.13; the runs agree to 0.24). It is now 1.0 below TCRF at f400,
+  where W16-RS had matched it. `city_mid` keeps W16-RS's gain (49.6 → 49.0).
+- **TCRF agrees on `lamp04`.** At 2x, TCRF shows a compact star with a weak
+  glow at that point. The base showed a large bloom over the roof; the fix
+  shows a small one, close to TCRF. TCRF also shows no glow at the two
+  hidden blinks' rects.
+
+Images (f200, mean of both runs; panels: before, after, TCRF, before − after
+luma ×6):
+
+- `~/tmp/w16ru/ab_blinks_f200.png`: the two hidden blinks (red rects) lose
+  their glow, and the unoccluded `red_blink01` (green) does not change.
+- `~/tmp/w16ru/ab_lamp04_f200.png`: `lamp04`'s bloom over the roof is gone.
+- `~/tmp/w16ru/ab_lamp01_f200.png`: `lamp01`, unoccluded, does not change;
+  its difference panel is flat.
+
+**0 `WebGPU error` lines** in all six title runs, base and fix. The one
+`device lost (reason 2): Device was destroyed` per run is shutdown, present
+in every leg and in W16-RS's logs.
+
+### 20.5 Tests
+
+rb3 `native/tests/test_point_test.cpp` (dc3 backend only, in `rb3-tests`):
+
+- `PointTestPassTest.CountsVisiblePixelsAgainstDepth`: a 128×64 4x
+  `Depth24PlusStencil8` target, cleared to 1.0, with z = 0.5 written over the
+  left half. Six 16×16 queries, checking that nothing is answered before
+  submit:
+
+  | case | expected |
+  |---|---|
+  | open, right half | area 256 |
+  | behind | 0, hidden |
+  | in front | 256 |
+  | straddling the edge | 128 |
+  | half off-screen, `areaScale` 0.25 | 32 |
+  | coplanar (LESS fails) | 0 |
+
+- `PointTestPassTest.CancelDropsInFlightAnswers`.
+- `RndTestPoint.FlareBehindGeometryReadsZero`, the end-to-end test through
+  rb3's real `Rnd::TestPoint`. Setup:
+  - a camera, and a real `RndMesh` wall (named, so it is not drawn as a text
+    mesh) covering x < 0;
+  - three `RndFlare`s: behind the wall, beside it, and in front of it.
+
+  Over two frames it checks:
+  - nothing is answered in the first frame;
+  - in the second, all three are answered, at `DoWorldEnd` (not the
+    `EndDrawing` fallback), with 0 WebGPU errors;
+  - the behind flare is hidden with area 0, and the other two are visible
+    with area ≈ 64 (8×8).
+
+  It runs both with and without a world end.
+- `RndTestPoint.RemovedFlareIsNeverAnswered`: a flare deleted between frames
+  gets no answer.
+
+**Sabotage**, each applied to a copy and reverted (restored sources
+byte-identical, all four tests pass again):
+
+| sabotage | tests that went red (predicted = observed) |
+|---|---|
+| depth compare `Always` | CountsVisible, FlareBehind |
+| `TestPoint` ignores the tester | FlareBehind, Removed |
+| `DoWorldEnd` does not run the tests | FlareBehind |
+| `RemovePointTest` does not cancel | Removed |
+| area reported in samples | CountsVisible, Cancel, FlareBehind |
+
+### 20.6 Not done
+
+- **The rb3 BandRnd flavor** registers no tester, so it keeps W16-RS's
+  "visible, unoccluded" fallback. It was not built or run.
+- **The web.** The pass is in the dc3 flavor's shipped WGSL, and `Collect`
+  does not block under `__EMSCRIPTEN__`, so answers arrive whenever the map
+  finishes rather than exactly one frame late. rb3-web was not built or run.
+- **The DC3 shape** (rb3-xenon, dc3-decomp) has no consumer calling the hook.
+  rb3-xenon's `Rnd::TestPoint` keeps its own `HX_NATIVE` fallback, the same
+  one W16-RS gave rb3, and could use this hook the same way. On that shape
+  `RunPointTests` runs only from `EndDrawing`, with an empty queue. rb3-xenon's native build was compiled against this worktree (20.7);
+  dc3-decomp was not.
+- **A flare with `mAreaTest` off.** Retail `DoPointTests`'s area-test else arm
+  calls `SetVisible(true)` immediately, in the same frame; the native path
+  does not mirror that arm. `mAreaTest` is always on in rb3 (19.3), so no
+  rb3 flare reaches it.
+- **Reverse Z.** Retail uses GREATER when `mReverseZ` is set; the native pass
+  always uses LESS, which is the engine's depth convention.
+- **Frame cost** was not measured. It is one depth-only pass and a 16-byte
+  readback per test, plus a wait on the previous frame's map, which the
+  frame's own submit has normally already passed.
+- **Venues and the hub** were not re-checked; 19.7 found no flare answered in
+  any gameplay frame of those runs.
+- **No merge, pin bump or push.** That is for the coordinator.
+
+### 20.7 Consumer verification
+
+- rb3 `native/build-native` was configured with
+  `MILO_ENGINE_PATH=/home/free/tmp/wt-w16ru-eng` (read back from
+  `CMakeCache.txt`) on the dc3 GPU backend, and all targets were built.
+- `ctest`: **100% tests passed out of 132**, 7 skipped (the same seven
+  fixture-gated tests as 19.9), rc=0. The four new tests account for 128 → 132.
+- **The DC3 shape compiles.** rb3-xenon's native build (main checkout,
+  read-only, out-of-tree build dir `~/tmp/w16ru/xenon-build`) was configured
+  against this worktree with `MILO_ENGINE_RNDOBJ_SHAPE=dc3`. All 3,914 edges
+  built, including `PointTestPass.cpp`, `PointTestHook.cpp` and
+  `Rnd_Wgpu.cpp`: rc=0, 0 `error:` lines. It was not run.
+- The rb3 change is inside `#ifdef HX_NATIVE`, so the Wii match build
+  compiles the same code as before.

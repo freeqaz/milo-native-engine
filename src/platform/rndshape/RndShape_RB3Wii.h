@@ -116,6 +116,10 @@ public:
         const Hmx::Color *
     ) {}
 
+    // Rnd::EndWorld's world-end step: also runs the flare point tests
+    // (WgpuRnd::RunPointTests), as retail DxRnd::DoWorldEnd runs DoPointTests
+    // after Rnd::DoWorldEnd. Defined in platform/Rnd_Wgpu.cpp.
+    void DoWorldEnd() override;
     // Rnd::EndWorld's post step: also grades the world on the GPU
     // (WgpuRnd::FlushWorldPost). Defined in platform/Rnd_Wgpu.cpp.
     void DoPostProcess() override;
