@@ -2057,6 +2057,20 @@
     "default": "off",
     "read": "presence"
   },
+  "RB3_NO_SKIN_MAT_ADOPT": {
+    "class": "feature",
+    "owner": "render/c8-faces",
+    "faithfulStatus": "live: restores retail's per-member skin materials (rb3 W16-RP). Retail merges char/main/shared/char_shared.milo with kMerge, so BandCharacter::Filter's sCharSharedDir branch repoints the installed outfit's refs (head.mesh, hands_naked.mesh, *_skin.N.mesh) from char_shared's head_naked/torso_naked/legs_skin/feet_skin/feet_socks_skin.mat to the member's own same-named objects. The native FilterSubdir shim turns that kMerge into kReplace, so Filter never ran and the whole cast drew char_shared's one instance per skin part (last SetSkinTextures wins: one gender's head diffuse/spec/normal for everyone, dummy_* torso/legs diffuse). NativeAdoptCharSharedRefs runs the same per-object step (ReplaceRefs, scoped to sOutfitDir/sResourceDir/sToDir) whenever the shim stops the merge at a subdir whose tree holds sCharSharedDir, keeping the shim's subdir topology. Measured on main_hub: 63/63 drawn skin-mesh rows own=0 before, 63/63 own=1 after. Presence read: any value, '0' included, opts out",
+    "default": "on",
+    "read": "presence"
+  },
+  "RB3_SKIN_MAT_ADOPT_PROBE": {
+    "class": "probe",
+    "owner": "render/c8-faces",
+    "faithfulStatus": "n/a: [SKIN_MAT_ADOPT] per adoption (member, outfit, subdir, objects adopted) from BandCharacter::FilterSubdir, and [SKIN_MAT] per drawn skin mesh from OutfitConfig::SetSkinTextures (material instance, owning dir, own=1 when it is the member's, diffuse/spec); rb3 W16-RP",
+    "default": "off",
+    "read": "presence"
+  },
   "RB3_WORLDPIN_PROBE": {
     "class": "probe",
     "owner": "char/anim",
