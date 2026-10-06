@@ -388,6 +388,14 @@ constexpr bool kRenderTargetForcesAlphaWrite = true;
 // and washes the sky. Draws into a target therefore write linear values.
 constexpr bool kRenderTargetStoresLinear = true;
 
+// ---- 2D rects --------------------------------------------------------------
+// RB3's DrawRect colour is the material's register colour times the colour
+// argument. OutfitConfig::MatSwap::Compose relies on it: every rect it draws
+// into an outfit's *_output target passes white and carries the palette tint
+// in sMat->SetColor(), so without the material colour every recoloured
+// garment, hair and eye composes to its untinted grey detail map.
+constexpr bool kRectModulatesMatColor = true;
+
 // ---- post-processing -------------------------------------------------------
 // RB3's mNoiseIntensity is a gain on a tiled noise TEXTURE (mNoiseMap scaled by
 // mNoiseBaseScale), not a per-pixel screen-space add: the menu and venue

@@ -117,6 +117,10 @@ constexpr bool kRenderTargetForcesAlphaWrite = false;
 // DC3 draws into render targets with the same sRGB-encoded output as the frame.
 constexpr bool kRenderTargetStoresLinear = false;
 
+// ---- 2D rects --------------------------------------------------------------
+// DC3's DrawRect colours a rect by the colour argument alone.
+constexpr bool kRectModulatesMatColor = false;
+
 // ---- post-processing -------------------------------------------------------
 // The grain strength the post-process shader adds per pixel, as authored.
 inline float PostProcGrain(const RndPostProc *pp) { return pp->GetNoiseIntensity(); }

@@ -132,6 +132,13 @@ void DrawRect2D::Draw(wgpu::RenderPassEncoder& pass, const Hmx::Rect& rect, RndM
     cBR[1] = (cTR[1] + cBL[1]) * 0.5f;
     cBR[2] = (cTR[2] + cBL[2]) * 0.5f;
     cBR[3] = (cTR[3] + cBL[3]) * 0.5f;
+    if (rndshape::kRectModulatesMatColor && mat) {
+        const Hmx::Color& mc = mat->GetColor();
+        const float m[4] = { mc.red, mc.green, mc.blue, mc.alpha };
+        for (int i = 0; i < 4; i++) {
+            cTL[i] *= m[i]; cTR[i] *= m[i]; cBL[i] *= m[i]; cBR[i] *= m[i];
+        }
+    }
 
     Vertex2D verts[6] = {
         {{x0, y0}, {0, 0}, {cTL[0], cTL[1], cTL[2], cTL[3]}},
