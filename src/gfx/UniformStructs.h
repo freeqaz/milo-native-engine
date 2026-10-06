@@ -57,7 +57,13 @@ struct SceneUniforms {
     float projLightProjRow0[4];   // vec4f — projection row 0: u = dot(worldPos, xyz) + w
     float projLightProjRow1[4];   // vec4f — projection row 1: v = dot(worldPos, xyz) + w
     float numProjLights;          // f32 — 0.0 or 1.0
-    float _padProj[3];
+    // 1 = RB3 retail light model (standard.vs, set only by the RB3-Wii
+    // shape's rndshape::WriteSceneLighting): per vertex, the lit term is
+    // ambient + ObjectUniforms.boxLight(N) + point lights with retail's linear
+    // falloff (pointFalloffMode 2), with no soft clip. 0 (DC3, every other
+    // path) = the existing model, byte-identical.
+    float retailLighting;          // f32
+    float _padProj[2];
 };
 static_assert(sizeof(SceneUniforms) == 656, "SceneUniforms must match WGSL layout");
 
@@ -98,8 +104,12 @@ static_assert(sizeof(MaterialUniforms) == 192, "MaterialUniforms must match WGSL
 struct ObjectUniforms {
     float world[16];            // mat4x4f
     float worldInvTranspose[16]; // mat4x4f
+    // RB3 retail box map for this draw (rndshape::FillMeshApproxLighting ->
+    // retail c80..c85): six face colours {+X,-X,+Y,-Y,+Z,-Z}, read only when
+    // SceneUniforms.retailLighting is set. Zero on every other path.
+    float boxLight[6][4];       // array<vec4f, 6>
 };
-static_assert(sizeof(ObjectUniforms) == 128, "ObjectUniforms must match WGSL layout");
+static_assert(sizeof(ObjectUniforms) == 224, "ObjectUniforms must match WGSL layout");
 
 // Max bones per mesh (from Mesh.h MaxBones())
 static constexpr int kMaxBones = 40;

@@ -4,42 +4,36 @@
 // WgpuRnd::WriteSceneUniforms was tuned for DC3 venues: every camera lights
 // from the current environ, point lights are folded into fake directionals
 // aimed at the stage, a fill light is added below three lights, and the
-// floor on ambient is 0.08. RB3 content authors its lighting for the Wii's
-// GX pipeline instead, and under those DC3 rules the title-screen city and
-// every venue backdrop render far too bright (title frame 400: city mean
-// luma 68.7 vs retail 52.4).
+// floor on ambient is 0.08. RB3 content is authored for its own light model,
+// and under those DC3 rules the title-screen city and every venue backdrop
+// render far too bright.
 //
-// This file is the lighting model rb3's own backend (BandRnd,
-// Rnd_Wgpu_RB3.cpp WriteSceneUniforms) has converged on, moved behind the
-// rndshape seam so the dc3 backend renders RB3 the same way. The tunables
-// keep BandRnd's environment-variable names and defaults so a tuning found on
-// one backend applies to the other.
-//
-//  * world.cam with a usable environ: ambient taken from the environ, a
-//    near-white ambient (the engine's unauthored default) scaled by 0.09, all
-//    channels floored at 0.008 (these and the character-ambient constants are
-//    BandRnd's values, re-expressed for gamma-space shading; see
-//    ShadingSpace below). Directional lights from the approx list (dir
-//    exposure 0.80, capped 1.5); point lights stay real point lights (point
-//    exposure 0.70, capped 1.8) with the GX inverse-linear falloff. Character
-//    environs (name contains "char") that carry a real key shade from the
-//    real list and fold the approx set into ambient. An environ with no
-//    usable light gets a dim grey key.
+//  * world.cam with an environ (the default): RB3's Xbox 360 retail model,
+//    WriteRetailLighting and FillMeshApproxLighting below (doc section 9).
+//  * RB3_VENUE_LIGHT_LEGACY=1: the heuristic rb3's own backend (BandRnd,
+//    Rnd_Wgpu_RB3.cpp WriteSceneUniforms) converged on, kept under BandRnd's
+//    environment-variable names: a near-white ambient scaled by 0.09, all
+//    channels floored at 0.008 (re-expressed for gamma-space shading, see
+//    ShadingSpace), approx directionals at exposure 0.80, real point lights
+//    at 0.70 with the GX inverse-linear falloff, character environs keyed by
+//    their real light, and a dim grey key for an environ with no usable light.
 //  * any other camera (Cam.cam painting the cloud target, menu and UI cams):
 //    a flat 1.0 white key plus 0.45 ambient, as BandRnd does.
-//  * no fog and no projected light: BandRnd ships both off (RB3_ENV_FOG,
-//    RB3_ENV_PROJLIGHT) and no shipping RB3 environ enables fog.
+//  * no fog: no shipping RB3 environ enables it (RB3_ENV_FOG).
 //
-// The DC3 shape's WriteSceneLighting is an inline `return false`, so DC3 and
-// rb3-xenon never reach this code.
+// The DC3 shape's WriteSceneLighting is an inline `return false` and its
+// FillMeshApproxLighting a no-op, so DC3 and rb3-xenon never reach this code.
 
 #include "platform/rndshape/RndShape.h"
 #include "gfx/UniformStructs.h"
+#include "char/Character.h"
+#include "rndobj/BoxMap.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <unordered_map>
 
 namespace {
 
@@ -90,18 +84,157 @@ void SetDirLight(SceneUniforms& s, int i, float x, float y, float z, float r, fl
     s.lightColors[i][0] = r; s.lightColors[i][1] = g; s.lightColors[i][2] = b; s.lightColors[i][3] = 1.0f;
 }
 
+
+bool RetailLightModel() { static int v = EnvFlag("RB3_VENUE_LIGHT_LEGACY") ? 0 : 1; return v != 0; }
+
+bool IsWorldCam(RndCam* cam) {
+    const char* camName = cam ? cam->Name() : nullptr;
+    // WorldReflection::DrawShowing draws the mirrored venue through an unnamed
+    // deep copy of world.cam in draw mode 7; it is the venue camera too.
+    return (camName && std::strcmp(camName, "world.cam") == 0) ||
+           TheRnd->DrawMode() == rndshape::kDrawModeReflection;
+}
+
+// Whether the retail model lights draws made now (WriteSceneLighting's test,
+// repeated per mesh by FillMeshApproxLighting).
+bool RetailLightingActive(RndCam* cam, RndEnviron* env) {
+    return VenueLightEnabled() && RetailLightModel() && IsWorldCam(cam) && env &&
+           env->mAmbientFogOwner;
+}
+
+// Retail's per-draw "is this light on" test: Showing and a non-zero packed
+// colour (NgEnviron CheckPointLight / SetPointLightRegisters).
+bool RetailLit(RndLight* L) { return L && L->mColorOwner && L->Showing() && L->GetColor().Pack() != 0; }
+
+// RB3's own light model, as the Xbox 360 retail build runs it. Sources:
+// rb3-xenon rndobj/Env_NG.cpp (NgEnviron::Select, UpdateApproxLighting),
+// rndobj/BoxMap.cpp, rndobj/Mat_NG.cpp (NgMat::SetupAmbient), rndobj/Shader.cpp
+// (option bits), char/Character.cpp (DrawLodOrShadow), rndobj/Mesh.cpp
+// (sUpdateApproxLight), and the shipped xbox_shaders `standard` permutations
+// (doc section 9).
+//
+//  * ambient: the environ's ambient colour, unscaled (constant c1);
+//  * real lights: at most two point lights (c64/c67 and c65/c68), Lambert,
+//    full strength inside falloffStart and linear to zero at range; at most
+//    one projected light. Written here, once per environ;
+//  * approx lights (mLightsApprox, plus the spotlight set in
+//    RndEnviron::sGlobalLighting): folded on the CPU into a six-face box map
+//    (c80..c85) at the mesh's world sphere centre, or the character's for a
+//    mesh inside a Character. Directional lights always land there; a real
+//    list holds only point and projected lights (IsValidRealLight). Written
+//    per draw by FillMeshApproxLighting;
+//  * standard.vs then computes material * (ambient + box(N) + points) per
+//    vertex, and standard.ps multiplies by the texel, with no clamp until the
+//    8-bit target.
+//
+// Projected lights are not uploaded. Every one the shipped venues carry is
+// blend 1 (`shadow_projected.lit`), which retail uses only to darken the light
+// terms inside the projected shadow map, in the per_pixel_lit permutations
+// alone; it adds no light. Fog stays off (no shipped RB3 environ enables it;
+// RB3_ENV_FOG).
+void WriteRetailLighting(SceneUniforms& s, RndEnviron* env) {
+    s.retailLighting = 1.0f;
+    s.pointFalloffMode = 2.0f;
+    s.venueHighlightLumaMode = 0.0f;
+    s.numLights = 0.0f;
+
+    const Hmx::Color& amb = env->AmbientColor();
+    s.ambientColor[0] = amb.red;
+    s.ambientColor[1] = amb.green;
+    s.ambientColor[2] = amb.blue;
+    s.ambientColor[3] = 1.0f;
+
+    // Real lights: retail keeps the first two lit point lights, in list order.
+    int pl = 0;
+    for (ObjPtrList<RndLight>::iterator it = env->mLightsReal.begin();
+         it != env->mLightsReal.end() && pl < 2; ++it) {
+        RndLight* L = *it;
+        if (!RetailLit(L) || L->GetType() != RndLight::kPoint) continue;
+        const Vector3& p = L->WorldXfm().v;
+        const Hmx::Color& c = L->GetColor();
+        float slope = 0.0f, rangeScale = 1.0f;
+        if (L->FalloffStart() < L->Range()) {
+            slope = 1.0f / (L->FalloffStart() - L->Range());
+            rangeScale = -(L->Range() * slope);
+        }
+        s.pointLightPos[pl][0] = p.x; s.pointLightPos[pl][1] = p.y;
+        s.pointLightPos[pl][2] = p.z; s.pointLightPos[pl][3] = slope;
+        s.pointLightColors[pl][0] = c.red; s.pointLightColors[pl][1] = c.green;
+        s.pointLightColors[pl][2] = c.blue; s.pointLightColors[pl][3] = rangeScale;
+        s.pointLightRanges[pl] = L->Range();
+        pl++;
+    }
+    s.numPointLights = (float)pl;
+}
+
+// The position retail evaluates a mesh's approx lights at. RndMesh draws
+// recompute the box map at their own world sphere centre (falling back to the
+// mesh origin) while RndMesh::sUpdateApproxLight is set, which is its default;
+// Character::DrawLodOrShadow clears it around its meshes and evaluates once at
+// the character's world sphere centre instead. The character's sphere is
+// cached per frame.
+Vector3 ApproxLightPos(RndMesh* mesh) {
+    for (RndTransformable* t = mesh->TransParent(); t; t = t->TransParent()) {
+        Character* ch = dynamic_cast<Character*>(t);
+        if (!ch) continue;
+        struct Cached { int frame; bool ok; Vector3 center; };
+        static std::unordered_map<Character*, Cached> sCache;
+        const int frame = TheRnd->GetFrameID();
+        Cached& c = sCache[ch];
+        if (c.frame != frame || frame == 0) {
+            Sphere sp;
+            c.ok = ch->MakeWorldSphere(sp, false) && sp.GetRadius() > 0;
+            c.center = sp.center;
+            c.frame = frame;
+        }
+        if (c.ok) return c.center;
+        break;
+    }
+    Sphere sp;
+    if (mesh->MakeWorldSphere(sp, false) && sp.GetRadius() > 0) return sp.center;
+    return mesh->WorldXfm().v;
+}
+
 } // namespace
 
 namespace rndshape {
 
+void FillMeshApproxLighting(RndMesh* mesh, float box[6][4]) {
+    RndEnviron* env = RndEnviron::sCurrent;
+    if (!mesh || !RetailLightingActive(RndCam::sCurrent, env)) return;
+    // NgEnviron::UpdateApproxLighting.
+    if (!(env->UsesApproxLocal() || env->UsesApproxGlobal())) return;
+    if (env->mLightsReal.empty() && env->mLightsApprox.empty()) return;
+    const Vector3 pos = ApproxLightPos(mesh);
+    Hmx::Color faces[6];
+    for (int i = 0; i < 6; i++) faces[i].Set(0, 0, 0);
+    if (env->UsesApproxLocal()) {
+        static BoxMapLighting sBoxLight;
+        sBoxLight.Clear();
+        for (ObjPtrList<RndLight>::iterator it = env->mLightsApprox.begin();
+             it != env->mLightsApprox.end(); ++it) {
+            if (*it) sBoxLight.QueueLight(*it, 1.0f);
+        }
+        sBoxLight.ApplyQueuedLights(faces, &pos);
+    }
+    if (env->UsesApproxGlobal() && RndEnviron::sGlobalLighting.NumQueuedLights() != 0)
+        RndEnviron::sGlobalLighting.ApplyQueuedLights(faces, &pos);
+    for (int i = 0; i < 6; i++) {
+        box[i][0] = faces[i].red;
+        box[i][1] = faces[i].green;
+        box[i][2] = faces[i].blue;
+        box[i][3] = 1.0f;
+    }
+}
+
 bool WriteSceneLighting(SceneUniforms& s, RndCam* cam) {
-    const char* camName = cam ? cam->Name() : nullptr;
-    // WorldReflection::DrawShowing draws the mirrored venue through an unnamed
-    // deep copy of world.cam in draw mode 7; it is the venue camera too.
-    const bool worldCam = (camName && std::strcmp(camName, "world.cam") == 0) ||
-                          TheRnd->DrawMode() == kDrawModeReflection;
+    const bool worldCam = IsWorldCam(cam);
     RndEnviron* env = RndEnviron::sCurrent;
 
+    if (RetailLightingActive(cam, env)) {
+        WriteRetailLighting(s, env);
+        return true;
+    }
     if (VenueLightEnabled() && worldCam && env && env->mAmbientFogOwner) {
         s.pointFalloffMode = PointFalloffGx() ? 1.0f : 0.0f;
         s.venueHighlightLumaMode = WhiteGuard() ? 1.0f : 0.0f;

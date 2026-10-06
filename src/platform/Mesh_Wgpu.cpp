@@ -270,8 +270,8 @@ void DrawMeshImmediate(RndMesh* mesh) {
     } else {
         FillObjectUniforms(mesh->WorldXfm(), objUni);
     }
-
-
+    // RB3's retail approx-light box map for this mesh (no-op for DC3).
+    rndshape::FillMeshApproxLighting(mesh, objUni.boxLight);
 
     uint32_t objOffset = gWgpuRnd->ObjectRing().Write(
         gWgpuRnd->Gpu().Queue(), &objUni, sizeof(objUni));
