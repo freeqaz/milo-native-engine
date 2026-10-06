@@ -6,12 +6,12 @@ GpuResourceRegistry& GpuResourceRegistry::Get() {
     return sInstance;
 }
 
-GpuMeshData* GpuResourceRegistry::FindMesh(RndMesh* mesh) {
+GpuResourceRegistry::MeshEntry* GpuResourceRegistry::FindMesh(RndMesh* mesh) {
     auto it = mMeshData.find(mesh);
     return it != mMeshData.end() ? &it->second : nullptr;
 }
 
-GpuMeshData& GpuResourceRegistry::GetOrCreateMesh(RndMesh* mesh) {
+GpuResourceRegistry::MeshEntry& GpuResourceRegistry::GetOrCreateMesh(RndMesh* mesh) {
     return mMeshData[mesh];
 }
 
@@ -26,12 +26,12 @@ void GpuResourceRegistry::RemoveMesh(RndMesh* mesh) {
     mMeshData.erase(mesh);
 }
 
-GpuTexData* GpuResourceRegistry::FindTex(RndTex* tex) {
+GpuResourceRegistry::TexEntry* GpuResourceRegistry::FindTex(RndTex* tex) {
     auto it = mTexData.find(tex);
     return it != mTexData.end() ? &it->second : nullptr;
 }
 
-GpuTexData& GpuResourceRegistry::GetOrCreateTex(RndTex* tex) {
+GpuResourceRegistry::TexEntry& GpuResourceRegistry::GetOrCreateTex(RndTex* tex) {
     return mTexData[tex];
 }
 
@@ -39,12 +39,12 @@ void GpuResourceRegistry::RemoveTexture(RndTex* tex) {
     mTexData.erase(tex);
 }
 
-GpuCubeTexData* GpuResourceRegistry::FindCubeTex(RndCubeTex* tex) {
+GpuResourceRegistry::CubeTexEntry* GpuResourceRegistry::FindCubeTex(RndCubeTex* tex) {
     auto it = mCubeTexData.find(tex);
     return it != mCubeTexData.end() ? &it->second : nullptr;
 }
 
-GpuCubeTexData& GpuResourceRegistry::GetOrCreateCubeTex(RndCubeTex* tex) {
+GpuResourceRegistry::CubeTexEntry& GpuResourceRegistry::GetOrCreateCubeTex(RndCubeTex* tex) {
     return mCubeTexData[tex];
 }
 
