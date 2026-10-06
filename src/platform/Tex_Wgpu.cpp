@@ -31,9 +31,20 @@ struct GpuTexData {
     bool renderTarget = false;
     const uint8_t* lastPixelPtr = nullptr;  // detect bitmap data changes
     uint32_t pixelFingerprint = 0;          // quick content check
+    // Bitmap size the texture was last created at (-1 == never created from a
+    // bitmap). PresyncBitmap re-reads the bitmap every time it re-creates, so a
+    // bitmap swapped to a new size gets a texture of the new size.
+    int lastW = -1;
+    int lastH = -1;
 };
 
 static std::unordered_map<RndTex*, GpuTexData> sTexGpuData;
+
+// Monotonic count of GPU textures PresyncBitmap has created from a bitmap: the
+// first upload and every re-create after the pixel pointer or content changed.
+// Read through GetGpuTexDebugInfo, so a caller can tell a re-create from a
+// cache hit.
+static unsigned long long sTexCreateCount = 0;
 
 static bool NeedsDepthTarget(RndTex* tex) {
     if (!tex) return false;
@@ -226,8 +237,31 @@ void RndTex::PresyncBitmap() {
     data.uploaded = true;
     data.lastPixelPtr = curPixels;
     data.pixelFingerprint = PixelFingerprint(curPixels, mBitmap.PixelBytes());
+    data.lastW = mBitmap.Width();
+    data.lastH = mBitmap.Height();
+    sTexCreateCount++;
 
     sTexGpuData[this] = data;
+}
+
+uint32_t GpuTexPixelFingerprint(const uint8_t* pixels, int size) {
+    return PixelFingerprint(pixels, size);
+}
+
+GpuTexDebugInfo GetGpuTexDebugInfo(RndTex* tex) {
+    GpuTexDebugInfo info;
+    info.createCount = sTexCreateCount;
+    auto it = sTexGpuData.find(tex);
+    if (it != sTexGpuData.end()) {
+        const GpuTexData& d = it->second;
+        info.present = true;
+        info.uploaded = d.uploaded;
+        info.width = d.lastW;
+        info.height = d.lastH;
+        info.view = (const void*)d.view.Get();
+        info.texture = (const void*)d.texture.Get();
+    }
+    return info;
 }
 
 // ============================================================================

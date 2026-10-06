@@ -49,6 +49,11 @@ inline bool MatPrelitAmbient(const T &) { return false; }
 // shader's own specular/normal/rim model.
 template <class T>
 inline bool MatRetailTerms(const T &, RetailMatTerms &) { return false; }
+// RB3's material colour modulation (RndShape_RB3Wii.h). Returns the mode, 0
+// for none. DC3's BaseMaterial exposes no colour-mod state here, so DC3 and
+// rb3-xenon draw every material unmodulated, as before.
+template <class T>
+inline int MatColorMod(const T &, float (*)[4]) { return 0; }
 
 // ---- environment -----------------------------------------------------------
 inline RndEnviron *CurrentEnv() { return RndEnviron::Current(); }
@@ -155,5 +160,14 @@ inline float DisplayGamma(bool) { return 0.0f; }
 // DC3 lights through WgpuRnd::WriteSceneUniforms' own environ block.
 inline bool WriteSceneLighting(SceneUniforms &, RndCam *) { return false; }
 inline void FillMeshApproxLighting(RndMesh *, float (*)[4], float *) {}
+
+// ---- per-draw state log ----------------------------------------------------
+// RB3's draw log (RB3DrawLogDebug.h). DC3 and rb3-xenon have no consumer for
+// it, so it is off and every hook compiles away.
+inline bool DrawLogActive() { return false; }
+inline void DrawLogFrameBegin() {}
+inline void DrawLogFrameEnd(int) {}
+inline void DrawLogPassOpen(int) {}
+inline void DrawLogRecord(const DrawLogDraw &) {}
 
 } // namespace rndshape

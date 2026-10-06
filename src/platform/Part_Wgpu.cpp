@@ -413,3 +413,8 @@ void PartTerminate() {
     sParticleBGL = nullptr;
     sParticlePipelineLayout = nullptr;
 }
+
+// Shipped WGSL accessor (gfx/ShippedWgsl.h): lets the validation test compile
+// the exact source this file hands CreateShaderModule.
+#include "gfx/ShippedWgsl.h"
+const char* ParticleWgslSource() { return kParticleShaderSource; }

@@ -10,8 +10,8 @@
 // texture at the NEW (larger) size and publish a NEW view — with no same-size
 // assert and no fixed-size assumption.
 //
-// These helpers (defined in Rnd_Wgpu_RB3.cpp, which owns the static sTexGpu
-// cache) let the native test suite drive that exact path and observe the result
+// These helpers (defined by the GPU backend: Rnd_Wgpu_RB3.cpp for the rb3
+// flavor, rndshape/RB3WiiTexSharpen.cpp over Tex_Wgpu's cache for dc3) let the native test suite drive that exact path and observe the result
 // without exposing the internal cache. They are diagnostic surface only — no
 // production draw path references them.
 
@@ -36,3 +36,8 @@ bool RB3DebugUploadTex(RndTex* tex);
 // Snapshot the GPU-cache state for `tex` (size of the last-created texture, the
 // current view/texture handles, and the global recreate counter).
 RB3TexGpuInfo RB3DebugGetTexGpuInfo(RndTex* tex);
+
+// While set, RB3SharpenReuploadTex reports the GPU as not ready (returns false
+// without uploading), so a test can drive the sharpen manager's retry path
+// without tearing the device down. Off by default; no production path sets it.
+void RB3DebugSetSharpenGpuUnavailable(bool on);

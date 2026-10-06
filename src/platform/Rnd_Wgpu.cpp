@@ -511,6 +511,7 @@ void WgpuRnd::ClearDepthForOverlay() {
     rpDesc.depthStencilAttachment = &depthAtt;
 
     mPass = mEncoder.BeginRenderPass(&rpDesc);
+    rndshape::DrawLogPassOpen(0);
     mInPass = true;
     mActiveTargetTex = nullptr;
     mCurrentTargetFormat = mGpu.SurfaceFormat();
@@ -563,6 +564,7 @@ void WgpuRnd::FlushPostProcessingForOverlay() {
     rpDesc.depthStencilAttachment = nullptr; // no depth for 2D HUD
 
     mPass = mEncoder.BeginRenderPass(&rpDesc);
+    rndshape::DrawLogPassOpen(2);
     mInPass = true;
     mActiveTargetTex = nullptr;
     mCurrentTargetFormat = mGpu.SurfaceFormat();
@@ -745,6 +747,7 @@ void WgpuRnd::BeginFramePass(bool clear) {
     rpDesc.depthStencilAttachment = &depthAtt;
 
     mPass = mEncoder.BeginRenderPass(&rpDesc);
+    rndshape::DrawLogPassOpen(clear ? 0 : 1);
     mInPass = true;
     mActiveTargetTex = nullptr;
     mFramePassValid = true;
@@ -820,6 +823,7 @@ void WgpuRnd::BeginTexturePass(RndTex* tex) {
     }
 
     mPass = mEncoder.BeginRenderPass(&rpDesc);
+    rndshape::DrawLogPassOpen(depthView ? 0 : 2);
     mInPass = true;
     mActiveTargetTex = tex;
     mCurrentTargetFormat = ChooseRenderTargetFormat(tex);
@@ -895,6 +899,7 @@ void WgpuRnd::MakeDrawTarget() {
 
 void WgpuRnd::BeginDrawing() {
     RndMesh_ResetFrameStats();
+    rndshape::DrawLogFrameBegin();
     mPostProcFlushed = false;
 
     // Frame capture: set target frame via MILO_CAPTURE_FRAME env var
@@ -1132,6 +1137,7 @@ void WgpuRnd::EnsureSceneUniformsCurrent() {
 
 void WgpuRnd::EndDrawing() {
     FrameCapture::Get().EndFrame();
+    rndshape::DrawLogFrameEnd(mFrameID);
     if (!mGpu.IsReady()) {
         mDrawing = false;
         return;
@@ -1762,6 +1768,7 @@ void WgpuRnd::WriteSceneUniforms() {
     // each camera gets its own data in the ring, so queue.WriteBuffer doesn't overwrite earlier values)
     uint32_t sceneOffset = mSceneRing.Write(mGpu.Queue(), &scene, sizeof(scene));
     mLastSceneOffset = sceneOffset;
+    memcpy(mLastSceneViewProj, scene.viewProj, sizeof(mLastSceneViewProj));
 
     // Create scene bind group (group 0) — shadow map + projected light texture
     wgpu::BindGroupEntry entries[5] = {};

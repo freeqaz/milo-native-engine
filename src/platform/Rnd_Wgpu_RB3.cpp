@@ -825,8 +825,11 @@ uint32_t RB3SharpenTexFingerprint(const RndTex* tex) {
     return TexFingerprint(pixels, pixBytes);
 }
 
+static bool sSharpenGpuUnavailable = false;
+void RB3DebugSetSharpenGpuUnavailable(bool on) { sSharpenGpuUnavailable = on; }
+
 bool RB3SharpenReuploadTex(RndTex* tex) {
-    if (!tex || !gBandRnd.mGpuReady) return false;
+    if (!tex || !gBandRnd.mGpuReady || sSharpenGpuUnavailable) return false;
     uint64_t before = sTexRecreateCount;
     wgpu::TextureView v = UploadRndTexIfNeeded(gBandRnd.Gpu(), tex);
     (void)v;

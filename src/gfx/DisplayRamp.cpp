@@ -137,3 +137,8 @@ bool DisplayRamp::Apply(wgpu::CommandEncoder& encoder, const wgpu::Texture& fram
     pass.End();
     return true;
 }
+
+// Shipped WGSL accessor (gfx/ShippedWgsl.h): lets the validation test compile
+// the exact source this file hands CreateShaderModule.
+#include "gfx/ShippedWgsl.h"
+const char* DisplayRampWgslSource() { return kShader; }

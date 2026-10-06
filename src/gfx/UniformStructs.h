@@ -111,8 +111,16 @@ struct MaterialUniforms {
     float retailSpec[4];        // vec4f — .rgb specular colour (0 = no specular), .a power, >= 0.5
     float retailRim[4];         // vec4f — .rgb rim colour (0 = no rim), .a power, >= 0.5
     float retailFlags[4];       // vec4f — x per-pixel lit, y normal map, z specular map, w rim map
+    // RB3 material colour modulation (RndMat mColorModFlags / mColorMod,
+    // rndshape::MatColorMod): x, y, z = colour 0, 1, 2 as RGBA8 unorm
+    // (pack4x8unorm byte order, red lowest), w = mode (0 none, 1 AlphaPack,
+    // 2 AlphaUnpackModulate, 3 Modulate). Zero for every other material.
+    // Packed so the struct stays one 256-byte uniform-ring slot; the colours
+    // scale an 8-bit output, so 8 bits each lose nothing visible. The shader
+    // math is retail's (standard_wgsl.inc colorModScale).
+    uint32_t colorMod[4];       // vec4u
 };
-static_assert(sizeof(MaterialUniforms) == 240, "MaterialUniforms must match WGSL layout");
+static_assert(sizeof(MaterialUniforms) == 256, "MaterialUniforms must match WGSL layout");
 
 struct ObjectUniforms {
     float world[16];            // mat4x4f

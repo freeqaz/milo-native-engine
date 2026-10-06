@@ -79,9 +79,13 @@ const poissonDisc = array<vec2f, 8>(
     let radius = coc;
     let texel = vec2f(dof.texelSizeX, dof.texelSizeY);
     var blurred = color.rgb;
+    // textureSampleLevel, not textureSample: these taps follow the early
+    // return above, which is non-uniform control flow, and WGSL rejects
+    // implicit-derivative sampling there (the module failed to compile).
+    // sceneTex has one mip level, so level 0 is what textureSample read.
     for (var i = 0; i < 8; i++) {
         let offset = poissonDisc[i] * radius * texel * 8.0;
-        blurred += textureSample(sceneTex, sceneSampler, in.uv + offset).rgb;
+        blurred += textureSampleLevel(sceneTex, sceneSampler, in.uv + offset, 0.0).rgb;
     }
     blurred /= 9.0;
 
@@ -358,3 +362,9 @@ void DofPass::Terminate() {
     mDefaultSampler = nullptr;
     mDofReady = false;
 }
+
+// Shipped WGSL accessor (gfx/ShippedWgsl.h): lets the validation test compile
+// the exact source this file hands CreateShaderModule.
+#include "gfx/ShippedWgsl.h"
+const char* DofPassWgslSource() { return kDofShaderSource; }
+const char* DofDepthResolveWgslSource() { return kDepthResolveShaderSource; }

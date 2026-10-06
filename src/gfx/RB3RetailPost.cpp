@@ -528,3 +528,8 @@ void RB3RetailPost::Terminate() {
     mSampler = nullptr;
     mReady = false;
 }
+
+// Shipped WGSL accessor (gfx/ShippedWgsl.h): lets the validation test compile
+// the exact source this file hands CreateShaderModule.
+#include "gfx/ShippedWgsl.h"
+const char* RB3RetailPostWgslSource() { return kShader; }

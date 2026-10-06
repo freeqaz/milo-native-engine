@@ -213,6 +213,30 @@ inline bool PackNonZero(const Hmx::Color &c) {
     return (((int)(c.red * 255.0f) & 0xFF) | (((int)(c.green * 255.0f) & 0xFF) << 8)
             | (((int)(c.blue * 255.0f) & 0xFF) << 16)) != 0;
 }
+// RB3 RndMat colour modulation: mColorModFlags (0 none, 1 AlphaPack,
+// 2 AlphaUnpackModulate, 3 Modulate) and the three mColorMod colours the band
+// modes scale by. Crowd::Init gives each 3D crowd character's materials
+// Modulate with three ColorPalette picks (world/Crowd.cpp); retail
+// NgMat::SetupShader loads the colours into c131..c133 whenever the flags are
+// set. Returns the mode and fills colours[i] = rgb, 1; a band mode with fewer
+// than three colours reads as none.
+inline int MatColorMod(const MatView &m, float colours[3][4]) {
+    RndMat *mat = m.Raw();
+    const int mode = (int)mat->mColorModFlags;
+    if (mode == RndMat::kColorModAlphaPack) return mode;
+    if (mode != RndMat::kColorModAlphaUnpackModulate && mode != RndMat::kColorModModulate)
+        return 0;
+    if (mat->mColorMod.size() < 3) return 0;
+    for (int i = 0; i < 3; i++) {
+        const Hmx::Color &c = mat->mColorMod[i];
+        colours[i][0] = c.red;
+        colours[i][1] = c.green;
+        colours[i][2] = c.blue;
+        colours[i][3] = 1.0f;
+    }
+    return mode;
+}
+
 inline bool MatRetailTerms(const MatView &m, RetailMatTerms &t) {
 #ifdef RB3_NATIVE_XBOX_MAT_FIELDS
     RndMat *mat = m.Raw();
@@ -554,5 +578,20 @@ bool WriteSceneLighting(SceneUniforms &s, RndCam *cam);
 // of approx lights queued (NgEnviron::UpdateApproxLighting); both 0 when the
 // retail light model does not apply.
 void FillMeshApproxLighting(RndMesh *mesh, float box[6][4], float retail[4]);
+
+// ---- per-draw state log ----------------------------------------------------
+// The draw log and provenance sidecar RB3's harnesses read (RB3DrawLogDebug.h:
+// RB3_DRAWLOG, RB3_DRAWLOG_DUMP, RB3_DRAWLOG_PROV, RB3DebugSetDrawLogEnabled).
+// Defined in rndshape/RB3WiiDrawLog.cpp. DrawLogActive is a cached env test;
+// the mesh path builds a DrawLogDraw only when it is true.
+bool DrawLogActive();
+// Clear the frame's log (WgpuRnd::BeginDrawing).
+void DrawLogFrameBegin();
+// Write RB3_DRAWLOG_DUMP if set (WgpuRnd::EndDrawing).
+void DrawLogFrameEnd(int frame);
+// A mesh render pass opened; depthOp 0 Clear, 1 Load, 2 no depth attachment.
+void DrawLogPassOpen(int depthOp);
+// Record one mesh draw (and its provenance entry when RB3_DRAWLOG_PROV is set).
+void DrawLogRecord(const DrawLogDraw &d);
 
 } // namespace rndshape

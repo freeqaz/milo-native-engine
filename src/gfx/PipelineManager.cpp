@@ -649,3 +649,9 @@ wgpu::RenderPipeline PipelineManager::GetPipeline(const PipelineKey& key) {
     }
     return pipeline;
 }
+
+// Shipped WGSL accessor (gfx/ShippedWgsl.h): lets the validation test compile
+// the exact source this file hands CreateShaderModule.
+#include "gfx/ShippedWgsl.h"
+// The compiled-in copy, not a ReloadShaders override.
+const char* StandardWgslSource() { return kBuiltinShaderSource; }
