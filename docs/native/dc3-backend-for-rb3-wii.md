@@ -462,7 +462,8 @@ The cause was upstream of the post chain. Retail renders into a
 `standard.ps` multiplies the gamma-space texel by the material colour and the
 lighting sum exactly as authored. The dc3 standard shader instead decodes
 textures through sRGB views and encodes its output, so every factor it does
-not decode is brightened. A material colour of 0.3 acts like about 0.58. The
+not decode is brightened. (Correction, section 9.5: the texture views are not
+sRGB. Bitmaps upload as `*Unorm`, so the texel is not decoded either.) A material colour of 0.3 acts like about 0.58. The
 title sky's ~2× brightness (7.2), which BandRnd shares, is this effect, and the
 bloom mask is driven by the same over-bright luma.
 
@@ -580,6 +581,10 @@ model ships projected lights off (`RB3_ENV_PROJLIGHT`), and its exposures are
 fitted rather than taken from retail. It is left to a lighting lane. The env
 vars let a consumer choose the other trade-off without a rebuild.
 
+> **Superseded by section 9 (W16-QS).** The default is now the retail light
+> model. This heuristic remains behind `RB3_VENUE_LIGHT_LEGACY=1`, and the env
+> vars above apply only there.
+
 ### 8.6 Not done
 
 - **BandRnd's highway halo / track-light block** was not ported. Retail draws
@@ -587,7 +592,7 @@ vars let a consumer choose the other trade-off without a rebuild.
   retail.
 - **Frames that never call `EndWorld`** (menus) still run the chain at
   `EndDrawing` over the UI too. Whether retail grades those was not verified.
-- **Venue lighting** (8.5): projected lights, and a retail-derived exposure.
+- **Venue lighting** (8.5): projected lights, and a retail-derived exposure. Done in section 9.
 - `PresyncBitmap`'s per-draw fingerprinting (7.5) — untouched.
 - No merge, pin bump or push.
 
@@ -609,3 +614,215 @@ compiles the X360 TUs from `build.ninja`. A plain `git worktree add` of
 rb3-xenon has none, so the check reports UNRUNNABLE and the gate goes
 INCOMPLETE (rc=3). In a worktree made with `scripts/setup_worktree.sh` it
 passes.
+
+## 9. Venue lighting from the retail light model (lane W16-QS, 2026-10-06)
+
+Section 8.5 left venues at a mean luma of 32.5–35 against retail's 57.7. Its
+model was a heuristic with fitted constants: exposures 0.70/0.80, re-expressed
+ambient fallbacks, a grey key, and projected lights off. This lane replaces it
+with the model the Xbox 360 retail build runs. Nothing in it is fitted.
+
+| repo | branch | base |
+|---|---|---|
+| milo-native-engine | `w16-qs` | `w16-qn` (`7952f03`) |
+| rb3, rb3-xenon, dc3-decomp | none — no consumer change was needed | |
+
+### 9.1 Sources
+
+- rb3-xenon `rndobj/Env_NG.cpp`: `NgEnviron::Select`, `SetPointLightRegisters`
+  and `UpdateApproxLighting`.
+- `rndobj/BoxMap.cpp`: `BoxMapLighting`.
+- `rndobj/Mat_NG.cpp`: `NgMat::SetupAmbient`.
+- `rndobj/Shader.cpp`: the option bits.
+- `rndobj/Mesh.cpp`: `RndMesh::sUpdateApproxLight = true`. Its retail byte is
+  `0x01`.
+- `char/Character.cpp`: `DrawLodOrShadow`.
+- The shipped `xbox_shaders` `standard` permutations, dumped with `xobx.py`
+  and disassembled with xenia (8.1).
+
+The model:
+
+1. **Ambient.** The environ's ambient colour, unscaled (`c1`).
+2. **Real lights.** At most two point lights that are `Showing()` with a
+   non-zero packed colour, taken in list order. Lambert. The light is full
+   strength inside `falloffStart` and fades linearly to zero at `range`:
+   `sat(d·pos.w + col.w)`, where `pos.w = 1/(falloffStart − range)` and
+   `col.w = −range·pos.w`. At most one projected light.
+3. **Approx lights.** These are `mLightsApprox` plus the spotlight set in
+   `RndEnviron::sGlobalLighting`. They are folded on the CPU into a six-face
+   box map (`c80..c85`), and `standard.vs` weights each face by the positive
+   part of the normal along that axis.
+   - **The box map is per mesh.** While `sUpdateApproxLight` is set (its
+     default), each mesh recomputes it at its world sphere centre, falling
+     back to its origin.
+   - `Character::DrawLodOrShadow` clears the flag and evaluates once, at the
+     character's sphere centre.
+4. **Shader.** `standard.vs` computes `material · (ambient + box(N) + points)`
+   per vertex. `standard.ps` multiplies that by the texel, and nothing clamps
+   it before the 8-bit target.
+5. **Prelit materials.** A prelit material that uses the environ takes
+   `vertexColour · ambient` as its ambient term. Only `use_environ = 0` keeps
+   the bare vertex colour, because `SetupAmbient` loads an ambient of 1.
+
+Some features are not modelled:
+
+- **Projected lights.** Every one the shipped venues carry is blend 1
+  (`shadow_projected.lit`). Retail uses those only to darken the light terms
+  inside the projected shadow map, and only in the `per_pixel_lit`
+  permutations, so they add no light.
+- **The venue `SpotlightDrawer`.** It has influence 0, so a global set of 0 is
+  genuine.
+- **Pseudo-HDR (bit 22).** It only writes the luma mask into alpha (8.1).
+
+### 9.2 What changed
+
+| change | where | DC3 entry |
+|---|---|---|
+| `SceneUniforms.retailLighting` (a former pad float) gates the model; point falloff mode 2 = retail's linear falloff | `UniformStructs.h`, `standard_wgsl.inc` | never set, so the existing path is unchanged |
+| `ObjectUniforms.boxLight[6]` (128 → 224 bytes): the per-draw box map | `UniformStructs.h`, `standard_wgsl.inc`, `Mesh_Wgpu.cpp` | zero |
+| `rndshape::FillMeshApproxLighting`: runs `BoxMapLighting` at the mesh's (or its character's) sphere centre | `RB3WiiSceneLighting.cpp` | inline no-op |
+| `WriteRetailLighting`: ambient + two point lights, written once per environ | `RB3WiiSceneLighting.cpp` | not built |
+| per-vertex lit term (`VertexOutput.vertexLit`), no soft clip; `prelit = 2` for prelit + use_environ | `standard_wgsl.inc`, `MaterialSetup.cpp`, `rndshape::MatPrelitAmbient` | `MatPrelitAmbient` returns false |
+
+The model applies to `world.cam` (and the reflection pass) with an environ.
+Other cameras keep the flat key (8.5).
+**`RB3_VENUE_LIGHT_LEGACY=1` restores the 8.5 heuristic.** Measured: title
+f60/f200/f400 = 21.6/18.3 · 20.7/21.9 · 18.5/18.3, which is the `w16-qn` row
+within noise. The 8.5 environment variables still tune that path.
+
+### 9.3 Venues
+
+Instrument as in 8.5: `venue_capture.py` with `RB3_FIXED_CLOCK=1`, 8 shots.
+Camera cuts differ run to run; `w16-qn` has read 30.0–35.0.
+
+| config | luma | p10 | dark % |
+|---|---|---|---|
+| retail (5 gameplay stills) | 57.7 | 9.4 | 30.5 |
+| base `14b3c2d` | 68.1 | 25.4 | 11.3 |
+| `w16-qn` (this lane's run) | 30.0 | 8.8 | 54.2 |
+| `w16-qn` (8.5's runs) | 32.5–35.0 | 11.2–12.9 | 46–52 |
+| box map once per environ, at the `Select` position (probe) | 38.8 | 11.8 | 36.6 |
+| texel also decoded (probe, see 9.5) | 32.1 | 10.1 | 51.1 |
+| **`w16-qs`**, run 1 | **43.6** | **13.8** | **34.0** |
+| **`w16-qs`**, run 2 | **39.7** | **14.1** | **42.9** |
+
+Per-shot luma for run 1: 21.0, 27.5, 12.2, 33.9, 41.4, 67.0, 70.0, 75.9.
+
+**What moved:**
+- Mean luma is closer to retail: |Δ| is about 16, against 23–28 for `w16-qn`.
+- Dark % is closer: |Δ| is 4–12, against 16–24.
+- The darkest tenth is slightly lifted: p10 is 14 against retail's 9.4.
+
+By eye, lit performers and set pieces now carry the light, and dark shots
+stay dark. Evaluating the box map per mesh rather than once per environ is
+worth about 3–5 luma. That is the difference between
+`sUpdateApproxLight` and the probe row.
+
+The remaining deficit is about 14–18 luma. It is not a constant to fit. The
+Wii material loader (rb3 `rndobj/Mat.cpp`) drops the Xbox material features
+that add light on retail: `per_pixel_lit`, specular, rim, normal maps and
+environment maps. They cannot be reproduced from the Wii data.
+
+### 9.4 Title screen
+
+Same instrument as 8.4: sky_dE / city_dE, lower is better.
+
+| frame | `w16-qn` | `w16-qn` rerun | `w16-qs` | `w16-qs` rerun |
+|---|---|---|---|---|
+| 60 | 21.6 / 18.5 | 21.6 / 18.5 | 30.2 / 19.6 | 30.1 / 18.8 |
+| 200 | 20.7 / 22.2 | 20.4 / 21.9 | 33.2 / 21.6 | 33.4 / 21.1 |
+| 400 | 18.6 / 18.3 | 18.6 / 18.3 | 25.5 / 19.4 | 25.0 / 18.6 |
+
+| f400 | luma | sky luma | city luma | p10 | dark % | city_edge |
+|---|---|---|---|---|---|---|
+| retail | 50.1 | 44.8 | 52.4 | 11.8 | 25.7 | 1 |
+| `w16-qn` | 52.7 | 54.2 | 52.1 | 21.1 | 8.6 | 0.729 |
+| `w16-qs` | 62.1 | 65.1 | 60.9 | 24.8 | 3.6 | 0.785 |
+
+**The title is worse than `w16-qn`. This lane's done condition is not met
+there.**
+- Sky_dE is up 6.5–13 at every frame. City_dE is within about 1, and
+  city_edge (structure) improved.
+- What improved: the logo outline is lavender-blue, as in retail, instead of
+  grey, and the sky glow around the lights is now present, as in retail.
+- What got worse: the whole frame is brighter. Sky luma is 65 against
+  retail's 45, and the shadows lift further.
+
+The pieces were separated with a probe (`RB3_RETAIL_LIGHT_EXCEPT`, not
+shipped). It kept the 8.5 heuristic for one title environ at a time and the
+retail model for the rest. f400 sky_dE / city_dE, on the probe builds before
+the per-mesh box map:
+
+| environ kept on the heuristic | f400 |
+|---|---|
+| none | 23.5 / 19.1 |
+| `logo` | 24.0 / 20.1 |
+| `back_left`, `buildings_dim`, `cityscape`, `street`, `theater`, `train` | 23.0–23.5 / 18.4–19.2 |
+| `char_rooftop` | 23.3 / 20.1 |
+| `rooftop_foreground` | 23.2 / **16.8** |
+| **`sky`** | **17.9–20.2** / 19.4–20.2 |
+
+**Only `sky.env` moves sky_dE.** Its lit meshes are `skynight.mesh`
+(`sky_gradient.mat`, use_environ 1) and the moon. The cloud layers
+(`sky_dome.mat`, `sky_dome02.mat`) have use_environ 0 and are unlit under
+both models.
+
+`sky.env` has an ambient of (0.34, 0.46, 0.51) and one real point light,
+`sky_light01`:
+- colour up to 2.0;
+- range 4000;
+- falloff start 0.
+
+Under retail's linear falloff, that light is at full colour near its source.
+The heuristic scaled it by 0.70 and used GX's inverse-linear falloff.
+Assuming the light values are right, the brighter sky is retail's own model
+on these data. Why it still reads brighter than retail's screenshot is 9.5.
+
+The `rooftop_foreground` row also suggests the city foreground runs a little
+bright under the retail model.
+
+### 9.5 Finding: textures are not decoded, and 8.2 is wrong about that
+
+8.2 says the dc3 shader "decodes textures through sRGB views". **It does
+not.**
+- `gfx/TextureConvert.cpp` uploads every bitmap as `BC1RGBAUnorm`,
+  `BC3RGBAUnorm` or `RGBA8Unorm`. No sRGB format or view is used anywhere.
+- The standard shader decodes the material colour and the lit term, then
+  encodes its output. A draw therefore computes about `enc(t · c · L)`, where
+  retail computes `t · c · L`. A texel of 0.2 acts like about 0.48.
+- The 8.5 heuristic absorbed this. Its fitted ambients were small. With
+  retail's unfitted lit term the error shows: it is the 2× sky floor (7.2,
+  8.4), now more visible.
+
+Decoding the texel as well should then give retail's formula. **Measured, it
+makes everything far too dark:**
+
+| f400 | luma | sky luma | city luma | p10 | dark % | sky_dE / city_dE |
+|---|---|---|---|---|---|---|
+| texel decoded | 25.7 | 13.3 | 31.0 | 5.6 | 60.4 | 34.4 / 22.9 |
+
+The venue luma for that build is 32.1. So the textures sit between "raw"
+(too bright) and "decoded" (too dark), and neither reproduces retail.
+
+The candidates were not separated, and that is the next step for this gap:
+- Wii texture data that differs from the Xbox data;
+- the gamma ramp retail applies at present time (`DxRnd::SetupGamma`, config
+  `rnd/gamma`);
+- something upstream of the lit term.
+
+No texture decode ships.
+
+### 9.6 Not done
+
+- **The title sky** (9.4, 9.5). It was not tuned away. Keeping `sky.env` on
+  the heuristic would score better, but nothing in retail lights it that
+  way.
+- **Xbox-only material features** dropped by the Wii loader: `per_pixel_lit`,
+  specular, rim, normal and environment maps. As a consequence, neither the
+  projected blend-1 shadow nor the per-pixel light path has anything to
+  modulate.
+- **The vignette.** Retail's (bit 36) is
+  `w = sat((|uv − 0.5|² + I) · 3.724 − 4.655)²`, which differs from the
+  generic one kept in 8.1. The title has none.
+- **Ambient alpha.** It was not modelled.
+- No merge, pin bump or push.
