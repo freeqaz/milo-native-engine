@@ -190,15 +190,15 @@ static float UnpackFloat_BE(unsigned int bits) {
 }
 
 static void UnpackColor_BE(unsigned int val, float out[4]) {
-    // val is the host-endian packed colour word, alpha in the high byte.
-    // Under rndshape::kCompressedColorIsArgb it is a D3DCOLOR (A,R,G,B from
-    // the high byte down, as retail FillCompressedVertex packs it); otherwise
-    // the low byte is read as red (the original read, see RndShape_DC3.h).
-    const bool argb = rndshape::kCompressedColorIsArgb;
-    out[0] = (float)((val >> (argb ? 16 : 0)) & 0xFF) / 255.0f;  // R
-    out[1] = (float)((val >> 8) & 0xFF) / 255.0f;                // G
-    out[2] = (float)((val >> (argb ? 0 : 16)) & 0xFF) / 255.0f;  // B
-    out[3] = (float)((val >> 24) & 0xFF) / 255.0f;               // A
+    // val is the host-endian packed colour word: the D3DCOLOR both games'
+    // FillCompressedVertex pack, alpha<<24 | red<<16 | green<<8 | blue (DC3
+    // retail 0x826204D8, rb3-xenon rnddx9/Mesh.cpp), and what the retail
+    // vertex declaration's D3DCOLOR element at offset 12 fetches. Reading red
+    // from the low byte swapped red and blue (dc3-backend-for-rb3-wii.md 12.2, 13).
+    out[0] = (float)((val >> 16) & 0xFF) / 255.0f;  // R
+    out[1] = (float)((val >> 8) & 0xFF) / 255.0f;   // G
+    out[2] = (float)(val & 0xFF) / 255.0f;          // B
+    out[3] = (float)((val >> 24) & 0xFF) / 255.0f;  // A
 }
 
 static void UnpackDEC4N_BE(unsigned int val, float out[3]) {

@@ -554,10 +554,5 @@ bool WriteSceneLighting(SceneUniforms &s, RndCam *cam);
 // of approx lights queued (NgEnviron::UpdateApproxLighting); both 0 when the
 // retail light model does not apply.
 void FillMeshApproxLighting(RndMesh *mesh, float box[6][4], float retail[4]);
-// How VertexFormats.cpp reads a compressed vertex's packed colour: true reads
-// it as the D3DCOLOR retail's FillCompressedVertex packs (rb3-xenon
-// rnddx9/Mesh.cpp: A, R, G, B from the high byte down, low byte blue), which
-// is what the retail vertex declaration's D3DCOLOR element fetches.
-constexpr bool kCompressedColorIsArgb = true;
 
 } // namespace rndshape
