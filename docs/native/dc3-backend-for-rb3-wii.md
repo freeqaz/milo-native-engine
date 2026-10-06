@@ -1325,6 +1325,9 @@ RB3 shape. With the old read, the title gets much worse (`noSWAP`, 12.4).
 DC3 packs the same way, so the DC3 shape probably has the same swap; that is
 left alone here (12.7).
 
+> **Superseded by section 13.1 (lane W16-RE).** DC3's retail packer is ARGB
+> too; the switch is gone and both shapes read ARGB.
+
 ### 12.3 What changed
 
 - **Seam** (`RndShape*.h`): `MatRetailTerms(mat, RetailMatTerms&)` and
@@ -1438,6 +1441,9 @@ less from this lane on every TCRF figure) is the "none" row.
   5% below it. The left roof and the middle city get darker, away from xenia.
   Their envs have near-black ambient (11.5), so what is left there is AO
   scaling the box light.
+  *Corrected in 13.2:* most draws there have no box light at all; the AO
+  darkening there is split between the point lights and the box, as retail
+  does it, and the left roof matches the hardware capture.
 - Colour adjust and the spot change are inert on the title, as predicted (no
   title env uses colour adjust, and no spots reached a box map in the venue probe, 12.7). The right-middle region
   moves between 39.0 and 43.2 across those runs because a billboard animates
@@ -1489,6 +1495,7 @@ configured with `-DMILO_ENGINE_PATH` at the `w16-ra` engine worktree
 DC3 and rb3-xenon use the DC3 shape. For them, `MatRetailTerms` returns false,
 `FillMeshApproxLighting` does nothing, and the colour read is unchanged, so
 the retail uniforms stay zero and the shader takes its existing branches.
+(13.1 later changes the colour read for the DC3 shape.)
 
 ### 12.7 Not done
 
@@ -1510,7 +1517,7 @@ the retail uniforms stay zero and the shader takes its existing branches.
   for normal-mapped materials with a rotated texgen.
 - **Normal detail**: dc3's `normDetail` map is not combined with the retail
   normal map.
-- **The DC3 shape's colour read**: `kCompressedColorIsArgb` is off for DC3,
+- **The DC3 shape's colour read** (*done in 13.1*): `kCompressedColorIsArgb` is off for DC3,
   although DC3's `FillCompressedVertex` packs ARGB too. Changing it would
   change DC3 renders, so it belongs to a DC3 lane with DC3 references.
 - **Uncompressed Wii `Color32` on little-endian hosts**: the fields come out
@@ -1520,7 +1527,218 @@ the retail uniforms stay zero and the shader takes its existing branches.
   title's AO meshes are all compressed, so AO does not depend on it.
 - **Inverse square root**: retail's box map uses the raw `frsqrte` estimate;
   this uses the exact value, as rb3-xenon's `HX_NATIVE` `BoxMap.cpp` does.
-- **Open finding**: the city sits about 5% below xenia's luma with AO on
+- **Open finding** (*answered in 13.2*): the city sits about 5% below xenia's luma with AO on
   (12.4). The left roof and middle city are darker than xenia and were not
   investigated.
+- No merge, pin bump or push.
+
+## 13. DC3's vertex colour read, and AO on the title city (lane W16-RE, 2026-10-06)
+
+Engine `w16-re`, off `f0ecb01`. This lane takes the two open findings of 12.7:
+
+- Does DC3 have the vertex colour swap that 12.2 fixed for RB3?
+- Should AO scale the box light in the parts of the title city that read darker than xenia?
+
+### 13.1 DC3 packs vertex colour as ARGB; both shapes now read it that way
+
+**Retail code.** DC3's `FillCompressedVertex` is at `0x826204D8` (dc3-decomp
+`build/373307D9/asm/system/rnddx9/Mesh.s`). It converts the four colour floats
+of `RndMesh::Vert` (red at `0x30`, green `0x34`, blue `0x38`, alpha `0x3C`)
+to bytes and joins them with three `rlwimi`:
+
+```
+rlwimi r28, r29, 8, 0, 23   ; r28 = alpha<<8 | red
+rlwimi r11, r28, 8, 0, 23   ; r11 = ..   <<8 | green
+rlwimi r10, r11, 8, 0, 23   ; r10 = ..   <<8 | blue
+stw    r10, 0xc(r30)        ; mColor
+```
+
+So `mColor = alpha<<24 | red<<16 | green<<8 | blue`, a D3DCOLOR, the same as
+RB3's. `SaveCompressedVertex` writes it as one big-endian word, so the disc
+bytes are A, R, G, B. DC3's vertex declaration fetches offset 12 as
+`D3DDECLTYPE_D3DCOLOR` (`rnddx9/Mesh.cpp`, the same as rb3-xenon's). The DC3
+shape read red from the low byte, so it swapped red and blue, as RB3's did
+before 12.2.
+
+**Assets.** DC3 has no AO data, so 12.2's band-0 test cannot be repeated. A
+temporary probe in milo-viewer logged the packed colour bytes of every
+compressed mesh it uploaded. It covered 1,611 DC3 `.milo_xbox` files under
+`milo-rnd-library/dc3`:
+
+- world 141, char 322, ui 1,139, modular_song_data 6, flow 3.
+- 1,552 runs were logged, and 1,082 of them uploaded at least one compressed mesh.
+- 26 UI files stop in a texture load before any mesh (`PopRev ABORT`).
+- That gave 2,798 records and 2,698 distinct mesh records.
+
+| kind | distinct records | red ≠ blue |
+|---|---|---|
+| AO (`HasAOCalc`) | 0 | — |
+| prelit, static | 135 (97 white, all grey or white) | 0 |
+| lit, skinned | 753 (all white) | 0 |
+| lit, static | 1,822 | 12 |
+
+The 12, by disc bytes A, R, G, B:
+
+| meshes | bytes | read as ARGB | read the old way |
+|---|---|---|---|
+| `tanarmy_row_01.1`–`.8` | 0, 252, 255, 0 | yellow | cyan |
+| `tanarmy_row_01.9`, `tongue` | 255, ~4, ~4, ~250 | blue | red |
+| `charged_xl_icon` and its `_alpha` copy | 255, 178, 25, 25 | red | blue |
+
+All 12 are lit static meshes. The DC3 light model gives those no vertex tint
+(`standard_wgsl.inc`: the baked colour counts only for prelit draws and, at
+`kSkinnedVtxChroma`, for skinned ones). So no DC3 draw shows the swap.
+
+**Change.** `kCompressedColorIsArgb` is removed from both shape headers.
+`UnpackColor_BE` now always reads `alpha<<24 | red<<16 | green<<8 | blue`. The
+RB3 shape's read is unchanged and the DC3 shape's read is corrected (engine
+commit `9ec481d`).
+
+**DC3 before and after.** `f0ecb01` vs `9ec481d`, dc3-decomp on `e992ee9b5`:
+
+| render | pixels that differ |
+|---|---|
+| milo-viewer at 960×540: `glitterati`, `dci`, `tan_tanarmyrow`, `angel03`, `aubrey03`, `move_flashcard` | 0 in all six (and 0 between two runs of the old binary) |
+| dc3-native boot, frames 300, 600 and 900 | 0 in all three |
+| control: `tan_tanarmyrow` with `MILO_SIMPLE_RENDER=1` | 32,459 |
+
+`MILO_SIMPLE_RENDER=1` forces every draw prelit, so the vertex colour shows.
+In the control the army turns from cyan (mean RGB 3, 82, 83) to yellow
+(81, 82, 4), so the instrument does see the change when a draw uses the colour.
+The boot frame's mean |ΔRGB| to the xenia DC3 references is unchanged at
+37.49 against `01_dc3_neon_logo` and 49.29 against `04_main_menu`.
+
+**rb3-xenon** draws RB3 content through the DC3 shape. Its skinned meshes
+carry RB3's AO SH data in the colour, and the DC3 model tints skinned draws by
+a desaturated vertex colour, so this read does change rb3-xenon. `rb3-render`
+was rendered against both engines, built from the same xenon tree (`5aa1d53b0`):
+
+| cell | pixels that differ | mean RGB of those pixels, before → after |
+|---|---|---|
+| `crowd_female01` | 100,523 of 921,600 (largest channel step 26, 99th percentile 9) | 83.4, 87.9, 96.7 → 87.4, 89.3, 95.4 |
+| `tracksystem_meshes` | 32 | — |
+
+The crowd shifts slightly warmer. Two runs of the new engine are
+pixel-identical, so this is not run-to-run noise. All 40 `rb3-render` gates
+pass on both engines.
+
+**RB3 title.** This change does nothing to the RB3 shape, which already read
+ARGB. Same frame instrument as 12.4:
+
+| f400 | sky_dE | city_dE | city_edge | city luma / xenia |
+|---|---|---|---|---|
+| `f0ecb01` | 11.6 | 11.6 | 0.913 | 0.946 |
+| `9ec481d` | 11.5 | 11.6 | 0.910 | 0.955 |
+
+The luma ratio moves only because the billboard in `city_rmid` animates
+(40.4 vs 41.1 there).
+
+### 13.2 AO and the box light on the title city
+
+Retail scales the box light by AO. That is not why the middle city is dark.
+
+**Retail shaders.** These are the vertex-lit and per-pixel permutations, read
+in the xenia disassemblies. `c80`–`c85` are the box faces, `c1` the ambient,
+and `c0` the diffuse colour.
+
+The ambient AO factor `ambAO = sat((1.128379 R − 1) S + 1)` (S is `c24.x`)
+multiplies the box term and the ambient term. Each point light gets its own
+factor, `ptAO`. The constants are the shaders' `.lit` literals:
+
+- `c253` = 3/4π, 0.282095
+- `c254` = 1/4π, 2, −1, 1.128379
+- `c255` = 0, 1, 0.488603, 3π/4
+
+| permutation | box × ambAO | ambient × ambAO |
+|---|---|---|
+| `0x14000030010` VS | instr 58 `mad r1, r0.z, box, point` | instr 59 `mad r1, r0.z, c1, r1` |
+| `0x14000030011` PS | instr 25 `mad r4, box, r4.w, point` | instr 5 `mul r2, c1·c0, r4.w` |
+| `0x14000030037` PS | instr 56 `mul r1, box, r6.w` | instr 15 `mul r10, c1·c0, r6.w` |
+
+The engine's retail light path does the same. So the answer to 12.7's
+question is yes: AO should scale the box light, and it already does.
+
+**What lights those regions.** A temporary per-draw probe ran on the title's
+frame 398, just before the f400 capture. Of the 66 AO draws whose
+world-sphere screen bounds overlap the middle city region, 44 have an all-zero
+box:
+
+- All draws from `back_left.env` and `buildings_dim.env`. Those envs have no approx lights.
+- 36 of the 44 `cityscape.env` draws. That env's only approx light,
+  `streetapprox` (point, range 1200), does not reach most building centres.
+
+The 11 `theater.env` draws (the facade under the logo) do have box light
+(brightest face 0.15–0.41). The ambient of `cityscape`, `back_left`,
+`theater` and `street` is exactly 0. So most of that region is lit only by
+point lights, each scaled by its own `ptAO`. 12.4's "what is left there is AO
+scaling the box light" was wrong.
+
+**Ablations.** Each AO term was turned off on its own, one build each, at
+f400. The switch builds are `f0ecb01` plus one switch, so `f0ecb01`'s all-AO
+row is their reference. All-AO is retail behaviour; the switches only
+attribute the darkening.
+
+| f400 luma | sky left | city right | city mid | city rmid | left roof | city luma / xenia |
+|---|---|---|---|---|---|---|
+| xenia front buffer (10.2) | 33.6 | 41.0 | 51.9 | 39.0 | 29.1 | 1.000 |
+| TCRF hardware capture | 22.1 | 40.4 | 55.0 | 66.4 | 12.1 | — |
+| `f0ecb01`, all AO (retail) | 22.6 | 42.0 | 40.3 | 40.4 | 13.5 | 0.946 |
+| AO not applied to the box | 22.8 | 42.1 | 41.5 | 40.6 | 13.6 | 0.957 |
+| AO not applied to point lights | 22.6 | 44.6 | 42.0 | 43.2 | 14.8 | 1.002 |
+| no AO | 22.9 | 48.0 | 43.1 | 43.2 | 15.1 | 1.037 |
+| `9ec481d`, all AO | 22.7 | 42.2 | 40.5 | 41.1 | 13.5 | 0.955 |
+
+The two all-AO rows run identical RB3 code. Their gap gives the noise: up to
+0.2, and 0.7 in `city_rmid`, where a billboard animates. The TCRF `city_rmid`
+figure shows a different billboard frame.
+
+- **The left roof is not a defect.** The hardware capture reads 12.1 there and
+  the native 13.5. Xenia's 29.1 is the outlier, as is its left sky (33.6 vs
+  22.1 on hardware). The xenia capture is the hub, whose camera is not quite
+  the title's: the characters sit at different screen positions. AO takes
+  1.6 off the native roof, nearly all through the point light.
+- **The middle city is dark, but AO is not the main reason.** Both references
+  read 52–55. The native reads 43.1 with no AO at all, in line with 12.4's
+  pre-W16-RA base (42.8). The gap to xenia is 11.6, and AO accounts for 2.8 of
+  it: 1.2 through the box and 1.7 through the point lights. The rest was
+  there before AO; 13.4 has the lead.
+- So the city-wide 0.946–0.955 is retail AO on top of a middle city that was
+  already about 17% below xenia without it.
+
+No code change for this finding.
+
+### 13.3 Consumer verification (engine `w16-re`)
+
+Fresh `~/tmp` worktrees made with each repo's `scripts/setup_worktree.sh`,
+configured with `-DMILO_ENGINE_PATH` at the `w16-re` engine worktree
+(confirmed in each `CMakeCache.txt`), built at `9ec481d`.
+
+| consumer | instrument | result |
+|---|---|---|
+| dc3-decomp (on `e992ee9b5`) | `scripts/native_test.sh` | 626 registered, 557 executed, 557 passed, 0 failed, 69 skipped (budget 69), rc=0 |
+| rb3-xenon (on `5aa1d53b0`) | `tools/native_health.sh` | `NATIVE_HEALTH_RESULT verdict=PASS link=PASS link_verified=18 link_expected=18 link_skipped=0 runtime=PASS runtime_ran=18 runtime_total=18 gates_pass=77 gates_fail=0 unrunnable=none selftest=SKIPPED scatter_unlinked=16 scatter_dirb=0 scatter_multihost=17 rc=0 handpose_controls=- handpose_baseline_fail=- runtime_crashed=0 runtime_failed=none` (embedded link gate: `verdict=PASS expected=18 verified=18 skipped=0 partial=0 failed=0 rc=0`) |
+| rb3-xenon | `tools/native_build_gate.sh` | run as the lane's last action; its `NATIVE_GATE_RESULT` line is in the lane report |
+| rb3 (Wii), dc3 flavor (on `cbce497e4`) | title (13.1) and Quickplay | title rc=0 (f400 11.5 / 11.6 / 0.910); Quickplay reaches `game_screen` in 2 of 2 runs (first logged at frames 818 and 801) |
+
+A rebuild of the rb3 binary from the committed engine is byte-identical to the
+one measured (`cmp`).
+
+The engine's shader source was briefly edited for the AO switches while the
+consumers were building. Both consumers' `PipelineManager.cpp.o` were compiled
+after the file was restored (rb3-xenon 19:45:08, dc3 19:45:14, against a
+restore at 19:44:29). rb3-xenon's health run was restarted on the clean tree.
+
+### 13.4 Not done
+
+- **The middle city's remaining gap** (13.2): the region reads about 43 with AO off, against 52–55 in both
+  references. The theater facade's env, `theater.env`, has a real point light
+  (`theater.lit`, 2.0 / 1.435 / 0.557, range 500) and four approx lights.
+  Whether retail lights that region brighter was not examined.
+- **The DC3 light model's vertex tint** (prelit: as authored; skinned:
+  `kSkinnedVtxChroma` of the chroma; lit static: none) is a native heuristic.
+  It was not compared against DC3's retail standard shader. The 12 coloured
+  lit static meshes in 13.1 would show if it changed.
+- The colour probe, the per-draw probe and the AO switches were temporary and
+  are not committed.
+- **Inverse square root**: unchanged from 12.7.
 - No merge, pin bump or push.
