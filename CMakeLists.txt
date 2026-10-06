@@ -301,6 +301,7 @@ set(MILO_ENGINE_GFX_RNDOBJ_SOURCES
     src/gfx/ShadowPass.cpp
     src/gfx/PostProcPass.cpp
     src/gfx/TextureConvert.cpp
+    src/gfx/GxTextureDecode.cpp
 )
 
 set(MILO_ENGINE_AUDIO_SOURCES

@@ -99,6 +99,11 @@ inline RndBitmap *CubeFaceBitmap(RndCubeTex *c, int face) {
     return &c->GetBitmap((RndCubeTex::CubeFace)face);
 }
 
+// ---- texture layout --------------------------------------------------------
+// DC3 and rb3-xenon bitmaps are Xbox layouts (DXT big-endian words, Milo tiling
+// via order & 4); none carries the Wii GX 0x40 order bit.
+constexpr bool kGxTextureLayout = false;
+
 // ---- draw modes ------------------------------------------------------------
 // The Rnd::Mode WorldReflection::DrawShowing sets while it draws the mirrored
 // world (DC3 world/Reflection.cpp: SetDrawMode((Rnd::Mode)8)).
