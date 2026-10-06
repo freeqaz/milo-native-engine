@@ -1204,6 +1204,10 @@ three looser matches, one of them 1.3 darker.
 
 ### 11.5 Identified, not implemented
 
+> Lane W16-RA implemented these terms in section 12. The AO input
+> statement below is corrected in 12.2: the input is the vertex colour, which
+> the engine had been reading with R and B swapped.
+
 Retail terms the RB3 path still lacks, from the same sources. None of them is
 the city's gap, and each needs an input this lane could not establish.
 
@@ -1246,4 +1250,277 @@ configured with `-DMILO_ENGINE_PATH` at the `w16-qy` engine worktree
 - The left roof and the moon (11.3).
 - A paired venue comparison: camera cuts still differ between runs, so 11.4
   rests on pooled runs plus matched shots.
+- No merge, pin bump or push.
+
+## 12. Retail material terms: specular, normal map, rim, AO, colour adjust (lane W16-RA, 2026-10-06)
+
+Engine `w16-ra` `2b578f6` (off `3cb54e5`) and rb3 `w16-ra` `0373e6aaa` (off
+`4039f5528`). This lane implements the terms 11.5 lists as identified but not
+implemented. The two that change nothing in the measured content are in 12.7,
+with the reasons.
+
+### 12.1 Sources
+
+| what | where (rb3-xenon, matched) |
+|---|---|
+| which terms a draw gets | `rndobj/Shader.cpp` `CalcShaderOpts` |
+| per-frame constants (AO strength `c24`, colour adjust `c109`–`c111`) | `rndobj/Env_NG.cpp` `NgEnviron::Select` |
+| material inputs | `rndobj/Mat.cpp` `RndMat::Load` |
+| AO vertex data | `rndobj/AmbientOcclusion.cpp` `CalculateAOAtPoint`, `BuildSHCoeff` |
+| vertex colour packing | `rnddx9/Mesh.cpp` `FillCompressedVertex` (dc3-decomp's is the same) |
+| box map | `rndobj/BoxMap.cpp` |
+| shader math | the retail `xbox_shaders` cache (`orig-assets/extracted-xbox-full/(.)/xbox_shaders`), standard permutations disassembled with `xenia-gpu-shader-compiler` |
+
+Selection (`CalcShaderOpts`; option bits as in the shader key):
+
+| term | bit | selected when |
+|---|---|---|
+| per-pixel (ppl) | 0 | `AllowPerPixel` (default on) and the material's per-pixel flag |
+| specular | 2 | `SpecularRGB.Pack() != 0` (packed rgb bytes; alpha ignored) |
+| specular map | 1 | ppl and specular and a specular map |
+| normal map | 5 | ppl and a normal map |
+| rim | 37 | ppl and `RimRGB.Pack() != 0` |
+| rim map / rim under | 15 / 14 | rim and the map / the flag |
+| colour adjust | 21 | the environ's `UseColorAdjust()` |
+| ambient occlusion | 38 | not prelit, mesh `HasAOCalc`, env AO enabled, `AOStrength > 0.003` (does not test use-environ) |
+
+All lighting terms also need real or approx lights. The approx light count is
+the queued local count plus the global count.
+
+The permutations disassembled for the math: `0x14000030010` (AO),
+`0x2000028037` (ppl, spec, spec map, normal map), `0x4000030035` (rim),
+`0x2000024005` (rim under), `0x220010` (colour adjust).
+
+The Wii loader reads every material input into locals and drops it. Under
+`HX_NATIVE` only, rb3's `RndMat` now keeps them (`RB3_NATIVE_XBOX_MAT_FIELDS`),
+with retail's revision fix-ups: before rev 0x25 a specular map forces white
+specular, rim power is ×2.857143 (min 1) up to rev 0x39, and rim is cleared
+before rev 0x3B.
+
+### 12.2 Finding: the AO input is the vertex colour, and the engine read it with R and B swapped
+
+11.5 rejected the vertex colour as the AO input because its mean was about
+(0.5, 0.5, 0.8, 0.5). That colour is the AO data. `BuildSHCoeff` stores four
+SH coefficients:
+
+- R = band 0, at most about 0.886 (open sky). 1.128379 × 0.886 = 1, so the
+  shader's ambient factor is 1 there.
+- G, B, A = the y, z and x band-1 coefficients, remapped from [−1, 1] to
+  [0, 1].
+
+The mean only looked wrong because of the swap below.
+
+Retail `FillCompressedVertex` packs a D3DCOLOR (A, R, G, B from the high byte
+down). The engine's `UnpackColor_BE` read R from the low byte, so it swapped R
+and B. A probe over the title's 162 compressed AO meshes showed both effects:
+
+| | before the fix | after the fix |
+|---|---|---|
+| where the band-0 bound (0.898) showed up | blue channel's max | red channel's max (0.902) |
+| what red tracked | the normal's z (sidewalk nz −0.5 → r 0.28; silos nz 0.38 → r 0.70) | — |
+
+A z band coefficient behaves like the normal's z, as the "before" red did.
+The fix is switched by `rndshape::kCompressedColorIsArgb`, which is on for the
+RB3 shape. With the old read, the title gets much worse (`noSWAP`, 12.4).
+DC3 packs the same way, so the DC3 shape probably has the same swap; that is
+left alone here (12.7).
+
+### 12.3 What changed
+
+- **Seam** (`RndShape*.h`): `MatRetailTerms(mat, RetailMatTerms&)` and
+  `FillMeshApproxLighting(mesh, box, retail)`. Both are no-ops for the DC3
+  shape, and DC3 materials keep the dc3 model's fields.
+- **Uniforms**:
+  - scene: `aoStrength`, `colorAdjust`, `colorXfm[3]`
+  - material: `retailSpec` (rgb, power), `retailRim` (rgb, power),
+    `retailFlags` (ppl, normal map, spec map, rim map)
+  - object: `retail` (`HasAOCalc`, approx light count)
+  - The object group is now visible to the fragment stage.
+- **Material** (`MaterialSetup.cpp` `FillRetailTerms`): fills the uniforms
+  and binds the normal, specular and rim maps in the slots the dc3 model uses.
+  The dc3 model's own fields stay zero, so its terms never run on top.
+- **Environ** (`RB3WiiSceneLighting.cpp`): AO strength (when enabled and above
+  0.003), colour adjust and its matrix (`colorXfm[c] = (m.x[c], m.y[c],
+  m.z[c], v[c])`). `SetPConstant4x3` writes the matrix's columns, so
+  `out.c = Σ rgb_i · m.row_i.c + v.c`.
+- **Box map**: `ApplyRetailBoxMap` follows retail `BoxMap.cpp`, with no 0.28
+  spot skip.
+- **Shader** (`standard_wgsl.inc` `retailShade`), as retail computes it:
+  - AO, from the SH vertex colour `(R, G, B, A)` and strength `S`:
+    - `ambAO = sat((1.128379 R − 1) S + 1)` scales ambient plus box light.
+    - Per point light, `ptAO = sat((v − 1) S + 1)`, where
+      `v = (0.282 R + 0.4886 · dot((2A−1, 2G−1, 2B−1), Lloc)) / (3/16 + 9/16 N·Lloc)`.
+      `Lloc` is the object-space light direction, and `v = 1` when the
+      denominator is negative.
+    - Non-ppl alpha is `ambAO` times the material alpha.
+  - Specular:
+    - `norm = p/2π + 1/π`
+    - `F = 0.25 + (1 − sat(N·V))(0.5 Nz + 0.5)`
+    - `R = 2(N·V)N − V`
+    - box: `Σ pow(sat(±R), p) · face · norm · F · ambAO`
+    - point: `norm · ptAO · colour · atten · pow(sat(R·L), p)`, with no
+      Lambert term
+    - A specular map multiplies the colour by its rgb and sets the power to
+      `max(p · a, 0.5)`.
+  - Normal map:
+    - `z = sat(1 − x² − y²)` (no square root)
+    - `N = normalize(z N + k x B + k y T)`, with `k = 1 − deNormal` and
+      `B = cross(N, T) · w`. Red runs along B.
+  - Rim:
+    - `rim = pow((1 − sat(N·V))(0.5 Nz + 0.5), rp) · rimColour · box(−V)`
+    - Diffuse is scaled by `1 + 0.3 rim`, then `0.7 rim` is added.
+    - A rim map multiplies the colour and sets the power to `max(a · rp, 0.5)`.
+  - Colour adjust: applied after fog, before the clamp.
+
+### 12.4 Title, before and after
+
+`title_capture.sh` + `title_fidelity.py` against TCRF. "base" is engine
+`3cb54e5`, "this lane" is `2b578f6`. Both builds use the rb3 `w16-ra`
+worktree; its `RndMat` additions only keep values the loader already read, and
+the base engine never reads them. The fields that probe in the title:
+
+- **Materials:** 113 drawn materials have per-pixel or specular, and all of
+  them are per-pixel: 78 specular, 68 normal map, 63 specular map, 26 rim,
+  0 rim map, deNormal 0 throughout.
+- **Envs:** all have AO enabled at strength 1.0 (1.5 for `subwayhangout_geom`
+  and one `geom.env`). No title env uses colour adjust.
+
+| frame | base sky_dE / city_dE / city_edge | **this lane** |
+|---|---|---|
+| 60 | 14.8 / 12.0 / 0.780 | **13.4 / 11.7 / 0.910** |
+| 200 | 15.4 / 13.7 / 0.719 | **14.7 / 13.1 / 0.870** |
+| 400 | 13.5 / 12.3 / 0.779 | **11.6 / 11.7 / 0.912** |
+
+| f400 | luma | p10 | dark % |
+|---|---|---|---|
+| retail (TCRF) | 50.1 | 11.8 | 25.7 |
+| base | 42.4 | 14.1 | 25.7 |
+| **this lane** | 43.7 | 13.0 | 27.7 |
+
+Against xenia's front buffer (regions as in 10.2), f400:
+
+| region | xenia | base | **this lane** |
+|---|---|---|---|
+| sky, left | 33.6 | 22.8 | 22.6 |
+| sky, right | 29.9 | 43.2 | 42.4 |
+| city, right | 41.0 | 43.4 | 42.3 |
+| city, middle | 51.9 | 42.8 | 40.4 |
+| city, right-middle | 39.0 | 43.2 | 41.2 |
+| left roof | 29.1 | 15.1 | 13.4 |
+| city mean \|ΔRGB\| vs xenia | 0 | 14.7 | **14.0** |
+| city luma / xenia | 1.000 | 0.998 | 0.956 |
+
+Ablations were measured on a build with the same terms plus one switch per
+term, each switch run on its own. The full-terms leg of that build (0.4 or
+less from this lane on every TCRF figure) is the "none" row.
+
+| f400, switched off | sky_dE | city_dE | city_edge | luma | dark % | city luma / xenia |
+|---|---|---|---|---|---|---|
+| none (all terms) | 11.6 | 11.7 | 0.912 | 43.9 | — | 0.942 |
+| vertex colour fix | 17.1 | 15.7 | 0.864 | 36.4 | 38.8 | 0.848 |
+| AO | 11.6 | 11.9 | 0.907 | 46.3 | 24.1 | 1.048 |
+| material terms | 13.7 | 13.1 | 0.821 | 40.5 | 31.3 | 0.947 |
+| colour adjust | 11.5 | 11.7 | 0.913 | 43.9 | 27.6 | 0.973 |
+| spot skip removal | 11.5 | 11.7 | 0.912 | 43.7 | 27.9 | 0.936 |
+
+- **Against TCRF the title improves at every frame on every figure**: sky_dE
+  by 0.7 to 1.9, city_dE by 0.3 to 0.6, city_edge by 0.13 to 0.15. Most of the
+  edge gain comes from the material terms (normal maps and specular give the
+  facades structure). Their removal also costs 2.1 sky_dE, because the
+  skyline's specular facades sit inside the sky band.
+- **The vertex colour fix is worth more than any term, but only with the
+  terms in.** With the terms and the old read, the title is far worse than
+  base (city_dE 15.7). The read only feeds AO here, so the swap was harmless
+  until AO used it.
+- **AO darkens the city**: the luma ratio against xenia goes from 1.048
+  without AO to 0.94–0.96 with it. City error against xenia still improves
+  (14.7 → 14.0), but by luma alone the city moves from xenia's level to about
+  5% below it. The left roof and the middle city get darker, away from xenia.
+  Their envs have near-black ambient (11.5), so what is left there is AO
+  scaling the box light.
+- Colour adjust and the spot change are inert on the title, as predicted (no
+  title env uses colour adjust, and no spots reached a box map in the venue probe, 12.7). The right-middle region
+  moves between 39.0 and 43.2 across those runs because a billboard animates
+  in it, which gives the run-to-run noise.
+
+### 12.5 Venues
+
+Same instrument as 10.5 and 11.4 (`venue_capture.py`, `RB3_FIXED_CLOCK=1`,
+8 shots at game frames 60–1020, 8 runs per build). Both builds were run in
+this lane. One venue env, `streaks_red.env`, uses colour adjust.
+
+| config | runs | luma | p10 | dark % |
+|---|---|---|---|---|
+| retail, 5 gameplay stills (10.5) | — | 54.0 | 9.0 | 34.4 |
+| base `3cb54e5` | 8 | 58.7 ± 2.1 | 19.3 ± 1.0 | 28.8 ± 1.9 |
+| **this lane** | 8 | 51.7 ± 4.4 | 16.2 ± 2.4 | 33.7 ± 4.5 |
+
+Bootstrap 95% intervals on this lane minus base:
+
+- luma −7.0 [−16.2, +1.3]
+- p10 −3.1 [−8.1, +1.5]
+- dark % +5.0 [−3.5, +14.2]
+
+All three move toward retail, and none separates from zero. Matched shots
+(the closest-looking base shot at 320×180):
+
+- Within mean |ΔRGB| 10 there are 3 pairs, at −0.9, −0.2 and −3.1 luma
+  (mean −1.4).
+- Widening to 14 gives 11 pairs, with mean +1.6.
+
+The shot-level effect is therefore small in both directions. The pooled drop
+is mostly in shots where AO darkens the crowd and stage set. By eye,
+characters gain specular highlights (arms, instruments) and the crowd reads
+darker under AO. Quickplay reached `game_screen` in all 16 runs.
+
+### 12.6 Consumer verification (engine `w16-ra`)
+
+Fresh `~/tmp` worktrees made with each repo's `scripts/setup_worktree.sh`,
+configured with `-DMILO_ENGINE_PATH` at the `w16-ra` engine worktree
+(confirmed in each `CMakeCache.txt`), built at `2b578f6`.
+
+| consumer | instrument | result |
+|---|---|---|
+| dc3-decomp (on `e992ee9b5`) | `scripts/native_configure.sh` + `scripts/native_test.sh` | 626 registered, 557 executed, 557 passed, 0 failed, 69 skipped (budget 69), rc=0 |
+| rb3-xenon (on `b5a56416b`) | `tools/native_health.sh` | `NATIVE_HEALTH_RESULT verdict=PASS link=PASS link_verified=18 link_expected=18 link_skipped=0 runtime=PASS runtime_ran=18 runtime_total=18 gates_pass=77 gates_fail=0 unrunnable=none selftest=SKIPPED scatter_unlinked=16 scatter_dirb=0 scatter_multihost=17 rc=0 handpose_controls=- handpose_baseline_fail=- runtime_crashed=0 runtime_failed=none` (embedded link gate: `verdict=PASS expected=18 verified=18 skipped=0 partial=0 failed=0 rc=0`) |
+| rb3-xenon | `tools/native_build_gate.sh` | run as the lane's last action; its `NATIVE_GATE_RESULT` line is in the lane report |
+| rb3 (Wii), dc3 flavor | title (12.4) and venues (12.5) | title exits rc=0 on the final build (f400 11.6 / 11.7 / 0.912); Quickplay reaches `game_screen` in all 16 venue runs |
+
+DC3 and rb3-xenon use the DC3 shape. For them, `MatRetailTerms` returns false,
+`FillMeshApproxLighting` does nothing, and the colour read is unchanged, so
+the retail uniforms stay zero and the shader takes its existing branches.
+
+### 12.7 Not done
+
+- **Rim under** (bit 14): no change. `0x2000024005` computes the same rim as
+  the plain rim permutation, so there is nothing separate to implement.
+- **Spot skip**: the 0.28 colour-sum skip is removed, but this changes nothing
+  in the measured content. `BoxMapLighting::QueueLight` queues fake spots as
+  directionals and has no case for floor spots or shadow refs. Spot entries
+  reach a box map only through `SpotlightDrawer::ApplyLightingApprox`, which
+  `SpotlightDrawer::UpdateBoxMap` calls from `EndWorld` into `sGlobalLighting`
+  (retail and rb3 alike). A probe on the venue path counted the spots in
+  `sGlobalLighting` at each approx-lit draw whose env uses global approx
+  lighting: 0 over 340k draws. Why they never arrive (no spotlights in
+  `sLights`, zero `mLightingInfluence`, `kProcessChar` not set, or no env
+  using global approx) was not investigated. Until it is, the skip cannot be
+  measured either way.
+- **Tangent frame**: the normal map uses the vertex tangent as it comes and
+  does not rotate it by the material's texgen transform. This only matters
+  for normal-mapped materials with a rotated texgen.
+- **Normal detail**: dc3's `normDetail` map is not combined with the retail
+  normal map.
+- **The DC3 shape's colour read**: `kCompressedColorIsArgb` is off for DC3,
+  although DC3's `FillCompressedVertex` packs ARGB too. Changing it would
+  change DC3 renders, so it belongs to a DC3 lane with DC3 references.
+- **Uncompressed Wii `Color32` on little-endian hosts**: the fields come out
+  reversed (`fr()` reads the alpha byte). Correcting the word decode in
+  `VertColor` would break the code that writes the fields directly (NoteTube
+  `SetAlpha`, `OutfitConfig`, `ChordShapeGenerator`), so it is unchanged. The
+  title's AO meshes are all compressed, so AO does not depend on it.
+- **Inverse square root**: retail's box map uses the raw `frsqrte` estimate;
+  this uses the exact value, as rb3-xenon's `HX_NATIVE` `BoxMap.cpp` does.
+- **Open finding**: the city sits about 5% below xenia's luma with AO on
+  (12.4). The left roof and middle city are darker than xenia and were not
+  investigated.
 - No merge, pin bump or push.
