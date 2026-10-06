@@ -2145,3 +2145,134 @@ fixed build (`6f308bf8`).
   gamma) was not probed, and its output was not checked against a
   reference.
 - No merge, pin bump or push.
+
+## 16. The bald, glossy band on main_hub (lane W16-RL, 2026-10-06)
+
+Section 15.2 recorded part of the dc3 cast on main_hub rendering bald with
+glossy skin, and left it uninvestigated. There are two separate causes. Both
+are in rb3's native game code (`src/system/bandobj`), not in this engine, and
+both fixes are there. The engine branch carries only this section.
+
+### 16.1 Bald: multi-bone hair drawn at the world origin
+
+A hair mesh with one bone (`bone_hair`) rendered. A hair mesh with several
+bones (fauxhawk, ziggymullet, messyshort, visor, 50sbandana) did not. The
+extra bones are the CharHair strand chains `bone_hair-*`, which live in the
+hair resource's own dir. A temporary probe in `Mesh_Wgpu.cpp` printed, per
+skinned draw, the skinned vertex average next to the bind average and each
+bone's parent and world:
+
+| mesh | skinned avg | bind avg | member's head |
+|---|---|---|---|
+| fauxhawk_resource.mesh | (-0.0, 0.6, 70.7) | (-0.0, 0.6, 70.9) | head.mesh skinned to (48.2, 24.2, 65.8) |
+
+The strand roots' parent is `bone_hair.mesh` of the **shared static magnet
+skeleton**: dir `''`, parent `bone_head` at (0, 0.3, 65.4), the world origin.
+The world transforms are not stale: a recomposed world equals the cached one,
+and dirty=0. `BandCharacter::RebindHeadHandsAtRest` moves the other head
+meshes onto the member's own skeleton, but it resolves every bone by name in
+the member. The strand bones never resolve, so the whole mesh stayed pending
+(`HEAD_REBIND_PENDING … fauxhawk_resource.mesh miss=6 resolvable=1/7
+why=unresolvable`, and `visor_resource.mesh miss=8 resolvable=1/9`). It was
+then drawn bound to the magnet chain, so the hair sat at the origin and the
+member looked bald.
+
+The rb3 flavor had the same defect. The same pending lines appear there, and
+its hub cast also lost those hairstyles; it only looked less bald. Section
+15's "rb3 flavor's cast had hair" compared different casts.
+
+The fix is rb3's `BandCharacter::NativeAnchorOutfitChain`, called from pass A
+of `RebindHeadHandsAtRest` when a bone does not resolve:
+
+1. Walk up to the first ancestor that resolves to a bone of this member
+   (`bone_hair.mesh`).
+2. Take the bone's rest as its current transform relative to that ancestor,
+   times the ancestor's captured char-space rest. This uses the same capture
+   rules as a distinct bone (no capture while a clip plays, finite only).
+3. In pass B, reparent the chain's root onto the member's bone, keeping its
+   local transform. The mesh is then baked and flagged like every other head
+   mesh.
+
+CharHair reads `Root()->TransParent()->WorldXfm()`, so the hair simulation
+follows the live head too. Opt-out: `RB3_NO_OUTFIT_CHAIN_ANCHOR=1`.
+
+After the fix:
+- fauxhawk skins to (48.9, 33.7, 70.2), on the member's head.
+- No `HEAD_REBIND_PENDING` lines appear in either flavor's hub run.
+
+### 16.2 Glossy: skin specular with no specular map
+
+Every band `head.mesh` draws one shared material: `head_naked.mat` from
+`char/main/shared/char_shared.milo`, the same pointer for all four members.
+Its retail terms (`MatRetailTerms`) are:
+- per-pixel lit;
+- specular rgb (1, 1, 1), power 30;
+- rim (0.93, 0.16, 0.03), power 3;
+- **no specular map and no normal map.**
+
+The dc3 backend applies retail's specular terms (section 12). An unmasked
+white specular at power 30 put hot spots on every face and torso.
+
+Retail Xbox `OutfitConfig::SetSkinTextures` (rb3-xenon, same function) binds,
+for each of the five skin materials:
+- the specular map `<gender>_<part>_spec.tex`;
+- a normal map: `<gender>_<part>_norm[_<variant>].tex` for torso, legs and
+  feet, and the wrinkle blender's `head_wrinkle_output.tex` for the head.
+
+The Wii build has no specular or normal maps, so the Wii `SetSkinTextures` in
+rb3 dropped those lines. The textures exist in the Xbox data
+(`char/main/shared/colorpalettes.milo`: `male_head_spec.tex`,
+`male_head00_norm.tex`, the torso and legs variants).
+
+The fix is rb3's `NativeBindSkinMaps`, called from `SetSkinTextures` under
+`HX_NATIVE`. It restores that binding into `mXbSpecularMap` / `mXbNormalMap`
+on dir1's material and on every drawn instance of the same name. It searches
+recursively, because the textures sit in a nested subdir. It also ports
+retail's `BandCharDesc::HeadNormVariant` for the body-type suffix.
+
+One substitution: the head gets `<gender>_head00_norm.tex`, not the wrinkle
+RT, because `RndTexBlender::DrawShowing` is a no-op in rb3's tree and that RT
+is never painted. Opt-out: `RB3_NO_SKIN_MAPS=1`.
+
+The BandRnd path never reads the `mXb*` maps (no `mXb` in `Rnd_Wgpu_RB3.cpp`
+or `RB3MaterialBinder.cpp`), so the rb3 flavor's shading is unaffected.
+
+### 16.3 Before / after
+
+There is one binary for both legs; the "before" leg uses the two opt-outs.
+Both legs use `RB3_FIXED_CLOCK=1`, Start ×2, and frame 580 on main_hub. The
+hub camera's timing is not frame-exact between runs, so the framing differs
+slightly.
+
+- `~/tmp/w16rl_before_after_f580.png`: before
+  (`RB3_NO_OUTFIT_CHAIN_ANCHOR=1 RB3_NO_SKIN_MAPS=1`) next to after. Before,
+  the right member is bald and the visor member has no hair under the visor.
+  After, both have hair, and the specular hot spots on faces and chests are
+  gone.
+- `~/tmp/w16rl_ab_montage.png`: before, hair fix only, hair + skin, at frames
+  300 and 580.
+- `~/tmp/w16rl_rb3_after/01_f0580.png`: rb3 flavor after the fix. The
+  fauxhawk and spiky hair now render on the two right members, which were
+  slicked or bald in `~/tmp/w16rl_rb3probe/01_f0580.png`.
+
+These are scratch paths, not committed.
+
+### 16.4 Verification
+
+| consumer | instrument | result |
+|---|---|---|
+| rb3 `w16-rl`, desktop, dc3 (engine `w16-rl`) | `ctest` | 123 tests: 116 passed, 7 skipped, 0 failed, rc=0; same counts as 15.4 |
+
+### 16.5 Not done
+
+- **Shared skin materials.** One `head_naked.mat` instance serves every band
+  member natively (the native milo merge; see the black-head comment in rb3's
+  `OutfitConfig.cpp`). The last member to run `SetSkinTextures` sets its
+  gender's spec and normal maps for all. A mixed-gender cast shares one set,
+  just as it already shares one head diffuse.
+- **The head wrinkle normal RT** (`RndTexBlender`) is not composed natively.
+  The head uses the neutral `head00` normal.
+- **The web build** was not rebuilt. The fixes are in rb3 game code that both
+  targets compile.
+- rb3's rb3-flavor `ctest` and the native gate were not run.
+- No merge, pin bump or push.
