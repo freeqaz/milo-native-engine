@@ -820,7 +820,14 @@ void WgpuRnd::MakeDrawTarget() {
         EndActivePass();
         mActiveTargetTex = nullptr;
     }
-    if (!mInPass) {
+    // Resume the frame pass only once BeginDrawing has opened it. A render
+    // target selected during the pre-clear phase (before BeginFramePass(true)),
+    // e.g. RB3's outfit compose painting *_diffuse_output, restores its
+    // previous camera on the way out; resuming here would leave a
+    // MainPassResume open when BeginDrawing then begins the real main pass,
+    // and Dawn invalidates the whole frame's command buffer, including the
+    // render-target contents just drawn.
+    if (!mInPass && mFramePassValid) {
         BeginFramePass(false);
     }
 }
