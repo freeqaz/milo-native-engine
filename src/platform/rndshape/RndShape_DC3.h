@@ -135,6 +135,9 @@ constexpr bool kRetailPostChain = false;
 template <class Params>
 inline void FillRetailPost(const RndPostProc *, float, Params &) {}
 inline int RetailPostMode() { return 0; }
+inline bool RetailBloomMaskActive() { return false; }
+// DC3 materials and lights are linear-space values (the dc3 shader's model).
+constexpr bool kGammaSpaceShading = false;
 template <class M>
 inline float BloomMaskScale(const M &) { return 0.0f; }
 

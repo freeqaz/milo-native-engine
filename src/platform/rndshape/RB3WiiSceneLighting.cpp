@@ -17,7 +17,9 @@
 //
 //  * world.cam with a usable environ: ambient taken from the environ, a
 //    near-white ambient (the engine's unauthored default) scaled by 0.09, all
-//    channels floored at 0.008. Directional lights from the approx list (dir
+//    channels floored at 0.008 (these and the character-ambient constants are
+//    BandRnd's values, re-expressed for gamma-space shading; see
+//    ShadingSpace below). Directional lights from the approx list (dir
 //    exposure 0.80, capped 1.5); point lights stay real point lights (point
 //    exposure 0.70, capped 1.8) with the GX inverse-linear falloff. Character
 //    environs (name contains "char") that carry a real key shade from the
@@ -35,6 +37,7 @@
 #include "gfx/UniformStructs.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 
@@ -57,11 +60,26 @@ bool PointFalloffGx()      { static int v = EnvFlag("RB3_VENUE_POINT_FALLOFF_LEG
 bool WhiteGuard()          { static int v = EnvFlag("RB3_VENUE_WHITE_GUARD") ? 1 : 0; return v != 0; }
 bool CharRealLight()       { static int v = EnvFlag("RB3_CHAR_REAL_LIGHT_OFF") ? 0 : 1; return v != 0; }
 bool FallbackFix()         { static int v = EnvFlag("RB3_VENUE_FALLBACK_FIX") ? 1 : 0; return v != 0; }
-float AmbientFloor()       { static float v = EnvFloat("RB3_VENUE_AMBIENT_FLOOR", 0.008f); return v; }
-float AmbientClamp()       { static float v = EnvFloat("RB3_VENUE_AMBIENT_CLAMP", 0.09f); return v; }
+// The standard shader shades RB3 in gamma space (rndshape::kGammaSpaceShading):
+// it decodes the lit term before multiplying it into the decoded texture, so a
+// lighting value v now darkens a texel exactly as much as retail's v does. The
+// four ambient fallbacks below were fitted under the old linear shading, where
+// the output encode lifted a lit term v to about linearToSrgb(v); they are
+// re-expressed through that curve so they keep the brightness they were fitted
+// to. They are still read in BandRnd's units, so a value tuned on one backend
+// means the same on the other. Light exposures and the grey key are not
+// re-expressed: authored light colours are used as authored, and re-expressing
+// those two moved the title frame further from retail (doc section 8).
+float ShadingSpace(float v) {
+    if (!rndshape::kGammaSpaceShading) return v;
+    return v <= 0.0031308f ? v * 12.92f : 1.055f * std::pow(v, 1.0f / 2.4f) - 0.055f;
+}
+
+float AmbientFloor()       { static float v = ShadingSpace(EnvFloat("RB3_VENUE_AMBIENT_FLOOR", 0.008f)); return v; }
+float AmbientClamp()       { static float v = ShadingSpace(EnvFloat("RB3_VENUE_AMBIENT_CLAMP", 0.09f)); return v; }
 float GreyKey()            { static float v = EnvFloat("RB3_VENUE_GREY_KEY", 0.22f); return v; }
-float CharApproxAmbient()  { static float v = EnvFloat("RB3_CHAR_APPROX_AMBIENT", 0.11f); return v; }
-float CharAmbientMax()     { static float v = EnvFloat("RB3_CHAR_AMBIENT_MAX", 0.14f); return v; }
+float CharApproxAmbient()  { static float v = ShadingSpace(EnvFloat("RB3_CHAR_APPROX_AMBIENT", 0.11f)); return v; }
+float CharAmbientMax()     { static float v = ShadingSpace(EnvFloat("RB3_CHAR_AMBIENT_MAX", 0.14f)); return v; }
 float PointExposure()      { static float v = EnvFloat("RB3_VENUE_POINT_EXPOSURE", 0.70f); return v; }
 float DirExposure()        { static float v = EnvFloat("RB3_VENUE_DIR_EXPOSURE", 0.80f); return v; }
 

@@ -16,6 +16,11 @@ public:
              wgpu::TextureView& depthView, wgpu::TextureView& frameView,
              wgpu::TextureView& blackTexView, GpuDevice& gpu);
     void Terminate();
+    // RB3: copies a graded frame over the current pass (RB3RetailPost::Blit).
+    void BlitRetail(wgpu::RenderPassEncoder& pass, const wgpu::TextureView& src,
+                    uint32_t samples, wgpu::TextureFormat depthFmt, GpuDevice& gpu) {
+        mRetail.Blit(pass, src, samples, depthFmt, gpu);
+    }
 
     BloomPass& Bloom() { return mBloom; }
     DofPass& Dof() { return mDof; }

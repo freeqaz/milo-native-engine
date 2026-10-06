@@ -439,6 +439,9 @@ void WgpuRnd::Terminate() {
     // Intermediate texture
     mIntermediateTex = nullptr;
     mIntermediateView = nullptr;
+    mPostOutTex = nullptr;
+    mPostOutView = nullptr;
+    mPostOutWidth = mPostOutHeight = 0;
 
 #ifdef __EMSCRIPTEN__
     mFrameResolvedTex = nullptr;
@@ -478,7 +481,8 @@ void WgpuRnd::ClearDepthForOverlay() {
 
     int curW = mGpu.WindowWidth();
     int curH = mGpu.WindowHeight();
-    bool hasPostProc = RndPostProc::Current() != nullptr;
+    bool hasPostProc = RndPostProc::Current() != nullptr &&
+                       !(rndshape::kRetailPostChain && mPostProcFlushed);
 
     wgpu::RenderPassColorAttachment colorAtt{};
     if (kMSAASamples > 1) {
@@ -585,6 +589,57 @@ void FlushPostProcessingForOverlay() {
     gWgpuRndInstance.FlushPostProcessingForOverlay();
 }
 
+void WgpuRnd::FlushWorldPost() {
+    if constexpr (!rndshape::kRetailPostChain) {
+        return;
+    } else {
+        // Only the retail chain moves the grade to EndWorld; MILO_RB3_RETAIL_POST=0
+        // keeps the DC3 composite at EndDrawing, as before.
+        if (rndshape::RetailPostMode() == 0) return;
+        if (!mInPass || !mFrameView || mActiveTargetTex || !mCurrentPassHasDepth) return;
+        if (!mIntermediateView || !RndPostProc::Current() || mPostProcFlushed) return;
+
+        EndActivePass();
+        const int w = mIntermediateWidth, h = mIntermediateHeight;
+        if (!mPostOutTex || mPostOutWidth != w || mPostOutHeight != h) {
+            wgpu::TextureDescriptor d{};
+            d.label = "RB3WorldPostOut";
+            d.size = {(uint32_t)w, (uint32_t)h, 1};
+            d.format = mGpu.SurfaceFormat();
+            d.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding;
+            d.mipLevelCount = 1;
+            mPostOutTex = mGpu.Device().CreateTexture(&d);
+            mPostOutView = mPostOutTex.CreateView();
+            mPostOutWidth = w;
+            mPostOutHeight = h;
+        }
+        mPostProcPass.Run(mEncoder, mIntermediateView, mIntermediateTex, w, h,
+                          mDepthView, mPostOutView, mBlackTexView, mGpu);
+        mPostProcFlushed = true;
+
+        // Resume the frame pass (now resolving to the frame target) and lay the
+        // graded image over it; depth and stencil carry on from the world.
+        BeginFramePass(false);
+        if (!mInPass) return;
+        mPass.SetViewport(0.0f, 0.0f, (float)w, (float)h, 0.0f, 1.0f);
+        mPostProcPass.BlitRetail(mPass, mPostOutView, kMSAASamples,
+                                 wgpu::TextureFormat::Depth24PlusStencil8, mGpu);
+        mPass.SetBindGroup(0, mSceneBindGroup);
+        ApplyViewport();
+        mLastSceneCam = nullptr;
+    }
+}
+
+#ifndef MILO_RNDOBJ_SHAPE_HAS_NGRND
+// RB3-Wii's Rnd::EndWorld runs DoWorldEnd then DoPostProcess; the world's grade
+// belongs there (retail NgRnd resolves the scene and runs NgPostProc at
+// EndWorld), so whatever the frame draws afterwards stays ungraded.
+void WgpuRndBase::DoPostProcess() {
+    Rnd::DoPostProcess();
+    static_cast<WgpuRnd*>(this)->FlushWorldPost();
+}
+#endif
+
 void WgpuRnd::SetViewport(const Viewport& v) {
     WgpuRndBase::SetViewport(v);
     ApplyViewport();
@@ -615,7 +670,10 @@ void WgpuRnd::BeginFramePass(bool clear) {
 
     int curW = mGpu.WindowWidth();
     int curH = mGpu.WindowHeight();
-    bool hasPostProc = RndPostProc::Current() != nullptr;
+    // After FlushWorldPost (RB3) the frame is already graded: the rest of it
+    // draws straight to the frame target.
+    bool hasPostProc = RndPostProc::Current() != nullptr &&
+                       !(rndshape::kRetailPostChain && mPostProcFlushed);
 
     wgpu::RenderPassColorAttachment colorAtt{};
     if (kMSAASamples > 1) {
@@ -663,8 +721,7 @@ void WgpuRnd::BeginFramePass(bool clear) {
     colorAtt.loadOp = clear ? wgpu::LoadOp::Clear : wgpu::LoadOp::Load;
     // RB3's retail chain reads the frame's alpha as its bloom mask
     // (rndshape::BloomMaskScale), and retail clears only RGB, leaving alpha 0.
-    const int retailMode = rndshape::RetailPostMode();
-    const bool maskInAlpha = hasPostProc && (retailMode == 1 || retailMode >= 3);
+    const bool maskInAlpha = hasPostProc && rndshape::RetailBloomMaskActive();
     colorAtt.clearValue = {
         (double)mClearColor.red,
         (double)mClearColor.green,

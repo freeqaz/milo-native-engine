@@ -116,6 +116,10 @@ public:
         const Hmx::Color *
     ) {}
 
+    // Rnd::EndWorld's post step: also grades the world on the GPU
+    // (WgpuRnd::FlushWorldPost). Defined in platform/Rnd_Wgpu.cpp.
+    void DoPostProcess() override;
+
     Viewport mViewport;
 };
 
@@ -433,6 +437,12 @@ void FillRetailPost(const RndPostProc *pp, float flickerMul, ::RetailPostParams 
 // (scene passed through ungraded), "mask" = 3 / "bloom" = 4 (the retail chain,
 // showing the bloom mask or the bloom term instead; for inspection).
 int RetailPostMode();
+// The frame's alpha carries the bloom mask this frame (the retail chain, or
+// its mask/bloom inspection views).
+inline bool RetailBloomMaskActive() {
+    const int m = RetailPostMode();
+    return m == 1 || m == 3 || m == 4;
+}
 // The pseudo-HDR bloom mask (ShaderOptions bit 22): retail's standard.ps writes
 // a = dot(rgb, c7.rgb) for a material whose NgMat::AllowHDR() holds, drawn into
 // the main frame (CalcShaderOpts: !fadeOut && !offscreen && AllowHDR()); every
@@ -442,6 +452,16 @@ int RetailPostMode();
 // 1/threshold above 1, else 1) for such a material while the retail chain runs
 // with a current RndPostProc, else 0 (no mask). The caller decides "main frame".
 float BloomMaskScale(const MatView &m);
+// RB3 shades in gamma space: retail's standard.ps multiplies the (gamma)
+// texture by the material colour and the ambient + diffuse lighting sum as
+// authored and writes the product straight to an 8-bit gamma target
+// (D3DFMT_A8R8G8B8, DxRnd::CreateEDRAMSurfaces). The dc3 shader decodes
+// textures and encodes its output, so it must decode those factors as well
+// (standard_wgsl.inc, material.gammaShading). Without it every material
+// colour and light is brightened by the encode (a 0.3 factor acts as 0.58),
+// which is most of the title sky's excess luma and why the retail bloom
+// (which weights the scene by its own luma) washed the frame out.
+constexpr bool kGammaSpaceShading = true;
 
 // ---- scene lighting --------------------------------------------------------
 // RB3 lights for the Wii's GX pipeline, not DC3's venue rig: world.cam reads

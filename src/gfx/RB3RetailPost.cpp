@@ -109,6 +109,12 @@ const kW = array<f32, 15>(0.0159283932, 0.0270778369, 0.0424231887, 0.0612547919
     return acc;
 }
 
+// The graded frame copied back over the main pass after the world-end flush
+// (RB3RetailPost::Blit), one texel per pixel.
+@fragment fn fs_copy(in: VOut) -> @location(0) vec4f {
+    return vec4f(textureLoad(srcTex, vec2i(in.pos.xy), 0).rgb, 0.0);
+}
+
 @fragment fn fs_composite(in: VOut) -> @location(0) vec4f {
     let texSize = vec2f(textureDimensions(srcTex));
     var scene: vec3f;
@@ -441,7 +447,65 @@ void RB3RetailPost::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& 
     pass.End();
 }
 
+void RB3RetailPost::Blit(wgpu::RenderPassEncoder& pass, const wgpu::TextureView& src,
+                         uint32_t samples, wgpu::TextureFormat depthFmt, GpuDevice& gpu) {
+    EnsurePipelines(gpu);
+    auto& dev = gpu.Device();
+    if (!mBlitPipe || mBlitSamples != samples || mBlitDepth != depthFmt) {
+        wgpu::ColorTargetState ct{};
+        ct.format = mFrameFormat;
+        ct.writeMask = wgpu::ColorWriteMask::All;
+        wgpu::FragmentState frag{};
+        frag.module = mShader;
+        frag.entryPoint = "fs_copy";
+        frag.targetCount = 1;
+        frag.targets = &ct;
+        wgpu::DepthStencilState ds{};
+        ds.format = depthFmt;
+        ds.depthWriteEnabled = wgpu::OptionalBool::False;
+        ds.depthCompare = wgpu::CompareFunction::Always;
+        ds.stencilFront.compare = wgpu::CompareFunction::Always;
+        ds.stencilBack.compare = wgpu::CompareFunction::Always;
+        ds.stencilReadMask = 0;
+        ds.stencilWriteMask = 0;
+        wgpu::RenderPipelineDescriptor pd{};
+        pd.label = "RB3RetailBlit";
+        pd.layout = mPassPL;
+        pd.vertex.module = mShader;
+        pd.vertex.entryPoint = "vs_full";
+        pd.fragment = &frag;
+        pd.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+        pd.depthStencil = depthFmt == wgpu::TextureFormat::Undefined ? nullptr : &ds;
+        pd.multisample.count = samples;
+        mBlitPipe = dev.CreateRenderPipeline(&pd);
+        mBlitSamples = samples;
+        mBlitDepth = depthFmt;
+    }
+    PassUniforms pu{};
+    uint64_t off = (uint64_t)(mSlot++ % kSlots) * kSlotStride;
+    gpu.Queue().WriteBuffer(mUniforms, off, &pu, sizeof(pu));
+    wgpu::BindGroupEntry e[3] = {};
+    e[0].binding = 0;
+    e[0].textureView = src;
+    e[1].binding = 1;
+    e[1].sampler = mSampler;
+    e[2].binding = 2;
+    e[2].buffer = mUniforms;
+    e[2].offset = off;
+    e[2].size = sizeof(pu);
+    wgpu::BindGroupDescriptor bgd{};
+    bgd.layout = mPassBGL;
+    bgd.entryCount = 3;
+    bgd.entries = e;
+    wgpu::BindGroup bg = dev.CreateBindGroup(&bgd);
+    pass.SetPipeline(mBlitPipe);
+    pass.SetBindGroup(0, bg);
+    pass.Draw(3);
+}
+
 void RB3RetailPost::Terminate() {
+    mBlitPipe = nullptr;
+    mBlitSamples = 0;
     for (int s = 0; s < kSets; s++) {
         for (int k = 0; k < 2; k++) {
             mTex[s][k] = nullptr;

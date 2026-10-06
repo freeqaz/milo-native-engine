@@ -64,6 +64,11 @@ public:
     void Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& sceneView,
              int sceneW, int sceneH, const wgpu::TextureView& frameView,
              const RetailPostParams& p, GpuDevice& gpu);
+    // Draws `src` (frame-sized, frame format) over the whole current render
+    // pass, whose attachments are `samples`-sampled with depth format
+    // `depthFmt` (Undefined: no depth). Neither depth nor stencil is touched.
+    void Blit(wgpu::RenderPassEncoder& pass, const wgpu::TextureView& src,
+              uint32_t samples, wgpu::TextureFormat depthFmt, GpuDevice& gpu);
     void Terminate();
 
 private:
@@ -86,6 +91,9 @@ private:
     wgpu::RenderPipeline mDown4Pipe;      // set k -> set k+1
     wgpu::RenderPipeline mBlurPipe;       // 15-tap separable
     wgpu::RenderPipeline mCompositePipe;
+    wgpu::RenderPipeline mBlitPipe;       // fs_copy, keyed on samples + depth
+    uint32_t mBlitSamples = 0;
+    wgpu::TextureFormat mBlitDepth = wgpu::TextureFormat::Undefined;
     wgpu::Sampler mSampler;               // linear, clamp
     // One 256-byte slot per pass. Queue::WriteBuffer runs at Submit, ahead of
     // the frame's passes, so passes sharing a slot would all read the last data.

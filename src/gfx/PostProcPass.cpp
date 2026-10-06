@@ -289,7 +289,8 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, wgpu::TextureView& interme
             float dt = StepTime();
             RetailPostParams rp;
             if (mode != 2) rndshape::FillRetailPost(pp, StepFlicker(pp, dt), rp);
-            if (mode >= 3) rp.debugView = mode - 2;
+            if (mode == 3 || mode == 4) rp.debugView = mode - 2;
+            if (mode == 5) rp.bloom = false;
             rp.time = mNoiseTime;
             mRetail.Run(encoder, intermediateView, intermediateW, intermediateH, frameView, rp, gpu);
             return;

@@ -18,7 +18,8 @@ int RetailPostMode() {
     if (s < 0) {
         const char *e = getenv("MILO_RB3_RETAIL_POST");
         s = !e ? 1 : (e[0] == '0') ? 0 : (strcmp(e, "raw") == 0) ? 2
-            : (strcmp(e, "mask") == 0) ? 3 : (strcmp(e, "bloom") == 0) ? 4 : 1;
+            : (strcmp(e, "mask") == 0) ? 3 : (strcmp(e, "bloom") == 0) ? 4
+            : (strcmp(e, "grade") == 0) ? 5 : 1;
     }
     return s;
 }
@@ -31,8 +32,7 @@ static float BloomLumaScale(const RndPostProc *pp) {
 }
 
 float BloomMaskScale(const MatView &m) {
-    const int mode = RetailPostMode();
-    if (mode != 1 && mode < 3) return 0.0f;
+    if (!RetailBloomMaskActive()) return 0.0f;
     const RndPostProc *pp = RndPostProc::Current();
     if (!pp) return 0.0f;
     // NgMat::AllowHDR.

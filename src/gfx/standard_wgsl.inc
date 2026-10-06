@@ -134,7 +134,7 @@ struct MaterialUniforms {
     hasSpecularMap: f32,     // 1.0 when specular map is bound
     unlit: f32,              // 1.0 = Wii mUseEnviron==0 && !mPreLit: register color only (no ambient/lights/vertex tint)
     bloomMaskScale: f32,     // >0: alpha = luma(rgb) * this (RB3 pseudo-HDR bloom mask)
-    _padMat3: f32,
+    gammaShading: f32,       // 1.0: material colour + lighting sum are gamma-space (RB3 retail)
 };
 
 @group(1) @binding(0) var<uniform> material: MaterialUniforms;
@@ -649,6 +649,15 @@ fn compressHighlightsLuma(color: vec3f) -> vec3f {
 // vs Wii reference ~90). Apply the sRGB transfer function at the fragment
 // output so the displayed pixels carry the correct perceptual brightness, the
 // same encode the GPU would do for free on an *_UnormSrgb surface.
+// sRGB EOTF (sRGB -> linear), the inverse of linearToSrgb below. Used to
+// bring gamma-space factors (material.gammaShading) into the linear working
+// space; extends as a power law above 1 so a hot lighting sum stays monotonic.
+fn srgbToLinear(color: vec3f) -> vec3f {
+    let lo = color / 12.92;
+    let hi = pow((max(color, vec3f(0.0)) + 0.055) / 1.055, vec3f(2.4));
+    return select(lo, hi, color > vec3f(0.04045));
+}
+
 fn linearToSrgb(color: vec3f) -> vec3f {
     let lo = color * 12.92;
     let hi = 1.055 * pow(max(color, vec3f(0.0)), vec3f(1.0 / 2.4)) - 0.055;
@@ -761,7 +770,18 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
     } else if (isEnabled(surfaceInput.isSkinned)) {
         vertexTint = skinnedTint;                     // skinned char: desaturated shading
     }                                                 // static non-prelit venue: white (suppress)
-    var baseColor = vec4f(material.color.rgb * vertexTint, materialAlpha * surfaceInput.color.a);
+    // RB3 shades in gamma space (material.gammaShading): retail multiplies the
+    // gamma-encoded texture by the material colour and the lighting sum as they
+    // are authored, and writes the product to an 8-bit gamma target. The
+    // texture is decoded here (sRGB views) and the result re-encoded at the
+    // end, so the factors must be decoded too, or every one of them is
+    // brightened by the encode: enc(dec(t) * dec(c)) == t * c.
+    let gammaShading = isEnabled(material.gammaShading);
+    var matRgb = material.color.rgb;
+    if (gammaShading) {
+        matRgb = srgbToLinear(matRgb);
+    }
+    var baseColor = vec4f(matRgb * vertexTint, materialAlpha * surfaceInput.color.a);
 
     if (isEnabled(material.useTexture)) {
         let diffuseSample = textureSample(diffuseTex, diffuseSampler, surfaceInput.uv);
@@ -859,7 +879,10 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
         // surface without blowing it past the texture's own brightness to white.
         // Specular is an additive glint term and is left unclamped (compress-
         // Highlights handles its tail) so legitimate highlights survive.
-        let litTerm = softClipLighting(ambientLight + totalLighting.diffuse * shadowFactor);
+        var litTerm = softClipLighting(ambientLight + totalLighting.diffuse * shadowFactor);
+        if (gammaShading) {
+            litTerm = srgbToLinear(litTerm);
+        }
         finalColor =
             baseColor.rgb * litTerm +
             totalLighting.specular * shadowFactor;
