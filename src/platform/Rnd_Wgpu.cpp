@@ -1149,8 +1149,10 @@ void WgpuRnd::EndDrawing() {
         }
 
         // The display gamma ramp (RB3: DxRnd::SetupGamma's D3DDevice_SetGammaRamp),
-        // over the finished frame, UI included. DC3 has none.
-        if (const float displayGamma = rndshape::DisplayGamma(); displayGamma > 0.0f) {
+        // over the finished frame, UI included, when the frame is presented.
+        // DC3 has none.
+        if (const float displayGamma = rndshape::DisplayGamma(!mGpu.IsHeadless());
+            displayGamma > 0.0f) {
 #ifdef __EMSCRIPTEN__
             const wgpu::Texture& frameTex = mFrameResolvedTex;
 #else

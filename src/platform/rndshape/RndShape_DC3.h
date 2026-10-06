@@ -145,7 +145,7 @@ constexpr bool kGammaSpaceShading = false;
 template <class M>
 inline float BloomMaskScale(const M &) { return 0.0f; }
 // No display gamma ramp: the frame is presented as rendered.
-inline float DisplayGamma() { return 0.0f; }
+inline float DisplayGamma(bool) { return 0.0f; }
 
 // ---- scene lighting --------------------------------------------------------
 // DC3 lights through WgpuRnd::WriteSceneUniforms' own environ block.

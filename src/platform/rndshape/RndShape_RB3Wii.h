@@ -479,11 +479,17 @@ constexpr bool kGammaSpaceShading = true;
 // (gamma 0.85), so the Xbox 360 scans the frame out through x^0.85 and the
 // frame buffer itself stays darker than what is seen. The Wii renderer has no
 // equivalent: no GXSetDispCopyGamma or VI gamma call outside the SDK, so a Wii
-// frame is displayed as rendered. Returns g, or 0 for no ramp;
-// MILO_RB3_DISPLAY_GAMMA overrides it ("off" or "0" = no ramp, else the value).
-// Defined in rndshape/RB3WiiPostChain.cpp; applied by WgpuRnd::EndDrawing
+// frame is displayed as rendered. The ramp sits between the front buffer and
+// the screen, so it applies only to a frame that is `presenting` (a window
+// surface or the web canvas). A headless frame is the front buffer, which is
+// what a retail screenshot is: xenia's raw frame dump of the retail XEX is
+// also pre-ramp and matches the TCRF title screenshot better than the ramped
+// one does (dc3-backend-for-rb3-wii.md, section 10). Returns g, or 0 for no
+// ramp. MILO_RB3_DISPLAY_GAMMA overrides it for every output, headless
+// included ("off" or "0" = no ramp, else the value). Defined in
+// rndshape/RB3WiiPostChain.cpp; applied by WgpuRnd::EndDrawing
 // (gfx/DisplayRamp) to the whole frame, after everything else is drawn.
-float DisplayGamma();
+float DisplayGamma(bool presenting);
 
 // ---- scene lighting --------------------------------------------------------
 // RB3 lights with its own (Xbox 360 retail) model, not DC3's venue rig:
