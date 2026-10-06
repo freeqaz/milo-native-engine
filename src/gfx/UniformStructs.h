@@ -63,9 +63,17 @@ struct SceneUniforms {
     // falloff (pointFalloffMode 2), with no soft clip. 0 (DC3, every other
     // path) = the existing model, byte-identical.
     float retailLighting;          // f32
-    float _padProj[2];
+    // RB3 retail light model only (zero elsewhere). aoStrength: the environ's
+    // AOStrength when its AO is enabled and above 0.003 (standard.vs c24.x,
+    // option bit 38), else 0. colorAdjust: 1 when the environ's
+    // use_color_adjust is set (option bit 21); colorXfm then holds its colour
+    // transform as the three output rows standard.ps reads from c109..c111,
+    // out.c = dot(colorXfm[c], (rgb, 1)).
+    float aoStrength;              // f32
+    float colorAdjust;             // f32
+    float colorXfm[3][4];          // array<vec4f, 3>
 };
-static_assert(sizeof(SceneUniforms) == 656, "SceneUniforms must match WGSL layout");
+static_assert(sizeof(SceneUniforms) == 704, "SceneUniforms must match WGSL layout");
 
 struct MaterialUniforms {
     float color[4];             // vec4f
@@ -98,8 +106,13 @@ struct MaterialUniforms {
     float unlit;                // f32 — 1.0 if material ignores environ (Wii RndMat::mUseEnviron==0 && !mPreLit): register color only, no ambient/lights/vertex tint
     float bloomMaskScale;       // f32 — >0: write alpha = luma(rgb) * this (RB3 pseudo-HDR bloom mask, rndshape::BloomMaskScale)
     float gammaShading;         // f32 — 1.0: shade in gamma space, texel * colour * lighting as stored, no output encode (rndshape::kGammaSpaceShading)
+    // RB3 retail material terms (rndshape::MatRetailTerms), read only under
+    // SceneUniforms.retailLighting; zero for every other material.
+    float retailSpec[4];        // vec4f — .rgb specular colour (0 = no specular), .a power, >= 0.5
+    float retailRim[4];         // vec4f — .rgb rim colour (0 = no rim), .a power, >= 0.5
+    float retailFlags[4];       // vec4f — x per-pixel lit, y normal map, z specular map, w rim map
 };
-static_assert(sizeof(MaterialUniforms) == 192, "MaterialUniforms must match WGSL layout");
+static_assert(sizeof(MaterialUniforms) == 240, "MaterialUniforms must match WGSL layout");
 
 struct ObjectUniforms {
     float world[16];            // mat4x4f
@@ -108,8 +121,12 @@ struct ObjectUniforms {
     // retail c80..c85): six face colours {+X,-X,+Y,-Y,+Z,-Z}, read only when
     // SceneUniforms.retailLighting is set. Zero on every other path.
     float boxLight[6][4];       // array<vec4f, 6>
+    // RB3 retail, same source: x = 1 when the mesh carries baked ambient
+    // occlusion (RndMesh::HasAOCalc), y = the approx lights queued for this
+    // draw (NgEnviron::UpdateApproxLighting's count). Zero elsewhere.
+    float retail[4];            // vec4f
 };
-static_assert(sizeof(ObjectUniforms) == 224, "ObjectUniforms must match WGSL layout");
+static_assert(sizeof(ObjectUniforms) == 240, "ObjectUniforms must match WGSL layout");
 
 // Max bones per mesh (from Mesh.h MaxBones())
 static constexpr int kMaxBones = 40;

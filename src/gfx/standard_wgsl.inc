@@ -94,8 +94,11 @@ struct SceneUniforms {
     numProjLights: f32,
     // 1.0: RB3 retail light model (see UniformStructs.h). 0: existing model.
     retailLighting: f32,
-    _padProj2: f32,
-    _padProj3: f32,
+    // RB3 retail only (UniformStructs.h): the environ's AO strength when its
+    // AO term is on (else 0), and its colour adjustment.
+    aoStrength: f32,
+    colorAdjust: f32,
+    colorXfm: array<vec4f, 3>,
 };
 
 @group(0) @binding(0) var<uniform> scene: SceneUniforms;
@@ -136,6 +139,10 @@ struct MaterialUniforms {
     unlit: f32,              // 1.0 = Wii mUseEnviron==0 && !mPreLit: register color only (no ambient/lights/vertex tint)
     bloomMaskScale: f32,     // >0: alpha = luma(rgb) * this (RB3 pseudo-HDR bloom mask)
     gammaShading: f32,       // 1.0: shade in gamma space, texel * colour * lighting as stored, no encode (RB3 retail)
+    // RB3 retail material terms (UniformStructs.h), read under scene.retailLighting.
+    retailSpec: vec4f,       // .rgb specular colour (0 = none), .a power
+    retailRim: vec4f,        // .rgb rim colour (0 = none), .a power
+    retailFlags: vec4f,      // x per-pixel lit, y normal map, z specular map, w rim map
 };
 
 @group(1) @binding(0) var<uniform> material: MaterialUniforms;
@@ -157,6 +164,8 @@ struct ObjectUniforms {
     // RB3 retail box map for this draw, faces {+X,-X,+Y,-Y,+Z,-Z} (retail
     // c80..c85); read only under scene.retailLighting.
     boxLight: array<vec4f, 6>,
+    // RB3 retail: x = mesh has baked AO, y = approx lights queued for this draw.
+    retail: vec4f,
 };
 
 @group(2) @binding(0) var<uniform> object: ObjectUniforms;
@@ -203,6 +212,12 @@ struct VertexOutput {
     // lights evaluated at the vertex, as standard.vs does for a material
     // without per_pixel_lit.
     @location(7) vertexLit: vec3f,
+    // RB3 retail ambient occlusion factors (retailAOFactors): x ambient and
+    // box map, y and z the two point lights, w 1 when the AO term is on.
+    @location(8) retailAO: vec4f,
+    // RB3 retail specular evaluated per vertex (a material without
+    // per_pixel_lit), added after the texel multiply.
+    @location(9) vertexSpec: vec3f,
 };
 
 struct LightingTerms {
@@ -647,25 +662,132 @@ fn boxLightSample(N: vec3f) -> vec3f {
     return c;
 }
 
-// standard.vs's lighting: box map plus the real point lights (Lambert, with
-// retail's linear falloff), evaluated per vertex.
-fn retailVertexLight(worldPos: vec3f, worldNormal: vec3f) -> vec3f {
-    if (scene.retailLighting < 0.5) {
-        return vec3f(0.0);
+// Whether the draw has any light at all: retail's CalcShaderOpts gates the
+// lighting terms (box map, points, specular, per-pixel, rim) on real or
+// approx lights being present.
+fn retailLightsOn() -> bool {
+    return object.retail.y > 0.5 || scene.numPointLights > 0.5;
+}
+
+// RB3 retail point light i at a position: colour times retail's linear
+// falloff, and the unit direction to the light.
+fn retailPointColor(i: i32, worldPos: vec3f) -> vec3f {
+    let d = length(scene.pointLightPos[i].xyz - worldPos);
+    let atten = saturate(d * scene.pointLightPos[i].w + scene.pointLightColors[i].w);
+    return scene.pointLightColors[i].rgb * atten;
+}
+fn retailPointDir(i: i32, worldPos: vec3f) -> vec3f {
+    let toLight = scene.pointLightPos[i].xyz - worldPos;
+    return toLight / max(length(toLight), 0.001);
+}
+fn retailPointAO(ao: vec4f, i: i32) -> f32 {
+    if (i == 0) { return ao.y; }
+    if (i == 1) { return ao.z; }
+    return 1.0;
+}
+
+// RB3 retail ambient occlusion (standard.vs, option bit 38: not prelit, the
+// mesh HasAOCalc, the environ's AO on with strength S > 0.003). The vertex
+// colour holds the baked visibility as four spherical-harmonic coefficients
+// (RndAmbientOcclusion::CalculateAOAtPoint): r the constant band, a/g/b the
+// x/y/z linear bands remapped to [0, 1]. Ambient and box light are scaled by
+// sat((1.128379 r - 1) S + 1); each point light by sat((v - 1) S + 1), v the
+// visibility toward the light over a cosine lobe, with the light direction
+// taken into the mesh's local frame.
+fn retailAOFactors(worldPos: vec3f, localNormal: vec3f, sh: vec4f) -> vec4f {
+    if (scene.retailLighting < 0.5 || scene.aoStrength <= 0.0 || object.retail.x < 0.5 ||
+        material.prelit > 0.5) {
+        return vec4f(1.0, 1.0, 1.0, 0.0);
     }
-    let N = normalize(worldNormal);
-    var lit = boxLightSample(N);
+    let S = scene.aoStrength;
+    let amb = saturate((1.128379 * sh.r - 1.0) * S + 1.0);
+    var pt = vec2f(1.0);
+    let M = mat3x3f(object.world[0].xyz, object.world[1].xyz, object.world[2].xyz);
+    let linearBands = vec3f(sh.a, sh.g, sh.b) * 2.0 - 1.0;
+    let pointLightCount = i32(scene.numPointLights);
+    for (var i = 0; i < 2; i++) {
+        if (i >= pointLightCount) {
+            break;
+        }
+        let lightLocal = retailPointDir(i, worldPos) * M;
+        let lobe = 0.1875 + 0.5625 * dot(localNormal, lightLocal);
+        var v = 1.0;
+        if (lobe >= 0.0) {
+            v = (0.2820948 * sh.r + 0.4886025 * dot(linearBands, lightLocal)) / max(lobe, 1e-6);
+        }
+        pt[i] = saturate((v - 1.0) * S + 1.0);
+    }
+    return vec4f(amb, pt.x, pt.y, 1.0);
+}
+
+// standard.vs / standard.ps diffuse lighting, ambient excluded: the box map
+// plus the real point lights (Lambert, retail's linear falloff), each scaled
+// by its AO factor.
+fn retailDiffuseLight(worldPos: vec3f, N: vec3f, ao: vec4f) -> vec3f {
+    var lit = ao.x * boxLightSample(N);
     let pointLightCount = i32(scene.numPointLights);
     for (var i = 0; i < 4; i++) {
         if (i >= pointLightCount) {
             break;
         }
-        let toLight = scene.pointLightPos[i].xyz - worldPos;
-        let d = length(toLight);
-        let atten = saturate(d * scene.pointLightPos[i].w + scene.pointLightColors[i].w);
-        lit += scene.pointLightColors[i].rgb * atten * max(dot(N, toLight / max(d, 0.001)), 0.0);
+        lit += retailPointAO(ao, i) * retailPointColor(i, worldPos) *
+            max(dot(N, retailPointDir(i, worldPos)), 0.0);
     }
     return lit;
+}
+
+fn retailVertexLight(worldPos: vec3f, worldNormal: vec3f, ao: vec4f) -> vec3f {
+    if (scene.retailLighting < 0.5) {
+        return vec3f(0.0);
+    }
+    return retailDiffuseLight(worldPos, normalize(worldNormal), ao);
+}
+
+// RB3 retail specular (standard.vs without per_pixel_lit, standard.ps with
+// it): an energy-normalised Phong lobe p/(2 pi) + 1/pi around the reflected
+// view vector R. The box map contributes pow(sat(R . axis), p) per face,
+// scaled by a Fresnel-like 0.25 + (1 - sat(N . V)) (0.5 N.z + 0.5) and the
+// ambient AO factor; each point light contributes
+// pow(sat(R . L), p) times its colour, falloff and AO factor (no Lambert
+// term). The sum is tinted by the specular colour.
+fn retailSpecular(worldPos: vec3f, N: vec3f, V: vec3f, ao: vec4f, power: f32) -> vec3f {
+    let NdotV = dot(N, V);
+    let lobeScale = power * 0.1591549 + 0.3183099;
+    let fresnel = 0.25 + (1.0 - saturate(NdotV)) * (0.5 * N.z + 0.5);
+    let R = 2.0 * NdotV * N - V;
+    var box = vec3f(0.0);
+    box += pow(saturate( R.x), power) * object.boxLight[0].rgb;
+    box += pow(saturate(-R.x), power) * object.boxLight[1].rgb;
+    box += pow(saturate( R.y), power) * object.boxLight[2].rgb;
+    box += pow(saturate(-R.y), power) * object.boxLight[3].rgb;
+    box += pow(saturate( R.z), power) * object.boxLight[4].rgb;
+    box += pow(saturate(-R.z), power) * object.boxLight[5].rgb;
+    var spec = lobeScale * fresnel * ao.x * box;
+    let pointLightCount = i32(scene.numPointLights);
+    for (var i = 0; i < 4; i++) {
+        if (i >= pointLightCount) {
+            break;
+        }
+        spec += lobeScale * retailPointAO(ao, i) * retailPointColor(i, worldPos) *
+            pow(saturate(dot(R, retailPointDir(i, worldPos))), power);
+    }
+    return spec;
+}
+
+fn retailHasSpecular() -> bool {
+    return dot(abs(material.retailSpec.rgb), vec3f(1.0)) > 0.0;
+}
+
+// Specular evaluated at the vertex: a material with specular but without
+// per_pixel_lit (option bit 2 without bit 0).
+fn retailVertexSpecular(worldPos: vec3f, worldNormal: vec3f, ao: vec4f) -> vec3f {
+    if (scene.retailLighting < 0.5 || isEnabled(material.retailFlags.x) || !retailHasSpecular() ||
+        !retailLightsOn()) {
+        return vec3f(0.0);
+    }
+    let N = normalize(worldNormal);
+    let V = normalize(scene.cameraPos - worldPos);
+    return material.retailSpec.rgb * retailSpecular(worldPos, N, V, ao, material.retailSpec.a);
 }
 
 fn compressHighlights(color: vec3f) -> vec3f {
@@ -723,7 +845,10 @@ fn vs_main(vertex: VertexInput) -> VertexOutput {
     vertexOutput.worldTangent = worldTangent;
     vertexOutput.worldBitangent = cross(worldNormal, worldTangent) * vertex.tangent.w;
     vertexOutput.isSkinned = 0.0;
-    vertexOutput.vertexLit = retailVertexLight(worldPos, worldNormal);
+    let retailAO = retailAOFactors(worldPos, vertex.normal, vertex.color);
+    vertexOutput.retailAO = retailAO;
+    vertexOutput.vertexLit = retailVertexLight(worldPos, worldNormal, retailAO);
+    vertexOutput.vertexSpec = retailVertexSpecular(worldPos, worldNormal, retailAO);
 
     return vertexOutput;
 }
@@ -763,9 +888,82 @@ fn vs_skinned(vertex: SkinnedVertexInput) -> VertexOutput {
     vertexOutput.worldTangent = worldTangent;
     vertexOutput.worldBitangent = cross(worldNormal, worldTangent) * vertex.tangent.w;
     vertexOutput.isSkinned = 1.0;
-    vertexOutput.vertexLit = retailVertexLight(worldPos, worldNormal);
+    let retailAO = retailAOFactors(worldPos, vertex.normal, vertex.color);
+    vertexOutput.retailAO = retailAO;
+    vertexOutput.vertexLit = retailVertexLight(worldPos, worldNormal, retailAO);
+    vertexOutput.vertexSpec = retailVertexSpecular(worldPos, worldNormal, retailAO);
 
     return vertexOutput;
+}
+
+// RB3 retail lighting of a lit material (standard.vs + standard.ps), the
+// texel-and-colour product `base` in, the colour before the emissive add out.
+//  * without per_pixel_lit: ambient * AO + the box map and point lights from
+//    the vertex, times base, plus the per-vertex specular;
+//  * with per_pixel_lit (and a light present): the same terms per pixel on the
+//    normal-mapped normal, the specular per pixel with the specular map, and
+//    the rim light. Normal map (bit 5): N = normalize(z N + k x B + k y T),
+//    x, y = 2 * texel.rg - 1, z = sat(1 - x^2 - y^2), k = 1 - deNormal (c14),
+//    red along the bitangent cross(N, T) * T.w and green along the tangent.
+//    Specular map (bit 1): colour * texel.rgb, power max(power * texel.a, 0.5).
+//    Rim (bit 37): r = pow((1 - sat(N . V)) (0.5 N.z + 0.5), power) * colour
+//    * box(-V), the box map seen from behind; the diffuse product is scaled by
+//    1 + 0.3 r and 0.7 r is added. A rim map (bit 15) scales the colour by its
+//    texel.rgb and the power by its texel.a, at least 0.5.
+fn retailShade(surfaceInput: VertexOutput, base: vec3f, ambientLight: vec3f, rawVtx: vec3f,
+               prelitAmbient: bool) -> vec3f {
+    let ao = surfaceInput.retailAO;
+    var ambientTerm = ambientLight;
+    if (prelitAmbient) {
+        ambientTerm = rawVtx * ambientLight;
+    }
+    let perPixel = isEnabled(material.retailFlags.x) && retailLightsOn();
+    if (!perPixel) {
+        return base * (ao.x * ambientTerm + surfaceInput.vertexLit) + surfaceInput.vertexSpec;
+    }
+    let uv = surfaceInput.uv;
+    let normalSample = textureSample(normalMapTex, diffuseSampler, uv);
+    let specSample = textureSample(specularMapTex, diffuseSampler, uv);
+    let rimSample = textureSample(rimMapTex, diffuseSampler, uv);
+
+    var N = normalize(surfaceInput.worldNormal);
+    if (isEnabled(material.retailFlags.y)) {
+        let x = normalSample.r * 2.0 - 1.0;
+        let y = normalSample.g * 2.0 - 1.0;
+        let z = saturate(1.0 - x * x - y * y);
+        let k = 1.0 - material.deNormal;
+        N = normalize(z * surfaceInput.worldNormal + k * x * surfaceInput.worldBitangent +
+                      k * y * surfaceInput.worldTangent);
+    }
+    let worldPos = surfaceInput.worldPos;
+    let V = normalize(scene.cameraPos - worldPos);
+    var diffuse = base * (ao.x * ambientTerm + retailDiffuseLight(worldPos, N, ao));
+
+    var spec = vec3f(0.0);
+    if (retailHasSpecular()) {
+        var specColor = material.retailSpec.rgb;
+        var power = material.retailSpec.a;
+        if (isEnabled(material.retailFlags.z)) {
+            specColor *= specSample.rgb;
+            power = max(power * specSample.a, 0.5);
+        }
+        spec = specColor * retailSpecular(worldPos, N, V, ao, power);
+    }
+
+    var rimAdd = vec3f(0.0);
+    if (dot(abs(material.retailRim.rgb), vec3f(1.0)) > 0.0) {
+        var rimColor = material.retailRim.rgb;
+        var rimPower = material.retailRim.a;
+        if (isEnabled(material.retailFlags.w)) {
+            rimColor *= rimSample.rgb;
+            rimPower = max(rimPower * rimSample.a, 0.5);
+        }
+        let rimBase = (1.0 - saturate(dot(N, V))) * (0.5 * N.z + 0.5);
+        let rim = pow(max(rimBase, 0.0), rimPower) * rimColor * boxLightSample(-V);
+        diffuse *= vec3f(1.0) + 0.3 * rim;
+        rimAdd = 0.7 * rim;
+    }
+    return diffuse + rimAdd + spec;
 }
 
 // === Fragment Shader ===
@@ -831,7 +1029,19 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
     // the whole computation below runs on those raw values: t * c * L.
     let gammaShading = isEnabled(material.gammaShading);
     let matRgb = material.color.rgb;
-    var baseColor = vec4f(matRgb * vertexTint, materialAlpha * surfaceInput.color.a);
+    // Alpha: retail standard.vs fetches the vertex colour only for a prelit
+    // material, so a lit or unlit one takes no vertex alpha (an AO mesh's
+    // vertex alpha is a spherical-harmonic band, not opacity). Without
+    // per_pixel_lit, the AO permutations carry the ambient AO factor into the
+    // output alpha (c1.w * ao * c0.w).
+    var vertexAlpha = surfaceInput.color.a;
+    if (retailLight && !isEnabled(material.prelit)) {
+        vertexAlpha = 1.0;
+        if (!(isEnabled(material.retailFlags.x) && retailLightsOn())) {
+            vertexAlpha = surfaceInput.retailAO.x;
+        }
+    }
+    var baseColor = vec4f(matRgb * vertexTint, materialAlpha * vertexAlpha);
 
     if (isEnabled(material.useTexture)) {
         let diffuseSample = textureSample(diffuseTex, diffuseSampler, surfaceInput.uv);
@@ -923,26 +1133,20 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
     // Emissive/rim/reflection adds still apply below (night-city glow stays).
     if ((isEnabled(material.prelit) && !prelitAmbient) || isEnabled(material.unlit)) {
         finalColor = baseColor.rgb;
+        if (retailLight && isEnabled(material.unlit)) {
+            // use_environ=0 keeps an ambient of 1 (NgMat::SetupAmbient), and
+            // the AO permutation still scales it.
+            finalColor *= surfaceInput.retailAO.x;
+        }
+    } else if (retailLight) {
+        finalColor = retailShade(surfaceInput, baseColor.rgb, ambientLight, rawVtx, prelitAmbient);
     } else {
         // GX-faithful: soft-saturate the (ambient + diffuse) lighting sum before
         // it modulates the texture so a hot multi-light venue moment tints the
         // surface without blowing it past the texture's own brightness to white.
         // Specular is an additive glint term and is left unclamped (compress-
         // Highlights handles its tail) so legitimate highlights survive.
-        var litTerm: vec3f;
-        if (retailLight) {
-            // RB3 retail (standard.vs): ambient + box map + point lights, all
-            // evaluated per vertex and unclamped; only the 8-bit target
-            // saturates the product. A prelit material's vertex colour scales
-            // the ambient.
-            var ambientTerm = ambientLight;
-            if (prelitAmbient) {
-                ambientTerm = rawVtx * ambientLight;
-            }
-            litTerm = ambientTerm + surfaceInput.vertexLit;
-        } else {
-            litTerm = softClipLighting(ambientLight + totalLighting.diffuse * shadowFactor);
-        }
+        let litTerm = softClipLighting(ambientLight + totalLighting.diffuse * shadowFactor);
         finalColor =
             baseColor.rgb * litTerm +
             totalLighting.specular * shadowFactor;
@@ -979,6 +1183,15 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
         let cameraDistance = length(surfaceInput.worldPos - scene.cameraPos);
         let fogFactor = clamp((scene.fogEnd - cameraDistance) / (scene.fogEnd - scene.fogStart), 0.0, 1.0);
         finalColor = mix(scene.fogColor, finalColor, fogFactor);
+    }
+
+    // RB3 retail colour adjustment (standard.ps option bit 21, constants
+    // c109..c111): the environ's colour transform applied to the output
+    // colour, last.
+    if (retailLight && scene.colorAdjust > 0.5) {
+        let c4 = vec4f(finalColor, 1.0);
+        finalColor = vec3f(dot(scene.colorXfm[0], c4), dot(scene.colorXfm[1], c4),
+                           dot(scene.colorXfm[2], c4));
     }
 
     if (gammaShading) {

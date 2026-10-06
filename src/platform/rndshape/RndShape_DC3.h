@@ -45,6 +45,10 @@ inline bool MatUnlit(const T &) { return false; }
 // on top). DC3's prelit materials skip lighting.
 template <class T>
 inline bool MatPrelitAmbient(const T &) { return false; }
+// RB3's retail material terms (RndShape.h). DC3 materials keep the dc3
+// shader's own specular/normal/rim model.
+template <class T>
+inline bool MatRetailTerms(const T &, RetailMatTerms &) { return false; }
 
 // ---- environment -----------------------------------------------------------
 inline RndEnviron *CurrentEnv() { return RndEnviron::Current(); }
@@ -150,6 +154,12 @@ inline float DisplayGamma(bool) { return 0.0f; }
 // ---- scene lighting --------------------------------------------------------
 // DC3 lights through WgpuRnd::WriteSceneUniforms' own environ block.
 inline bool WriteSceneLighting(SceneUniforms &, RndCam *) { return false; }
-inline void FillMeshApproxLighting(RndMesh *, float (*)[4]) {}
+inline void FillMeshApproxLighting(RndMesh *, float (*)[4], float *) {}
+// How VertexFormats.cpp reads a compressed vertex's packed colour. false
+// keeps the existing read, low byte as red. DC3's FillCompressedVertex packs a
+// D3DCOLOR (A,R,G,B from the high byte down, low byte blue), the same as RB3's,
+// so this read swaps red and blue on DC3 too; changing it changes every DC3
+// prelit draw and is left to a DC3 lane (dc3-backend-for-rb3-wii.md 12.1).
+constexpr bool kCompressedColorIsArgb = false;
 
 } // namespace rndshape
