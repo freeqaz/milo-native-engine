@@ -959,8 +959,18 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
     // authored intensity. Only materials whose base is essentially black are
     // affected — they emit nothing today, so this introduces no regression for
     // any material that's currently visible.
+    //
+    // RB3 retail (gammaShading) does not tint it: each standard.ps
+    // permutation with the glow bit (option bit 7) scales the emissive texel
+    // by c5.x alone and adds it as its own term, e.g.
+    // `mad oC0.xyz, emissive.rgb, c5.xxxx, <lit diffuse>`. c5.x is
+    // NgMat::SetRegularShaderConst's mEmissiveMultiplier, so the map is
+    // added as authored on top of texel * colour * lighting.
     let emBaseLuma = max(max(baseColor.r, baseColor.g), baseColor.b);
-    let emissiveTint = mix(vec3f(1.0), baseColor.rgb, smoothstep(0.0, 0.04, emBaseLuma));
+    var emissiveTint = mix(vec3f(1.0), baseColor.rgb, smoothstep(0.0, 0.04, emBaseLuma));
+    if (gammaShading) {
+        emissiveTint = vec3f(1.0);
+    }
     finalColor += emissiveTint * material.emissiveMultiplier * emissiveSample.rgb;
     finalColor += computeRimLighting(surfaceNormal, viewDir, surfaceInput.uv);
     finalColor += computeEnvironmentReflection(surfaceNormal, viewDir, specularSample);

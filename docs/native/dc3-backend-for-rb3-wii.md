@@ -1066,3 +1066,184 @@ Two environment traps hit on the way, neither an engine problem:
   headless only through `MILO_RB3_DISPLAY_GAMMA`, and on the web build not at
   all.
 - No merge, pin bump or push.
+
+## 11. Lit city: the emissive map, untinted (lane W16-QY, 2026-10-06)
+
+Section 10.4 left the title city about 30% darker than xenia's front buffer
+while the sky matched, and attributed the gap to the Xbox-only material
+features the Wii loader drops (9.6). The city's gap came from somewhere else:
+the dc3 shader tinted the emissive ("illum") map by the diffuse base, and
+retail does not.
+
+### 11.1 Evidence
+
+**What the city materials carry.** An env-gated probe in the rb3 `Mat` loader
+(investigation only, not committed) recorded the Xbox-only fields of every
+material loaded during a title run: 849 distinct materials. 360 have
+`per_pixel_lit`, 153 a non-zero specular colour, 104 a specular map, 91 a
+normal map, 19 a rim colour, 0 an environment map, and 64 an emissive map.
+The city's lit buildings are in that last group: `building_02`/`_03` (emissive
+multiplier 1.5), `building_04`, `_05`, `building_misc_01`/`_02` (1.0),
+`theatre_01` (1.25), `skyline_buildings02` (0.4), all `prelit` 0 with white
+material colour. The Wii `Mat` already loads the emissive map and
+`mEmissiveMultiplier`, and the engine already passes both to the shader, so
+the lights in the windows were drawn, just at the wrong strength.
+
+**What retail does with it.** Retail `standard.ps` permutations were taken
+from the shipped shader archive (QT's `xobx.py` dumps, disassembled with
+xenia's shader compiler). Nine of the dumped permutations that have the glow
+bit (option bit 7) disassemble. All nine scale the emissive texel by `c5.x`
+alone and add it as a separate term, either directly
+(`standard_0000000000030080`: `mad oC0.xyz, r0.xyz, c5.xxxx, r3.xyz`) or
+through a register (`standard_0000000000020081`: `mul r0.xyz, r0, c5.xxxx`
+... `mad oC0.xyz, c1.xyz, c0.xyz, r0.xyz`). `c5` is written by
+`NgMat::SetRegularShaderConst` (rb3-xenon, 100% matched) as
+`(mEmissiveMultiplier, intensify + 1, 0, 0)`. Nothing multiplies the
+emissive term by the texel or the material colour.
+
+**What the engine did.** `standard_wgsl.inc` multiplied the emissive sample by
+`mix(1, baseColor.rgb, smoothstep(0, 0.04, max(baseColor)))`, i.e. by the
+diffuse texel times the material colour wherever the base is not black. On a
+building facade (dark texel, bright window in the illum map) that cut the
+window light to the facade's brightness.
+
+**What else was checked and is not the cause.**
+- The vertex light model. Retail `standard.vs` for a non-prelit, non-ppl
+  draw computes `c0 · (c1 + box(N) + Σ points)`, with the box as six linear
+  `max(0, ±N)` faces (`c80`–`c85`) and each point light as
+  `c67.rgb · sat(d · c64.w + c67.w) · sat(N·L)`. The pixel shader then
+  multiplies by the texel. That is what the engine's retail light model
+  (section 9) already computes.
+- Vertex colour. That permutation fetches no vertex colour, and the engine
+  already ignores it for non-prelit draws under the retail light model.
+- The env lights. The title's envs (`sky`, `buildings_dim`, `cityscape`,
+  `street`, …) have near-black ambient, so the facades are almost entirely
+  emissive plus point lights.
+
+### 11.2 Change
+
+`a8bde0b`, `src/gfx/standard_wgsl.inc`: when `material.gammaShading` is set
+(RB3 content only, see 10.3) the emissive tint is 1, so the shader adds
+`emissiveMultiplier · emissive.rgb` as retail does. The DC3 shape never sets
+`gammaShading`, so DC3 and rb3-xenon are unchanged.
+
+Before the change I expected the city luma ratio against xenia to rise from
+about 0.70 to between 0.9 and 1.1, with the sky unchanged.
+
+### 11.3 Title, before and after
+
+`title_capture.sh` + `title_fidelity.py` against TCRF; "base" is engine
+`1e47d3e`, "this lane" adds `a8bde0b`. Same rb3 worktree for both.
+
+| frame | base sky_dE / city_dE | **this lane** |
+|---|---|---|
+| 60 | 14.8 / 18.9 | **14.7 / 12.0** |
+| 200 | 15.5 / 19.2 | **15.3 / 13.7** |
+| 400 | 13.6 / 19.2 | **13.4 / 12.2** |
+
+(Xenia's own front buffer reads 16.2 / 17.7 against TCRF, 10.2: the hub and
+the title differ in which rooftop lights are on.)
+
+| f400 | luma | sky luma | city luma | p10 | dark % | city_edge |
+|---|---|---|---|---|---|---|
+| retail (TCRF) | 50.1 | 44.8 | 52.4 | 11.8 | 25.7 | — |
+| base | 35.4 | 39.6 | 33.6 | 10.8 | 35.4 | 0.715 |
+| **this lane** | 42.6 | 40.5 | 43.5 | 14.2 | 25.5 | 0.780 |
+
+Luma by region against xenia's front buffer (`main_hub_screen` frame 1800,
+same camera; regions as in 10.2), f400:
+
+| region | xenia | base | **this lane** |
+|---|---|---|---|
+| sky, left | 33.6 | 22.5 | 22.7 |
+| sky, right | 29.9 | 41.7 | 42.9 |
+| city, right | 41.0 | 31.7 | **43.4** |
+| city, middle | 51.9 | 22.7 | **42.8** |
+| city, right-middle | 39.0 | 34.7 | **43.7** |
+| left roof | 29.1 | 14.3 | 15.2 |
+| city mean \|ΔRGB\| vs xenia | 0 | 20.9 | **14.9** |
+| city luma / xenia | 1.000 | 0.701 | **1.002** |
+
+- **The city moves to xenia's brightness**: luma ratio 0.701 → 1.002, inside
+  the predicted band, and city error against xenia falls 20.9 → 14.9.
+  Against TCRF, city_dE falls by about a third at every frame (mean over the
+  three frames 19.1 → 12.6), below xenia's own 17.7.
+- **The sky does not move**: sky_dE changes by at most 0.2 and the sky regions
+  by at most 1.2 luma (the right sky region overlaps lit skyline windows).
+- Dark % goes from 35.4 to 25.5 against TCRF's 25.7.
+- Remaining differences seen by eye against xenia: the left roof is still
+  about half xenia's luma (its envs have near-black ambient, see 11.5), the
+  moon is dimmer and partly hidden, the right facade is slightly bluer, and
+  the billboards show different frames.
+
+### 11.4 Venues
+
+Same instrument as 10.5 (`venue_capture.py`, `RB3_FIXED_CLOCK=1`, 8 shots at
+game frames 60–1020, 8 runs per build), both builds run in this lane.
+
+| config | runs | luma | p10 | dark % |
+|---|---|---|---|---|
+| retail, 5 gameplay stills (10.5) | — | 54.0 | 9.0 | 34.4 |
+| base `1e47d3e` | 8 | 60.7 ± 5.0 | 17.3 ± 1.7 | 28.5 ± 3.5 |
+| **this lane** | 8 | 52.4 ± 2.7 | 17.3 ± 1.7 | 29.4 ± 3.1 |
+
+Bootstrap 95% intervals on this lane minus base: luma −8.4 [−19.1, +2.0],
+p10 +0.0 [−4.2, +4.6], dark % +0.9 [−7.9, +9.3]. None separates from zero.
+The base row reads 7.9 luma above 10.5's row for the same engine, which shows
+the size of the camera-cut variance.
+
+The luma drop cannot be the change. The tint was `mix(1, base, s)` with the
+base at most 1, so removing it can only add light, and only on emissive
+materials. A probe run of the venue path found 17 materials with an emissive
+map beyond those the title loads (`city_sky`, `glass_02`, LED and flare
+cards, the taxi dash and meter, `amp_fnr_bassman_head`). Pairing each venue
+shot with the closest-looking base shot (320×180) gives the shot-level
+effect: the 9 pairs within mean |ΔRGB| 10 are all as
+bright or brighter in this lane, by 0.0 to 2.8 luma. Widening to 11 adds
+three looser matches, one of them 1.3 darker.
+
+### 11.5 Identified, not implemented
+
+Retail terms the RB3 path still lacks, from the same sources. None of them is
+the city's gap, and each needs an input this lane could not establish.
+
+- **Ambient occlusion** (option bit 38, `standard.vs`). Retail scales
+  ambient plus box light by
+  `ao = sat((a · 1.128379 − 1) · c24.x + 1)`, `a` being one extra scalar
+  vertex fetch and `c24.x` the env's `AOStrength`. It is selected when the
+  draw is not prelit, the mesh has `HasAOCalc`, the env has AO enabled and
+  `AOStrength > 0.003`. 760 of 819 title draws have `HasAOCalc`. Which vertex
+  element `a` comes from is not known: the vertex declaration fetch is by
+  stream offset, and the title meshes' vertex colours are not AO-like (mean
+  RGBA about (0.5, 0.5, 0.8, 0.5) on `building_*`, `prison_03`,
+  `theater01B`), so using the colour would be a guess. The effect can only
+  darken ambient and box light, which are near black in the city envs.
+- **Env colour adjustment** (option bit 21, `UseColorAdjust`, pixel
+  constants `c109`–`c111`). Not measured on these scenes.
+- **Specular, normal, specular-map and rim** from 9.6. The title loads 153
+  materials with specular colour and 91 with normal maps; their absence is
+  not visible at title distance against xenia, and they remain out of reach of
+  the Wii loader.
+- **Retail spot lights in the box map** have no 0.28 colour-sum skip (Wii's
+  `BoxMap` has one). Not changed.
+
+### 11.6 Consumer verification (engine `w16-qy`)
+
+Fresh `~/tmp` worktrees made with each repo's `scripts/setup_worktree.sh`,
+configured with `-DMILO_ENGINE_PATH` at the `w16-qy` engine worktree
+(confirmed in each `CMakeCache.txt`), built after `b7f8f67`.
+
+| consumer | instrument | result |
+|---|---|---|
+| dc3-decomp (on `e992ee9b5`) | `scripts/native_configure.sh` + `scripts/native_test.sh` | 626 registered, 557 passed, 0 failed, 69 skipped (budget 69), rc=0 |
+| rb3-xenon (on `d5d873c95`) | `tools/native_health.sh` | `NATIVE_HEALTH_RESULT verdict=PASS link=PASS link_verified=18 link_expected=18 link_skipped=0 runtime=PASS runtime_ran=18 runtime_total=18 gates_pass=77 gates_fail=0 unrunnable=none selftest=SKIPPED scatter_unlinked=16 scatter_dirb=0 scatter_multihost=17 rc=0 handpose_controls=- handpose_baseline_fail=- runtime_crashed=0 runtime_failed=none` (embedded link gate: `verdict=PASS expected=18 verified=18 skipped=0 partial=0 failed=0 rc=0`) |
+| rb3-xenon | `tools/native_build_gate.sh` | run as the lane's last action; its `NATIVE_GATE_RESULT` line is in the lane report |
+| rb3 (Wii), dc3 flavor | title (11.3) and venues (11.4), plus a clean rebuild at `b7f8f67` | title exits rc=0 (f400 city_dE 12.2, as 11.3); Quickplay reaches `game_screen` in all 10 runs with this engine (and in the 8 base runs) |
+
+### 11.7 Not done
+
+- The AO and colour-adjust terms (11.5).
+- The left roof and the moon (11.3).
+- A paired venue comparison: camera cuts still differ between runs, so 11.4
+  rests on pooled runs plus matched shots.
+- No merge, pin bump or push.
