@@ -206,7 +206,8 @@ fixes, so those fixes did not move them.
   1065353217 > 256") and on the extras/crowd milos happen in **both** flavors,
   so they are not renderer issues.
 - **Web build** (`main_web.cpp`) compiles through the facade but was not built
-  or run under emscripten.
+  or run under emscripten. (Section 15: built and run; it needed two engine
+  fixes and is now rb3-web's default.)
 - **Venue cells in rb3-xenon's `rb3-render`** (`small_club_01`, `arena_01`)
   segfault identically on the base and branch engines (pre-existing, not
   touched).
@@ -1970,4 +1971,177 @@ base engine it ran 104 tests. It now runs the same 123 as the rb3 flavor; the
 - **DoF depth binding** (14.3): unfilterable depth through a filtering sampler,
   not examined.
 - The colour-mod probe was temporary and is not committed.
+- No merge, pin bump or push.
+
+## 15. rb3-web on the dc3 backend (lane W16-RJ, 2026-10-06)
+
+rb3's Emscripten target `rb3-web` now defaults to `RB3_GPU_BACKEND=dc3`, like
+the desktop build. Before this lane, `native/CMakeLists.txt` kept web on `rb3`
+with the reason "rb3-web still drives gBandRnd directly". That reason was
+stale: `main_web.cpp` already reached the renderer only through
+`RB3RndBackend` (section 1's facade), and no web-compiled rb3 source names
+`gBandRnd` outside comments. Section 4 recorded that the web build "compiles
+through the facade but was not built or run under emscripten". Building and
+running it found two engine bugs in `WgpuRnd`'s `__EMSCRIPTEN__` arms. Both
+were latent because DC3, until now the arm's only consumer, boots in a
+different order and names its canvas `#dc3-canvas`.
+
+Branches (not merged, not pushed, no pin bumped):
+
+| repo | branch | commits |
+|---|---|---|
+| milo-native-engine | `w16-rj` (on `cc8acc2`) | `81b96a0` the two fixes; this section |
+| rb3 | `w16-rj` (on `05f959153`) | `24a21baf5` default + `build.sh --backend`; `7079f0b22` smoke checks |
+
+Landing order matters. rb3 `24a21baf5` makes web default to dc3, and before
+engine `81b96a0` the dc3 web renderer draws nothing (15.2). So the engine
+branch, and an rb3 pin bump to include it, must land first or together.
+
+### 15.1 What changed
+
+Engine (`81b96a0`):
+
+- **`WgpuRnd::Init` re-created the GPU device on web.** rb3-web runs
+  `RB3RndBackend::StartGpuInit`, waits for `IsReady`, calls
+  `InitGpuResources`, and only then constructs the `App`, whose ctor calls
+  `TheRnd->Init()`. The desktop arm already handled a consumer that brought
+  the device up first (section 1, RB3's `RB3_GAME` boot). The web arm called
+  `mGpu.Init` unconditionally. That replaced the instance, and once its
+  adapter callback ran, the device, so every pipeline, ring and texture made
+  before it belonged to a dead device. The web arm now takes the same "already
+  up, so `InitGpuResources`" branch. `InitGpuResources` is idempotent. DC3's
+  web boot calls `Init` before any device exists, so it still takes the old
+  path.
+- **`BeginDrawing` polled `#dc3-canvas` and ignored the result.** On
+  `#rb3-canvas`, `emscripten_get_canvas_element_size` failed and left both ints
+  unwritten. Every frame then resized the surface to stack garbage: depth and
+  MSAA textures of 5684687×5685950, and "Could not create the swapchain
+  texture". The selector is `MILO_WEB_CANVAS_SELECTOR`, which only TUs
+  compiled into the consumer's web target see; `Rnd_Wgpu.cpp` is in
+  `libmilo-engine.a`. So `GpuDevice` gained `CanvasSize(int&, int&)`, defined
+  in `GpuDevice_Web.cpp` and declared only under `__EMSCRIPTEN__`, which
+  returns false and zero sizes when the page has no such canvas. The poll uses
+  it and checks the result. dc3-decomp's `native/CMakeLists.txt` sets
+  `milo_engine_set_web_canvas_selector(dc3-web "#dc3-canvas")`, so DC3 reads
+  the same canvas as before.
+
+rb3:
+
+- `native/CMakeLists.txt`: `RB3_GPU_BACKEND` defaults to `dc3` on every
+  platform; `rb3` stays selectable. It also rewrites two stale comments: the
+  one above the variable still said WgpuRnd "stay[s] OFF for RB3", and the
+  rb3-web boot comment still named `gBandRnd`.
+- `scripts/web/build.sh --backend dc3|rb3` (default `dc3`, or
+  `$RB3_GPU_BACKEND`) passes the flavor explicitly, and the script's
+  reconfigure-on-drift check now covers it. `RB3_GPU_BACKEND` is a non-FORCE
+  cache variable, so a web build dir configured while the default was `rb3`
+  would otherwise stay on BandRnd. The main checkout's three web build dirs
+  predate the variable and have no entry, so their next configure takes `dc3`
+  either way.
+- `scripts/web/smoke-test.mjs`: a fifth check (15.3).
+
+### 15.2 Measurements
+
+Every leg: `RB3_WEB_RELEASE=ON` (`-O0 -g0 -fno-inline`), emcc 5.0.2, engine
+`w16-rj`, assets from `~/code/milohax/rb3/orig-assets/extracted` via
+`RB3_ASSETS`, served by `native/web/server.py`, driven by headless Playwright
+Chromium. The flavor of each run is read from its own console line
+`StartGpuInit (async, <flavor> backend)`, not inferred from what was deployed.
+
+| leg | wasm sha1 | boot smoke (checks 1–4) | uncaptured WebGPU errors | main_hub canvas |
+|---|---|---|---|---|
+| rb3 flavor, base engine | `0d981db5` | PASS, 83 songs | 0 | renders (84.21% painted) |
+| dc3, base engine | `267c2e99` | **PASS**, 83 songs | **369,829** (1,298,924 console lines) | screenshot fails |
+| dc3, `Init` fix only | `e7cfa7f5` | **PASS**, 83 songs | 33,650 | black (0.00%) |
+| dc3, both fixes | `6f308bf8` | PASS, 83 songs | **0** | renders (75.48%) |
+
+The two middle rows are the reason for 15.3: the existing smoke test passed a
+renderer that drew nothing.
+
+Further checks on the final state:
+
+- **Link.** The undefined-symbol sets the link warns about
+  (`-sERROR_ON_UNDEFINED_SYMBOLS=0` turns each into a no-op JS stub) are 257
+  on both flavors and identical. The dc3 link introduces no new silent stub.
+- **Gameplay.** `scripts/web/keyboard-to-gameplay.mjs` on dc3: PASS, reaching
+  `game_screen` by pure keyboard (guitar, hard), with 0 uncaptured WebGPU
+  errors. The venue, its lights and the crowd render.
+- **The documented entry point.** `scripts/web/build.sh --release` with no
+  flavor flag, in a fresh dir: rc=0, `RB3_GPU_BACKEND:STRING=dc3`, wasm
+  `b4928136` (8.5 MB; 1.9 MB brotli). On that deploy the strengthened smoke
+  passes (0 WebGPU errors, 76.06% painted) and so does keyboard-to-gameplay
+  (0 errors).
+- **A flagless `emcmake cmake` configure** gives `RB3_GPU_BACKEND=dc3` and
+  `MILO_ENGINE_GPU_BACKEND=dc3`. Its build graph has `rb3_rnd_backend_dc3.cpp`
+  and `Rnd_Wgpu.cpp`, and no `Rnd_Wgpu_RB3` / `rb3_rnd_backend_rb3`.
+- **The rb3 flavor is untouched.** Rebuilt on the final engine (13 TUs
+  recompiled), its wasm is byte-identical to the base-engine build
+  (`0d981db5`). `CanvasSize` is unreferenced there, and the strengthened smoke
+  passes (85.35% painted).
+- **Desktop is untouched.** Every edited line is inside `__EMSCRIPTEN__`.
+  Measured on rb3's desktop dc3 compile command for `Rnd_Wgpu.cpp` (which
+  includes `GpuDevice.h`), with `-E -P` against `cc8acc2` and `w16-rj`: both
+  outputs are 90,534 lines and byte-identical. Control: the base leg's line
+  markers show all 26 engine headers it read came from the base checkout and
+  none from `w16-rj`. `GpuDevice_Web.cpp` is not compiled on desktop.
+- **Remaining web console lines** that rb3 does not print are the dc3 path's
+  own stderr diagnostics, which emscripten routes to `console.error`:
+  `BoneSetup`'s `BONE DIAG` (three dumps per process at frames 1000–1600) and
+  `Mesh_Wgpu: skipping … no vertices`. Desktop prints them too. The NOTIFY
+  lines differ between runs because the hub cast is randomized per boot.
+- **Character look.** On the web hub, part of the dc3 cast renders bald with
+  glossy skin, where the rb3 flavor's cast had hair. The desktop dc3 build at
+  the same screen (Start, overshell options, band shot, frame 500 after
+  arrival) shows the same: bald heads on part of the cast, specular skin. So
+  this is how the dc3 backend renders this content, not a web regression.
+  The tint differs (gold on web, magenta on desktop) because the hub's lights
+  animate and the two frames are at different times. Not investigated
+  further.
+
+### 15.3 The smoke test now sees the renderer
+
+`smoke-test.mjs` check 5 fails on any `GpuDevice: uncaptured error` console
+line, or on a main_hub canvas below 10% painted (`captureCanvasStats`,
+threshold 12). `result.json` records `gpu_error_count` and `painted_pct`. The
+floor comes from measurement: working frames read 58–97% (rb3 web 84.76,
+dc3 web 76.06, desktop dc3 hub 58.24, gameplay 96.81), and the black canvas
+reads 0.00.
+
+Control: the old `#dc3-canvas` poll restored and rebuilt. The smoke fails
+(rc=1) on both new lines: 33,593 WebGPU errors and a 0% painted canvas. With
+the poll restored to the fix and rebuilt, the wasm is byte-identical to the
+fixed build (`6f308bf8`).
+
+### 15.4 Consumer verification (engine `w16-rj`)
+
+| consumer | instrument | result |
+|---|---|---|
+| rb3 `w16-rj`, desktop, flavor from the default (`dc3`) | `ctest` | 123 tests: 116 passed, 7 skipped (the six fixture-gated oracles plus `PopulatesFromRealDrawMesh`), 0 failed, rc=0; same counts as 14.7 |
+| rb3 `w16-rj`, web, dc3 | `smoke-test.mjs` (with check 5), `keyboard-to-gameplay.mjs` | PASS, PASS (15.2) |
+| rb3 `w16-rj`, web, rb3 flavor | `smoke-test.mjs` (with check 5) | PASS |
+| rb3-xenon, dc3-decomp (desktop) | preprocessed-source identity (15.2) | the changed TU preprocesses byte-identically; their desktop suites were not rerun |
+
+### 15.5 Not done
+
+- **dc3-decomp's own web target (`dc3-web`) was not rebuilt or run.** Its
+  selector is `#dc3-canvas`, so `CanvasSize` reads the same canvas the
+  hardcoded poll did. Its boot calls `WgpuRnd::Init` before any device
+  exists, which takes the unchanged branch. Both are by reading, not by
+  measurement.
+- **rb3-xenon and dc3-decomp desktop suites** were not rerun; 15.2 shows the
+  changed TU preprocesses identically on desktop.
+- **Web vs desktop pixel parity** under dc3 was not measured. The cast and
+  hub lighting differ run to run, and the web `.milo_xbox` downscale and
+  on-demand fetch paths differ from desktop's disk reads.
+- **The debug web build** (`build.sh --debug`, `-g2`) and the `-O>0` release
+  were not built. The shipped release default is `-O0`.
+- **SFX sidecar 404s** (`sfx/gen/xma_pcm/*`) appear in every leg because the
+  server, run from a worktree, does not auto-detect the main checkout's
+  `orig-assets/derived`. They are environmental and identical across flavors.
+- **The display ramp on the web canvas** (section 10.7). Web frames call
+  `DisplayGamma(presenting=true)`, and the ramp's frame texture there is
+  `FrameResolved`, which carries `CopySrc`. No run printed the ramp's
+  "does not allow CopySrc" warning. Whether the ramp applied (a non-zero
+  gamma) was not probed, and its output was not checked against a
+  reference.
 - No merge, pin bump or push.
