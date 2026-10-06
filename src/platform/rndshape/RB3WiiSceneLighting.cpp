@@ -78,7 +78,10 @@ namespace rndshape {
 
 bool WriteSceneLighting(SceneUniforms& s, RndCam* cam) {
     const char* camName = cam ? cam->Name() : nullptr;
-    const bool worldCam = camName && std::strcmp(camName, "world.cam") == 0;
+    // WorldReflection::DrawShowing draws the mirrored venue through an unnamed
+    // deep copy of world.cam in draw mode 7; it is the venue camera too.
+    const bool worldCam = (camName && std::strcmp(camName, "world.cam") == 0) ||
+                          TheRnd->DrawMode() == kDrawModeReflection;
     RndEnviron* env = RndEnviron::sCurrent;
 
     if (VenueLightEnabled() && worldCam && env && env->mAmbientFogOwner) {
