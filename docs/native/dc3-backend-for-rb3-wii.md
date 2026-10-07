@@ -5135,7 +5135,7 @@ the new `rndshape::kAlphaBlendMax`:
 | shape | `kAlphaBlendMax` | why |
 |---|---|---|
 | RB3Wii | `true` | retail, 30.1 |
-| DC3 (dc3-decomp, rb3-xenon) | `false` | DC3 retail also uses MAX, but no DC3 or rb3-xenon frame was measured with it. The flip is one line and retail licenses it |
+| DC3 (dc3-decomp, rb3-xenon) | `true` (since 30.7; `false` when this section was written) | DC3 retail also uses MAX; measured in 30.7 |
 
 The switch reaches every `MapBlend` caller on the dc3 backend: mesh pipelines
 (`PipelineManager::CreatePipeline`), particles (`Part_Wgpu`) and rects
@@ -5276,3 +5276,21 @@ removed.
   hue, BandRnd) are untouched.
 - **No merge, pin bump or push.** That is for the coordinator. The new rb3
   test needs this engine commit, so bump the pin with the rb3 branch.
+
+### 30.7 The DC3 shape flipped to MAX (dc3-decomp, 2026-10-07)
+
+30.6's first item, done. `RndShape_DC3.h` now sets `kAlphaBlendMax = true`.
+DC3 retail sets `BlendOpAlpha` 3 exactly once, in `DxRnd::SetDefaultRenderStates`
+(dc3-decomp `src/system/rnddx9/Rnd_Xbox.cpp`, 100% matched), and no other DC3
+function writes it.
+
+| check | result |
+|---|---|
+| dc3-decomp native build against this branch, captures with the flag `false` twice (A, A') and `true` (B): dc3-native frames 50/100/250/400/600, milo-viewer `glitterati` and `dclive` | A vs A': 0 px differ in any channel, so the noise floor is zero. B vs A: **RGB identical in all 7**. Frame alpha differs on **0.254% of dclive's pixels** and nowhere else, so the switch fires but nothing on screen reads that alpha (DC3's `PostProcPass` bloom thresholds RGB luma) |
+| dc3-decomp `scripts/native_test.sh` | 626 registered / 557 executed / 557 passed / 0 failed / 69 skipped = budget |
+| rb3-xenon (this shape too) `tools/native_build_gate.sh` + `tools/native_health.sh` | PASS 18/18; health PASS, 125 gates pass, 0 fail |
+
+Limits: these are not compared against a retail capture. The pixel A/B shows
+the flip is invisible on these frames, not that it improves them. Where DC3
+reads a render target's alpha, the result now follows retail's MAX.
+
