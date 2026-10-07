@@ -4325,3 +4325,186 @@ still have nothing to draw them on native. The run had 0 WebGPU errors.
 - **The probes** (shader modes, pre buffer dump, spotlight logging) are not
   committed. The captures are in `~/tmp/w16se/cap_*`.
 - **No merge, pin bump or push.** That is for the coordinator.
+
+## 26. Volumetric spotlight beams, from retail (lane W16-SI, 2026-10-07)
+
+Section 25 left the title's street lamp without its beam. Retail 360 draws
+beams in `NgSpotlightDrawer` (half-size render, blur, post composite), and
+nothing in the engine did that. This section ports the pass to the dc3
+backend, fixes two rb3 defects that kept the beams faint and misaimed, and
+compares the result with TCRF.
+
+| repo | branch | commit |
+|---|---|---|
+| milo-native-engine | `w16-si` | `fd6441c` + this section (on `c97d5da`) |
+| rb3 | `w16-si` | `775737cba` (on `ec475582e`) |
+
+### 26.1 What retail does
+
+Sources: rb3-xenon `world/SpotlightDrawer_NG.cpp` for the CPU side
+(`RenderScene`, `RenderBeams`, `RenderCone`, `RenderConeDefs`,
+`SetupXSection`, `RenderSheet`, `RenderSphere`, `BlurRT`,
+`SetupForPostProcess`). The shipped `xbox_shaders` for the GPU side, dumped
+with `tools/rb3-dc3-parity/xobx.py` and disassembled with
+`xenia-gpu-shader-compiler` (dumps in `~/tmp/w16si/sh/`).
+
+1. **`RenderBeams`**: each spotlight's NG shaft mesh (`Spotlight::BuildNGShaft`)
+   is drawn with `depthvolume` into a half-size A8R8G8B8 target cleared to
+   (0, 0, 0, 1), blend ONE/ONE add, with no depth test.
+   - The shape picks the option: `mShape` 0/1 → cone, 2 → sheet, 3/4 → sphere.
+   - The cone uses cull override 3 (D3D CCW, the reverse of a material's CW),
+     so the far side of the shaft draws. The sheet and the sphere cull nothing.
+2. **The cone PS** intersects the view ray with the analytic cone. The apex
+   is `c25`, the axis `c26`, and `c28.w` is cos² of the half angle. The ray
+   is clipped by the scene's view depth and the pixel's own distance. It
+   writes `c90.rgb · 0.004 · |Δviewdepth| · mean((1 − s)²) · xsection`.
+   - The literals are verified in the disassembly: `c254 = (0.004, 1/3, 0, 0)`
+     and `c255 = (0.5, −0.5, 0, 1)`.
+   - The mean has the closed form `(oE³ − oX³) / 3 / Δs`.
+3. **`BlurRT`**: 5 taps, weights 0.1 / 0.25 / 0.3 / 0.25 / 0.1, along x and
+   then along y. The retail statics are `sSeparateBlurPasses` = 1 and
+   `sBlurAmount` = 1.0 (0x82C711C4 / 0x82C711C0).
+4. **The composite**: `postprocess` option bit 51, after the bloom screen
+   blend and before the colour transform. Verified from
+   `postprocess_0008000000000000.ps`:
+
+   ```
+   c += beam.rgb · (tf5.r · c127.y + c127.x) · c91.x
+   ```
+
+   - `c91.x` = `mIntensity · 32`.
+   - `c127` = (base · 0.01, smoke · 0.01 · (1 − base · 0.01)). The 0.01 is
+     `lbl_82017E70`, read at 0x824D1FF0.
+   - `tf5` is the proxy's fog density map, else `mTexture`, else
+     `kDefaultTex_Black`.
+
+### 26.2 The port
+
+- **Engine, `gfx/SpotBeamPass`.** The constants are a line-by-line port of
+  `RenderConeDefs` / `SetupXSection` / `RenderSheet` / `RenderSphere`, using
+  the retail statics:
+  - `sBeamIntensity` 8, `sBeamBrighten` 0.1, `sSheetIntensity` 8,
+    `sSheetW` 0.5, `sSphereScale` 1, `sFogScale` 0.125.
+  - The WGSL ports the three `depthvolume` PS options and the blur.
+  - Scene depth comes from the 4× MSAA depth view through `textureLoad`, and
+    is unprojected through the inverse view-projection.
+  - The fog terms `c127.zw` are 0 while the beams draw
+    (`SetupFogDensityState`), so the density map never reaches the beam
+    shaders.
+- **Engine, `gfx/RB3RetailPost`.** Bit 51's add, on two new bindings (beam
+  target, fog density). The fog binding is black unless the drawer has
+  `mTexture` and no proxy. `MILO_RB3_RETAIL_POST=beams` shows the blurred
+  target.
+- **Engine, `platform/SpotBeamHook`** (`NativeSpotBeamRenderer`). This is the
+  seam. `WgpuRnd` registers a renderer when the retail post chain is on and
+  `MILO_NO_SPOT_BEAMS` is unset. It resolves the meshes, cross-section
+  textures and camera, runs the pass in `FlushWorldPost` before the post
+  chain, and hands the target to the composite.
+- **rb3, `SpotlightDrawer::DrawWorld`** (under `HX_NATIVE`). rb3 runs
+  `kOldGfx`, so this path is gated on a renderer being registered. When one
+  is, `DrawNGSpotlights()` is true, and each showing beam goes into a
+  `NativeSpotBeam` instead of the old-gfx `DrawBeams`. The frame is submitted
+  once, after the loop. `RB3_SPOT_BEAM_LOG` prints the drawer's parameters
+  and each beam for the first three frames.
+
+### 26.3 Two rb3 defects, both against target asm
+
+With only the port in place, the beams showed as a faint haze (about +6
+levels on the street) and their shapes were inconsistent. Both came from rb3
+source.
+
+- **`SpotDrawParams::Load`, rev > 3.** The Wii target (0x8086F300) reads
+  offsets 0x14 / 0x18 / 0x1c = base, smoke, half distance, and reads
+  lighting influence (0x20) only when rev > 4. rb3 read smoke, half,
+  lighting, so base intensity kept its 0.1 default. The title drawer then
+  composited at weight 0.032 instead of 0.32.
+  - Fixed. The title drawer now reads intensity 1, base 1, smoke 1, half 250,
+    with no texture and no proxy.
+  - rb3-xenon's `Load` is already right.
+- **`Spotlight::UpdateTransforms`.** Both targets give the beam mesh the
+  identity rotation when `mIsCone` is set and the spotlight rotation
+  otherwise: Wii 0x80860464, 360 0x824D93CC. In the Wii objdiff, `r7 = rot`
+  and is overwritten with `ident` on `mIsCone != 0`. rb3 had the ternary
+  reversed, so the NG cone mesh pointed along the spot's +z while the shader's
+  analytic cone runs along `m.y`. The shaft and the analytic cone then
+  overlapped only in part.
+  - Fixed. The log shows mesh y == spot `m.y` for all 12 title beams.
+  - ⚠ **rb3-xenon has the same reversed ternary** (`UpdateTransforms` 99.66%).
+    It was not touched here, only reported.
+
+Wii matching build, measured in a `tools/setup-worktree.sh` worktree at
+`775737cba`, after touching both TUs so they recompiled. The script's 2020
+source mtimes otherwise leave the warm objs in place, and the first read was
+byte-identical to main for that reason.
+
+| row | main | this lane |
+|---|---|---|
+| `SpotDrawParams::Load` (548 B) | 99.905 | **99.927** (the three field-offset `diff_arg`s gone; the rev < 4 locals' stack slots remain) |
+| `Spotlight::UpdateTransforms` (2,392 B) | 79.881 | 79.881: Δ0, because both arms' addresses were already charged (target `lis/addi` per static, ours an `r31` base) |
+| whole binary | 31,944 fns / 7,223,260 B | unchanged |
+
+### 26.4 Retail data that differs from rb3-xenon's source
+
+These were read from the retail image while porting. They are reported here
+and not fixed in rb3-xenon:
+
+| static | retail | rb3-xenon source |
+|---|---|---|
+| `sSheetW` (0x82C71198) | 0.5 | 0.0 |
+| `sSeparateBlurPasses` / `sBlurAmount` (0x82C711C4 / C0) | 1 / 1.0 | false / 0.5 |
+| `sFogScale` (0x82C711CC) | 0.125 | 1 |
+
+### 26.5 Results
+
+Title, frames 60/200/400, mean luma (TCRF is a single frame). Region script
+`~/tmp/w16rz/street_regions.py`; road window as in 25.
+
+| region | TCRF | no beams (`MILO_NO_SPOT_BEAMS=1`) | beams, final | \|dRGB\| to TCRF, before → after |
+|---|---|---|---|---|
+| street_R | 92.8 | 37.3 | **108.7** | 49.5 → **15.8** |
+| street_L | 60.2 | 65.3 | 94.0 | 7.9 → 34.7 |
+| crowd | 104.3 | 112.6 | 146.3 | 6.7 → 40.9 |
+| road window | 98.6 | 49.1 | 124.4 | |
+
+- **The beam draws.** In the beams view (`~/tmp/w16si/capB3`) the cones
+  appear with notches where buildings occlude them. In the composite
+  (`~/tmp/w16si/quad3.png`, `full3.png`), a hazy cone falls over the street
+  with a building notch at its top, as in TCRF. There are 0 WebGPU errors in
+  every capture.
+- **street_R closes most of section 22's gap**, overshooting TCRF by about
+  16 luma.
+- **The haze reaches too far, and its colour is wrong.** Native's beam light
+  is more orange-red and spreads over the Capitol and the crowd. TCRF's is
+  yellower and sits lower right. As a result, street_L and crowd moved
+  *away* from TCRF.
+  - Not resolved. Candidates: TCRF predates TU5, so its title light state
+    may differ; some of the 12 beams (for example the subway ones) may be
+    off in TCRF's preset; and the packed colour decode is the same one
+    section 25 used.
+  - Section 25's open question still stands. xenia's hub frame runs retail
+    code, which reads `Load` correctly, and shows no cone, so either the
+    hub's light state differs or xenia does not render the pass.
+
+### 26.6 Verification
+
+| check | result |
+|---|---|
+| new `rb3-tests` `SpotBeamConstants.*` (3) | constants against hand-worked `RenderConeDefs`, sheet/sphere, composite and blur taps |
+| new `SpotBeamPassTest.ConeMatchesShaderModel` | the real pass on the device against a CPU model of the cone PS and two-pass blur, both quantised to 8 bits: **max \|gpu − model\| 1/255** over 64×64. Predicted red at texels 24 / 40 on the centre row ≈ 29 / 11, measured 26 / 11 |
+| `ConeCullsFrontFaces` / `SceneDepthOccludesBeam` | 0 lit texels, with the opposite winding / with depth at view depth 100 (the model test lights 170 texels with the same inputs, so both can fail) |
+| WGSL validation | `gfx/SpotBeamPass.cpp OK` |
+| `native_compat_census.check` | OK, 440 flags (`MILO_NO_SPOT_BEAMS` and `RB3_SPOT_BEAM_LOG` classified as probes) |
+| rb3 native ctest (`build-native`, dc3) | **147 tests, 100% passed**, 7 skipped (the usual real-capture fixtures) |
+| title capture, final binaries (`~/tmp/w16si/cap4`) | 0 `GpuDevice: WebGPU error` lines; regions within run spread of `cap3` |
+
+### 26.7 Not done
+
+- **The fog density map from a proxy** is not rendered. The seam carries
+  `hasProxy` and the composite then reads black. The title drawer has no
+  proxy.
+- **The sheet and sphere shaders** are ported and validate, but the title
+  has no such beams, so they are untested against retail output.
+- **26.5's colour and extent gap** is open.
+- **rb3-xenon** is untouched: its reversed `UpdateTransforms` ternary and
+  the 26.4 statics are for a matching lane.
+- **No merge, pin bump or push.** That is for the coordinator.
