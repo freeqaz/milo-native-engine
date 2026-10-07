@@ -4,6 +4,16 @@
 // Headless input: set MILO_INPUT_SCRIPT to a text file with scripted actions.
 // Supports absolute frames, wait_screen directives, and relative offsets.
 // See scripts/dc3-input-flows/README.txt for full format docs.
+//
+// Script format (one directive per line, `#` comments):
+//   N button          press `button` for one frame at absolute input frame N
+//   +N button         ... N frames after the last satisfied wait_screen
+//   wait_screen name  block until TheUI's current screen is `name` and idle
+//   N wake / +N wake  "the player presses the wake button": a no-op when the
+//                     game's JoypadScriptWakeNeededFn says it is already in
+//                     its pad-driven mode, otherwise a one-frame press of the
+//                     wake button (kPad_L3, or MILO_INPUT_WAKE_BUTTON). See
+//                     platform/JoypadScriptHook.h.
 
 #include "os/Joypad.h"
 #include "os/JoypadMsgs.h"
@@ -11,6 +21,7 @@
 #include "os/System.h"
 #include "rndobj/Rnd.h"
 #include "ui/UI.h"
+#include "platform/JoypadScriptHook.h"
 #ifdef DC3_HTTP_SERVER
 #include "platform/HttpServer.h"
 #endif
@@ -164,6 +175,7 @@ static const float kTriggerThreshold = 0.3f;
 enum ScriptDirectiveType {
     kDirectiveButton,
     kDirectiveWaitScreen,
+    kDirectiveWake, // a button directive that asks gWakeNeeded first
 };
 
 struct ScriptDirective {
@@ -182,6 +194,9 @@ static const char *gWaitTarget = nullptr;
 static int gWaitSatisfiedFrame = -1;
 static int gWaitStartFrame = -1;
 static const int kWaitTimeoutFrames = 30 * 60; // 30 seconds at 60fps
+static JoypadScriptWakeNeededFn gWakeNeeded = nullptr;
+
+void JoypadScriptSetWakeNeeded(JoypadScriptWakeNeededFn fn) { gWakeNeeded = fn; }
 
 static JoypadButton ParseButtonName(const char *name) {
     // Confirm / A
@@ -212,6 +227,23 @@ static JoypadButton ParseButtonName(const char *name) {
     if (!strcmp(name, "r3") || !strcmp(name, "rs"))          return kPad_R3;
 
     return (JoypadButton)-1;
+}
+
+// The button a `wake` directive presses: MILO_INPUT_WAKE_BUTTON (a script
+// button name), else L3 -- the button the DC3-under-Xenia flows used.
+static JoypadButton ScriptWakeButton() {
+    const char *name = getenv("MILO_INPUT_WAKE_BUTTON");
+    if (name && name[0]) {
+        char buf[64];
+        size_t i = 0;
+        for (; name[i] && i < sizeof(buf) - 1; i++)
+            buf[i] = (name[i] >= 'A' && name[i] <= 'Z') ? name[i] + 32 : name[i];
+        buf[i] = '\0';
+        JoypadButton btn = ParseButtonName(buf);
+        if ((int)btn >= 0) return btn;
+        printf("DC3 Native: MILO_INPUT_WAKE_BUTTON: unknown button '%s', using l3\n", name);
+    }
+    return kPad_L3;
 }
 
 static void LoadInputScript() {
@@ -259,6 +291,16 @@ static void LoadInputScript() {
 
         for (char *c = btnName; *c; c++) {
             if (*c >= 'A' && *c <= 'Z') *c += 32;
+        }
+
+        if (!strcmp(btnName, "wake")) {
+            ScriptDirective d = {};
+            d.type = kDirectiveWake;
+            d.frame = frame;
+            d.button = ScriptWakeButton();
+            d.relative = isRelative;
+            gScript.push_back(d);
+            continue;
         }
 
         JoypadButton btn = ParseButtonName(btnName);
@@ -325,13 +367,21 @@ static unsigned int GetScriptedButtons(int currentFrame) {
             break; // Still waiting
         }
 
-        if (d.type == kDirectiveButton) {
+        if (d.type == kDirectiveButton || d.type == kDirectiveWake) {
             int targetFrame = d.relative
                 ? (gWaitSatisfiedFrame >= 0 ? gWaitSatisfiedFrame + d.frame : d.frame)
                 : d.frame;
 
             if (currentFrame == targetFrame) {
-                buttons |= (1 << d.button);
+                if (d.type == kDirectiveWake && gWakeNeeded && !gWakeNeeded()) {
+                    printf("DC3 Input: wake at frame %d: no-op (already awake)\n",
+                        currentFrame);
+                } else {
+                    if (d.type == kDirectiveWake)
+                        printf("DC3 Input: wake at frame %d: pressed button %d\n",
+                            currentFrame, (int)d.button);
+                    buttons |= (1 << d.button);
+                }
                 gScriptCursor++;
                 continue;
             } else if (currentFrame > targetFrame) {
