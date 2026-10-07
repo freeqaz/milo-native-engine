@@ -4508,3 +4508,149 @@ Title, frames 60/200/400, mean luma (TCRF is a single frame). Region script
 - **rb3-xenon** is untouched: its reversed `UpdateTransforms` ternary and
   the 26.4 statics are for a matching lane.
 - **No merge, pin bump or push.** That is for the coordinator.
+
+## 27. Where section 26's extra haze comes from (lane W16-SR, 2026-10-07)
+
+Section 26.5 left the title haze too red and too wide: street_L 7.9 → 34.7,
+crowd 6.7 → 40.9. This lane looked for the cause and did not find a defect
+in the pass. The extra haze comes from **two of the twelve beams,
+`Spotlight02` and `subway_bridge`**. With those two removed, every region
+lands within a few levels of TCRF. The other ten beams reproduce TCRF where
+TCRF shows beam light.
+
+No code mechanism was found by which retail drops those two. Every input
+the pass reads was checked against retail and matches (27.3). **So no engine
+change is committed.** A name-based skip would only fit the score to one
+still image. This section is the measured explanation.
+
+| repo | branch | commit |
+|---|---|---|
+| milo-native-engine | `w16-sr` | this section only (on `e8aaf63`) |
+| rb3 | `w16-sr` (local worktree) | diagnostics only, not committed |
+
+### 27.1 Per-beam attribution
+
+Before measuring, I expected the excess to be a pass-wide error: wrong
+culling, depth or the cross section, which would scale every beam. That was
+wrong. The beams were isolated with a temporary rb3 skip list
+(`RB3_SPOT_BEAM_SKIP`, substring match in `AddNativeBeam`), all at frame 200,
+`RB3_FIXED_CLOCK=1`, dc3 flavour. The table gives \|dRGB\| to TCRF, with
+luma in brackets.
+
+| leg (beams drawn) | street_R | street_L | crowd |
+|---|---|---|---|
+| none (`MILO_NO_SPOT_BEAMS=1`) | 50.6 (36.1) | 8.1 (64.2) | 6.8 (112.5) |
+| all 12 (section 26 as landed) | 14.5 (107.3) | 35.2 (94.6) | 42.0 (147.3) |
+| `Spotlight01` only | **10.3** (88.1) | 8.1 (66.4) | 13.3 (119.8) |
+| `Spotlight02` + `subway_bridge` only | 17.7 (67.6) | **34.2** (93.5) | **37.9** (142.3) |
+| `subway`, `subway01`, `subway03` only | 50.7 | 8.1 | 7.4 |
+| `Spotlight05`–`08` only | 50.4 | 8.1 | 7.7 |
+| `Spotlight03`, `Spotlight04` only | 50.4 | 7.8 | 7.0 |
+| all but `Spotlight02` + `subway_bridge` | **10.3** (87.9) | **8.2** (64.1) | **13.4** (119.9) |
+
+Frames 60/200/400 averaged for the three main legs: none 49.6 / 8.2 / 6.6,
+all 15.6 / 35.1 / 41.8, and all-but-two **11.4 / 8.0 / 13.2**.
+
+The contributions add up: the all-but-two leg equals `Spotlight01` alone to
+within 0.2 luma in every region. Upper-image regions, by luma (frame 200):
+
+| region | TCRF | none | all 12 | `02`+`bridge` only | all but those two |
+|---|---|---|---|---|---|
+| facade_lo (380,470,560,560) | 67.7 | 64.1 | 84.3 | 82.7 | 65.7 |
+| facade_hi (330,380,520,460) | 32.1 | 47.8 | 54.5 | 54.3 | 48.1 |
+| marquee_L (250,560,380,640) | 41.9 | 44.8 | 64.1 | 64.2 | 44.8 |
+| sky_far_R (1000,300,1250,380) | 36.8 | 27.8 | 39.4 | 27.8 | 39.1 |
+
+- **`Spotlight01` is section 25's street lamp.** Alone, it adds
+  (+74, +47, +18) RGB over the no-beams frame at street_R. TCRF's excess over
+  the no-beams frame there is (+65, +58, +29). The size matches, and the hue
+  is close.
+- **`Spotlight05`–`08`** are the far beams. They light sky_far_R from 27.8
+  to 39.2 luma, against 36.8 in TCRF.
+- **`Spotlight02` and `subway_bridge`** account for all of the street_L,
+  crowd, facade and marquee excess. At marquee_L, TCRF sits *below* the
+  no-beams frame (41.9 vs 44.8), so it holds none of their +19 luma. At
+  facade_lo, TCRF's red is +11 over no-beams against their +44, so at most
+  about a quarter.
+- **"Too red" is their colour.** Both carry colour (0.537, 0.267, 0.267) at
+  intensity 0.45, read from the file bytes. Every other beam is warm-white
+  or yellow.
+
+### 27.2 Why those two are different
+
+Read from `sv8_a.milo_xbox`, decompressed, with blobs located by their
+`0xADDEADDE` separators and checked against the `[DefDiag]` log:
+
+- They are a **copy pair**. Same rotation (axis = `m.y` =
+  (0.2526, −0.3746, 0.8921)), same local sphere ((−68.89, 371.98, 51.38),
+  r 392.97), same beam (cone, length 550, top 40, bottom 250) and same
+  colour. Only the position differs: (−498, 508, −342) and (−805, 314, −598).
+  No other beam has top radius 40 or intensity 0.45.
+- They are the only beams that **point at the camera from outside their
+  cone**. The camera, `world.cam` at (110.8, 60.1, 300) with no parent
+  (`[CamDiag]`), lies past the open end of both:
+
+  | beam | axial distance / length | radial / cone radius there | axis·view |
+  |---|---|---|---|
+  | `Spotlight01` | 939 / 600 | 104 / 264 (inside the extended cone) | 0.994 |
+  | `Spotlight02` | 895 / 550 | 429 / 382 (outside) | 0.902 |
+  | `subway_bridge` | 1128 / 550 | 662 / 471 (outside) | 0.862 |
+
+  Both lamps project just below the frame, at screen (0.49, 1.00) and
+  (0.30, 1.13). Each cone opens toward the viewer and covers the lower-left
+  of the image.
+- `SetupXSection`'s fade gives them `c86.x` = 1. For `Spotlight02`,
+  `fade` = 0.930 and axis·view = 0.902, so the slack is 0.028 (≥ 0.02). The
+  cross section is therefore applied. With no `mXSection`, it is
+  `SR().unk14` = `mDefaultTex[2]`, which retail reads at
+  `lwz r11, 0xb8(r11)` in `CheckRTs` (0x824D1D70). That slot's
+  `sDefColor` row is `0xFFFFFFFF` (`lbl_8205EA68`), white. So the factor is
+  1, and the cross section does not dim them.
+
+### 27.3 Inputs checked against retail (all equal)
+
+| input | retail evidence | native |
+|---|---|---|
+| cone PS math | `depthvolume_0000000000000000.ps` re-read: maxT = `min(linear tf9, sqrt(dist²))` (`mins r1.w, r5.zw`), nappe selection, mean falloff, Δviewdepth; **no `c29` read** | same |
+| cull | override 3. **`Spotlight01` proves the far shell:** its camera is past its wide cap, inside the extended cone. With front faces only, maxT would be the cap distance and the whole segment would have s > 1, so falloff would be 0 and the beam would be black. TCRF shows it lit | far shell (`CullMode::Front` under CCW-front) |
+| cross section | white, as above | white 1×1 |
+| target format and blend | A8R8G8B8, clear (0,0,0,1), ONE/ONE | RGBA8Unorm, same |
+| composite weight | `c91.x` = 32, `c127` = (0.01, 0.0099); `tf5` black | same (drawer: intensity 1, base 1, smoke 1, half 250) |
+| beam colour | `colorOwner->mIntensity · 8 · mColor · brighten`; no material | same, owner = self |
+| queueing | `DrawLight`: packed key (61, 30, 30) passes; `mTargetLoaded` (no target name); `Showing()` 1 | queued |
+| frustum cull (`RndDrawable::Draw`, mSphere · WorldXfm) | sphere centres at view depth 987 / 1171, r 393, inside the frustum | culling off |
+| light state | no `LightPreset` in `sv8_a`; no `PropAnim`, `EventTrigger` or group names either spot (each name occurs exactly twice in the decompressed dir: entry table and own `mColorOwner`); no other `.milo_xbox` or `.dta` names `subway_bridge` | file state |
+| `SpotlightEnder` / `UpdateBoxMap` | rebuilds `sGlobalLighting` only; never touches `sLights` | — |
+| camera | `CheckCam` copies `TheWorld->Cam()` and drops the parent. `world.cam` has no parent, so its local and world transforms are equal | `world.cam` world |
+
+### 27.4 What remains open
+
+- **The only retail reference is one still image.** TCRF's frame differs in
+  time from frame 200: the train is absent from the bridge. TCRF also
+  possibly predates TU5 (26.5).
+  - The xenia hub frame cannot help. Per section 25.3, it renders no cone
+    at all.
+  - Its facade_lo (64.8) and marquee_L (43.8) values match the no-beams
+    frame, but that only shows that xenia lacks the pass. It is not
+    evidence about these two beams.
+- **Untested lead.** Retail may write scene depth for geometry that native
+  skips, for example meshes without a material, which section 25 notes the
+  engine does not draw. That depth would cut the two segments that run
+  toward the viewer. A material-less or depth-only mesh between the camera
+  and the street would show this. It was not enumerated.
+- **Side finding, not fixed.** Native's `RndCam::WorldFrustum()` reports
+  every spotlight sphere as culled from this camera. The test with the
+  correct frustum culls none. Frustum culling is off natively
+  (`RB3VenueFrustumCull`), so nothing uses it today. Turning culling on
+  without fixing the frustum would drop all twelve beams.
+
+### 27.5 Not done
+
+- **No engine change.** The pass is unchanged from `e8aaf63`. Skipping the
+  two beams by name would score street_L 8.0 and crowd 13.2 (from 35.1 /
+  41.8), but it would fit one screenshot without a retail mechanism behind
+  it.
+- **The rb3 diagnostics** (`RB3_SPOT_BEAM_SKIP`, `[DefDiag]`, `[CullCam]`,
+  `[CamDiag]`, `[PresetDiag]`) stay in the uncommitted `~/tmp/wt-w16sr-rb3`
+  worktree.
+- **No merge, pin bump or push.** That is for the coordinator.
