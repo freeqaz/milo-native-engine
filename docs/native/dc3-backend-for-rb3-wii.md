@@ -2237,7 +2237,8 @@ retail's `BandCharDesc::HeadNormVariant` for the body-type suffix.
 
 One substitution: the head gets `<gender>_head00_norm.tex`, not the wrinkle
 RT, because `RndTexBlender::DrawShowing` is a no-op in rb3's tree and that RT
-is never painted. Opt-out: `RB3_NO_SKIN_MAPS=1`.
+is never painted. Opt-out: `RB3_NO_SKIN_MAPS=1`. (Section 23 removes the
+substitution: the RT is now composed and bound as in retail.)
 
 The BandRnd path never reads the `mXb*` maps (no `mXb` in `Rnd_Wgpu_RB3.cpp`
 or `RB3MaterialBinder.cpp`), so the rb3 flavor's shading is unaffected.
@@ -2276,7 +2277,7 @@ These are scratch paths, not committed.
   gender's spec and normal maps for all. A mixed-gender cast shares one set,
   just as it already shares one head diffuse. **Fixed in section 17.**
 - **The head wrinkle normal RT** (`RndTexBlender`) is not composed natively.
-  The head uses the neutral `head00` normal.
+  The head uses the neutral `head00` normal. **Fixed in section 23.**
 - **The web build** was not rebuilt. The fixes are in rb3 game code that both
   targets compile.
 - rb3's rb3-flavor `ctest` and the native gate were not run.
@@ -3625,3 +3626,224 @@ Each run logs one `device lost … destroyed` line at shutdown, as before.
   rb3-xenon's main checkout was not built, per the brief.
 - **BandRnd** (rb3 flavor) binds placeholders and does not refract.
 - **No merge, pin bump or push.** That is for the coordinator.
+
+## 23. The band head's wrinkle normal map, composed as retail does (lane W16-SA, 2026-10-07)
+
+Section 16 bound retail's skin maps but left the head on the plain
+`<gender>_head00_norm.tex`, because the Wii `RndTexBlender::DrawShowing` is
+empty and `head_wrinkle_output.tex` was never painted (16.5). This section
+ports retail's texture blender, has the dc3 backend draw it, and binds its
+output as the head normal map, as retail does.
+
+| repo | branch | commits |
+|---|---|---|
+| milo-native-engine | `w16-sa` | `965b9b6` (pass + seam), `0d8ec8d` (flag registry), and this section, on `f901441` |
+| rb3 | `w16-sa` | `1482e35a9` (port), `fffd837ab` (GPU test, ledger), on `69c88e9a1` |
+
+### 23.1 What retail does
+
+rb3-xenon (retail Xbox, matched source) has three parts:
+
+- `RndTexBlender::DrawShowing` (`rndobj/TexBlender.cpp`):
+  - It returns unless the draw mode is normal and the world is processed,
+    and unless its output is a no-z render target.
+  - Each controller's `GetBlendState(alpha, influence)` sorts it into a near,
+    far or custom list. The alpha is a smoothstep of the distance between two
+    bones against reference/min/max distances, times the influence, clamped
+    and quantised to 8 bits; anything below 1/255 drops out.
+  - It returns early when its re-render flag is clear, all lists are empty
+    and it last drew the base alone.
+  - Otherwise it binds the output as target and draws:
+    1. the base map as a full-target rect, blending off;
+    2. the near list, then the far list, each sorted by ascending alpha,
+       with the blender's near or far map;
+    3. the custom list, each controller with its own override map (`mTex`).
+  - Every list entry draws the controller mesh's faces with the `unwrapuv`
+    shader, blending `SrcAlpha`/`InvSrcAlpha`, clamped sampling, and the
+    work material's alpha set to the entry's alpha.
+  - The retail ucode (disassembled from the shipped shader) is
+    `tfetch2D r0.xyz1, r0.xy, tf0; mul oC0, r0, r2`: the texel's rgb, with
+    alpha = material alpha. The vertex shader places each vertex at its UV.
+- `OutfitConfig::SetSkinTextures`:
+  - The head's normal map is `dir2`'s `head_wrinkle_output.tex`.
+  - The eyes.cfg block: `SetHeadNormMap` points `norm_<part>.texblendctl`'s
+    `mTex` at `<gender>_head_norm%02d.tex` (option + 1) for chin, eye, mouth,
+    nose and shape.
+  - If any of those changed, it sets the re-render flag on eyes.cfg's blender
+    and on `wrinkle.texblend`.
+- `OutfitConfig::DrawPreClear` draws the eyes.cfg blender when it is dirty,
+  and the wrinkle blender every frame.
+
+The data, measured natively (`RB3_TEXBLEND_PROBE`), per band member:
+
+| blender | base | layers | output |
+|---|---|---|---|
+| `norm.texblend` | `<gender>_head00_norm.tex` | 5 custom controllers (the five head features) | `norm_output.tex`, 256×256 |
+| `wrinkle.texblend` | `norm_output.tex` | 12 bone-distance controllers, maps `<gender>_head_wrinkles_near/far.tex` | `head_wrinkle_output.tex`, 256×256 |
+
+All 17 controllers are revision 2.
+
+### 23.2 Two loader gaps the port uncovered
+
+- **Override maps were never read.** The Wii `RndTexBlendController::Load`
+  reads `mTex` only when `gRev > 1`, but never stores `gRev`. A rev 2
+  controller therefore loaded without its map. Retail stores the revision.
+  Under `HX_NATIVE` the Load now does too.
+- **Every member's controllers measured one shared skeleton.** The
+  controllers' `mObject1/mObject2` resolved to bones in
+  `char/main/skeleton_unshared.milo`, the same pointers for every member, so
+  no member's wrinkles followed their own face.
+  `NativeRepointBlendBones` (rb3 `OutfitConfig.cpp`) repoints each to the
+  member's own same-named transform: 28 per member. Opt-out:
+  `RB3_NO_TEXBLEND_BONE_REMAP=1`. This is a native-only fix: retail's
+  per-member resolution yields the member's bones by itself.
+
+### 23.3 Change
+
+- **Engine.**
+  - `platform/TexBlendHook.h`: a forward-declared seam, in the pattern of
+    `PointTestHook.h`. `NativeTexBlendComposer::ComposeTexBlend(output,
+    base, layers, count)`, where each layer is a mesh, a texture and an alpha.
+  - `gfx/TexBlendPass`: rndobj-free. It records one render pass over the
+    output, with load-op Load, in three pipelines per target format:
+    - base: a full-target triangle sampling the base at the pixel's UV,
+      blend off;
+    - unwrap, static stride (64) and skinned stride (88): the UV at byte 40
+      becomes clip `(2u − 1, 1 − 2v)`, the pixel is `vec4(tex.rgb, alpha)`,
+      blend `SrcAlpha`/`OneMinusSrcAlpha`, no culling, clamp/linear sampling.
+
+    Each draw gets its own parameter block and bind group.
+  - `WgpuRnd::ComposeTexBlend` resolves the target (`GetGpuTexView`,
+    `IsGpuTexRenderable`), the textures (`PresyncBitmap`) and the mesh
+    buffers (`EnsureMeshUploaded`). It ends the open frame pass, records,
+    and resumes the frame pass.
+    - It declines (returns false) with no frame open, or while another
+      target is bound.
+    - The composer is registered in `Init` and cleared in `Terminate`.
+- **rb3.**
+  - `TexBlender.cpp` (`HX_NATIVE`) is retail `DrawShowing`: the gates, the
+    lists, the early-out, the sort, and the near/far/custom layer order and
+    alphas, handed to the composer. One deviation: the re-render flag
+    (`unk9p6`, retail `unkc0`) is cleared only after the backend records,
+    so a declined frame retries.
+  - `TexBlendController`: retail `IsValid` and `GetBlendState`, plus the
+    `gRev` store (23.2).
+  - `OutfitConfig::SetSkinTextures`:
+    - retail's eyes.cfg block;
+    - the head binds `head_wrinkle_output.tex` whenever a composer is
+      registered (else `head00`, as before);
+    - the bone repoint.
+  - Flags (registered and classified in `NativeCompatFlags`):
+
+    | flag | class | effect |
+    |---|---|---|
+    | `RB3_NO_WRINKLE_BLEND` | feature, default on | opt-out: empty DrawShowing and the `head00` binding |
+    | `RB3_NO_TEXBLEND_BONE_REMAP` | native-only workaround | keeps the shared skeleton's bones |
+    | `RB3_TEXBLEND_PROBE` | probe | `[TEXBLEND]` lines |
+    | `RB3_TEXBLEND_AB_FRAME` | probe | in-run A/B, see 23.4 |
+
+### 23.4 Results
+
+**Composition runs per member.** Gameplay, quickplay song, 3,780 frames
+(`~/tmp/w16sa/P3/run.log`):
+- 370 `[TEXBLEND] draw` lines, all `ok=1`, 0 declined;
+- 4 `norm.texblend` draws per outfit build, with male and female bases
+  (`states=0x9`: base + 5 custom);
+- `wrinkle.texblend` re-renders whenever its near/far sets change
+  (`states=0x7`, e.g. `near=2 far=7`);
+- 0 `GpuDevice: WebGPU error` lines;
+- the `[SKIN_MAPS]` probe shows every head instance bound to
+  `head_wrinkle_output.tex`.
+
+In a dumped pair (`MILO_DUMP_RT=1`, main_hub frame 300), the wrinkle layers
+change 6,887 of 65,536 texels of `norm_output.tex` (max channel delta 147).
+
+**An A/B across runs is impossible here, and the obvious comparator lied.**
+- `magick compare -metric AE` reported **0 differing pixels** for every
+  before/after pair, including a sabotage leg that bound the specular map as
+  the head normal.
+  - Cause: the PNGs carry an alpha channel of mean 0.003, and ImageMagick
+    compares near-transparent pixels as equal. Every frame comparison in
+    this section uses rgb with alpha dropped (`-alpha off`, numpy).
+- Measured that way, two runs of the same binary with the same flags differ
+  across the whole frame: main_hub frame 300, 797,956 px, max 254.
+  Gameplay camera cuts also land on different shots. A before run against
+  an after run therefore measures run-to-run drift, not the change.
+
+**In-run A/B.** `RB3_TEXBLEND_AB_FRAME="a-b,…"` makes every blender draw its
+chain's first base map alone inside each window. That is `head00` for the
+wrinkle output, the pre-W16-SA head normal. `~/tmp/w16sa_pause.sh` sets up
+each pause point P:
+1. pause the song with `msg:beatmatch:set_paused:1:0:0` (the scene freezes);
+2. capture 8 composed frames (P+14…28);
+3. A/B window [P+30, P+50); capture 8 `head00` frames (P+34…48);
+4. capture 8 composed frames again (P+54…68) as the control;
+5. unpause at P+70.
+
+The film grain still moves in a paused frame (±15/255, per frame), so each
+set of 8 is averaged. Treatment is |composed − head00| and control is
+|composed − composed again|. Pause points where heads were lit, P3 run:
+
+| P | control max | treatment max | px above control max | px > 8, treatment / control |
+|---|---|---|---|---|
+| 2700 | 2.4 | 22.9 | 2,553 | 173 / 0 |
+| 2850 | 6.1 | 47.6 | 1,658 | 1,180 / 0 |
+| 3000 | 8.4 | 61.9 | 714 | 764 / 6 |
+| 3150 | 9.8 | 133.6 | 1,005 | 1,619 / 108 |
+
+The P4 run used the final rebased binary. Its shots differ (camera cuts) and
+its grain is noisier (control max 15–20). At P = 3300 the treatment max is
+197.3 against a control max of 14.6, with 519 px above it, centred on a face
+(x 1023–1061, y 274–303, 10th–90th percentile).
+
+- The treatment pixels sit on the faces: cheeks, nose, nasolabial folds,
+  brow.
+- Composed frames carry the feature normals and the bone-driven wrinkles;
+  the `head00` frames carry the neutral head.
+- Close-ups: `~/tmp/w16sa/W16SA_head_ab.png`. Each row is composed, then
+  `head00`, then the 8× difference of the averages. Rows: P4 P=3300, P3
+  P=3150, P3 P=2850, P3 P=2700.
+- The per-pause heat maps and averages are under `~/tmp/w16sa/P3` and
+  `~/tmp/w16sa/P4`.
+
+Pause points with no lit head show nothing, and that is expected.
+
+- On main_hub the drawn `head.mesh` has no approx lights (`object.retail.y`
+  = 0) and no point lights. The shader's `retailLightsOn()` is false, so the
+  per-pixel branch, the only reader of the normal map, does not run.
+- In paused gameplay frames P3 2400 and 3300 (no lit head in shot), the
+  treatment stays at or under the control.
+- This matches retail's `RndShaderStandard::CalcShaderOpts`, which selects
+  the normal map only with real or approx lights. The one difference is
+  noted in 23.6.
+
+### 23.5 Verification
+
+| check | result |
+|---|---|
+| rb3 `w16-sa` (`fffd837ab`), `native/build-dc3`, desktop, dc3 flavor, `MILO_ENGINE_PATH` = this worktree (read back from `CMakeCache.txt`), `ctest` | **100% tests passed out of 137** (134 before, plus 3 new), 7 skipped (the seven of 20.7), rc=0 |
+| new `TexBlendPassTest.BaseThenUnwrappedLayersMatchRetailModel` | Gradient base, a static-stride quad (alpha 0.5, texel alpha 0) and a skinned-stride triangle (alpha 0.25, opposite winding). Within **1/255** of a CPU model, off the triangle's diagonal. |
+| same test, unwrap's v flipped (sabotage, reverted) | **fails** at 63/255 |
+| `TexBlendPassTest.NullBaseLoadsTarget`, `ErrorScopeCatchesUnrenderableTarget` | pass; the error scope does catch a validation error |
+| `native_compat_census.py --engine-root <this> check` | `OK — 436 scanned flags all present in registry, regen clean` |
+| gameplay runs above | rc=0, 0 WebGPU errors |
+
+### 23.6 Not done
+
+- **Projected lights do not enable per-pixel lighting natively.** Retail
+  `NumLights_Real` counts projected lights too (`NgEnviron::Select`), so a
+  venue with only a `shadow_projected.lit` would light heads per pixel.
+  The native gate (`retailLightsOn`) counts approx and point lights only.
+  - With no approx lights the box term is zero, so the normal map would add
+    almost nothing there.
+  - Neither venue nor main_hub was checked for projected lights.
+- **No retail capture** to compare the composed RT against.
+- **`colorpalettes.milo`'s shared `head_naked.mat` copy** (17.2) also binds
+  `head_wrinkle_output.tex`, last writer wins. It is not drawn in the band
+  shots.
+- **The rb3 flavor (BandRnd)** registers no composer, so rb3's
+  `DrawShowing` stays a no-op there and the head keeps `head00`.
+- **rb3-xenon and dc3-decomp** were not built. The engine change is
+  additive: a seam nobody else registers against.
+- **Web build** not rebuilt.
+- **No merge, pin bump or push.**

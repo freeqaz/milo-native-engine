@@ -303,6 +303,7 @@ set(MILO_ENGINE_GFX_RNDOBJ_SOURCES
     src/gfx/RB3RetailPost.cpp   # rndobj-free; run by PostProcPass only for the rb3wii shape
     src/gfx/DisplayRamp.cpp     # rndobj-free; run by WgpuRnd::EndDrawing when rndshape::DisplayGamma() > 0
     src/gfx/PointTestPass.cpp   # rndobj-free; WgpuRnd's flare occlusion queries (platform/PointTestHook.h)
+    src/gfx/TexBlendPass.cpp    # rndobj-free; WgpuRnd's RndTexBlender composer (platform/TexBlendHook.h)
     src/gfx/TextureConvert.cpp
     src/gfx/GxTextureDecode.cpp
     src/gfx/ShippedWgsl_DC3.cpp # the dc3 flavor's WGSL module table (gfx/ShippedWgsl.h)
@@ -366,6 +367,7 @@ set(MILO_ENGINE_PLATFORM_SOURCES
     src/platform/FxSendNative.cpp
     src/platform/GameRenderHook.cpp
     src/platform/PointTestHook.cpp
+    src/platform/TexBlendHook.cpp
     src/platform/Joypad_Native.cpp
     src/platform/Keyboard_Native.cpp
     src/platform/Keygen_Stub.cpp
