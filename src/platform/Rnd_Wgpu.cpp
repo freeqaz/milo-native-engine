@@ -660,14 +660,19 @@ void WgpuRndBase::DoPostProcess() {
     Rnd::DoPostProcess();
     static_cast<WgpuRnd*>(this)->FlushWorldPost();
 }
+#endif
 
 // Retail DxRnd::DoWorldEnd: Rnd::DoWorldEnd, then DoPointTests (then
-// SavePreBuffer, which has no native counterpart).
-void WgpuRndBase::DoWorldEnd() {
-    Rnd::DoWorldEnd();
-    static_cast<WgpuRnd*>(this)->RunPointTests();
+// SavePreBuffer, which has no native counterpart), on both rndobj shapes. The
+// tests therefore read the world's depth, before anything the frame draws after
+// the world (UI, HUD) writes over it. Retail runs both only when the frame
+// processes the world (mProcCmds & kProcessWorld); WgpuRnd never narrows
+// mProcCmds (BeginDrawing does not run the proc counter), so that test would
+// always pass here and is left out.
+void WgpuRnd::DoWorldEnd() {
+    WgpuRndBase::DoWorldEnd();
+    RunPointTests();
 }
-#endif
 
 // ----------------------------------------------------------------------------
 // Flare point tests (platform/PointTestHook.h, gfx/PointTestPass.h)
