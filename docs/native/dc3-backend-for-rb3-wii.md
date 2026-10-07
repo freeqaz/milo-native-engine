@@ -4141,3 +4141,187 @@ it will. Under `RB3_NO_END_WORLD` the gate is skipped, as before.
   `flares.py` scripts are in `~/tmp/w16sb/`.
 - **No merge, pin bump or push.** That is for the coordinator. This section was
   renumbered 23 → 24 after W16-SA's section 23 landed.
+
+## 25. The dark right-hand street after world refraction (lane W16-SE, 2026-10-07)
+
+Section 22 left the title's right-hand street much darker than TCRF
+(`street_R` luma 37.5 against 92.8). It also left a guess, never tested:
+`city_road.mat` refracts its own previous frame and so amplifies a city
+lighting gap. This section tests that guess and finds it does not explain
+the street. It also fixes one rb3 defect found on the way, and names the part
+of the gap that is still unported.
+
+| repo | branch | commit |
+|---|---|---|
+| rb3 | `w16-se` | `c354d413e` (on `0d9b64067`) |
+| milo-native-engine | `w16-se` | this section only (on `886b18b`) |
+
+All native runs use `title_capture.sh` with `RB3_FIXED_CLOCK=1` at frames
+60/200/400 and the dc3 flavor. The regions are section 22's (`street_R`,
+`street_L`, `crowd`), plus a **road window**, which is the
+`city_road.mat` pixels inside x 600–820, y 597–625. That window lies above the
+overshell bar, so it can be compared with xenia's hub frame. The road mask
+comes from a probe draw of the road material (`~/tmp/w16se/roadmask.png`,
+3,651 px in the window). Scripts: `~/tmp/w16se/roadcmp.py` and
+`~/tmp/w16rz/street_regions.py`.
+
+### 25.1 The guess, measured
+
+The guess was tested with an engine shader probe (not committed). It writes
+the terms of the refracting draw into the world colour buffer, and that buffer
+is then read back from the saved pre buffer. Probe modes:
+
+- the lit material colour with the screen multiply skipped;
+- the refract fetch replaced by 0 and by 1;
+- the screen-space offset;
+- the refract normal sample.
+
+The road's next pass is the alpha-blended overlay layer. For each pixel, the
+road's output is then
+
+```
+S = (1 − a_ov)·(0.9·L·S′ + 0.1·dst) + a_ov·T·L2
+```
+
+Here `S′` is the previous frame's pre buffer at the refracted position, `L`
+is the road's lit colour (22.4's `r3`), and `a_ov·T·L2` is the overlay. The
+loop gain is `0.9·L·(1 − a_ov)`. Frame 200, `street_R`:
+
+| term | R | G | B |
+|---|---|---|---|
+| `L`, unclamped mean | 0.659 | 0.355 | 0.004 |
+| `L`, p90 / max | 0.863 / 0.988 | 0.471 / 0.533 | 0 / 0.157 |
+| `1 − a_ov` | 0.464 | 0.464 | 0.464 |
+| `a_ov·T·L2` | 0.036 | 0.018 | 0 |
+| loop gain, mean | **0.275** | **0.148** | 0.002 |
+| loop gain, max | 0.634 | 0.339 | 0.086 |
+
+- **The loop exists**: the road does sample last frame's world, and over the
+  road that is mostly road. The decoded offset is about 0.06 of the screen in
+  each axis (median |Δuv| 0.058 / 0.062; read through the road's own blend,
+  so approximate).
+- **It does not amplify much.** At gain 0.28 the steady state is 1/(1 − g) ≈
+  **1.4×** in red, and less in the other channels. Even the maximum gain
+  (0.63) stays far from unity, and `L` never exceeds 1 on the street. A loop
+  this weak cannot turn a small lighting deficit into a 2.5× luma gap.
+- **The darkness is the multiply itself.** With the screen multiply skipped
+  (lit colour only), the road window reads luma 87.4. With retail's
+  `scr * r3` it reads 49. The saved pre buffer under the road is dark (road
+  window 9.8 as dumped), and the road is that darkness times its lighting.
+  This is 22.4's math and the order is retail's.
+
+### 25.2 What retail code renders there
+
+xenia running clean TU5 (`~/tmp/w16qt/x4/rgb_1800.png`: `main_hub_screen`
+frame 1800, same city, same camera; section 10's capture) draws the same
+street **darker than native does**:
+
+| road window | luma | RGB |
+|---|---|---|
+| TCRF title | 98.6 | 115.6 / 97.5 / 59.8 |
+| xenia TU5, hub f1800 | **22.0** | 27.3 / 21.0 / 13.1 |
+| xenia TU5, hub f2100 | 21.1 | 21.0 / 20.2 / 26.0 |
+| native before W16-RZ | 73.9 | 103.2 / 66.8 / 33.3 |
+| native after W16-RZ | 49.2 | 64.5 / 44.1 / 35.2 |
+| native, this lane | 49.0 | 64.1 / 44.0 / 35.0 |
+
+Retail's code, emulated, puts this street at 22. Our port of the same
+refraction gives 49. **The street's deviation from TCRF is therefore not a
+refraction defect**, and it is not something W16-RZ introduced against
+retail. The bright street in TCRF comes from a different draw.
+
+### 25.3 What TCRF shows instead: a spotlight beam
+
+In TCRF, a cone of warm light with visible rays spreads from the street lamp
+down across the road (`~/tmp/w16se/street4.png`: TCRF, xenia f1800, xenia
+f2700, native). That is a volumetric spotlight beam. Native draws no beams on
+the title, for two reasons.
+
+**Defect 1, ours, fixed in rb3: no spotlight ever registered.** Both
+`ObjPtr<T>::Load` and `ObjOwnerPtr<T>::Load` returned `false` whenever a dir
+was available, including when the name was found. `Spotlight::Load` does
+`if (!mTarget.Load(bs, false, 0)) mTargetLoaded = false;`. As a result every
+spotlight had `mTargetLoaded == false`, and `SpotlightDrawer::DrawLight`, gated
+on it, never added one to the drawer. That dropped beams, spotlight flares,
+lenses and additional objects.
+
+- Retail's answer comes from the Wii target asm (`Spotlight::Load`'s inlined
+  copy, 0x8085C5B8–0x8085C6A8), which loads 0 into the result only on the
+  `mPtr == 0 && buf[0] != 0` path and 1 otherwise. rb3-xenon's
+  `Spotlight.cpp:424` consumes it the same way.
+- **The fix**: return false only for a non-empty name that is not found.
+  - Title: 0 → **12** spotlights registered (`Spotlight01`–`08`, `subway`,
+    `subway01`, `subway03`, `subway_bridge`). For example, `Spotlight01` is
+    warm (packed `0x4386ff`: R 255, G 134, B 67), cone length 600, radius
+    185 → 45.
+  - Wii matching build (whole binary, one worktree): **+2 functions /
+    +3,784 B**. `Spotlight::Load` went 99.37 → 100 and
+    `LightPreset::SpotlightEntry::Load` went mpn 97.20 → 100; no row
+    regressed.
+  - New test `NativeSubsystems.ObjPtrLoadFailsOnlyForMissingName`. With the
+    fix reverted, 3 of its 4 assertions fail.
+
+**Defect 2, not ported: the NG beam pass.** Retail 360 runs with
+`kNewGfx`, so `SpotlightDrawer::DrawWorld` skips the old-gfx `DrawBeams`, and
+`NgSpotlightDrawer` draws the beams instead. In rb3-xenon, `RenderScene` is at
+99.6 and `DoPost`, `EndWorld`, `BlurRT` and `SetupForPostProcess` are at 100.
+The pass works like this:
+
+- `NgSpotlightDrawer::DoPost` → `RenderScene` renders each beam into a
+  half-resolution target.
+- It uses the beam definition's cross-section texture (`SetXSectionTexture`,
+  PS sampler 0xB), fog density and the smoke/half-distance parameters.
+- It blurs the target (`BlurRT`) and composites it in post.
+
+Native rb3 runs `kOldGfx` (`System.cpp: SetGfxMode(kOldGfx)`), so it takes
+`DrawBeams`. That draws each spotlight's beam mesh with the beam's own
+material. The Xbox beams carry no material, so the engine skips those draws.
+The engine has no counterpart to the NG pass.
+
+**What is not proven.** xenia's hub frame shows the lamp but no cone either,
+and vanilla TU5 shows a movie behind the title, so no retail TU5 capture of
+this screen exists. The TCRF title predates TU5's movie title. So either the
+hub's light state differs from the title's, or xenia does not render the pass.
+The beam is the only draw found that puts light on this street in TCRF and
+that native lacks. It is still an attribution, not a measured equality.
+
+### 25.4 Results
+
+Title, frames 60/200/400 (luma, mean of three; TCRF single frame):
+
+| region | TCRF | after W16-RZ | this lane |
+|---|---|---|---|
+| street_R | 92.8 | 37.4 | 37.2 |
+| street_L | 60.2 | 65.1 | 64.0 |
+| crowd | 104.3 | 113.2 | 112.8 |
+| road window | 98.6 | 49.2 | 49.0 |
+
+As predicted, registering the spotlights does not move the street: their beams
+still have nothing to draw them on native. The run had 0 WebGPU errors.
+
+### 25.5 Verification
+
+| check | result |
+|---|---|
+| rb3 native ctest (`build-native`, dc3 flavor) | 140 tests, **100% passed**, 7 skipped (the usual real-capture fixtures) |
+| sabotage: fix reverted, new test | **fails** (found name, empty name, `ObjOwnerPtr` found name) |
+| Wii whole-binary A/B (`tools/setup-worktree.sh`, warm cache, 661 objs rebuilt) | 31,942 → 31,944 fns, 7,219,476 → 7,223,260 B; 2 rows changed, both up |
+| title capture | 0 WebGPU errors, street metrics within run spread of after-RZ |
+
+### 25.6 Not done
+
+- **The NG volumetric beam pass** is not ported. It would need retail's
+  spotlight shaders, the half-resolution target, fog density, the blur and the
+  post composite, plus a way to run it under rb3's `kOldGfx`. That is a lane of
+  its own. It would also have to settle 25.3's open question first, for
+  example with a xenia capture of a TU5 screen where the city spotlights draw
+  beams.
+- **No other `ObjPtr::Load` caller was audited for behaviour.** In rb3 only
+  `Spotlight::Load`, `LightPreset` (`tPtr`, which has no owner and so takes the
+  unchanged branch) and `RndPostProc::Load` (`mColorXfm`, a different `Load`)
+  test the result. The Wii A/B shows no row moved except the two above.
+- **rb3-xenon and dc3-decomp were not touched.** Their `ObjPtr` headers are
+  their own.
+- **The probes** (shader modes, pre buffer dump, spotlight logging) are not
+  committed. The captures are in `~/tmp/w16se/cap_*`.
+- **No merge, pin bump or push.** That is for the coordinator.
