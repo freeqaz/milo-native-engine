@@ -54,6 +54,17 @@ inline bool MatRetailTerms(const T &, RetailMatTerms &) { return false; }
 // rb3-xenon draw every material unmodulated, as before.
 template <class T>
 inline int MatColorMod(const T &, float (*)[4]) { return 0; }
+// World refraction (RndShape.h RefractTerms): the decomp's own RndMat
+// accessors. GetRefractEnabled(true) skips its GetCurrentFrameTex test; the
+// frame is bound whatever it holds (black before the first SavePreBuffer).
+template <class T>
+inline bool MatRefract(T *m, RefractTerms &r) {
+    RndMat *mat = dynamic_cast<RndMat *>(m);
+    if (!mat || !mat->GetRefractEnabled(true)) return false;
+    r.strength = mat->GetRefractStrength();
+    r.normalTex = mat->GetRefractNormalMap();
+    return true;
+}
 
 // ---- environment -----------------------------------------------------------
 inline RndEnviron *CurrentEnv() { return RndEnviron::Current(); }

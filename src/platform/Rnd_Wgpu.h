@@ -105,6 +105,15 @@ public:
 #endif
     }
 
+    // The texture behind FrameTarget().
+    wgpu::Texture FrameTargetTexture() {
+#ifdef __EMSCRIPTEN__
+        return mFrameResolvedTex;
+#else
+        return mGpu.IsHeadless() ? mGpu.HeadlessTex() : mGpu.SurfaceTexture();
+#endif
+    }
+
     // Accessors for Mesh_Wgpu.cpp / Tex_Wgpu.cpp
     GpuDevice& Gpu() { return mGpu; }
     PipelineManager& Pipelines() { return mPipelines; }
@@ -141,6 +150,7 @@ public:
         wgpu::TextureView rim;
         wgpu::TextureView environCube;
         wgpu::TextureView normDetail;
+        wgpu::TextureView refractNormal;   // binding 11 (rndshape::MatRefract)
     };
 
     // Create material bind group (group 1)
@@ -176,10 +186,24 @@ public:
     RndTex* ActiveTargetTex() const { return mActiveTargetTex; }
 
     // Rnd::EndWorld's world-end step, on every shape: retail DxRnd::DoWorldEnd
-    // runs Rnd::DoWorldEnd, then DoPointTests (then SavePreBuffer, which has no
-    // native counterpart). NgRnd has no DoWorldEnd of its own; retail's lives in
-    // the platform renderer, which WgpuRnd stands in for.
+    // runs Rnd::DoWorldEnd, then DoPointTests, then SavePreBuffer. NgRnd has no
+    // DoWorldEnd of its own; retail's lives in the platform renderer, which
+    // WgpuRnd stands in for.
     void DoWorldEnd() override;
+
+    // Retail DxRnd::SavePreBuffer's colour half: copy the world, as it stands
+    // at world end, into the pre-process buffer (mPreTex). Retail resolves the
+    // world's colour into mPreProcessBuffer (and its depth into
+    // mFrontBufferDepth, which nothing here reads). See
+    // dc3-backend-for-rb3-wii.md section 22.
+    void SavePreBuffer();
+    // The copy itself, between passes (no pass may be open).
+    void CopyWorldToPreBuffer();
+    // The frame a refracting material samples (binding 12): retail
+    // DxRnd::GetCurrentFrameTex, i.e. the pre-process buffer until this
+    // frame's world post-processing has run, then its output; black before
+    // the first SavePreBuffer.
+    wgpu::TextureView& RefractFrameView();
 
     // Flare point tests (platform/PointTestHook.h): retail DxRnd::DoPointTests
     // on occlusion queries. QueuePointTest holds a test for this frame's world
@@ -298,6 +322,20 @@ public:
     wgpu::TextureView mPostOutView;
     int mPostOutWidth = 0;
     int mPostOutHeight = 0;
+    // FlushWorldPost wrote mPostOutTex this frame (retail mPostProcDone).
+    bool mWorldPostDone = false;
+    // The colour texture the frame pass writes (or MSAA-resolves into): the
+    // post-processing intermediate or the frame target. Set by BeginFramePass.
+    wgpu::Texture mFramePassColorTex;
+    // SavePreBuffer's copy of the world (retail mPreProcessBuffer /
+    // mPreProcessTex) and the clamped linear sampler refraction reads it with.
+    wgpu::Texture mPreTex;
+    wgpu::TextureView mPreView;
+    uint32_t mPreWidth = 0;
+    uint32_t mPreHeight = 0;
+    bool mPreSaved = false;            // mPreTex holds a world (any frame)
+    bool mPreSavedThisFrame = false;   // this frame's world end has saved it
+    wgpu::Sampler mFrameSampler;
 
 #ifdef __EMSCRIPTEN__
     // On web, the swapchain surface texture may not reliably support

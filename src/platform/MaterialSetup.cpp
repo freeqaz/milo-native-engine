@@ -119,6 +119,33 @@ static void FillColorMod(const MatT& mat, MaterialUniforms& uni) {
     uni.colorMod[3] = (uint32_t)mode;
 }
 
+// World refraction (rndshape::MatRefract, dc3-backend-for-rb3-wii.md
+// section 22): the strength goes in the high half of colorMod.w as an f16
+// (the shader's refractStrength; the low half is the colour-mod mode) and the
+// refract normal map in binding 11. The frame it refracts is bound per draw
+// (WgpuRnd::RefractFrameView).
+static uint32_t FloatToHalfBits(float f) {
+    uint32_t x;
+    std::memcpy(&x, &f, sizeof(x));
+    const uint32_t sign = (x >> 16) & 0x8000u;
+    const int exp = (int)((x >> 23) & 0xFFu) - 127 + 15;
+    const uint32_t mant = x & 0x7FFFFFu;
+    if (exp <= 0) return sign;                // below the f16 normal range
+    if (exp >= 31) return sign | 0x7BFFu;     // the largest finite f16
+    uint32_t h = sign | ((uint32_t)exp << 10) | (mant >> 13);
+    if (mant & 0x1000u) h++;                  // round to nearest
+    return h;
+}
+
+template <class MatT>
+static void FillRefract(const MatT& mat, MaterialUniforms& uni,
+                        WgpuRnd::MaterialTexViews& views) {
+    rndshape::RefractTerms r;
+    if (!rndshape::MatRefract(mat, r)) return;
+    uni.colorMod[3] |= FloatToHalfBits(r.strength) << 16;
+    views.refractNormal = ResolveMap(r.normalTex, gWgpuRnd->FlatNormalTexView());
+}
+
 MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh) {
     // DC3 BaseMaterial getters, whatever the rndobj shape (platform/rndshape/).
     auto mat = rndshape::Mat(rawMat);
@@ -276,8 +303,10 @@ MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh) {
     // Detail normal map
     texViews.normDetail = ResolveMap(mat->GetNormDetailMap(), gWgpuRnd->FlatNormalTexView());
 
+    texViews.refractNormal = gWgpuRnd->FlatNormalTexView();
     FillRetailTerms(mat, matUni, texViews);
     FillColorMod(mat, matUni);
+    FillRefract(mat, matUni, texViews);
 
     // --- Environment cube map ---
     RndCubeTex* environMap = mat->GetEnvironMap();
@@ -385,8 +414,10 @@ MaterialParams BuildPassMaterialParams(BaseMaterial* rawNextPass) {
     npTexViews.rim        = ResolveMap(nextPass->GetRimMap(),      gWgpuRnd->WhiteTexView());
     npTexViews.environCube = gWgpuRnd->BlackCubeTexView();
     npTexViews.normDetail = ResolveMap(nextPass->GetNormDetailMap(), gWgpuRnd->FlatNormalTexView());
+    npTexViews.refractNormal = gWgpuRnd->FlatNormalTexView();
     FillRetailTerms(nextPass, npMatUni, npTexViews);
     FillColorMod(nextPass, npMatUni);
+    FillRefract(nextPass, npMatUni, npTexViews);
 
     // Multi-pass materials don't set their own sampler -- caller reuses primary material's sampler
     result.heuristics = 0;

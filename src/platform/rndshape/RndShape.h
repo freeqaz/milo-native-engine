@@ -51,6 +51,15 @@ struct RetailMatTerms {
     RndTex *specularTex = nullptr;
     RndTex *rimTex = nullptr;
 };
+// A material's world refraction as retail selects it: RndShaderStandard
+// sets option bit 46 (mRefractWorld) when RndMat::GetRefractEnabled holds
+// (enabled, strength > 0, a refract normal map) and NgMat puts the strength in
+// kPS_RefractStrength (c119). Filled by rndshape::MatRefract; see
+// dc3-backend-for-rb3-wii.md section 22.
+struct RefractTerms {
+    float strength = 0.0f;
+    RndTex *normalTex = nullptr;   // RndMat::GetRefractNormalMap
+};
 // One mesh draw as the per-draw state log records it (rndshape::DrawLogRecord;
 // RB3DrawLogDebug.h's RB3DrawRecord is the stored form). Every pointer is
 // borrowed for the duration of the call. The four tokens identify the uniform

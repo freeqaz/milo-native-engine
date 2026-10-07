@@ -239,6 +239,23 @@ inline int MatColorMod(const MatView &m, float colours[3][4]) {
     return mode;
 }
 
+// World refraction (RndShape.h RefractTerms) as the Xbox RndMat answers it:
+// GetRefractEnabled is mRefractEnabled && mRefractStrength > 0 && a normal
+// map, and GetRefractNormalMap is mRefractNormalMap, else the material's
+// normal map (rb3-xenon rndobj/Mat.cpp). The Wii class has no normal map
+// besides the Xbox one carried for the native build.
+inline bool MatRefract(const MatView &m, RefractTerms &r) {
+    RndMat *mat = m.Raw();
+    RndTex *normal = mat->mRefractNormalMap;
+#ifdef RB3_NATIVE_XBOX_MAT_FIELDS
+    if (!normal) normal = mat->mXbNormalMap;
+#endif
+    if (!mat->mRefractEnabled || !(mat->mRefractStrength > 0.0f) || !normal) return false;
+    r.strength = mat->mRefractStrength;
+    r.normalTex = normal;
+    return true;
+}
+
 inline bool MatRetailTerms(const MatView &m, RetailMatTerms &t) {
 #ifdef RB3_NATIVE_XBOX_MAT_FIELDS
     RndMat *mat = m.Raw();

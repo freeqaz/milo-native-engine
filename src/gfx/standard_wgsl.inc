@@ -143,7 +143,9 @@ struct MaterialUniforms {
     retailSpec: vec4f,       // .rgb specular colour (0 = none), .a power
     retailRim: vec4f,        // .rgb rim colour (0 = none), .a power
     retailFlags: vec4f,      // x per-pixel lit, y normal map, z specular map, w rim map
-    // RB3 colour modulation (UniformStructs.h): xyz colours as RGBA8, w mode.
+    // RB3 colour modulation (UniformStructs.h): xyz colours as RGBA8, w mode
+    // in the low 16 bits; the high 16 bits of w carry the world refraction
+    // strength as an f16 (0 = no refraction, see refractStrength).
     colorMod: vec4u,
 };
 
@@ -158,6 +160,14 @@ struct MaterialUniforms {
 @group(1) @binding(8) var environMapTex: texture_cube<f32>;
 @group(1) @binding(9) var environSampler: sampler;
 @group(1) @binding(10) var normDetailMapTex: texture_2d<f32>;
+// Retail world refraction (standard.ps option bit 46, mRefractWorld): the
+// refract normal map (retail tf1), the frame being refracted (retail tf6,
+// DxRnd::GetCurrentFrameTex: the pre-process buffer SavePreBuffer fills at
+// world end, or the post buffer once post-processing has run) and its
+// linear clamp sampler.
+@group(1) @binding(11) var refractNormalTex: texture_2d<f32>;
+@group(1) @binding(12) var screenTex: texture_2d<f32>;
+@group(1) @binding(13) var screenSampler: sampler;
 
 // === Bind Group 2: Per-object ===
 struct ObjectUniforms {
@@ -244,7 +254,40 @@ fn isEnabled(value: f32) -> bool {
 //                          output alpha is 10a (RB3 permutation 0x4202000010)
 //   1 AlphaPack:           output alpha 0.1 + 0.9a, colour unchanged
 fn colorModMode() -> u32 {
-    return material.colorMod.w;
+    return material.colorMod.w & 0xFFFFu;
+}
+
+// RndMat::GetRefractStrength for a material whose refraction is on
+// (GetRefractEnabled: enabled, strength > 0 and a refract normal map), else 0.
+fn refractStrength() -> f32 {
+    return unpack2x16float(material.colorMod.w).y;
+}
+
+// sRGB EOTF (sRGB -> linear), the inverse of linearToSrgb below.
+fn srgbToLinear(color: vec3f) -> vec3f {
+    let lo = color / 12.92;
+    let hi = pow((max(color, vec3f(0.0)) + 0.055) / 1.055, vec3f(2.4));
+    return select(lo, hi, color > vec3f(0.04045));
+}
+
+// Retail world refraction, standard.ps with option bit 46 (e.g. permutation
+// standard_0000400000000000): the refract normal map at the material uv gives
+// n = (g * 2 - 1, r * 2 - 1); the frame is fetched at the clip position pushed
+// by n * strength (c119.w, kPS_RefractStrength) before the divide,
+//   uv = (clip.xy + n * strength) * (0.5, -0.5) / clip.w + 0.5,
+// rgb only (alpha is the texel's). The caller multiplies it into the texel.
+// The frame holds output values (8-bit, display-encoded); a gamma-space
+// material uses them as stored, a linear one decodes them first.
+fn refractScreen(worldPos: vec3f, uv: vec2f, strength: f32, gammaShading: bool) -> vec3f {
+    let c = scene.viewProj * vec4f(worldPos, 1.0);
+    let ns = textureSample(refractNormalTex, diffuseSampler, uv);
+    let n = vec2f(ns.g * 2.0 - 1.0, ns.r * 2.0 - 1.0);
+    let suv = (c.xy + n * strength) * vec2f(0.5, -0.5) / c.w + vec2f(0.5);
+    let screen = textureSampleLevel(screenTex, screenSampler, suv, 0.0).rgb;
+    if (gammaShading) {
+        return screen;
+    }
+    return srgbToLinear(screen);
 }
 
 fn colorModBand(packed: u32, a: f32, lo: f32, hi: f32) -> vec3f {
@@ -1105,6 +1148,15 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
             baseColor = vec4f(baseColor.rgb * diffuseSample.rgb,
                               baseColor.a * colorModAlpha(diffuseSample.a));
         }
+    }
+
+    // Retail world refraction: the texel's rgb is the diffuse rgb times the
+    // refracted frame, or the frame alone without a diffuse map.
+    let refract = refractStrength();
+    if (refract > 0.0) {
+        baseColor = vec4f(baseColor.rgb * refractScreen(surfaceInput.worldPos, surfaceInput.uv,
+                                                        refract, gammaShading),
+                          baseColor.a);
     }
 
     // Intensify is the original material toggle that doubles texture brightness.
