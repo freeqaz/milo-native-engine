@@ -354,7 +354,8 @@ void WgpuRnd::InitGpuResources() {
         mFrameTimes = fopen(path, "w");
         if (mFrameTimes)
             fprintf(mFrameTimes,
-                    "frame,period_ms,cpu_ms,draw_ms,pt_wait_ms,pt_recorded,pt_answers,pt_age\n");
+                    "frame,period_ms,cpu_ms,draw_ms,pt_wait_ms,pt_recorded,pt_answers,pt_age,"
+                    "pt_end_wait_ms,pt_after_submit\n");
     }
 
     // Compose RndTexBlender outputs (TexBlendHook.h).
@@ -912,14 +913,15 @@ void WgpuRnd::RunPointTests() {
     }
 
     // Retail first reads back the queries it issued last frame, after blocking
-    // on that frame's fence. The web cannot block, so it takes what is ready.
-#ifdef __EMSCRIPTEN__
-    const bool wait = false;
-#else
-    const bool wait = true;
-#endif
+    // on that frame's fence. Here that frame's answers are taken if their
+    // readback has finished, without blocking: blocking here, before this
+    // frame's commands are submitted, would leave the GPU idle while the CPU
+    // waits. Answers not ready yet are waited for at the end of EndDrawing,
+    // after this frame's submit (FinishPointTestReadback), so they still
+    // arrive within this frame, as retail's do.
     const double waitStart = mFrameTimes ? PerfNow() : 0.0;
-    mPointTestPass.Collect(wait, DeliverPointTestAnswer, this, mGpu);
+    mPointTestPass.CollectThrough(mPointTestSeqBeforeFrame, false, DeliverPointTestAnswer, this,
+                                  mGpu);
     if (mFrameTimes) mPointTestWaitMs += (PerfNow() - waitStart) * 1000.0;
 
     if (mPointTestQueue.empty()) return;
@@ -943,6 +945,27 @@ void WgpuRnd::RunPointTests() {
         BeginFramePass(false);
         mLastSceneCam = nullptr;  // the new pass has no scene bind group yet
     }
+}
+
+// The deadline for the answers RunPointTests did not find ready: every batch
+// recorded before this frame is delivered before the frame ends, so a flare
+// drawn next frame sees them, one frame after its test, as retail's do. Run
+// after this frame's submit, the wait overlaps the GPU's work on this frame
+// instead of idling it. This frame's own batch is never taken here, even when
+// it has already finished: retail answers it at the next world end, and so
+// does RunPointTests. The web cannot block, and keeps taking what is ready at
+// world end.
+void WgpuRnd::FinishPointTestReadback() {
+#ifndef __EMSCRIPTEN__
+    if (!mPointTestPass.InFlight() || mPointTestSeqBeforeFrame == 0) return;
+    const double waitStart = mFrameTimes ? PerfNow() : 0.0;
+    const int n = mPointTestPass.CollectThrough(mPointTestSeqBeforeFrame, true,
+                                                DeliverPointTestAnswer, this, mGpu);
+    if (mFrameTimes) {
+        mPointTestEndWaitMs += (PerfNow() - waitStart) * 1000.0;
+        mPointTestAfterSubmit += n;
+    }
+#endif
 }
 
 void WgpuRnd::SetViewport(const Viewport& v) {
@@ -1209,6 +1232,7 @@ void WgpuRnd::BeginDrawing() {
     mPointTestQueue.clear();
     mPointTestsRan = false;
     mPointTestPass.DiscardUnsubmitted();
+    mPointTestSeqBeforeFrame = mPointTestPass.LastSeq();
     RndMesh_ResetFrameStats();
     rndshape::DrawLogFrameBegin();
     mPostProcFlushed = false;
@@ -1526,6 +1550,9 @@ void WgpuRnd::EndDrawing() {
 
     }
 
+    // Point-test answers from earlier frames that RunPointTests found not ready.
+    FinishPointTestReadback();
+
     mFrameView = nullptr;
     mActiveTargetTex = nullptr;
     mFramePassValid = false;
@@ -1568,15 +1595,17 @@ void WgpuRnd::WriteFrameTimes() {
     if (!mFrameTimes) return;
     const double now = PerfNow(), cpu = ThreadCpuNow();
     if (mFrameTimesLastEnd > 0.0) {
-        fprintf(mFrameTimes, "%d,%.3f,%.3f,%.3f,%.3f,%d,%d,%d\n", (int)mFrameID,
+        fprintf(mFrameTimes, "%d,%.3f,%.3f,%.3f,%.3f,%d,%d,%d,%.3f,%d\n", (int)mFrameID,
                 (now - mFrameTimesLastEnd) * 1000.0, (cpu - mFrameTimesLastCpu) * 1000.0,
                 (now - mFrameTimesBegin) * 1000.0, mPointTestWaitMs, mPointTestsRecorded,
-                mPointTestAnswers, mPointTestAgeMax);
+                mPointTestAnswers, mPointTestAgeMax, mPointTestEndWaitMs, mPointTestAfterSubmit);
         fflush(mFrameTimes);
     }
     mFrameTimesLastEnd = now;
     mFrameTimesLastCpu = cpu;
     mPointTestWaitMs = 0.0;
+    mPointTestEndWaitMs = 0.0;
+    mPointTestAfterSubmit = 0;
     mPointTestsRecorded = 0;
     mPointTestAnswers = 0;
     mPointTestAgeMax = 0;

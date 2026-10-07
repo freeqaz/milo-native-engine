@@ -227,22 +227,33 @@ void PointTestPass::DiscardUnsubmitted() {
 }
 
 int PointTestPass::Collect(bool wait, AnswerFn fn, void* user, GpuDevice& gpu) {
+    return CollectThrough(~0ull, wait, fn, user, gpu);
+}
+
+int PointTestPass::CollectThrough(uint64_t through, bool wait, AnswerFn fn, void* user,
+                                  GpuDevice& gpu) {
     if (mBatches.empty()) return 0;
     wgpu::Instance& inst = gpu.Instance();
-    if (wait) {
-        for (auto& it : mBatches) {
-            if (it->state != Batch::kMapping) continue;
-            wgpu::WaitStatus ws = inst.WaitAny(it->future, 1000000000ull);
-            if (ws != wgpu::WaitStatus::Success && it->state == Batch::kMapping) {
-                static int warned = 0;
-                if (warned++ < 3)
-                    fprintf(stderr, "PointTestPass: query readback not ready (wait status %d)\n",
-                            (int)ws);
-            }
+#ifdef __EMSCRIPTEN__
+    wait = false;  // the web cannot block
+#endif
+    bool mapping = false;
+    for (auto& it : mBatches) {
+        if (it->state != Batch::kMapping || it->seq > through) continue;
+        if (!wait) {
+            mapping = true;
+            continue;
         }
-    } else if (inst) {
-        inst.ProcessEvents();
+        wgpu::WaitStatus ws = inst.WaitAny(it->future, 1000000000ull);
+        if (ws != wgpu::WaitStatus::Success && it->state == Batch::kMapping) {
+            static int warned = 0;
+            if (warned++ < 3)
+                fprintf(stderr, "PointTestPass: query readback not ready (wait status %d)\n",
+                        (int)ws);
+        }
     }
+    // Not waiting: let finished maps complete.
+    if (mapping && inst) inst.ProcessEvents();
 
     int delivered = 0;
     for (;;) {
@@ -250,7 +261,7 @@ int PointTestPass::Collect(bool wait, AnswerFn fn, void* user, GpuDevice& gpu) {
         Batch* b = nullptr;
         for (auto& it : mBatches) {
             if ((it->state == Batch::kMapped || it->state == Batch::kFailed) &&
-                (!b || it->seq < b->seq))
+                it->seq <= through && (!b || it->seq < b->seq))
                 b = it.get();
         }
         if (!b) break;

@@ -212,10 +212,15 @@ public:
     // end; RunPointTests, at world end (DoWorldEnd; or, for a frame that never
     // ends its world, the first thing EndDrawing does, as retail's
     // Rnd::EndDrawing ends the world), first delivers the answers to the tests
-    // issued the frame before, then draws this frame's against the world's depth.
+    // issued the frame before if their readback has finished, then draws this
+    // frame's against the world's depth. FinishPointTestReadback, at the end of
+    // EndDrawing (after the submit), waits for any of the earlier frames'
+    // answers that were not ready, so every answer still arrives one frame after
+    // its test, as retail's do, without the CPU waiting on an idle GPU.
     bool QueuePointTest(const NativePointTest& test);
     void CancelPointTests(const void* key);
     void RunPointTests();
+    void FinishPointTestReadback();
     int PendingPointTests() const { return (int)mPointTestQueue.size(); }
     int PointTestsInFlight() const { return mPointTestPass.InFlight(); }
     // Counts an answer for the frame-times log (MILO_FRAME_TIMES).
@@ -276,6 +281,7 @@ public:
     // Point tests queued this frame, and whether this frame's world end ran.
     std::vector<PointTestPass::Query> mPointTestQueue;
     bool mPointTestsRan = false;
+    uint64_t mPointTestSeqBeforeFrame = 0;  // LastSeq() at BeginDrawing
     struct PointTester : NativePointTester {
         WgpuRnd* rnd = nullptr;
         bool QueuePointTest(const NativePointTest& t) override { return rnd->QueuePointTest(t); }
@@ -401,13 +407,16 @@ public:
     // EndDrawing to the next (the whole frame: game poll, draw and submit);
     // `draw` from BeginDrawing; `pt_wait` is the time spent collecting point
     // test answers; `pt_age` is how many frames after its tests were recorded
-    // the oldest answer delivered this frame arrived.
+    // the oldest answer delivered this frame arrived; `pt_end_wait` and
+    // `pt_after_submit` are the time and answers of FinishPointTestReadback.
     void WriteFrameTimes();
     FILE* mFrameTimes = nullptr;
     double mFrameTimesBegin = 0.0;    // wall s, BeginDrawing
     double mFrameTimesLastEnd = 0.0;  // wall s, previous EndDrawing
     double mFrameTimesLastCpu = 0.0;  // thread CPU s, previous EndDrawing
     double mPointTestWaitMs = 0.0;
+    double mPointTestEndWaitMs = 0.0;  // in FinishPointTestReadback
+    int mPointTestAfterSubmit = 0;     // answers it delivered
     int mPointTestsRecorded = 0;
     int mPointTestAnswers = 0;
     int mPointTestAgeMax = 0;
