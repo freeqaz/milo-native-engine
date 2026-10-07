@@ -3862,8 +3862,11 @@ to after the submit.
 
 | repo | branch | commits |
 |---|---|---|
-| milo-native-engine | `w16-sb` | `3885d18` (instrument), `ea9af8c` (change), and this section, on `f901441` |
-| rb3 | `w16-sb` | `a5a2b8163` (NativeCompat ledger), `bf637da92` (tests), on `69c88e9a1` |
+| milo-native-engine | `w16-sb` | `7e92531` (instrument), `9e72545` (change), and this section, on `4a66a9f` |
+| rb3 | `w16-sb` | `6be95edcd` (NativeCompat ledger), `51585398a` (tests), on `013862302` |
+| rb3-xenon | `w16-sb` | `9fd319ae8` (`flare-tests-at-world-end` checks answer age, 24.8), on `962c20ec5` |
+
+Before the rebase onto `4a66a9f` the engine commits were `3885d18` and `ea9af8c`, on `f901441`.
 
 ### 24.1 Instrument
 
@@ -4072,8 +4075,9 @@ filter was never exercised. The test now completes both maps first.
 | check | result |
 |---|---|
 | rb3 `w16-sb` (`bf637da92`), `native/build-native`, desktop, dc3 flavor, `MILO_ENGINE_PATH=/home/free/tmp/wt-w16sb-eng` (read back from `CMakeCache.txt`), engine rebased on `f901441` | `ctest`: **100% tests passed out of 136**, 7 skipped (the seven fixture-gated tests of 20.7), rc=0. 134 → 136 is W16-RZ's two `RefractTest`s; before the rebase it was 134/134 (132 + the two new tests) |
-| the six point tests in that run | all pass |
-| `native_compat_census.check` (in that run) | passes; `gen` regenerates no diff |
+| rb3 `w16-sb` (`51585398a`) rebased on `013862302`, engine rebased on `4a66a9f`, same build dir | `ctest`: **100% tests passed out of 139**, the same 7 skipped, rc=0. 136 → 139 is W16-SA's tests |
+| the six point tests in those runs | all pass |
+| `native_compat_census.check` (in those runs) | passes. After the rebase, `gen` rewrote the engine's `NativeCompatFlags.gen.inc` and sidecar byte-identically (sha1 checked); the rb3 ledger was regenerated from master's copy, +2 rows (`MILO_FRAME_TIMES`, `MILO_NO_POINT_TESTS`) next to W16-SA's `RB3_TEXBLEND_*` |
 | WebGPU errors | no `WebGPU error` line in any of the 76 title runs |
 | rebased Debug, tests on / off | CPU median 29.97 / 29.95 ms, world-end collect 0.078 ms: as in 24.2 |
 | DC3 shape compile (`cmake -C cmake/dc3-reference.cmake`, a copy pointed at `~/code/milohax/dc3-decomp`, build dir `~/tmp/w16sb/build-dc3ref`) | `Rnd_Wgpu.cpp` and `PointTestPass.cpp` compile, rc=0, 0 `error:` lines |
@@ -4081,7 +4085,42 @@ filter was never exercised. The test now completes both maps first.
 
 The rb3 change is test-only, plus the regenerated NativeCompat ledger.
 
-### 24.8 Not done
+### 24.8 rb3-xenon's flare gate checks answer age
+
+Before this change rb3-xenon's `flare-tests-at-world-end` gate (21.2) required
+every answer at `Rnd::EndWorld` and none at `EndDrawing`. With the change, an
+answer whose readback is not finished at the world end arrives at the end of
+`EndDrawing` instead, still one frame old. So the old gate depended on GPU
+timing. rb3-xenon `9fd319ae8` (`native/src/main_render.cpp`) now wraps the
+backend's `NativePointTester` for `rb3-render`'s frame loop. It notes the frame
+each accepted test was queued in, per flare, and matches each answer to that
+flare's oldest noted test. The gate passes when:
+
+- there are answers;
+- none is older than one frame;
+- no test is still unanswered at the end of the frame after its own;
+- no answer is unmatched.
+
+The world end / `EndDrawing` split is still printed.
+
+Measured on `sv8_a`, `--frames 8 --focus mesh`, `rb3-render` built in
+`~/tmp/wt-w16sb-xen/native/build` with `MILO_ENGINE_PATH` = this worktree
+(read back from `CMakeCache.txt`) and a test-only `MILO_ENGINE_PIN` of
+`c3eee3d`, not committed. The two sabotages were temporary edits to
+`Rnd_Wgpu.cpp`, restored by sha1 afterwards:
+
+| engine | new gate | answers, aged 0 / 1 / 2+ | overdue | world end / EndDrawing | old gate |
+|---|---|---|---|---|---|
+| this branch, 4 runs | **PASS** | 56: 0 / 56 / 0 | 0 | 56 / 0 | pass |
+| delivers two frames late (limit from the previous frame's `BeginDrawing`) | **FAIL** | 48: 0 / 0 / 48 | 56 | 48 / 0 | **pass** |
+| skips the world-end collect (every answer at `EndDrawing`) | **PASS** | 56: 0 / 56 / 0 | 0 | 0 / 56 | **fail** |
+| this branch, `RB3_POST_WORLD_OCCLUDER=1` | PASS | 56: 0 / 56 / 0 | 0 | 56 / 0 | pass |
+
+In every row `lamp04` reads visible at ratio 0.964. Under
+`RB3_POST_WORLD_OCCLUDER` `image-not-empty` fails, as that knob's comment says
+it will. Under `RB3_NO_END_WORLD` the gate is skipped, as before.
+
+### 24.9 Not done
 
 - **A windowed, presenting desktop** was not run (no display on this host).
   With FIFO present, `GetCurrentTexture` and present pace the frame. The old
@@ -4090,23 +4129,15 @@ The rb3 change is test-only, plus the regenerated NativeCompat ledger.
   load of 24.3. No real low-end GPU or software adapter was measured.
 - **rb3-web** was not built. Its path is unchanged: the world end still takes
   what is ready, and the end-of-frame step is compiled out.
-- **rb3-xenon's `flare-tests-at-world-end` gate now depends on GPU timing.**
-  It requires 0 answers at `EndDrawing`, and any answer the world end finds not
-  ready is now delivered at the end of `EndDrawing`. It passed 5 of 5 here
-  (24.7), but on a GPU that lags the CPU it would fail while the tests are still
-  drawn at the world end and still answered one frame late. If this change
-  lands, that gate should check where the tests are *recorded* (or that no
-  answer is older than one frame), not where they are delivered. rb3-xenon was
-  not edited; that repo is outside this lane.
 - **dc3-decomp** was not built or run; only the two changed engine objects were
   compiled on its shape (24.7). On DC3 the step runs with an empty queue.
 - **`native_health.sh` / `native_build_gate.sh`** were not run for rb3-xenon;
-  only `rb3-render` was built.
+  only `rb3-render` was built. rb3-xenon's real `MILO_ENGINE_PIN` is not set
+  here.
 - **The probes** (GPU time, GPU load, flare names) are not committed. The
   GPU-load probe crashed at process exit (its static wgpu objects outlived the
   device) after all 420 frames had been recorded. The patches are in
   `~/tmp/w16sb/probe-*.patch`, and the runs and the `leg.sh` / `stats.py` /
   `flares.py` scripts are in `~/tmp/w16sb/`.
-- **No merge, pin bump or push.** That is for the coordinator. This section is
-  numbered 23 after W16-RZ's 22; W16-SA is also writing one, so it may need
-  renumbering.
+- **No merge, pin bump or push.** That is for the coordinator. This section was
+  renumbered 23 → 24 after W16-SA's section 23 landed.
