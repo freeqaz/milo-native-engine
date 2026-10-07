@@ -21,7 +21,7 @@ int RetailPostMode() {
         const char *e = getenv("MILO_RB3_RETAIL_POST");
         s = !e ? 1 : (e[0] == '0') ? 0 : (strcmp(e, "raw") == 0) ? 2
             : (strcmp(e, "mask") == 0) ? 3 : (strcmp(e, "bloom") == 0) ? 4
-            : (strcmp(e, "grade") == 0) ? 5 : 1;
+            : (strcmp(e, "grade") == 0) ? 5 : (strcmp(e, "beams") == 0) ? 6 : 1;
     }
     return s;
 }

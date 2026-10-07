@@ -2025,7 +2025,7 @@
   "MILO_RB3_RETAIL_POST": {
     "class": "feature",
     "owner": "render/post",
-    "faithfulStatus": "live: RB3 Xbox 360 retail post chain (pseudo-HDR luma bloom mask, bloom/blur/downsample sets, screen blend, RndColorXfm) ported from the retail shaders, default-ON for the RB3Wii rndshape (engine c942ad9 WIP, completed 34169f1). Unset or unrecognised = 1 (retail chain); '0' = PostProcPass's previous DC3 composite; 'raw'/'mask'/'bloom'/'grade' = inspection views. DC3 shape RetailPostMode() is a constant 0, so the flag is inert there [rndshape/RB3WiiPostChain.cpp:21]",
+    "faithfulStatus": "live: RB3 Xbox 360 retail post chain (pseudo-HDR luma bloom mask, bloom/blur/downsample sets, screen blend, RndColorXfm) ported from the retail shaders, default-ON for the RB3Wii rndshape (engine c942ad9 WIP, completed 34169f1). Unset or unrecognised = 1 (retail chain); '0' = PostProcPass's previous DC3 composite; 'raw'/'mask'/'bloom'/'grade'/'beams' = inspection views ('beams' = the blurred NgSpotlightDrawer beam target, W16-SI). DC3 shape RetailPostMode() is a constant 0, so the flag is inert there [rndshape/RB3WiiPostChain.cpp:21]",
     "default": "on",
     "read": "value"
   },
@@ -2117,6 +2117,20 @@
     "class": "probe",
     "owner": "render/flare",
     "faithfulStatus": "n/a: WgpuRnd registers no NativePointTester, so the consumer (rb3 Rnd::TestPoint) keeps its no-tester fallback instead of retail's occlusion-query point tests (sections 20-21 of docs/native/dc3-backend-for-rb3-wii.md). For measuring what the tests cost (lane W16-SB); changes flare strength [Rnd_Wgpu.cpp]",
+    "default": "off",
+    "read": "presence"
+  },
+  "MILO_NO_SPOT_BEAMS": {
+    "class": "probe",
+    "owner": "render/post",
+    "faithfulStatus": "n/a: A/B kill switch for the retail NgSpotlightDrawer volumetric beam pass (gfx/SpotBeamPass, W16-SI): set = WgpuRnd registers no NativeSpotBeamRenderer, so the consumer draws beam meshes the old way [Rnd_Wgpu.cpp]. Shipped default draws the beams.",
+    "default": "off",
+    "read": "presence"
+  },
+  "RB3_SPOT_BEAM_LOG": {
+    "class": "probe",
+    "owner": "render/post",
+    "faithfulStatus": "n/a: W16-SI beam diagnostics: prints the SpotDrawParams and each submitted beam (screen projection, axis, mesh axis) for the first 3 frames [world/SpotlightDrawer.cpp]. Render output unchanged.",
     "default": "off",
     "read": "presence"
   }

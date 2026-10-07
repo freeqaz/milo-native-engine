@@ -31,4 +31,5 @@ const char* RB3RetailPostWgslSource(); // gfx/RB3RetailPost.cpp
 const char* DisplayRampWgslSource();   // gfx/DisplayRamp.cpp
 const char* PointTestPassWgslSource(); // gfx/PointTestPass.cpp, flare occlusion queries
 const char* ShadowPassWgslSource();    // gfx/ShadowPass.cpp
+const char* SpotBeamPassWgslSource();  // gfx/SpotBeamPass.cpp, volumetric spotlight beams
 const char* ParticleWgslSource();      // platform/Part_Wgpu.cpp

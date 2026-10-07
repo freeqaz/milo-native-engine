@@ -24,6 +24,15 @@ public:
         mRetail.Blit(pass, src, samples, depthFmt, gpu);
     }
 
+    // This frame's spotlight beams for the RB3 composite (RetailPostParams::
+    // spotBeams..spotSmoke; gfx/SpotBeamPass). Consumed by the next Run.
+    void SetSpotBeams(const wgpu::TextureView& beams, const wgpu::TextureView& fog,
+                      const float k[3]) {
+        mSpotBeams = beams;
+        mSpotFog = fog;
+        for (int i = 0; i < 3; i++) mSpotK[i] = k[i];
+    }
+
     BloomPass& Bloom() { return mBloom; }
     DofPass& Dof() { return mDof; }
 
@@ -35,6 +44,8 @@ private:
     BloomPass mBloom;
     DofPass mDof;
     RB3RetailPost mRetail;   // RB3 content only (rndshape::kRetailPostChain)
+    wgpu::TextureView mSpotBeams, mSpotFog;  // SetSpotBeams, this frame only
+    float mSpotK[3] = {};
 
     wgpu::ShaderModule mPostProcShader;
     wgpu::BindGroupLayout mPostProcBGL;

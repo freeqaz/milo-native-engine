@@ -11,11 +11,13 @@
 #include "gfx/DisplayRamp.h"
 #include "gfx/DrawRect2D.h"
 #include "gfx/PointTestPass.h"
+#include "gfx/SpotBeamPass.h"
 #include "gfx/TexBlendPass.h"
 #include "gfx/UniformStructs.h"
 #include "gfx/UniformRingBuffer.h"
 #include "platform/rndshape/RndShape.h"
 #include "platform/PointTestHook.h"
+#include "platform/SpotBeamHook.h"
 #include "platform/TexBlendHook.h"
 #ifdef MILO_RNDOBJ_SHAPE_HAS_NGRND
 #include "rndobj/ShaderMgr.h"
@@ -234,6 +236,14 @@ public:
                          int count);
     int TexBlendsComposed() const { return mTexBlendsComposed; }
 
+    // Volumetric spotlight beams (platform/SpotBeamHook.h, gfx/SpotBeamPass.h):
+    // retail NgSpotlightDrawer::DoPost. SubmitSpotBeams keeps this frame's
+    // beams, with the camera current at submit; FlushWorldPost draws them
+    // against the world's depth and hands the blurred result to the RB3
+    // composite. Beams not drawn by the frame's end are dropped.
+    bool SubmitSpotBeams(const NativeSpotBeamFrame& frame, const NativeSpotBeam* beams, int count);
+    int SpotBeamsDrawn() const { return mSpotBeamsDrawn; }
+
 private:
     void ApplyViewport();
     // The viewport a camera select sets on DC3 (RndCam::Select) and on the Wii
@@ -299,6 +309,21 @@ public:
         }
     };
     TexBlendComposer mTexBlendComposer;
+
+    SpotBeamPass mSpotBeamPass;
+    std::vector<SpotBeamPass::Draw> mSpotBeamDraws;  // this frame's
+    SpotBeamPass::Camera mSpotBeamCam{};
+    wgpu::TextureView mSpotBeamFog;
+    float mSpotBeamComposite[3] = {};
+    int mSpotBeamsDrawn = 0;                         // last frame's count
+    struct SpotBeamRenderer : NativeSpotBeamRenderer {
+        WgpuRnd* rnd = nullptr;
+        bool SubmitSpotBeams(const NativeSpotBeamFrame& f, const NativeSpotBeam* b,
+                             int count) override {
+            return rnd->SubmitSpotBeams(f, b, count);
+        }
+    };
+    SpotBeamRenderer mSpotBeamRenderer;
 
     // GPU resource initialization tracking
     bool mGpuResourcesReady = false;
