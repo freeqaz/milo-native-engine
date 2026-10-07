@@ -175,12 +175,18 @@ public:
     void FinishRenderTarget(RndTex* tex);
     RndTex* ActiveTargetTex() const { return mActiveTargetTex; }
 
+    // Rnd::EndWorld's world-end step, on every shape: retail DxRnd::DoWorldEnd
+    // runs Rnd::DoWorldEnd, then DoPointTests (then SavePreBuffer, which has no
+    // native counterpart). NgRnd has no DoWorldEnd of its own; retail's lives in
+    // the platform renderer, which WgpuRnd stands in for.
+    void DoWorldEnd() override;
+
     // Flare point tests (platform/PointTestHook.h): retail DxRnd::DoPointTests
     // on occlusion queries. QueuePointTest holds a test for this frame's world
-    // end; RunPointTests, at world end (DoWorldEnd for the RB3-Wii shape; else
-    // the first thing EndDrawing does, as retail's Rnd::EndDrawing ends the
-    // world), first delivers the answers to the tests issued the frame before,
-    // then draws this frame's against the world's depth.
+    // end; RunPointTests, at world end (DoWorldEnd; or, for a frame that never
+    // ends its world, the first thing EndDrawing does, as retail's
+    // Rnd::EndDrawing ends the world), first delivers the answers to the tests
+    // issued the frame before, then draws this frame's against the world's depth.
     bool QueuePointTest(const NativePointTest& test);
     void CancelPointTests(const void* key);
     void RunPointTests();
