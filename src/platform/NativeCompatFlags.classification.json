@@ -899,6 +899,13 @@
     "default": "off",
     "read": "presence"
   },
+  "MILO_INPUT_WAKE_BUTTON": {
+    "class": "feature",
+    "owner": "input/script",
+    "faithfulStatus": "n/a: input-script harness value knob — the button a `wake` directive presses (a script button name; unset = l3). Only read when an input script runs.",
+    "default": "off",
+    "read": "value"
+  },
   "RB3_APPLY_HANDLER_FIX_OFF": {
     "class": "workaround",
     "owner": "bandobj/trackpanel",
