@@ -262,6 +262,7 @@ int PointTestPass::Collect(bool wait, AnswerFn fn, void* user, GpuDevice& gpu) {
                 if (!q.key || (!q.point && !q.area)) continue;
                 Answer a;
                 a.key = q.key;
+                a.seq = b->seq;
                 a.pointDone = q.point;
                 a.visible = q.point && r[i * kQueriesPerTest] != 0;
                 a.areaDone = q.area;

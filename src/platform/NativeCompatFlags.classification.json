@@ -2105,5 +2105,19 @@
     "faithfulStatus": "n/a: W34-CHARCLIP-EVAL STEP-0 L3 attribution probe (rb3 ec9bd9ff; it named the alias-unsafe native Multiply(Transform,Transform,Transform) in Rot.cpp as the 4.2x upperArm stretch). HX_NATIVE, getenv-gated, read-only. Prints the native backtrace at every RndTransformable::SetWorldXfm/SetWorldPos on a matching object (budget 4000; no backtrace under Emscripten); value = object-name substring or '*' (empty matches everything) [Trans.cpp:126]",
     "default": "off",
     "read": "value"
+  },
+  "MILO_FRAME_TIMES": {
+    "class": "probe",
+    "owner": "render/perf",
+    "faithfulStatus": "n/a: writes one CSV row per frame to <path> (frame period, thread CPU time, BeginDrawing->EndDrawing time, time spent collecting flare point-test answers, tests recorded, answers delivered, oldest answer's age in frames; WgpuRnd::WriteFrameTimes, lane W16-SB). Measurement only, no draw change [Rnd_Wgpu.cpp]",
+    "default": "off",
+    "read": "value"
+  },
+  "MILO_NO_POINT_TESTS": {
+    "class": "probe",
+    "owner": "render/flare",
+    "faithfulStatus": "n/a: WgpuRnd registers no NativePointTester, so the consumer (rb3 Rnd::TestPoint) keeps its no-tester fallback instead of retail's occlusion-query point tests (sections 20-21 of docs/native/dc3-backend-for-rb3-wii.md). For measuring what the tests cost (lane W16-SB); changes flare strength [Rnd_Wgpu.cpp]",
+    "default": "off",
+    "read": "presence"
   }
 }

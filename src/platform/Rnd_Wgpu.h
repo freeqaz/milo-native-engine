@@ -218,6 +218,8 @@ public:
     void RunPointTests();
     int PendingPointTests() const { return (int)mPointTestQueue.size(); }
     int PointTestsInFlight() const { return mPointTestPass.InFlight(); }
+    // Counts an answer for the frame-times log (MILO_FRAME_TIMES).
+    void NotePointTestAnswer(const PointTestPass::Answer& answer);
 
     // RndTexBlender composition (platform/TexBlendHook.h): retail
     // RndTexBlender::DrawShowing's base rect and unwrapped controller meshes,
@@ -393,6 +395,27 @@ public:
     std::string mScreenshotDir;
     std::vector<int> mCaptureFrames;
     int mCaptureIndex = 0;
+
+    // Per-frame timing log (MILO_FRAME_TIMES=<path>): one CSV row per frame,
+    // written at the end of EndDrawing. `period` and `cpu` run from one
+    // EndDrawing to the next (the whole frame: game poll, draw and submit);
+    // `draw` from BeginDrawing; `pt_wait` is the time spent collecting point
+    // test answers; `pt_age` is how many frames after its tests were recorded
+    // the oldest answer delivered this frame arrived.
+    void WriteFrameTimes();
+    FILE* mFrameTimes = nullptr;
+    double mFrameTimesBegin = 0.0;    // wall s, BeginDrawing
+    double mFrameTimesLastEnd = 0.0;  // wall s, previous EndDrawing
+    double mFrameTimesLastCpu = 0.0;  // thread CPU s, previous EndDrawing
+    double mPointTestWaitMs = 0.0;
+    int mPointTestsRecorded = 0;
+    int mPointTestAnswers = 0;
+    int mPointTestAgeMax = 0;
+    struct PointTestBatchFrame {
+        uint64_t seq = 0;
+        int frame = 0;
+    };
+    PointTestBatchFrame mPointTestBatchFrames[8];
 
     // Frame budget tracking (MILO_PERF env var)
     bool mPerfEnabled = false;

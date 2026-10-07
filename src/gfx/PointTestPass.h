@@ -43,6 +43,7 @@ public:
         bool visible = false;
         bool areaDone = false;
         float area = 0.0f;
+        uint64_t seq = 0;  // the batch's LastSeq() when it was recorded
     };
     typedef void (*AnswerFn)(const Answer& answer, void* user);
 
@@ -71,6 +72,8 @@ public:
     void Cancel(const void* key);
     // Batches recorded or being read back.
     int InFlight() const;
+    // The sequence number of the last batch Record() accepted (0: none yet).
+    uint64_t LastSeq() const { return mNextSeq - 1; }
     void Terminate(GpuDevice* gpu);
 
     static constexpr int kMaxBatches = 3;

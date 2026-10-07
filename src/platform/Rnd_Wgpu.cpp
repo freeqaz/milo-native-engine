@@ -53,6 +53,7 @@
 #include <vector>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <sstream>
 #include <string>
 
@@ -68,6 +69,15 @@ static WgpuRnd gWgpuRndInstance;
 static double PerfNow() {
     using namespace std::chrono;
     return duration<double>(steady_clock::now().time_since_epoch()).count();
+}
+
+// This thread's CPU time in seconds (0 where the platform has no such clock).
+static double ThreadCpuNow() {
+#if defined(__linux__) || defined(__APPLE__)
+    timespec ts;
+    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) == 0) return ts.tv_sec + ts.tv_nsec * 1e-9;
+#endif
+    return 0.0;
 }
 
 #ifdef MILO_RNDOBJ_SHAPE_HAS_NGRND
@@ -336,8 +346,16 @@ void WgpuRnd::InitGpuResources() {
     mPostProcPass.Init(mGpu);
 
     // Answer flare point tests with occlusion queries (PointTestHook.h).
+    // MILO_NO_POINT_TESTS=1 registers no tester, so the consumer keeps its own
+    // fallback (for measuring what the tests cost).
     mPointTester.rnd = this;
-    SetNativePointTester(&mPointTester);
+    if (!getenv("MILO_NO_POINT_TESTS")) SetNativePointTester(&mPointTester);
+    if (const char* path = getenv("MILO_FRAME_TIMES"); path && *path && !mFrameTimes) {
+        mFrameTimes = fopen(path, "w");
+        if (mFrameTimes)
+            fprintf(mFrameTimes,
+                    "frame,period_ms,cpu_ms,draw_ms,pt_wait_ms,pt_recorded,pt_answers,pt_age\n");
+    }
 
     // Compose RndTexBlender outputs (TexBlendHook.h).
     mTexBlendComposer.rnd = this;
@@ -452,6 +470,10 @@ void WgpuRnd::Terminate() {
     mTexBlendPass.Terminate();
     mPointTestQueue.clear();
     mPointTestPass.Terminate(&mGpu);
+    if (mFrameTimes) {
+        fclose(mFrameTimes);
+        mFrameTimes = nullptr;
+    }
     mPostProcPass.Terminate();
     mShadowPass.Terminate();
 
@@ -804,7 +826,8 @@ bool WgpuRnd::ComposeTexBlend(RndTex* output, RndTex* base, const NativeTexBlend
 static void CamSceneMatrices(RndCam* cam, float* viewProj, float* viewOut);
 
 namespace {
-void DeliverPointTestAnswer(const PointTestPass::Answer& a, void*) {
+void DeliverPointTestAnswer(const PointTestPass::Answer& a, void* user) {
+    if (user) static_cast<WgpuRnd*>(user)->NotePointTestAnswer(a);
     NativePointTestResultFn fn = GetNativePointTestResultFn();
     if (!fn) return;
     NativePointTestResult r;
@@ -858,6 +881,18 @@ bool WgpuRnd::QueuePointTest(const NativePointTest& t) {
     return true;
 }
 
+void WgpuRnd::NotePointTestAnswer(const PointTestPass::Answer& a) {
+    if (!mFrameTimes) return;
+    mPointTestAnswers++;
+    for (const PointTestBatchFrame& bf : mPointTestBatchFrames) {
+        if (bf.seq == a.seq && bf.seq != 0) {
+            const int age = (int)mFrameID - bf.frame;
+            if (age > mPointTestAgeMax) mPointTestAgeMax = age;
+            break;
+        }
+    }
+}
+
 void WgpuRnd::CancelPointTests(const void* key) {
     for (size_t i = 0; i < mPointTestQueue.size();) {
         if (mPointTestQueue[i].key == key)
@@ -883,7 +918,9 @@ void WgpuRnd::RunPointTests() {
 #else
     const bool wait = true;
 #endif
-    mPointTestPass.Collect(wait, DeliverPointTestAnswer, nullptr, mGpu);
+    const double waitStart = mFrameTimes ? PerfNow() : 0.0;
+    mPointTestPass.Collect(wait, DeliverPointTestAnswer, this, mGpu);
+    if (mFrameTimes) mPointTestWaitMs += (PerfNow() - waitStart) * 1000.0;
 
     if (mPointTestQueue.empty()) return;
     // The tests read the frame's depth: only while the frame (not a render
@@ -894,9 +931,13 @@ void WgpuRnd::RunPointTests() {
     }
     const bool resume = mInPass;
     EndActivePass();
-    mPointTestPass.Record(mEncoder, mDepthView, wgpu::TextureFormat::Depth24PlusStencil8,
-                          kMSAASamples, (uint32_t)mDepthWidth, (uint32_t)mDepthHeight,
-                          mPointTestQueue.data(), mPointTestQueue.size(), mGpu);
+    if (mPointTestPass.Record(mEncoder, mDepthView, wgpu::TextureFormat::Depth24PlusStencil8,
+                              kMSAASamples, (uint32_t)mDepthWidth, (uint32_t)mDepthHeight,
+                              mPointTestQueue.data(), mPointTestQueue.size(), mGpu)) {
+        const uint64_t seq = mPointTestPass.LastSeq();
+        mPointTestBatchFrames[seq % 8] = {seq, (int)mFrameID};
+        mPointTestsRecorded += (int)mPointTestQueue.size();
+    }
     mPointTestQueue.clear();
     if (resume) {
         BeginFramePass(false);
@@ -1224,6 +1265,7 @@ void WgpuRnd::BeginDrawing() {
     if (mPerfEnabled) {
         mFrameStartTime = PerfNow();
     }
+    if (mFrameTimes) mFrameTimesBegin = PerfNow();
 
     FrameCapture::Get().BeginFrame(mFrameID);
 
@@ -1494,6 +1536,8 @@ void WgpuRnd::EndDrawing() {
     mCurrentTargetHeight = 0;
     mDrawing = false;
 
+    WriteFrameTimes();
+
     // Frame budget tracking (MILO_PERF)
     if (mPerfEnabled && mFrameStartTime > 0.0) {
         double now = PerfNow();
@@ -1518,6 +1562,24 @@ void WgpuRnd::EndDrawing() {
             mPerfBudgetViolations = 0;
         }
     }
+}
+
+void WgpuRnd::WriteFrameTimes() {
+    if (!mFrameTimes) return;
+    const double now = PerfNow(), cpu = ThreadCpuNow();
+    if (mFrameTimesLastEnd > 0.0) {
+        fprintf(mFrameTimes, "%d,%.3f,%.3f,%.3f,%.3f,%d,%d,%d\n", (int)mFrameID,
+                (now - mFrameTimesLastEnd) * 1000.0, (cpu - mFrameTimesLastCpu) * 1000.0,
+                (now - mFrameTimesBegin) * 1000.0, mPointTestWaitMs, mPointTestsRecorded,
+                mPointTestAnswers, mPointTestAgeMax);
+        fflush(mFrameTimes);
+    }
+    mFrameTimesLastEnd = now;
+    mFrameTimesLastCpu = cpu;
+    mPointTestWaitMs = 0.0;
+    mPointTestsRecorded = 0;
+    mPointTestAnswers = 0;
+    mPointTestAgeMax = 0;
 }
 
 void WgpuRnd::CreateDepthTexture(int w, int h) {
