@@ -36,13 +36,24 @@ struct VSOut {
 @group(0) @binding(0) var rectTex: texture_2d<f32>;
 @group(0) @binding(1) var rectSampler: sampler;
 
+// RB3 pseudo-HDR bloom mask (standard.ps ShaderOptions bit 22): > 0 writes
+// alpha = luma(rgb) * kMaskScale, as a mesh with the same material does.
+override kMaskScale: f32 = 0.0;
+
+fn bloomMask(c: vec4f) -> vec4f {
+    if (kMaskScale > 0.0) {
+        return vec4f(c.rgb, clamp(dot(c.rgb, vec3f(0.3, 0.59, 0.11)) * kMaskScale, 0.0, 1.0));
+    }
+    return c;
+}
+
 @fragment fn fs_2d(in: VSOut) -> @location(0) vec4f {
     let texColor = textureSample(rectTex, rectSampler, in.uv);
-    return texColor * in.color;
+    return bloomMask(texColor * in.color);
 }
 
 @fragment fn fs_2d_notex(in: VSOut) -> @location(0) vec4f {
-    return in.color;
+    return bloomMask(in.color);
 }
 )WGSL";
 
@@ -194,10 +205,32 @@ void DrawRect2D::Draw(wgpu::RenderPassEncoder& pass, const Hmx::Rect& rect, RndM
     ct.format = rnd->CurrentTargetFormat();
     ct.blend = &bs;
     ct.writeMask = wgpu::ColorWriteMask::All;
+    // RB3's retail post chain reads the main frame's alpha as its bloom mask.
+    // Retail draws a rect through RndShaderDrawRect (rb3-xenon Shader.cpp):
+    // CalcShaderOpts sets pseudo-HDR when !Offscreen() && mat->AllowHDR(), and
+    // SetColorWriteMask (0x824A5AF8) writes alpha only under pseudo-HDR,
+    // Offscreen() or mat->mAlphaWrite. A null material is DrawRectMat
+    // (SrcAlpha, so not AllowHDR). So in the main frame an AllowHDR material
+    // writes the luma mask, an alpha-write one its alpha, and every other rect
+    // leaves alpha alone, as meshes (Mesh_Wgpu) and particles (Part_Wgpu) do.
+    // No-ops for DC3 (rndshape::RetailBloomMaskActive false).
+    float maskScale = 0.0f;
+    if (rndshape::RetailBloomMaskActive() && rnd->CurrentPassHasDepth() &&
+        !rnd->ActiveTargetTex()) {
+        if (mat) maskScale = rndshape::BloomMaskScale(rndshape::Mat(mat));
+        if (maskScale <= 0.0f && !(mat && rndshape::Mat(mat)->GetAlphaWrite()))
+            ct.writeMask = wgpu::ColorWriteMask::Red | wgpu::ColorWriteMask::Green |
+                           wgpu::ColorWriteMask::Blue;
+    }
+    wgpu::ConstantEntry consts[1] = {};
+    consts[0].key = "kMaskScale";
+    consts[0].value = maskScale;
 
     wgpu::FragmentState frag{};
     frag.module = m2dShader;
     frag.entryPoint = hasTex ? "fs_2d" : "fs_2d_notex";
+    frag.constantCount = 1;
+    frag.constants = consts;
     frag.targetCount = 1;
     frag.targets = &ct;
 
