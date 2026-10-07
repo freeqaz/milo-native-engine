@@ -327,6 +327,7 @@ void WgpuRnd::InitGpuResources() {
 
     // Initialize pipeline manager
     mPipelines.Init(&mGpu);
+    mPipelines.SetAlphaBlendMax(rndshape::kAlphaBlendMax);
     // Create per-draw ring buffers (64KB each — enough for ~250 draws/frame at 256-byte alignment)
     // Scene ring handles mid-frame camera switches (each camera gets its own offset)
     mSceneRing.Init(mGpu.Device(), 16 * 1024, "SceneUniforms");
@@ -364,11 +365,15 @@ void WgpuRnd::InitGpuResources() {
 
     // Draw volumetric spotlight beams (SpotBeamHook.h) where the world is
     // graded at EndWorld (the RB3 retail post chain), which composites them.
-    // MILO_NO_SPOT_BEAMS=1 registers none, so the consumer draws its beam
-    // meshes the old way.
+    // MILO_NO_SPOT_BEAMS=1 registers a renderer that drops the beams, so the
+    // consumer still takes retail's NG path and only the beam pass is gone.
+    // (Registering none sends the consumer down the old-gfx path instead,
+    // whose BuildShaft cones carry the beam's own material; the title's have
+    // none, so they drew as opaque default-material cones. Section 30.)
     mSpotBeamRenderer.rnd = this;
     if constexpr (rndshape::kRetailPostChain) {
-        if (!getenv("MILO_NO_SPOT_BEAMS")) SetNativeSpotBeamRenderer(&mSpotBeamRenderer);
+        mSpotBeamRenderer.drop = getenv("MILO_NO_SPOT_BEAMS") != nullptr;
+        SetNativeSpotBeamRenderer(&mSpotBeamRenderer);
     }
 
     // Native port: disable Xbox 360 safe area shrink (TVs need overscan

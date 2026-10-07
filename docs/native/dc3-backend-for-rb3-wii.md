@@ -5054,15 +5054,225 @@ beams also removed the light that the square bloomed.
   meshes, particles and rects alike. Where a faint flare edge lies over a
   window, native erases the window's mask and retail keeps it. This is
   engine-wide and `MapBlend` is shared with DC3, so a fix needs the rndshape
-  seam. It was not measured.
+  seam. It was not measured. (Done in section 30, which also corrects the
+  description: `MapBlend` blended alpha by the colour equation, it did not
+  replace it.)
 - **The clamped-colour dot** of 19.2 (retail takes the mask of the unclamped
   colour) is unchanged.
 - **`MILO_NO_SPOT_BEAMS=1` is broken on the base engine.** All three legs run
   with it (factor 0, 0.6, 1.0, rb3 probe binary on `570c305`) read frame luma
   ≈171 against 59 without it, so section 27's beams-off control is not
-  usable at this commit. Not investigated.
+  usable at this commit. Not investigated. (Explained and fixed in section 30.)
 - **The sky hue** (19.8) is untouched.
 - **BandRnd** keeps 0.6 and was not built or run.
 - **No merge, pin bump or push.** That is for the coordinator. rb3's
   `RectBloomMaskTest` fails against the current pin `570c305`, so bump the pin
   with the rb3 branch.
+
+## 30. Section 29's two open items: the MAX mask blend and the beams-off switch (lane W16-TC, 2026-10-07)
+
+Section 29.7 left two items. Retail combines each blended draw's bloom mask
+with the one under it by MAX. And `MILO_NO_SPOT_BEAMS=1` rendered a frame of
+luma ≈171. Both are fixed and committed.
+
+| repo | branch | commit |
+|---|---|---|
+| milo-native-engine | `w16-tc` | `ae08e40` + this section (on `e1dd15f`) |
+| rb3 | `w16-tc` | `225ca0294` (on `c104a659a`, which pins `e1dd15f`) |
+
+The instrument is section 29's: `title_capture.sh`, `RB3_FIXED_CLOCK=1`,
+frames 60/200/400, dc3 flavour, Debug, rb3 `native/build-native` with
+`MILO_ENGINE_PATH=/home/free/tmp/wt-w16tc-eng` (read back from
+`CMakeCache.txt`). The scripts are `~/tmp/w16sz/measure.py`, `core.py` and
+`~/tmp/w16rz/street_regions.py`. Captures are in `~/tmp/w16tc/`.
+**Noise control:** two runs of the base binary differ by at most 0.02 in
+city_dE, 0.03 in frame luma and 0.34 in any region (`sky_right`). The base
+reproduces section 29's `final` row within 0.06 on sky_dE, city_dE, frame and
+city luma and the three city regions (city_dE 8.80 vs 8.84), and within 0.5
+on `sky_right` and every flare rect.
+
+### 30.1 MAX, on retail bytes
+
+- **RB3.** `DxRnd::SetDefaultRenderStates` (rb3-xenon, 100%) sets
+  `SeparateAlphaBlendEnable` 1, `SrcBlendAlpha` 1, `DestBlendAlpha` 1 and
+  `BlendOpAlpha` 3. No other function in either tree sets `BlendOpAlpha`.
+  `RndRenderState::SetBlendOp` (100%) sets the colour op only.
+  `NgMat::SetBasicState` (100%) passes alpha factors (1, 1).
+- **Op 3 is MAX.** Xenia's `xenos.h` numbers `BlendOp` kAdd 0, kSubtract 1,
+  kMin 2, kMax 3, kRevSubtract 4. Its render-backend blend
+  (`spirv_shader_translator_rb.cc`) handles min and max "which don't involve
+  the factors". That agrees with section 29.7's reading from `Mat_NG`.
+- **Opaque draws replace.** `NgMat::RefreshState` (96.6% fuzzy) sets
+  `mBlendEnable` false for `kBlendSrc` alone, so only blended draws use
+  MAX.
+- **DC3 retail does the same.** dc3-decomp's `SetDefaultRenderStates`,
+  `SetBasicState`, `SetBlend` and `SetBlendOp` are 100%. They set the same
+  four states. DC3's `SetBasicState` passes the colour factors as the alpha
+  factors, which MAX ignores.
+
+**Section 29.7 described the engine wrongly.** `MapBlend` did not replace
+alpha. Its last three statements copied the colour factors and op into alpha.
+So an additive draw wrote `min(1, src.a + dst.a)` and summed with the mask
+under it rather than erasing it. A SrcAlpha draw wrote
+`src.a² + dst.a·(1 − src.a)`, but in the main frame that has no effect: its
+write mask is RGB only (section 29.3). The prediction below was revised to
+match before measuring.
+
+**Prediction:** MAX lowers the mask where an additive draw lies over lit
+pixels, the flares and haze over windows. It raises the mask only under a
+Multiply, Dest or Subtract draw. On the title that means slightly less bloom,
+frame luma down by at most 1, and city_dE a little better.
+
+### 30.2 Change, MAX
+
+`PipelineManager::SetAlphaBlendMax(bool)` (`gfx/PipelineManager.{h,cpp}`).
+When it is on, every blended mode except `Src` blends alpha with
+`BlendOperation::Max`, factors One/One. When it is off, `MapBlend` does
+exactly what it did before. `PipelineManager` is in the rndobj-free gfx tier,
+so it does not see rndshape. `WgpuRnd::InitGpuResources` sets the switch from
+the new `rndshape::kAlphaBlendMax`:
+
+| shape | `kAlphaBlendMax` | why |
+|---|---|---|
+| RB3Wii | `true` | retail, 30.1 |
+| DC3 (dc3-decomp, rb3-xenon) | `false` | DC3 retail also uses MAX, but no DC3 or rb3-xenon frame was measured with it. The flip is one line and retail licenses it |
+
+The switch reaches every `MapBlend` caller on the dc3 backend: mesh pipelines
+(`PipelineManager::CreatePipeline`), particles (`Part_Wgpu`) and rects
+(`DrawRect2D`). Engine-internal passes (bloom, post, beams, DOF) build their
+own blend states and are unchanged. So is BandRnd (`RB3Quad`,
+`Rnd_Wgpu_RB3`), which never sets the switch.
+
+### 30.3 Result, MAX
+
+One probe binary carried the change with an env switch to turn it off
+(`nomax`), so the A/B is in one binary. `final` is the committed code, built
+after the probes were removed.
+
+| leg | sky_dE | city_dE | frame luma | city luma | `city_mid` | `city_rmid` | `lamp01` | `lamp02` | `lamp03` | `lamp04` |
+|---|---|---|---|---|---|---|---|---|---|---|
+| TCRF | 0 | 0 | 50.1 | 52.4 | 55.2 | 66.5 | 124.9 | 144.1 | 83.3 | 39.9 |
+| base (2 runs) | 13.34 | 8.80 | 55.87 | 59.56 | 63.64 | 75.21 | 140.0 | 171.0 | 96.5 | 45.0 |
+| probe, MAX off | 13.33 | 8.79 | 55.89 | 59.57 | 63.64 | 75.21 | 140.2 | 171.0 | 96.5 | 45.0 |
+| probe, MAX (2 runs) | 12.89 | 8.45 | 55.27 | 58.98 | 62.99 | 74.62 | 135.0 | 168.0 | 94.9 | 44.2 |
+| **final** | **12.86** | **8.42** | **55.25** | 58.95 | 63.00 | 74.56 | 134.9 | 168.2 | 94.5 | 44.2 |
+
+(Flare columns are mean luma in section 20's flare rects.) The prediction
+held. city_dE improved by 0.38 and sky_dE by 0.48, each more than 15× the
+run-to-run spread. Frame luma fell 0.62. `city_mid`, `city_rmid` and every
+lamp rect moved toward TCRF. `city_right` did not move, and `sky_right` moved
+0.3, inside its 0.34 run-to-run spread. The probe with MAX off matches the base, so the probe build
+itself changed nothing.
+
+**Mask view, f200** (`MILO_RB3_RETAIL_POST=mask`, mean luma of the mask):
+
+| | frame | `lamp01` | `lamp02` | `lamp03` | `lamp04` | `blink01` | `slow` |
+|---|---|---|---|---|---|---|---|
+| MAX off | 24.8 | 64.3 | 89.1 | 43.2 | 21.3 | 19.1 | 18.3 |
+| MAX | 24.9 | 53.3 | 83.2 | 37.1 | 18.6 | 19.1 | 18.3 |
+
+The map is in `~/tmp/w16tc/mask_diff_f200.png`. 1.98% of pixels fall by more
+than 8: the additive flare discs where they lie over lit windows and street.
+0.97% rise by more than 8. Most of those are three solid rectangles near
+(683, 407), (1035, 440) and (680, 700), where a blended non-SrcAlpha draw
+now keeps the brighter of the two masks. Which materials those are was not
+identified. The band members' edges show red and blue speckle, which matches
+section 28's per-pixel run-to-run noise. The blinks are SrcAlphaAdd, so they
+write no mask and do not move.
+
+**Flare cores** (`core.py`, core / core − ring):
+
+| lamp | TCRF | base | MAX |
+|---|---|---|---|
+| `lamp01` | 251.4 / 123.3 | 254.0 / 113.6 | 253.5 / 119.2 |
+| `lamp02` | 251.5 / 112.3 | 254.6 / 86.7 | 254.6 / 90.0 |
+| `lamp03` | 200.2 / 139.6 | 207.1 / 140.4 | 205.6 / 137.1 |
+| `lamp04` | 113.7 / 76.7 | 122.1 / 80.2 | 119.9 / 78.6 |
+
+The contrast of `lamp01` and `lamp02` moves toward TCRF's, and `lamp04`'s core
+comes down toward TCRF's. `lamp03` moves 1.4 the other way and stays within
+2.5 of TCRF.
+
+**Street** (\|dRGB\| to TCRF, three frames; base and MAX are two runs each):
+
+| region | base | MAX |
+|---|---|---|
+| street_R | 11.0 | 11.2 (luma spread within a leg 3.8) |
+| street_L | 16.4 | 14.6 |
+| crowd | 25.9 | 22.5 |
+
+### 30.4 `MILO_NO_SPOT_BEAMS=1`: twelve opaque cones
+
+The frame at base, f200 (`~/tmp/w16tc/nb_quad.png`: normal, the switch, the
+switch with `MILO_RB3_RETAIL_POST=raw`, and `=mask`). The raw view shows
+**solid shaded cones**, white at the top and black at the bottom. They cover
+the city and write a full mask, so the bloom whites out the frame.
+
+**Mechanism.** The switch registered no `NativeSpotBeamRenderer`. rb3's
+`SpotlightDrawer::DrawNGSpotlights()` is then false, so `Spotlight::Generate`
+builds old-gfx `BuildShaft` cones and `DrawLights` draws them through
+`DrawBeams` with the beam's own material. On the title's 360 assets that
+material is null. Retail 360 never takes this path: it builds NG shafts and
+draws them in `NgSpotlightDrawer`. Since section 28.1 (`452b184`), a
+material-less mesh draws with the default material, which is prelit and
+opaque. A cone with the vertex colours of `BuildCone` (1 at the top, 0 at the
+base) then gives exactly the cones in the raw view.
+
+**Measured, not inferred.** A temporary probe logged every default-material
+draw in `Mesh_Wgpu`. With the old registration restored by a probe env switch:
+**2,616 draws of unnamed meshes over the 220-frame run, ≈12 a frame**, which
+is the 12 spotlights of section 28.2 (`BuildShaft` meshes are created
+unnamed). There were also 218 draws of `kick_drum_01.mesh`, section 28.1's
+one material-less mesh. Control: with the fix, the same probe logs only the
+218 `kick_drum_01.mesh` draws. Two section 28 changes let this through. 28.1
+drew material-less meshes (before it, they were refused, which hid the cones)
+and 28.2 stopped culling all 12 spotlights. Which of the two alone would have
+been enough was not bisected.
+
+**Change** (`Rnd_Wgpu.{h,cpp}`). The switch now registers the renderer with
+`drop` set. `SubmitSpotBeams` then queues no beams, and with an empty list the
+beam pass does not run. The consumer stays on the NG path, as in the shipped
+default, so the switch removes the beam pass and nothing else. The flag's
+`faithfulStatus` in `NativeCompatFlags.classification.json` and `.gen.inc`
+says so.
+
+| leg | sky_dE | city_dE | frame luma | city luma | street_R | street_L | crowd |
+|---|---|---|---|---|---|---|---|
+| base, switch set | 29.65 | 161.48 | 170.64 | 213.01 | 167.7 | 186.7 | 139.4 |
+| probe, switch set | 12.86 | 11.33 | 45.17 | 44.55 | 54.1 | 17.1 | 14.5 |
+| **final**, switch set | 12.86 | 11.30 | 45.21 | 44.60 | | | |
+| final, beams drawn (30.3; street cells from the probe's two MAX runs) | 12.86 | 8.42 | 55.25 | 58.95 | 11.2 | 14.6 | 22.5 |
+
+(Street columns are \|dRGB\| to TCRF. The switch legs are one run each, and
+`final` reproduces the probe within 0.05 on sky_dE, city_dE and both
+lumas, and within 0.31 on every region and flare rect.) The
+beams-off leg is usable again.
+The beams add about 10 to frame luma on this engine. Without them the city
+is darker than TCRF's (city luma 44.6 against 52.4), and with them it is
+brighter. **This leg is not comparable to section 27's "none" row**
+(street_L 8.2 there, 17.1 here). That row ran the old-gfx path with the cones
+refused, and its street still carried the flare-mask squares section 29
+removed.
+
+### 30.5 Verification
+
+| check | result |
+|---|---|
+| new rb3 test `RectBloomMaskTest.AdditiveRectKeepsTheBrighterMaskNotTheSum` (additive grey world, mask 0.25; an additive 0.25 rect must bloom like a SrcAlphaAdd 0.25 rect, which adds the same colour and no mask) | pass: 189 / 189 (luma just outside the rect; no rect 187) |
+| control inside the test: an additive white rect must bloom more than the 0.25 one | passes: white 207 against 189, so the observable can fire |
+| sabotage: `kAlphaBlendMax` set false for rb3wii, test rebuilt | **fails**: the MAX branch in `PipelineManager.cpp` disabled (one TU, `if (false && …)`), `rb3-tests` rebuilt: additive 194 against SrcAlphaAdd 189, \|5\| > 2. The file was restored and checked identical to `HEAD` with `git diff --quiet` |
+| rb3 native ctest (`build-native`, dc3, Debug) | **100% tests passed out of 153** (152 before, plus the new test), 7 skipped (the seven fixture-gated tests of 20.7), rc=0. The first run failed `native_compat_census.check` because rb3's `NATIVE_COMPAT_LEDGER.md` lagged the new `faithfulStatus`. `native_compat_census.py --engine-root <this tree> gen` regenerated it and left the engine's hand-edited `.gen.inc` unchanged, so the hand edit equals generator output |
+| title captures | 0 `WebGPU error` lines in all 9 title legs |
+| DC3 shape | `Rnd_Wgpu.cpp` and `PipelineManager.cpp` pass `-fsyntax-only` with dc3-decomp's compile command (section 29.6's `dc3_cmd`) pointed at this tree. Control: a copy of `Rnd_Wgpu.cpp` that names `rndshape::kAlphaBlendMaxNoSuch` **fails** (`did you mean 'kAlphaBlendMax'?`), so the new line is compiled against the DC3 shape. With `kAlphaBlendMax` false, `MapBlend` runs the same statements as before, and the beam-switch change sits under `if constexpr (kRetailPostChain)`, which is false for DC3 |
+
+### 30.6 Not done
+
+- **DC3 and rb3-xenon keep the colour-equation alpha.** Retail licenses MAX
+  for both (30.1). Flipping `RndShape_DC3.h`'s `kAlphaBlendMax` needs a DC3
+  or rb3-xenon frame measurement, which this lane did not have.
+- **The three rectangles** whose mask rises under MAX (30.3) were not
+  identified.
+- **Section 29.7's remaining items** (the clamped-colour dot of 19.2, the sky
+  hue, BandRnd) are untouched.
+- **No merge, pin bump or push.** That is for the coordinator. The new rb3
+  test needs this engine commit, so bump the pin with the rb3 branch.

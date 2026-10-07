@@ -398,9 +398,25 @@ wgpu::BlendState PipelineManager::MapBlend(WgpuBlend blend) {
         break;
     }
 
+    // By default alpha blends by the colour equation.
     alpha.srcFactor = color.srcFactor;
     alpha.dstFactor = color.dstFactor;
     alpha.operation = color.operation;
+
+    // Retail's destination alpha (SetAlphaBlendMax). DxRnd::SetDefaultRenderStates
+    // enables separate alpha blending with SrcBlendAlpha 1, DestBlendAlpha 1 and
+    // BlendOpAlpha 3, and nothing changes the alpha op afterwards
+    // (RndRenderState::SetBlendOp sets the colour op only). On Xenos op 3 is MAX,
+    // which ignores the factors, so a blended draw leaves max(src.a, dst.a).
+    // NgMat disables blending for kBlendSrc alone, so an opaque draw still
+    // replaces alpha. (RB3's NgMat::SetBasicState passes alpha factors 1, 1 and
+    // DC3's passes the colour factors; under MAX both give the same result.)
+    if (mAlphaBlendMax && blend != WgpuBlend::Src &&
+        (int)blend >= (int)WgpuBlend::Dest && (int)blend <= (int)WgpuBlend::Darken) {
+        alpha.operation = wgpu::BlendOperation::Max;
+        alpha.srcFactor = wgpu::BlendFactor::One;
+        alpha.dstFactor = wgpu::BlendFactor::One;
+    }
 
     return bs;
 }
