@@ -543,6 +543,12 @@ inline bool RetailBloomMaskActive() {
     const int m = RetailPostMode();
     return m == 1 || m == 3 || m == 4 || m == 6;
 }
+// Retail combines a blended draw's alpha with the destination's by MAX:
+// DxRnd::SetDefaultRenderStates sets BlendOpAlpha 3 (rb3-xenon 100%), which no
+// later state changes. So where an additive flare edge lies over a lit window,
+// the window keeps its bloom mask. WgpuRnd passes this to
+// PipelineManager::SetAlphaBlendMax; see dc3-backend-for-rb3-wii.md section 30.
+constexpr bool kAlphaBlendMax = true;
 // The pseudo-HDR bloom mask (ShaderOptions bit 22): retail's standard.ps writes
 // a = dot(rgb, c7.rgb) for a material whose NgMat::AllowHDR() holds, drawn into
 // the main frame (CalcShaderOpts: !fadeOut && !offscreen && AllowHDR()); every

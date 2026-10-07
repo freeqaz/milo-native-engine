@@ -138,6 +138,13 @@ public:
     // State mapping (public for DrawRect)
     wgpu::BlendState MapBlend(WgpuBlend blend);
 
+    // Blend the destination alpha with MAX for every blended mode, as RB3's
+    // and DC3's retail DxRnd::SetDefaultRenderStates set it (BlendOpAlpha 3).
+    // Off by default: alpha replaces. Set once, before any pipeline exists;
+    // the pipeline caches do not key on it. See MapBlend.
+    void SetAlphaBlendMax(bool on) { mAlphaBlendMax = on; }
+    bool AlphaBlendMax() const { return mAlphaBlendMax; }
+
 private:
     wgpu::RenderPipeline CreatePipeline(const PipelineKey& key);
     wgpu::ShaderModule GetOrCreateShader(uint32_t shaderType);
@@ -155,5 +162,6 @@ private:
     std::vector<PipelineKey> mPreWarmKeys;
     int mPreWarmCursor = 0;
     bool mPreWarmStarted = false;
+    bool mAlphaBlendMax = false;   // SetAlphaBlendMax
     void BuildPreWarmKeys(wgpu::TextureFormat mainFmt, wgpu::TextureFormat rtFmt);
 };

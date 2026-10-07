@@ -2123,7 +2123,7 @@
   "MILO_NO_SPOT_BEAMS": {
     "class": "probe",
     "owner": "render/post",
-    "faithfulStatus": "n/a: A/B kill switch for the retail NgSpotlightDrawer volumetric beam pass (gfx/SpotBeamPass, W16-SI): set = WgpuRnd registers no NativeSpotBeamRenderer, so the consumer draws beam meshes the old way [Rnd_Wgpu.cpp]. Shipped default draws the beams.",
+    "faithfulStatus": "n/a: A/B kill switch for the retail NgSpotlightDrawer volumetric beam pass (gfx/SpotBeamPass, W16-SI): set = WgpuRnd registers a NativeSpotBeamRenderer that drops the submitted beams, so the consumer keeps the NG path and only the beam pass is removed (W16-TC; registering none sent it down the old-gfx path, whose material-less BuildShaft cones drew opaque) [Rnd_Wgpu.cpp]. Shipped default draws the beams.",
     "default": "off",
     "read": "presence"
   },

@@ -318,8 +318,10 @@ public:
     int mSpotBeamsDrawn = 0;                         // last frame's count
     struct SpotBeamRenderer : NativeSpotBeamRenderer {
         WgpuRnd* rnd = nullptr;
+        bool drop = false;   // MILO_NO_SPOT_BEAMS: accept the beams, draw none
         bool SubmitSpotBeams(const NativeSpotBeamFrame& f, const NativeSpotBeam* b,
                              int count) override {
+            if (drop) return rnd->SubmitSpotBeams(f, b, 0);
             return rnd->SubmitSpotBeams(f, b, count);
         }
     };
