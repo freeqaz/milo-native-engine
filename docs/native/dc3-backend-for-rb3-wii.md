@@ -4077,6 +4077,7 @@ filter was never exercised. The test now completes both maps first.
 | WebGPU errors | no `WebGPU error` line in any of the 76 title runs |
 | rebased Debug, tests on / off | CPU median 29.97 / 29.95 ms, world-end collect 0.078 ms: as in 24.2 |
 | DC3 shape compile (`cmake -C cmake/dc3-reference.cmake`, a copy pointed at `~/code/milohax/dc3-decomp`, build dir `~/tmp/w16sb/build-dc3ref`) | `Rnd_Wgpu.cpp` and `PointTestPass.cpp` compile, rc=0, 0 `error:` lines |
+| rb3-xenon `962c20ec5` (main checkout, read-only), `rb3-render` built out of tree in `~/tmp/w16sb/xenon-build` with `MILO_ENGINE_PATH` = this worktree (read back from `CMakeCache.txt`); 21.3's `sv8_a` cell, `--frames 8 --focus mesh`, five runs | **`flare-tests-at-world-end` PASS in 5 of 5**: 56 answers at the world end, 0 at EndDrawing, as in 21.3's fix row. The five runs' flare answers are identical, with `lamp04` visible at ratio 0.964 |
 
 The rb3 change is test-only, plus the regenerated NativeCompat ledger.
 
@@ -4089,11 +4090,18 @@ The rb3 change is test-only, plus the regenerated NativeCompat ledger.
   load of 24.3. No real low-end GPU or software adapter was measured.
 - **rb3-web** was not built. Its path is unchanged: the world end still takes
   what is ready, and the end-of-frame step is compiled out.
-- **rb3-xenon and dc3-decomp** were not built or run; only the two changed
-  engine objects were compiled on their shape (24.7). On DC3 the step runs
-  with an empty queue. rb3-xenon's `rb3-render` queues tests and runs the same
-  code as rb3, so its `flare-tests-at-world-end` gate (21.2) should still count
-  every answer at the world end on its unloaded cells. That was not run.
+- **rb3-xenon's `flare-tests-at-world-end` gate now depends on GPU timing.**
+  It requires 0 answers at `EndDrawing`, and any answer the world end finds not
+  ready is now delivered at the end of `EndDrawing`. It passed 5 of 5 here
+  (24.7), but on a GPU that lags the CPU it would fail while the tests are still
+  drawn at the world end and still answered one frame late. If this change
+  lands, that gate should check where the tests are *recorded* (or that no
+  answer is older than one frame), not where they are delivered. rb3-xenon was
+  not edited; that repo is outside this lane.
+- **dc3-decomp** was not built or run; only the two changed engine objects were
+  compiled on its shape (24.7). On DC3 the step runs with an empty queue.
+- **`native_health.sh` / `native_build_gate.sh`** were not run for rb3-xenon;
+  only `rb3-render` was built.
 - **The probes** (GPU time, GPU load, flare names) are not committed. The
   GPU-load probe crashed at process exit (its static wgpu objects outlived the
   device) after all 420 frames had been recorded. The patches are in
