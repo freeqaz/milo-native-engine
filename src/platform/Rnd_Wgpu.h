@@ -11,10 +11,12 @@
 #include "gfx/DisplayRamp.h"
 #include "gfx/DrawRect2D.h"
 #include "gfx/PointTestPass.h"
+#include "gfx/TexBlendPass.h"
 #include "gfx/UniformStructs.h"
 #include "gfx/UniformRingBuffer.h"
 #include "platform/rndshape/RndShape.h"
 #include "platform/PointTestHook.h"
+#include "platform/TexBlendHook.h"
 #ifdef MILO_RNDOBJ_SHAPE_HAS_NGRND
 #include "rndobj/ShaderMgr.h"
 #endif
@@ -217,6 +219,14 @@ public:
     int PendingPointTests() const { return (int)mPointTestQueue.size(); }
     int PointTestsInFlight() const { return mPointTestPass.InFlight(); }
 
+    // RndTexBlender composition (platform/TexBlendHook.h): retail
+    // RndTexBlender::DrawShowing's base rect and unwrapped controller meshes,
+    // recorded into the frame's encoder as one pass over the output texture.
+    // A frame pass open on entry is resumed (loaded) afterwards.
+    bool ComposeTexBlend(RndTex* output, RndTex* base, const NativeTexBlendLayer* layers,
+                         int count);
+    int TexBlendsComposed() const { return mTexBlendsComposed; }
+
 private:
     void ApplyViewport();
     // The viewport a camera select sets on DC3 (RndCam::Select) and on the Wii
@@ -270,6 +280,17 @@ public:
         void CancelPointTests(const void* key) override { rnd->CancelPointTests(key); }
     };
     PointTester mPointTester;
+
+    TexBlendPass mTexBlendPass;
+    int mTexBlendsComposed = 0;
+    struct TexBlendComposer : NativeTexBlendComposer {
+        WgpuRnd* rnd = nullptr;
+        bool ComposeTexBlend(RndTex* output, RndTex* base, const NativeTexBlendLayer* layers,
+                             int count) override {
+            return rnd->ComposeTexBlend(output, base, layers, count);
+        }
+    };
+    TexBlendComposer mTexBlendComposer;
 
     // GPU resource initialization tracking
     bool mGpuResourcesReady = false;

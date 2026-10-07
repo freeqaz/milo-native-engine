@@ -339,6 +339,10 @@ void WgpuRnd::InitGpuResources() {
     mPointTester.rnd = this;
     SetNativePointTester(&mPointTester);
 
+    // Compose RndTexBlender outputs (TexBlendHook.h).
+    mTexBlendComposer.rnd = this;
+    SetNativeTexBlendComposer(&mTexBlendComposer);
+
     // Native port: disable Xbox 360 safe area shrink (TVs need overscan
     // compensation, but PC/Mac monitors don't).
     SetShrinkToSafeArea(false);
@@ -444,6 +448,8 @@ void WgpuRnd::Terminate() {
     // Render passes
     mDrawRect2D.Terminate();
     if (GetNativePointTester() == &mPointTester) SetNativePointTester(nullptr);
+    if (GetNativeTexBlendComposer() == &mTexBlendComposer) SetNativeTexBlendComposer(nullptr);
+    mTexBlendPass.Terminate();
     mPointTestQueue.clear();
     mPointTestPass.Terminate(&mGpu);
     mPostProcPass.Terminate();
@@ -737,6 +743,58 @@ wgpu::TextureView& WgpuRnd::RefractFrameView() {
     if (mWorldPostDone && mPostOutView) return mPostOutView;
     if (mPreSaved && mPreView) return mPreView;
     return mBlackTexView;
+}
+
+// ----------------------------------------------------------------------------
+// RndTexBlender composition (platform/TexBlendHook.h, gfx/TexBlendPass.h)
+// ----------------------------------------------------------------------------
+
+bool WgpuRnd::ComposeTexBlend(RndTex* output, RndTex* base, const NativeTexBlendLayer* layers,
+                              int count) {
+    if (!mGpuResourcesReady || !mGpu.IsReady() || !mFrameView || !mDrawing || !mEncoder)
+        return false;
+    if (!output || !output->IsRenderTarget()) return false;
+    // Retail warns and draws anyway when a target is already bound; a texture
+    // pass here cannot be resumed with its contents, so decline instead.
+    if (mActiveTargetTex) return false;
+    wgpu::TextureView target = GetGpuTexView(output);
+    if (!target || !IsGpuTexRenderable(output)) return false;
+    const uint32_t w = (uint32_t)(output->Width() > 0 ? output->Width() : 256);
+    const uint32_t h = (uint32_t)(output->Height() > 0 ? output->Height() : 256);
+
+    wgpu::TextureView baseView;
+    if (base) {
+        base->PresyncBitmap();
+        baseView = GetGpuTexView(base);
+    }
+    std::vector<TexBlendPass::Layer> draws;
+    draws.reserve(count > 0 ? (size_t)count : 0);
+    for (int i = 0; i < count; i++) {
+        const NativeTexBlendLayer& l = layers[i];
+        if (!l.mesh || !l.tex) continue;
+        l.tex->PresyncBitmap();
+        wgpu::TextureView view = GetGpuTexView(l.tex);
+        if (!view || !EnsureMeshUploaded(l.mesh)) continue;
+        GpuMeshData* m = GetMeshGpuData(l.mesh);
+        if (!m || !m->uploaded) continue;
+        TexBlendPass::Layer d;
+        d.vertexBuffer = m->vertexBuffer;
+        d.vertexStride = m->skinned ? (uint32_t)sizeof(GpuVertexSkinned) : (uint32_t)sizeof(GpuVertex);
+        d.vertexBytes = (uint64_t)m->numVertices * d.vertexStride;
+        d.indexBuffer = m->indexBuffer;
+        d.indexCount = (uint32_t)m->numIndices;
+        d.tex = view;
+        d.alpha = l.alpha;
+        draws.push_back(d);
+    }
+
+    const bool resumeFrame = mInPass;
+    EndActivePass();
+    const bool ok = mTexBlendPass.Record(mEncoder, target, ChooseRenderTargetFormat(output), w, h,
+                                         baseView, draws.data(), draws.size(), mGpu);
+    if (ok) mTexBlendsComposed++;
+    if (resumeFrame) BeginFramePass(false);
+    return ok;
 }
 
 // ----------------------------------------------------------------------------
