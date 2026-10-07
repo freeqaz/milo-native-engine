@@ -88,6 +88,7 @@
 { "MILO_HEADLESS", "off", FlagClass::Feature, FlagRead::Presence, "platform/headless", "n/a: headless runtime mode (skips window/audio/GPU device init; UI.cpp fakes a fixed 1/30s UI clock). Real port toggle, not a fidelity stand-in.", "MILO_HEADLESS" },
 { "MILO_HEIGHT", "unknown", FlagClass::Unknown, FlagRead::Value, "unclassified", "n/a", "MILO_HEIGHT" },
 { "MILO_INPUT_SCRIPT", "unknown", FlagClass::Unknown, FlagRead::Truthy, "unclassified", "n/a", "MILO_INPUT_SCRIPT" },
+{ "MILO_INPUT_WAKE_BUTTON", "off", FlagClass::Feature, FlagRead::Value, "input/script", "n/a: input-script harness value knob — the button a `wake` directive presses (a script button name; unset = l3). Only read when an input script runs.", "MILO_INPUT_WAKE_BUTTON" },
 { "MILO_LOCALE_DBG", "off", FlagClass::Probe, FlagRead::Presence, "utl/locale", "n/a: traces Localize() token/format resolution for diagnosing format-string/token leaks [Locale.cpp:296]", "MILO_LOCALE_DBG" },
 { "MILO_NORENDER", "unknown", FlagClass::Unknown, FlagRead::Presence, "unclassified", "n/a", "MILO_NORENDER" },
 { "MILO_NO_POINT_TESTS", "off", FlagClass::Probe, FlagRead::Presence, "render/flare", "n/a: WgpuRnd registers no NativePointTester, so the consumer (rb3 Rnd::TestPoint) keeps its no-tester fallback instead of retail's occlusion-query point tests (sections 20-21 of docs/native/dc3-backend-for-rb3-wii.md). For measuring what the tests cost (lane W16-SB); changes flare strength [Rnd_Wgpu.cpp]", "MILO_NO_POINT_TESTS" },
