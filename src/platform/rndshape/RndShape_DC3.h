@@ -30,6 +30,8 @@ namespace rndshape {
 
 // ---- renderer singleton (DC3 declares `Rnd& TheRnd`) ----------------------
 inline Rnd &TheRndRef() { return TheRnd; }
+// The renderer's default material (Rnd::Init: use_environ 0, pre_lit 1).
+inline RndMat *DefaultMat() { return TheRnd.DefaultMat(); }
 
 // ---- material --------------------------------------------------------------
 // Mat(m) yields something whose operator-> exposes the DC3 BaseMaterial getter

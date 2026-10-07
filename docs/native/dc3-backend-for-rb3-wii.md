@@ -4654,3 +4654,198 @@ Read from `sv8_a.milo_xbox`, decompressed, with blobs located by their
   `[CamDiag]`, `[PresetDiag]`) stay in the uncommitted `~/tmp/wt-w16sr-rb3`
   worktree.
 - **No merge, pin bump or push.** That is for the coordinator.
+
+## 28. Section 27's two open items: material-less meshes and the world frustum (lane W16-SU, 2026-10-07)
+
+Section 27.4 left two items. The first was an untested lead: retail may write
+scene depth for meshes that native skips, for example meshes without a
+material, and that depth would cut the `Spotlight02` / `subway_bridge` beams.
+The second was a side finding: native `RndCam::WorldFrustum()` reported every
+title spotlight as culled. This section tests the first against retail and
+fixes the second.
+
+| repo | branch | commit |
+|---|---|---|
+| milo-native-engine | `w16-su` | `452b184` + this section (on `e093b66`) |
+| rb3 | `w16-su` | `44b2d10c4`, `57de56778` (on `e3234ee2e`) |
+
+The instrument is section 27's: `title_capture.sh`, `RB3_FIXED_CLOCK=1`,
+frames 60/200/400, dc3 flavour, \|dRGB\| to TCRF per region
+(`~/tmp/w16rz/street_regions.py`, `~/tmp/w16sr/facade.py`). Captures are in
+`~/tmp/w16su/`.
+
+⚠ **Per-pixel diffs are not usable here.** Two runs of the same binary differ
+by a mean of 5.4 levels, with 22% of pixels above 8 levels, spread over the
+whole frame. That is as large as any change measured below. So every
+comparison uses the region means over three frames, and leg `fi2` (a second
+run of the `fi` binary) is the noise control.
+
+### 28.1 Material-less meshes: retail draws them, but they do not cut the beams
+
+**What retail does.** Retail `DxMesh::DrawShowing` (rb3-xenon 0x82738E38)
+reads `Mat()` from 0xf8. When it is null, the function sets `r31 = 0` and calls
+`RndShader::SelectConfig(null, kStandardShader, false)` (0x824A5740). It then
+calls `DrawFaces` through vtable slot 0x38. `RndShaderStandard::Select`
+(0x824A8080, 100% matched) begins with `if (!mat) mat = TheRnd.DefaultMat();`.
+The default material comes from `Rnd::Init`, with `use_environ` 0 and
+`pre_lit` 1. So retail draws a material-less mesh, colour and depth, as
+vertex colour times white. dc3-decomp's `DxMesh::DrawShowing` and `Select`
+do the same. The engine refused such a mesh twice: `"no material"` in both
+`RndMeshDrawShowingSkip` and `DrawMeshImmediate`.
+
+**What the title has.** This is a census from the frame capture
+(`MILO_CAPTURE_FRAME=200`). The frame records 888 mesh submissions: 881
+draws and 7 skips.
+
+- 6 skips are `Man_scale01/02/04.mesh` in two passes. These meshes have no
+  vertices, so retail's `CanDraw` refuses them as well.
+- 1 skip is the only material-less mesh, **`kick_drum_01.mesh`**. It sits at
+  NDC (0.569, −0.942), which is screen ≈ (1004, 699), at the bottom right.
+  `street_L` and `crowd` span x 300–590.
+- Nothing is filtered by the consumer (rb3's `ShouldSkipMesh` returns false).
+
+So, apart from those no-vertex meshes, native submits every mesh on this
+frame. One mesh is not drawn, and it is not between the camera and the beams.
+
+**Prediction:** drawing it as retail does leaves every region within noise.
+
+**The fix** (`452b184`): `rndshape::DefaultMat()` is a new accessor on both
+shapes (Wii `TheRnd->mDefaultMat`, DC3 `TheRnd.DefaultMat()`).
+`DrawMeshImmediate` uses it for a null `Mat()`, and `RndMeshDrawShowingSkip`
+no longer refuses. The capture now records
+`DRAW mesh='kick_drum_01.mesh' mat='' … prelit=1`, with 882 draws and 6 skips.
+
+| region | TCRF luma | `fi` | `fi2` (noise) | `dm` (+ default material) |
+|---|---|---|---|---|
+| street_R | 92.8 | 15.7 | 15.6 | 15.9 |
+| street_L | 60.2 | 34.1 | 34.7 | 34.3 |
+| crowd | 104.3 | 41.6 | 41.6 | 42.0 |
+| drum box (940,660)–(1080,720), luma | | 40.5 | 40.5 | 40.6 |
+
+The values are \|dRGB\| to TCRF, the mean of frames 60/200/400. The
+prediction held. **The lead does not hold.** The beams cannot be cut by a
+material-less mesh on this frame, because the frame has none in their path.
+The retail behaviour is committed anyway, because it is retail's. The
+`Spotlight02` / `subway_bridge` excess (27.1) remains unexplained.
+
+### 28.2 The world frustum: `FastInvert(Matrix3)` was not an inverse
+
+Before measuring, I expected a bad aspect ratio or a stale world transform in
+`RndCam::UpdateLocal`. That was wrong. `UpdatedWorldXfm` builds
+`mWorldFrustum` with `Multiply(Frustum, Transform)`. That function moves each
+plane with `Multiply(Plane, Transform, Plane)` (`math/Geo.cpp`), and the plane
+multiply inverts the rotation with `FastInvert(t.m, invM)`.
+
+- **The defect.** rb3's `FastInvert(Matrix3)` scaled each row by its own
+  1/\|row\|² and did not transpose. For a rotation, that returns the rotation
+  itself rather than its inverse. The frustum planes were therefore turned by
+  the inverse of the camera's rotation. A camera with a nontrivial rotation
+  (`world.cam`) then had a frustum that faced away from what it sees.
+- **The target.** The Wii target (`FastInvert__FRCQ23Hmx7Matrix3RQ23Hmx7Matrix3`,
+  0x80401560) computes x, y and z = 1/\|row\|². It stores `xz·x` to 0x18,
+  `xx·x` to 0x0, `yx·y` to 0x4, `zx·z` to 0x8, `xy·x` to 0xc, and so on. So
+  `out.x` = (xx·x, yx·y, zx·z): the transpose. rb3-xenon (`math/mtx.cpp`) and
+  dc3-decomp already have the transposed body.
+- **The fix** (rb3 `44b2d10c4`, then `57de56778` in the target's load and
+  store order). All nine loads come before any store, so the in-place callers
+  (`FastInvert(evalMat, evalMat)` in `CharBonesSamples`) stay correct.
+
+Results, from section 27's `[CullDiag]` probe (`RndCam::Current()->CompareSphereToWorld`
+on each spotlight's world sphere), on the first queued frame:
+
+| | culled of 12 |
+|---|---|
+| before | **12** |
+| after | **0** (the result section 27's independent frustum gave) |
+
+Frustum culling is off natively (`RB3VenueFrustumCull`, opt-in with
+`RB3_VENUE_FRUSTUM_CULL=1`), so the fix should not move the default image:
+
+| region | `base` | `fi` (fix) | `fi2` (same binary) | `ficull` (fix + `RB3_VENUE_FRUSTUM_CULL=1`) |
+|---|---|---|---|---|
+| street_R | 15.7 | 15.7 | 15.6 | 15.7 |
+| street_L | 35.1 | 34.1 | 34.7 | 34.4 |
+| crowd | 41.4 | 41.6 | 41.6 | 41.3 |
+
+- With culling on and the fixed frustum, frame 200 draws **870 meshes instead
+  of 881**, and every region holds.
+- All 12 beams still queue on most frames. `subway`, `subway01` and
+  `subway03` are culled on some frames: they queue 181, 181 and 233 times out
+  of 418. These are the three beams that section 27.1 found contribute nothing
+  to the measured regions.
+- The comment on `RB3VenueFrustumCull` (rb3 `rndobj/Draw.cpp`) says native
+  culling was disabled because "the baked Xbox mSphere was wrong, so culling
+  dropped visible meshes". With this defect, any rotated camera culled with a
+  mirrored frustum. That explains dropped meshes without wrong spheres. This
+  was not tested beyond the title frame, and the default was not flipped.
+- **Other callers also got wrong results before**, since `FastInvert(Transform)`
+  wraps this function: `TransformNormal`, `RndMesh::CollideShowing` and
+  `CollidePlane`, `RndMultiMesh::MakeWorldSphere`, `AttachMesh`, and the
+  `UpdateSphere` of `Spotlight`, `Character`, `Mesh`, `Group`, `Generator`,
+  `Dir`, `Line` and `ParticleSys`, plus `CharServoBone`, `CharIKMidi`, `CharCuff`, `BandCharacter` and
+  `CameraShot`. The title regions do not move, and the full native ctest
+  passes. Nothing else was audited for visible change.
+
+Wii matching build (`tools/setup-worktree.sh` at `e3234ee2e`, with `Rot.cpp`
+touched on every leg so it recompiles):
+
+| `FastInvert(Matrix3)` (192 B) | fuzzy |
+|---|---|
+| main (untransposed) | 85.56 |
+| `44b2d10c4` (transposed `Set`) | 77.10 |
+| `57de56778` (target load and store order) | **82.81** |
+
+The whole binary is 31,944 fns / 7,223,260 B on every leg, and no other row
+moves. The score drops 2.75 points for a body whose values are now the
+target's. The residual is register allocation and scheduling. Among the
+variants tried, a `Dot()`-based body scored 54.3 and a fully inlined
+`min.*` body 64.0.
+
+### 28.3 Final state
+
+`final` is the committed engine and rb3 state, without section 27's
+diagnostics. Values are \|dRGB\| to TCRF over three frames; facade rows are
+frame-200 luma.
+
+| region | TCRF | base (as section 27 landed) | final |
+|---|---|---|---|
+| street_R | 92.8 | 15.7 | 15.8 |
+| street_L | 60.2 | 35.1 | 34.5 |
+| crowd | 104.3 | 41.4 | 41.4 |
+| facade_lo (luma) | 67.7 | 84.2 | 84.3 |
+| marquee_L (luma) | 41.9 | 64.1 | 64.3 |
+| sky_far_R (luma) | 36.8 | 38.9 | 38.6 |
+
+These match section 27's own reproduction (15.6 / 35.1 / 41.8), and the
+section 27.1 excess is unchanged. Both items are closed: the first as a lead
+that does not hold, the second as fixed. Neither touches the haze.
+
+### 28.4 Verification
+
+| check | result |
+|---|---|
+| new rb3 tests `NativeSubsystems.FastInvertIsTheInverseOfAScaledRotation`, `WorldFrustumFollowsAYawedCamera`, `MeshWithoutMaterialIsNotRefused` | pass |
+| sabotage: old `FastInvert` body + the engine's `"no material"` refusal restored | **all three fail** (product off-identity; the sphere 900 ahead tests as outside; `refused a material-less mesh: no material`) |
+| rb3 native ctest (`build-native`, dc3) | **150 tests, 100% passed**, 7 skipped (the usual real-capture fixtures) |
+| title captures | 0 `GpuDevice: WebGPU error` lines in every leg |
+| DC3 shape | `Mesh_Wgpu.cpp` passes `-fsyntax-only` with dc3-decomp's compile command pointed at this tree (its PCH dropped, since it was stale) |
+
+### 28.5 For the coordinator
+
+- **rb3 and the engine move together.** rb3's `MeshWithoutMaterialIsNotRefused`
+  fails against the current pin `e8aaf63`, so bump the pin with the rb3 branch.
+- **dc3-decomp's pin bump will fail one control.**
+  `NativeSuspectsTest.MeshDrawShowingDrawsAHiddenNamedMesh`
+  (`native/tests/test_native_suspects.cpp:271-274`) uses a material-less mesh
+  as its "the predicate can refuse" control. That mesh no longer refuses. The
+  same file's `grid_80by60_cube.mesh` assertion (line 287) still shows that the
+  predicate can refuse.
+- **rb3-xenon** is untouched. Its `FastInvert` is already transposed.
+
+### 28.6 Not done
+
+- The `Spotlight02` / `subway_bridge` excess (27.1) is still open. Its last
+  named code lead is closed above.
+- `RB3_VENUE_FRUSTUM_CULL` stays opt-in. Making it the default needs captures
+  beyond the title.
+- **No merge, pin bump or push.** That is for the coordinator.

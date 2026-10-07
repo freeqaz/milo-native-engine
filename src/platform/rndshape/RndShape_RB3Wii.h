@@ -129,6 +129,9 @@ namespace rndshape {
 
 // ---- renderer singleton (RB3-Wii declares `Rnd* TheRnd`) -------------------
 inline Rnd &TheRndRef() { return *TheRnd; }
+// The renderer's default material (Rnd::mDefaultMat, made in Rnd::Init:
+// use_environ 0, pre_lit 1). Null before Init.
+inline RndMat *DefaultMat() { return TheRnd ? TheRnd->mDefaultMat : nullptr; }
 
 // ---- material --------------------------------------------------------------
 // The DC3 BaseMaterial getter surface over an RB3-Wii RndMat.

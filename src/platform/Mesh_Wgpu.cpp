@@ -153,7 +153,12 @@ const char* RndMeshDrawShowingSkip(RndMesh* mesh) {
     // ahead of IncrementMeshDrawCalls, so the draw-call counter is unchanged.
     if (ShouldSkipMesh(mesh->Name(), mesh->Mat())) return "filtered by consumer";
 
-    if (!mesh->Mat()) return "no material";
+    // No material test either. DxMesh::DrawShowing hands a null Mat() to
+    // RndShader::SelectConfig, and RndShaderStandard::Select replaces it with
+    // TheRnd.DefaultMat() (rb3-xenon 0x82738E38 and 0x824A8080, the latter 100%
+    // matched; dc3-decomp's DxMesh::DrawShowing and Select are the same), so the
+    // image draws a material-less mesh, colour and depth, with the default
+    // material. DrawMeshImmediate does that substitution.
     return nullptr;
 }
 
@@ -187,7 +192,11 @@ void DrawMeshImmediate(RndMesh* mesh) {
     gWgpuRnd->EnsureSceneUniformsCurrent();
 
     // DC3 BaseMaterial getters, whatever the rndobj shape (platform/rndshape/).
-    auto mat = rndshape::Mat(mesh->Mat());
+    // A material-less mesh draws with the renderer's default material, as the
+    // image's RndShaderStandard::Select does (see RndMeshDrawShowingSkip).
+    RndMat* rawMat = mesh->Mat();
+    if (!rawMat) rawMat = rndshape::DefaultMat();
+    auto mat = rndshape::Mat(rawMat);
     if (!mat) {
         if (capturing) FrameCapture::Get().AddSkip(MeshLabel(mesh), "no material");
         return;
@@ -339,7 +348,7 @@ void DrawMeshImmediate(RndMesh* mesh) {
         d.triCount = meshData.numIndices / 3;
         d.vertCount = meshData.numVertices;
         d.mesh = mesh;
-        d.mat = mesh->Mat();
+        d.mat = rawMat;
         d.world = objUni.world;
         d.viewProj = gWgpuRnd->LastSceneViewProj();
         d.boundColor = matParams.uniforms.color;
