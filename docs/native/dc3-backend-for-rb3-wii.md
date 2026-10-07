@@ -4882,7 +4882,7 @@ rb3-xenon `RndFlare::DrawShowing` (0x82477270, 98.5% fuzzy) computes
 result into all three channels (`fmr f13, f0; fmr f12, f0`), optionally
 multiplies by `RndEnviron::sCurrent->mAmbientFogOwner->mAmbientColor`
 (`lwz 0x7c` = the owner pointer at 0x74 + 8, colour at 0x64), and stores it at
-mat + 0x2c/0x30/0x34. **There is no 0.6.** The Wii source rb3 builds
+mat + 0x2c/0x30/0x34. **There is no 0.6.** The Flare.cpp that rb3 compiles
 multiplies by 0.6. The ambient term is the same field rb3's `AmbientColor()`
 returns, so that is not a difference.
 
