@@ -4849,3 +4849,220 @@ that does not hold, the second as fixed. Neither touches the haze.
 - `RB3_VENUE_FRUSTUM_CULL` stays opt-in. Making it the default needs captures
   beyond the title.
 - **No merge, pin bump or push.** That is for the coordinator.
+
+## 29. The flares' bloom mask and colour factor, from retail (lane W16-SZ, 2026-10-07)
+
+Section 19.8 left three title items: the 360 flare colour factor, the bloom
+mask, and the star-shaped flare highlights TCRF shows. They turn out to be
+linked. The engine's rect path wrote a **solid square of bloom mask** under
+every flare, so the bloom turned each star into a wide wash. With the mask
+written as retail writes it, the stars appear, and the retail colour factor
+(1.0, not the Wii's 0.6) then matches TCRF's flare cores. Both are settled on
+retail code and committed.
+
+| repo | branch | commit |
+|---|---|---|
+| milo-native-engine | `w16-sz` | `ca6b466` + this section (on `570c305`) |
+| rb3 | `w16-sz` | `bc92aea59` (on `1374ddb96`) |
+
+The instrument is section 28's: `title_capture.sh`, `RB3_FIXED_CLOCK=1`,
+frames 60/200/400, dc3 flavour, Debug build, means over the three frames.
+Scripts and captures are in `~/tmp/w16sz/` (`measure.py` = `title_fidelity.py`'s
+sky_dE / city_dE plus section 13.2's regions and section 20's flare rects;
+`core.py` = flare cores). **Noise control:** two runs of the base binary
+differ by at most 0.08 in city_dE and 0.6 in any flare rect, and two runs of
+the 1.0 binary by at most 0.8. A probe build with the factor at 0.6
+reproduces the base binary within that.
+
+### 29.1 The colour factor, on retail bytes
+
+rb3-xenon `RndFlare::DrawShowing` (0x82477270, 98.5% fuzzy) computes
+`alpha = clamp(t · ratio)` with `fsel` against `f30` and `f31`. The PE holds
+`f31 = lbl_820009FC = 1.0` and `f30 = lbl_82000D78 = 0.0`. It then moves the
+result into all three channels (`fmr f13, f0; fmr f12, f0`), optionally
+multiplies by `RndEnviron::sCurrent->mAmbientFogOwner->mAmbientColor`
+(`lwz 0x7c` = the owner pointer at 0x74 + 8, colour at 0x64), and stores it at
+mat + 0x2c/0x30/0x34. **There is no 0.6.** The Flare.cpp that rb3 compiles
+multiplies by 0.6. The ambient term is the same field rb3's `AmbientColor()`
+returns, so that is not a difference.
+
+### 29.2 First measurement: the factor alone moves away from TCRF
+
+Before the change I expected 1.0 to brighten the flares toward TCRF's, as
+section 19.5's `city_mid` did. Measured with the factor alone (probe binary,
+env-switched; values are means of f60/200/400):
+
+| leg | city_dE | frame luma | `lamp01` | `lamp02` | `lamp03` | `lamp04` |
+|---|---|---|---|---|---|---|
+| TCRF | 0 | 50.1 | 124.9 | 144.1 | 83.3 | 39.9 |
+| base (0.6), 2 runs | 12.81 | 59.1 | 167.7 | 189.6 | 109.3 | 64.1 |
+| factor 1.0, 2 runs | 14.77 | 60.6 | 183.5 | 199.6 | 126.1 | 76.0 |
+| factor 0 (flares drawn black) | 9.86 | 56.5 | 134.7 | 168.0 | 80.0 | 44.8 |
+
+(Flare columns are mean luma in section 20's flare rects.) The prediction
+failed, and the last row says why rect luma cannot settle the factor: with
+the flares drawn black, `lamp01`'s rect is still brighter than TCRF's with
+its flare. The scene has grown brighter since section 20 (frame luma then
+49.2, now 59.1), mostly from the beam haze of section 26.
+
+Side by side (`~/tmp/w16sz/lamps_crop.png`), TCRF's flares are **sharp star
+cores** with a modest glow. Native's are **round washes with no core** at
+either factor. The flare's own contribution (1.0 minus 0,
+`flare_contrib.png`) is a smooth disc.
+
+### 29.3 Cause: each flare wrote a square of bloom mask
+
+A temporary probe in `RndFlare::DrawShowing` logged the material for every
+flare: all eight use `flare_light_can_star.tex` (256×256, DXT1, order 0x8, no
+mips), `texgen` 1 (`kTexGenXfm`). The lamps' `flare_lamp01.mat` is blend 2
+(`kBlendAdd`) and the blinks' `flare_red_blink.mat` is blend 4
+(`kBlendSrcAlphaAdd`).
+
+- **The texture is a star.** The probe drew `Flare_lamp02` as a 576×576
+  rect. With `MILO_RB3_RETAIL_POST=raw` it shows a star with rays; with the
+  retail chain the same frame is a white wash over the whole middle
+  (`~/tmp/w16sz/big.png`).
+- **The mask view shows squares.** `MILO_RB3_RETAIL_POST=mask`, f200: each
+  lamp's rect is solid white, means 254.1 / 242.5 / 251.0 / 254.0 for
+  `lamp01`–`04`, and each blink is a grey square (63.7, 63.0).
+- **Why.** `DrawRect2D` set `writeMask = All` and wrote
+  `texel.a · colour.a` to alpha. DXT1 alpha is 1, so every flare wrote mask
+  1 over its whole rect, and the bloom spread a square of whatever lay
+  under it. Meshes (`Mesh_Wgpu`) and particles (`Part_Wgpu`) already follow
+  retail's rule; the rect path did not.
+
+**Retail's rule for a rect** (rb3-xenon, every function 100% matched):
+
+| function | what it does |
+|---|---|
+| `DxRnd::DrawRect` (6-arg) | draws with `kDrawRectShader` |
+| `RndShaderDrawRect::Select` | selects the **standard** shader with `CalcShaderOpts`'s options, then `SetColorWriteMask(opts, mat)`; a null material is `DrawRectMat` |
+| `RndShaderDrawRect::CalcShaderOpts` | pseudo-HDR (bit 22) = `!Offscreen() && mat->AllowHDR()` |
+| `SetColorWriteMask` (0x824A5AF8) | RGBA if bit 22, `Offscreen()` or `mat->mAlphaWrite`; otherwise **RGB only** |
+| `NgMat::AllowHDR` | not SrcAlpha, SrcAlphaAdd or PreMultAlpha; not alpha-cut; not alpha-write |
+
+So in the main frame a lamp flare (Add) writes `a = dot(rgb, c7)`, star
+shaped, and a blink (SrcAlphaAdd) or a material-less rect leaves alpha alone.
+
+### 29.4 Change
+
+- **Engine** (`ca6b466`, `gfx/DrawRect2D.cpp`): in the main frame
+  (`CurrentPassHasDepth()`, no target) with `rndshape::RetailBloomMaskActive()`,
+  a rect writes alpha = clamp(luma(rgb) · `BloomMaskScale(mat)`) for an
+  `AllowHDR` material (a WGSL override constant, as `Part_Wgpu` uses), its own
+  alpha for an alpha-write material, and RGB only otherwise. Render targets
+  and the DC3 shape (`RetailBloomMaskActive()` is false) are unchanged.
+- **rb3** (`bc92aea59`): under `HX_NATIVE`, `RndFlare::DrawShowing` scales by
+  `gNativeFlareColorScale` (default 0.6, the Wii value); the dc3 backend sets
+  1 in `InitGpuResources`. The Wii build compiles the same literal as
+  before (`#else`), and the BandRnd flavour keeps 0.6.
+
+Prediction for the mask fix: the squares become star-shaped masks, the blink
+squares go, frame luma and city_dE fall toward TCRF, and the 0.6 / 1.0 gap
+shrinks.
+
+### 29.5 Results
+
+Mask view, f200 (`~/tmp/w16sz/mask_before_after_f200.png`), mean in each
+flare rect:
+
+| | frame | `lamp01` | `lamp02` | `lamp03` | `lamp04` | `blink01` | `slow` |
+|---|---|---|---|---|---|---|---|
+| before | 36.3 | 254.1 | 242.5 | 251.0 | 254.0 | 63.7 | 63.0 |
+| after | 24.9 | 64.1 | 89.2 | 43.2 | 21.3 | 19.1 | 18.3 |
+
+Title against TCRF, means of f60/200/400 (`m06` / `m10` are the probe binary
+with the mask fix at each factor; `final` is the committed code, no probe):
+
+| leg | sky_dE | city_dE | frame luma | city luma | `city_mid` | `city_rmid` |
+|---|---|---|---|---|---|---|
+| TCRF | 0 | 0 | 50.1 | 52.4 | 55.2 | 66.5 |
+| base (2 runs) | 13.63 | 12.81 | 59.1 | 64.0 | 69.8 | 84.4 |
+| mask fix, 0.6 | 13.26 | **8.10** | 54.8 | 58.1 | 62.3 | 72.8 |
+| mask fix, 1.0 (2 runs) | 13.35 | 8.85 | 55.9 | 59.6 | 63.7 | 75.2 |
+| **final** | 13.36 | 8.84 | 55.9 | 59.6 | 63.7 | 75.2 |
+| mask fix, flares black | 13.20 | 8.20 | 53.5 | 56.3 | 61.1 | 70.2 |
+
+**Flare cores** decide the factor. `core.py` takes the brightest 9×9 mean
+within 12 px of each lamp's centre, and its contrast over a ring at
+r = 40–56 px (core / core − ring):
+
+| lamp | TCRF | base | mask fix, 0.6 | mask fix, 1.0 | **final** |
+|---|---|---|---|---|---|
+| `lamp01` | 251.4 / 123.3 | 239.6 / 67.8 | 210.6 / 84.8 | 254.0 / 113.4 | **254.0 / 114.1** |
+| `lamp02` | 251.5 / 112.3 | 251.7 / 62.0 | 226.9 / 67.5 | 254.6 / 86.6 | **254.6 / 86.8** |
+| `lamp03` | 200.2 / 139.6 | 181.5 / 107.4 | 151.3 / 86.2 | 207.1 / 139.9 | **207.3 / 138.1** |
+| `lamp04` | 113.7 / 76.7 | 122.6 / 56.3 | 82.4 / 42.0 | 121.1 / 79.0 | **121.3 / 79.6** |
+
+- **The mask fix holds and is the larger change.** city_dE 12.81 → 8.10 at
+  the old factor, frame luma 59.1 → 54.8, every region closer to TCRF, and
+  sky_dE 0.4 better. With the mask fixed, the flare rects at 0.6 land within
+  1.2 of TCRF on `lamp01`, `lamp03` and `lamp04` (124.0 / 82.5 / 38.8).
+- **The retail factor holds on the flares themselves.** At 0.6 every core
+  sits 25–49 below TCRF's and its contrast is 55–70% of TCRF's. At 1.0 the
+  cores agree within 8 and the contrast within 10, except `lamp02`, whose
+  ring is brighter than TCRF's (the haze around the theater). The crops show
+  the same: at 1.0 the cores are crisp white stars like TCRF's
+  (`lamps_crop_fix.png`).
+- **What 1.0 costs.** City_dE 8.10 → 8.84 and frame luma +1.1 against 0.6,
+  because the extra flare light lands on a background that is already
+  brighter than TCRF's (29.2's last row). The flare rects then read 5–15 over
+  TCRF. That is the background, not the flare, which the core contrast
+  separates. Both legs are far closer to TCRF than the base.
+- `final` reproduces the probe's 1.0 legs within the run-to-run spread on
+  every figure.
+
+**Section 27's haze.** `lamp01`'s rect overlaps `street_L` and `crowd`, so its
+mask square bloomed whatever light lay there, including the
+`Spotlight02` / `subway_bridge` haze. \|dRGB\| to TCRF (section 27's
+`street_regions.py`, three frames) and luma (`facade.py`, f200):
+
+| region | base | mask fix, 0.6 | final |
+|---|---|---|---|
+| street_R | 15.7 | 9.8 | 11.1 |
+| street_L | 34.4 | 16.0 | 16.1 |
+| crowd | 41.7 | 18.9 | 25.9 |
+| facade_lo (luma; TCRF 67.7) | 84.2 | | 79.0 |
+| marquee_L (luma; TCRF 41.9) | 64.0 | | 54.2 |
+| right_bld (luma; TCRF 30.2) | 40.8 | | 32.8 |
+
+About half of section 27's street_L / crowd excess was this square. Section
+27's per-beam attribution remains correct as measured. Removing those two
+beams also removed the light that the square bloomed.
+
+### 29.6 Verification
+
+| check | result |
+|---|---|
+| new rb3 tests `RectBloomMaskTest.AdditiveRectMasksByItsLuma`, `SrcAlphaAddRectLeavesTheMaskAlone` (grey non-HDR world, one rect, world end with a bloom postproc, luma 1/16 outside the rect) | pass |
+| control inside the test: a white additive rect must bloom past its edge | passes (so the observable can fire) |
+| sabotage: `DrawRect2D.cpp` restored from `570c305`, tests rebuilt | **both fail**: black additive rect off by 39 luma, white SrcAlphaAdd by 154; source restored and compared with `cmp` |
+| rb3 native ctest (`build-native`, dc3, Debug) | **152 tests, 100% passed**, 7 skipped (the usual real-capture fixtures) |
+| title captures | 0 `WebGPU error` lines in every leg |
+| DC3 shape | `DrawRect2D.cpp` passes `-fsyntax-only` with dc3-decomp's compile command pointed at this tree (stale PCH dropped). Control: the same command on a copy calling a missing `GetAlphaWriteNoSuch()` in the new branch **fails**, so the branch is compiled under the DC3 shape. (A first control, `-Drndshape=…`, could not fail: a macro rename is consistent across declarations and uses.) |
+| Wii build | `Flare.cpp`'s Wii path is the same text under `#else`; the header addition is `#ifdef HX_NATIVE`. Not rebuilt. |
+
+### 29.7 Found, not done
+
+- **Retail blends the mask with MAX.** `DxRnd::SetDefaultRenderStates`
+  enables separate alpha blending with `SrcBlendAlpha` 1, `DestBlendAlpha` 1
+  and `BlendOpAlpha` 3, and `NgMat::SetBasicState` passes alpha factors (1, 1)
+  for every material. On the 360's numbering (`Mat_NG`'s own uses: Blend 0
+  ZERO, 1 ONE; op 4 is the Subtract material's reverse subtract), op 3 is
+  MAX. So a blended draw's mask is `max(src.a, dst.a)`. The engine's
+  `PipelineManager::MapBlend` replaces alpha (One/Zero) for every blend, for
+  meshes, particles and rects alike. Where a faint flare edge lies over a
+  window, native erases the window's mask and retail keeps it. This is
+  engine-wide and `MapBlend` is shared with DC3, so a fix needs the rndshape
+  seam. It was not measured.
+- **The clamped-colour dot** of 19.2 (retail takes the mask of the unclamped
+  colour) is unchanged.
+- **`MILO_NO_SPOT_BEAMS=1` is broken on the base engine.** All three legs run
+  with it (factor 0, 0.6, 1.0, rb3 probe binary on `570c305`) read frame luma
+  ≈171 against 59 without it, so section 27's beams-off control is not
+  usable at this commit. Not investigated.
+- **The sky hue** (19.8) is untouched.
+- **BandRnd** keeps 0.6 and was not built or run.
+- **No merge, pin bump or push.** That is for the coordinator. rb3's
+  `RectBloomMaskTest` fails against the current pin `570c305`, so bump the pin
+  with the rb3 branch.
