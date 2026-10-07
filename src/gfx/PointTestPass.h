@@ -43,6 +43,7 @@ public:
         bool visible = false;
         bool areaDone = false;
         float area = 0.0f;
+        uint64_t seq = 0;  // the batch's LastSeq() when it was recorded
     };
     typedef void (*AnswerFn)(const Answer& answer, void* user);
 
@@ -63,14 +64,19 @@ public:
     void DiscardUnsubmitted();
     // Hands every batch whose readback has finished to `fn`, oldest first, then
     // frees it. With `wait`, first blocks (up to a second per batch) until each
-    // submitted batch has mapped, as retail blocks on the previous frame's
-    // fence; without it (the web, which cannot block) takes what is ready.
-    // Returns the number of answers delivered.
+    // submitted batch has mapped; without it takes what is ready. Returns the
+    // number of answers delivered. CollectThrough(~0, wait).
     int Collect(bool wait, AnswerFn fn, void* user, GpuDevice& gpu);
+    // As Collect, for the batches whose sequence number is at most `through`
+    // (see LastSeq()) only: later batches are left in flight even when their
+    // readback has finished. Under __EMSCRIPTEN__ it never blocks.
+    int CollectThrough(uint64_t through, bool wait, AnswerFn fn, void* user, GpuDevice& gpu);
     // No answer for `key` is delivered after this returns.
     void Cancel(const void* key);
     // Batches recorded or being read back.
     int InFlight() const;
+    // The sequence number of the last batch Record() accepted (0: none yet).
+    uint64_t LastSeq() const { return mNextSeq - 1; }
     void Terminate(GpuDevice* gpu);
 
     static constexpr int kMaxBatches = 3;

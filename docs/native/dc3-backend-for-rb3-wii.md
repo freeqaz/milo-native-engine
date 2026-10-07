@@ -3196,7 +3196,8 @@ byte-identical, all four tests pass again):
   always uses LESS, which is the engine's depth convention.
 - **Frame cost** was not measured. It is one depth-only pass and a 16-byte
   readback per test, plus a wait on the previous frame's map, which the
-  frame's own submit has normally already passed.
+  frame's own submit has normally already passed. (Section 24 measures it,
+  and moves that wait to after the submit.)
 - **Venues and the hub** were not re-checked; 19.7 found no flare answered in
   any gameplay frame of those runs.
 - **No merge, pin bump or push.** That is for the coordinator.
@@ -3847,3 +3848,296 @@ Pause points with no lit head show nothing, and that is expected.
   additive: a seam nobody else registers against.
 - **Web build** not rebuilt.
 - **No merge, pin bump or push.**
+
+## 24. What the flare point tests cost the frame (lane W16-SB, 2026-10-07)
+
+Sections 20 and 21 left one cost unmeasured (20.6). On every desktop frame
+that queued tests, `WgpuRnd::RunPointTests` called
+`PointTestPass::Collect(wait=true)` at the world end, which blocks in
+`Instance::WaitAny` (up to 1 s per batch) until the previous frame's readback
+has mapped. The world end comes before the frame's own submit. So when the
+GPU is behind, the CPU waits there and the GPU then sits idle until the frame
+is submitted. This section measures that cost on the title and moves the wait
+to after the submit.
+
+| repo | branch | commits |
+|---|---|---|
+| milo-native-engine | `w16-sb` | `7e92531` (instrument), `9e72545` (change), and this section, on `4a66a9f` |
+| rb3 | `w16-sb` | `6be95edcd` (NativeCompat ledger), `51585398a` (tests), on `013862302` |
+| rb3-xenon | `w16-sb` | `9fd319ae8` (`flare-tests-at-world-end` checks answer age, 24.8), on `962c20ec5` |
+
+Before the rebase onto `4a66a9f` the engine commits were `3885d18` and `ea9af8c`, on `f901441`.
+
+### 24.1 Instrument
+
+- **`MILO_FRAME_TIMES=<path>`** (engine, `3885d18`) writes one CSV row per frame
+  from `WgpuRnd::EndDrawing`. Columns:
+  - `period_ms` and `cpu_ms`: wall time and the main thread's CPU time
+    (`CLOCK_THREAD_CPUTIME_ID`) from one `EndDrawing` to the next. That covers
+    the whole frame: game poll, draw and submit.
+  - `draw_ms`: `BeginDrawing` to the end of `EndDrawing`.
+  - `pt_wait_ms`: time inside the world-end `Collect`.
+  - `pt_recorded`, `pt_answers`: tests recorded and answers delivered this
+    frame.
+  - `pt_age`: how many frames after its tests were recorded the oldest answer
+    delivered this frame arrived. `Answer` now carries its batch's sequence
+    number for this.
+  - `pt_end_wait_ms`, `pt_after_submit` (added with the change): the time and
+    answers of the new end-of-frame step.
+- **`MILO_NO_POINT_TESTS=1`** registers no `NativePointTester`, so rb3's
+  `Rnd::TestPoint` keeps its no-tester fallback. This is the "without flare
+  tests" leg.
+- Both flags are classified in `NativeCompatFlags.classification.json` as
+  probes; `native_compat_census.py check` passes (434 flags).
+
+Every leg ran the title headless with `RB3_GAME=1 MILO_HEADLESS=1
+MILO_MAX_FRAMES=420 RB3_FIXED_CLOCK=1`, with no screenshots, because a
+screenshot readback blocks on the GPU itself. Statistics are over engine
+frames 150–421 (272 frames); frames 100–110 still load. The headless loop has no
+frame pacing, so a stall shows directly in `period_ms`.
+
+Two builds of rb3 `rb3-native`, both against the engine worktree:
+
+- **Debug** (`native/build-native`, `-O0`), the desktop build `ctest` uses;
+- **`-O2 -fno-inline -g0`** (`CMAKE_BUILD_TYPE=Release` with those flags), the
+  web release's optimisation. Plain `Release` does not link (undefined
+  references to functions defined out of line elsewhere, the fault 1281ff of
+  rb3's `native/CMakeLists.txt` describes for the web), so this is not a
+  shipped desktop configuration.
+
+Host: an RTX 3090, shared with other lanes (load average 29–35 on 32 cores,
+four other `rb3-native` processes on the same GPU during the runs). Identical
+legs differ by up to ±2 ms of CPU median, and single runs were sometimes
+slowed by 10 ms or more (marked `*` below). The legs were run interleaved:
+before-on, after-on, before-off, after-off, three rounds.
+
+### 24.2 The cost on the title
+
+8 flares are tested each frame, and every answer arrives at age 1.
+
+Main-thread CPU time per frame, median of each run (ms):
+
+| build | leg | before | after |
+|---|---|---|---|
+| Debug | tests on | 29.03 / 28.26 / 25.61 | 25.76 / 25.99 / 27.52 |
+| Debug | tests off | 27.26 / 28.92 / 24.99 | 29.04 / 27.34 / 28.86 |
+| `-O2` | tests on | 35.16\* / 20.43 / 22.10 | 33.09\* / 22.04 / 20.88 |
+| `-O2` | tests off | 22.82 / 21.01 / 22.88 | 22.81 / 24.33 / 33.58\* |
+
+Time in the point-test collect per frame, mean (p95, max) in ms:
+
+| build | before: world-end wait | after: world-end collect | after: end-of-frame wait |
+|---|---|---|---|
+| Debug | 0.043–0.050 (≤ 0.071, 0.367) | 0.069–0.076 (≤ 0.105, 0.642) | 0.000 (max 0.002) |
+| `-O2` | 0.042–0.047 (≤ 0.062, 0.930), \*run 0.292 | 0.070–0.072 (≤ 0.093, 0.299), \*run 0.434 | 0.000 (max 0.002) |
+
+- **On this host the wait does not stall the title.** The blocking wait costs
+  about 0.05 ms of a 20–30 ms frame, and it does not grow with resolution. An
+  earlier two-run set at 3840×2160 and 7680×4320 (the log confirms
+  `GpuDevice: initialized (7680x4320, headless)`) measured 0.046–0.055 ms, with
+  CPU medians of 18.8–24.3 ms, as at 720p.
+- **With and without tests, the CPU time differs by less than the run-to-run
+  spread**, in both builds, before and after.
+- The non-blocking collect (`ProcessEvents`) costs about 0.025 ms more than
+  `WaitAny` on a future that has already completed. The end-of-frame step
+  costs nothing when the world end has already taken the answers, which it
+  does on every unloaded frame (`pt_after_submit` = 0).
+- The two `*` maxima (6 ms, 32 ms) were slow in every column of the run.
+  They look like the thread being descheduled, not the GPU.
+
+GPU time per frame (temporary probe, removed: wait for
+`OnSubmittedWorkDone` straight after the submit, which serialises the frame):
+**0.83 ms median at 1280×720** (p95 2.49) and **7.47 ms at 7680×4320** (p95
+9.48). The CPU frame is about 25× longer than the GPU's at 720p. A GPU would
+have to be that much slower before the old wait stalled anything.
+
+### 24.3 The stall, when the GPU is behind
+
+To reach the case the old wait handles badly, a temporary probe (removed)
+submitted a compute job, calibrated to N ms of GPU time, at each
+`BeginDrawing` from frame 60 on, ahead of the frame's own commands. That
+stands in for a slower GPU. `-O2` build, tests on, 720p.
+
+| load | leg | period med | CPU med | world-end wait mean | end-of-frame wait mean |
+|---|---|---|---|---|---|
+| 60 ms | before | 59.24 / 58.38 | 21.33 / 23.88 | **37.29 / 33.75** | — |
+| 60 ms | after | 58.92 / 58.12 / 57.04 | 21.19 / 22.68 / 22.10 | **0.012–0.014** | 37.69 / 38.38 / 34.35 |
+
+- The first 60 ms "before" run is left out. Its calibration read 1.75e-4
+  ms/iteration against 7.1–7.8e-5 for the other 60 ms runs, so its load was
+  about 25 ms (period 26.9 ms). Each run calibrates once, on a GPU other lanes
+  were using.
+- **Before:** the CPU waits 34–37 ms per frame at the world end, before the
+  frame is submitted.
+- **After:** the world end does not wait, and the same 34–38 ms is spent after
+  the submit, while the GPU works on the frame just submitted. The period and
+  the CPU time do not change materially. The frame is GPU-bound, and with no
+  frame pacing headless the CPU has to wait for the GPU somewhere. The
+  throughput gain is bounded by the CPU work between the world end and the
+  submit (UI, post-processing encode), which is small on the title: under
+  1 ms of period here (medians 57.0–58.9 after, 58.4–59.2 before), inside the
+  spread.
+- At a 30 ms load the runs sit on the CPU/GPU boundary and disagree from run
+  to run; their calibrations (7.2e-5 to 1.15e-4) put the real load between
+  about 19 and 30 ms. One before run waited 9.2 ms per frame at the world end (max 106);
+  the after runs moved 10.1 and 10.9 ms to the end of the frame and kept the
+  world end at 0.013–0.016 ms.
+
+So what the change buys is a world end that never blocks: the step retail
+takes at `DoWorldEnd` no longer serialises the CPU against an idle GPU. It
+does not make a GPU-bound frame faster in any amount measurable here, and on
+this host the title is never GPU-bound.
+
+### 24.4 Change
+
+- **`PointTestPass::CollectThrough(through, wait, …)`** considers only batches
+  whose sequence number is at most `through`. Without `wait` it takes those
+  whose map has finished (`ProcessEvents`); with `wait` it blocks for them, up
+  to 1 s each. Later batches stay in flight even when finished. `Collect(wait)`
+  is `CollectThrough(~0, wait)`, unchanged for its callers. Under
+  `__EMSCRIPTEN__` it never blocks.
+- **`RunPointTests`** (world end) calls `CollectThrough(seqBeforeFrame,
+  false)`, where `seqBeforeFrame` is `LastSeq()` at `BeginDrawing`. It
+  delivers the previous frame's answers if ready, and no longer blocks.
+- **`FinishPointTestReadback`**, the new last step of `EndDrawing`, runs after
+  the submit and the present. It calls `CollectThrough(seqBeforeFrame, true)`
+  and blocks only for earlier frames' batches still mapping. Every answer
+  therefore still arrives during the frame after its test, as retail's does
+  after `DxRnd::DoPointTests` blocks on the fence. It is desktop-only; the
+  web keeps taking what is ready at the world end, as before.
+- **The `through` filter is load-bearing.** The first version waited only
+  through `seqBeforeFrame` but then took any finished batch. On the title,
+  frame 3 is a long boot frame, and that version delivered frame 3's own
+  answers at the end of frame 3: 16 answers there, none in frame 4. That is
+  one frame earlier than retail, and a flare would have reacted a frame
+  sooner. The answer comparison (24.5) caught it.
+  `PointTestPassTest.CollectThroughTakesOnlyBatchesUpToSeq` now guards it.
+
+### 24.5 The answers on the title are unchanged
+
+A temporary probe in rb3's `ApplyNativePointTest` (removed) printed every
+answer with the flare's name. The answers were grouped by the frame loop's
+`frame N complete` marker and compared frame by frame against the
+before-change engine (`-O2`, same fixed clock):
+
+| leg | answers | frames with answers | frames that differ from before | answers delivered after the submit |
+|---|---|---|---|---|
+| before | 3,336 | 417 (3–419) | — | 0 |
+| after | 3,336 | 417 | **0** | 0 |
+| after, 40 ms GPU load | 3,336 | 417 | **0** | 2,000 |
+| after, rebased on `f901441` | 3,336 | 417 | **0** | 0 |
+
+Under load, 2,000 answers came through the end-of-frame step instead of the
+world end. They arrived in the same frames with the same values, and every
+delivered answer had age 1 in every leg. The values are W16-RU's (20.3), for
+example `Flare_lamp01` 16,383 visible and `Flare_red_blink02` 154 hidden.
+
+### 24.6 Tests
+
+rb3 `native/tests/test_point_test.cpp`:
+
+- A helper, `GpuBusy`, submits a compute job calibrated on first use to
+  ~150 ms of GPU time. Anything submitted after it waits behind it, so
+  whether a readback is ready at a given point is not a race.
+- **`PointTestPassTest.CollectThroughTakesOnlyBatchesUpToSeq`** (new). Two
+  one-test batches queue behind the busy job.
+  - `CollectThrough(second, false)` delivers nothing and returns in under
+    75 ms.
+  - After the GPU is idle and `ProcessEvents`, `CollectThrough(first, true)`
+    delivers exactly the first batch, and the finished second batch stays in
+    flight.
+- **`RndTestPoint.SlowGpuAnswersArriveByFrameEndNotAtWorldEnd`** (new). Frame
+  A's commands queue behind the busy job. At frame B's world end:
+  - nothing is delivered, and `DoWorldEnd` takes under 75 ms;
+  - by the end of frame B exactly frame A's three answers have arrived, and
+    they are correct: the flare behind the wall reads hidden, area 0;
+  - frame B's own answers arrive at the next world end.
+- **`RndTestPoint.FlareBehindGeometryReadsZero`** now waits for the GPU to go
+  idle before the frame that must answer at the world end. Otherwise "answered
+  at world end" would depend on the GPU's timing.
+
+Sabotage, each applied to the engine and reverted (sources restored
+byte-identical, `sha1sum -c`):
+
+| sabotage | predicted red | observed red |
+|---|---|---|
+| world end blocks again (`wait = true`) | SlowGpu | SlowGpu |
+| no `FinishPointTestReadback` call | SlowGpu | SlowGpu |
+| end-of-frame wait through `LastSeq()` (the current frame) | SlowGpu | SlowGpu, FlareBehind, RemovedFlare (each also checks that nothing is answered in the test's own frame) |
+| `CollectThrough` delivers past `through` | CollectThroughTakesOnly | none at first; CollectThroughTakesOnly once the test calls `ProcessEvents` before the wait |
+
+The last row is a test fix. In wait mode `CollectThrough` never calls
+`ProcessEvents`, so the newer batch's map callback had not fired and the
+filter was never exercised. The test now completes both maps first.
+
+### 24.7 Verification
+
+| check | result |
+|---|---|
+| rb3 `w16-sb` (`bf637da92`), `native/build-native`, desktop, dc3 flavor, `MILO_ENGINE_PATH=/home/free/tmp/wt-w16sb-eng` (read back from `CMakeCache.txt`), engine rebased on `f901441` | `ctest`: **100% tests passed out of 136**, 7 skipped (the seven fixture-gated tests of 20.7), rc=0. 134 → 136 is W16-RZ's two `RefractTest`s; before the rebase it was 134/134 (132 + the two new tests) |
+| rb3 `w16-sb` (`51585398a`) rebased on `013862302`, engine rebased on `4a66a9f`, same build dir | `ctest`: **100% tests passed out of 139**, the same 7 skipped, rc=0. 136 → 139 is W16-SA's tests |
+| the six point tests in those runs | all pass |
+| `native_compat_census.check` (in those runs) | passes. After the rebase, `gen` rewrote the engine's `NativeCompatFlags.gen.inc` and sidecar byte-identically (sha1 checked); the rb3 ledger was regenerated from master's copy, +2 rows (`MILO_FRAME_TIMES`, `MILO_NO_POINT_TESTS`) next to W16-SA's `RB3_TEXBLEND_*` |
+| WebGPU errors | no `WebGPU error` line in any of the 76 title runs |
+| rebased Debug, tests on / off | CPU median 29.97 / 29.95 ms, world-end collect 0.078 ms: as in 24.2 |
+| DC3 shape compile (`cmake -C cmake/dc3-reference.cmake`, a copy pointed at `~/code/milohax/dc3-decomp`, build dir `~/tmp/w16sb/build-dc3ref`) | `Rnd_Wgpu.cpp` and `PointTestPass.cpp` compile, rc=0, 0 `error:` lines |
+| rb3-xenon `962c20ec5` (main checkout, read-only), `rb3-render` built out of tree in `~/tmp/w16sb/xenon-build` with `MILO_ENGINE_PATH` = this worktree (read back from `CMakeCache.txt`); 21.3's `sv8_a` cell, `--frames 8 --focus mesh`, five runs | **`flare-tests-at-world-end` PASS in 5 of 5**: 56 answers at the world end, 0 at EndDrawing, as in 21.3's fix row. The five runs' flare answers are identical, with `lamp04` visible at ratio 0.964 |
+
+The rb3 change is test-only, plus the regenerated NativeCompat ledger.
+
+### 24.8 rb3-xenon's flare gate checks answer age
+
+Before this change rb3-xenon's `flare-tests-at-world-end` gate (21.2) required
+every answer at `Rnd::EndWorld` and none at `EndDrawing`. With the change, an
+answer whose readback is not finished at the world end arrives at the end of
+`EndDrawing` instead, still one frame old. So the old gate depended on GPU
+timing. rb3-xenon `9fd319ae8` (`native/src/main_render.cpp`) now wraps the
+backend's `NativePointTester` for `rb3-render`'s frame loop. It notes the frame
+each accepted test was queued in, per flare, and matches each answer to that
+flare's oldest noted test. The gate passes when:
+
+- there are answers;
+- none is older than one frame;
+- no test is still unanswered at the end of the frame after its own;
+- no answer is unmatched.
+
+The world end / `EndDrawing` split is still printed.
+
+Measured on `sv8_a`, `--frames 8 --focus mesh`, `rb3-render` built in
+`~/tmp/wt-w16sb-xen/native/build` with `MILO_ENGINE_PATH` = this worktree
+(read back from `CMakeCache.txt`) and a test-only `MILO_ENGINE_PIN` of
+`c3eee3d`, not committed. The two sabotages were temporary edits to
+`Rnd_Wgpu.cpp`, restored by sha1 afterwards:
+
+| engine | new gate | answers, aged 0 / 1 / 2+ | overdue | world end / EndDrawing | old gate |
+|---|---|---|---|---|---|
+| this branch, 4 runs | **PASS** | 56: 0 / 56 / 0 | 0 | 56 / 0 | pass |
+| delivers two frames late (limit from the previous frame's `BeginDrawing`) | **FAIL** | 48: 0 / 0 / 48 | 56 | 48 / 0 | **pass** |
+| skips the world-end collect (every answer at `EndDrawing`) | **PASS** | 56: 0 / 56 / 0 | 0 | 0 / 56 | **fail** |
+| this branch, `RB3_POST_WORLD_OCCLUDER=1` | PASS | 56: 0 / 56 / 0 | 0 | 56 / 0 | pass |
+
+In every row `lamp04` reads visible at ratio 0.964. Under
+`RB3_POST_WORLD_OCCLUDER` `image-not-empty` fails, as that knob's comment says
+it will. Under `RB3_NO_END_WORLD` the gate is skipped, as before.
+
+### 24.9 Not done
+
+- **A windowed, presenting desktop** was not run (no display on this host).
+  With FIFO present, `GetCurrentTexture` and present pace the frame. The old
+  wait would then trade against that throttle, not against an unpaced loop.
+- **A GPU slower than the CPU frame** was only simulated, with the compute
+  load of 24.3. No real low-end GPU or software adapter was measured.
+- **rb3-web** was not built. Its path is unchanged: the world end still takes
+  what is ready, and the end-of-frame step is compiled out.
+- **dc3-decomp** was not built or run; only the two changed engine objects were
+  compiled on its shape (24.7). On DC3 the step runs with an empty queue.
+- **`native_health.sh` / `native_build_gate.sh`** were not run for rb3-xenon;
+  only `rb3-render` was built. rb3-xenon's real `MILO_ENGINE_PIN` is not set
+  here.
+- **The probes** (GPU time, GPU load, flare names) are not committed. The
+  GPU-load probe crashed at process exit (its static wgpu objects outlived the
+  device) after all 420 frames had been recorded. The patches are in
+  `~/tmp/w16sb/probe-*.patch`, and the runs and the `leg.sh` / `stats.py` /
+  `flares.py` scripts are in `~/tmp/w16sb/`.
+- **No merge, pin bump or push.** That is for the coordinator. This section was
+  renumbered 23 → 24 after W16-SA's section 23 landed.
