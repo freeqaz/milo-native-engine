@@ -4999,7 +4999,7 @@ r = 40–56 px (core / core − ring):
   sky_dE 0.4 better. With the mask fixed, the flare rects at 0.6 land within
   1.2 of TCRF on `lamp01`, `lamp03` and `lamp04` (124.0 / 82.5 / 38.8).
 - **The retail factor holds on the flares themselves.** At 0.6 every core
-  sits about 40 below TCRF's and its contrast about half TCRF's. At 1.0 the
+  sits 25–49 below TCRF's and its contrast is 55–70% of TCRF's. At 1.0 the
   cores agree within 8 and the contrast within 10, except `lamp02`, whose
   ring is brighter than TCRF's (the haze around the theater). The crops show
   the same: at 1.0 the cores are crisp white stars like TCRF's
