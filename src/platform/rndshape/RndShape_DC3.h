@@ -162,11 +162,12 @@ template <class Params>
 inline void FillRetailPost(const RndPostProc *, float, Params &) {}
 inline int RetailPostMode() { return 0; }
 inline bool RetailBloomMaskActive() { return false; }
-// Destination alpha blends by the colour equation (PipelineManager::MapBlend's
-// default). DC3 retail also sets BlendOpAlpha MAX (DxRnd::SetDefaultRenderStates,
-// 100% matched in dc3-decomp), but nothing measured DC3 or rb3-xenon with it, so
-// this shape keeps the old behaviour; see dc3-backend-for-rb3-wii.md section 30.
-constexpr bool kAlphaBlendMax = false;
+// Destination alpha blends with MAX, as retail: DxRnd::SetDefaultRenderStates
+// (100% matched in dc3-decomp, Rnd_Xbox.cpp) sets BlendOpAlpha 3 once and
+// nothing changes it; see dc3-backend-for-rb3-wii.md section 30. Measured on
+// dc3-native frames 50-600 and the glitterati/dclive venues: RGB identical,
+// frame alpha moves on 0.25% of dclive's pixels (PostProcPass reads RGB only).
+constexpr bool kAlphaBlendMax = true;
 // DC3 materials and lights are linear-space values (the dc3 shader's model).
 constexpr bool kGammaSpaceShading = false;
 template <class M>
