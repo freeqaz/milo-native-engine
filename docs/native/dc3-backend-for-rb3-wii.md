@@ -3184,7 +3184,8 @@ byte-identical, all four tests pass again):
 - **The DC3 shape** (rb3-xenon, dc3-decomp) has no consumer calling the hook.
   rb3-xenon's `Rnd::TestPoint` keeps its own `HX_NATIVE` fallback, the same
   one W16-RS gave rb3, and could use this hook the same way. On that shape
-  `RunPointTests` runs only from `EndDrawing`, with an empty queue. rb3-xenon's native build was compiled against this worktree (20.7);
+  `RunPointTests` runs only from `EndDrawing`, with an empty queue. (Section 21
+  moves the world-end step to `WgpuRnd`, so this shape gets it too.) rb3-xenon's native build was compiled against this worktree (20.7);
   dc3-decomp was not.
 - **A flare with `mAreaTest` off.** Retail `DoPointTests`'s area-test else arm
   calls `SetVisible(true)` immediately, in the same frame; the native path
@@ -3213,3 +3214,133 @@ byte-identical, all four tests pass again):
   `Rnd_Wgpu.cpp`: rc=0, 0 `error:` lines. It was not run.
 - The rb3 change is inside `#ifdef HX_NATIVE`, so the Wii match build
   compiles the same code as before.
+
+## 21. Flare point tests at world end on the NgRnd shape (lane W16-RX, 2026-10-07)
+
+Section 20 ran the point tests from `WgpuRndBase::DoWorldEnd`, an override
+that exists only on the RB3-Wii rndobj shape. On the NgRnd shape (rb3-xenon,
+DC3) `WgpuRndBase` is `NgRnd` itself, so the override was compiled out and the
+tests ran only from `EndDrawing`. By then the depth buffer also holds whatever
+the frame drew after the world (UI, HUD), so a flare under a menu panel read
+as hidden. rb3-xenon's W16-RW consumer was answered there (its gdb backtrace
+showed `WgpuRnd::EndDrawing`).
+
+| repo | branch | commit |
+|---|---|---|
+| milo-native-engine | `w16-rx` | `d51d304` (on `76a355a`), and this section |
+| rb3-xenon | `w16-rx` | `eeef8d548` (on `2b280289f`) |
+
+### 21.1 What retail does
+
+Retail RB3 (rb3-xenon `rnddx9/Rnd_Xbox.cpp`) and DC3 order the step the same
+way:
+
+1. `Rnd::EndWorld` runs `DoWorldEnd`, then `DoPostProcess`. `WorldDir::
+   DrawShowing` and `PanelDir` call it after the world's drawables;
+   `Rnd::EndDrawing` calls it too, for a frame that never ended its world.
+2. `DoWorldEnd` is virtual. `NgRnd` does not override it; `DxRnd`, the
+   platform renderer, does:
+   `if (mProcCmds & kProcessWorld) { Rnd::DoWorldEnd(); DoPointTests(); SavePreBuffer(); }`.
+
+So the point tests belong to the platform renderer, after `Rnd::DoWorldEnd`
+and before post-processing.
+
+### 21.2 Change
+
+- **Engine** (`src/platform/Rnd_Wgpu.{h,cpp}`,
+  `src/platform/rndshape/RndShape_RB3Wii.h`): the override moves from the
+  RB3-Wii `WgpuRndBase` to `WgpuRnd`, which stands in for `DxRnd` on both
+  shapes. `WgpuRnd::DoWorldEnd` runs `WgpuRndBase::DoWorldEnd()` (that is,
+  `Rnd::DoWorldEnd`), then `RunPointTests()`. There is one definition, and
+  the RB3-Wii shape runs the same code as before.
+  - `EndDrawing` still calls `RunPointTests` first, for frames that never
+    end their world. `mPointTestsRan` keeps it to once per frame.
+  - Retail's `kProcessWorld` check is left out. `WgpuRnd::BeginDrawing` does
+    not run the proc counter, so `mProcCmds` stays `kProcessAll` and the
+    check would always pass.
+  - On DC3 (no consumer queues tests) the step collects nothing, and with an
+    empty queue it returns before touching the render pass.
+- **rb3-xenon** (`native/src/main_render.cpp`): `rb3-render` drew the world
+  and went straight to `EndDrawing`, so no native rb3-xenon target ever ran
+  `Rnd::EndWorld`. The cell now calls `TheRnd.EndWorld()` after the meshes,
+  crowd and flares, as `WorldDir::DrawShowing` does.
+  - It wraps the handler `Rnd::TestPoint` registers and counts the answers
+    each step delivers, printing them per frame
+    (`point tests: frame N answered A at the world end, B at EndDrawing`).
+  - A new gate, `flare-tests-at-world-end`, requires every answer at the
+    world end. It runs only when a cell has flares, ends its world, and
+    draws at least two frames; the default cells have no flares, so
+    `native_health`'s gate count does not change.
+  - `RB3_NO_END_WORLD=1` restores the old flow.
+  - `RB3_POST_WORLD_OCCLUDER=1` draws a full-frame quad 4× the near plane in
+    front of the camera after the world end, standing in for UI. It covers
+    the frame, so `image-not-empty` fails under it.
+
+### 21.3 Results
+
+`rb3-render <xbox-zip> <out> world/vignette/shell/gen/sv8_a.milo_xbox
+--frames 8 --focus mesh`. Fix = engine `d51d304`; base = engine `76a355a`
+(W16-RU, what rb3-xenon pins). Both legs use the same rb3-render source
+(`eeef8d548`), built into separate dirs.
+
+| leg | answers at world end / EndDrawing | `flare-tests-at-world-end` | flares visible | lamp04 ratio |
+|---|---|---|---|---|
+| base | 0 / 56 | **FAIL** | lamp04, lamp02 | 0.964 |
+| **fix** | **56 / 0** | **PASS** | lamp04, lamp02 | 0.964 |
+| base + occluder | 0 / 56 | FAIL | **none** | **0.000** |
+| **fix + occluder** | **56 / 0** | PASS | lamp04, lamp02 | **0.964** |
+| fix + occluder + `RB3_NO_END_WORLD` | 0 / 56 | (not run) | **none** | **0.000** |
+
+- Frame 0 answers nothing (answers arrive one frame late); frames 1–7 answer
+  all eight.
+- **The occluder no longer hides anything.** With the fix, all eight answers
+  under the occluder equal the no-occluder answers, value for value. With
+  the base engine, or with the fix but no world end, the same occluder reads
+  every flare hidden with area 0.
+- The fix's eight answers equal W16-RW's `c_fix2` run value for value, and its
+  `sv8_a.png` is byte-identical (`cmp`) to W16-RW's. On this cell nothing
+  draws after the flares, so the depth at world end and at `EndDrawing` is
+  the same.
+- **Backtrace** (gdb, breakpoint on the counting wrapper, fix binary):
+  `CountPointTestAnswer` ← `DeliverPointTestAnswer` ←
+  `PointTestPass::Collect` ← `WgpuRnd::RunPointTests` ←
+  **`WgpuRnd::DoWorldEnd`** ← **`Rnd::EndWorld`** ← `RenderCell`.
+
+The world end itself changes no pixels:
+
+- The default cells (`tracksystem_meshes`, `crowd_female01`) are
+  byte-identical to W16-RW's `rb3-render`.
+- With `--postproc post_process_fx_venue` (`intro_contrast_flame.pp`) the
+  PNG is not reproducible on any binary: two W16-RW runs differ in 777,440
+  pixels (max 13, mean 2.97). W16-RW vs fix differs by 782,294 pixels (max
+  13, mean 3.02), and fix vs fix without world end by 780,295. Both are
+  inside that run-to-run spread. The flare answers are identical in both
+  legs.
+
+### 21.4 Verification
+
+| consumer | check | result |
+|---|---|---|
+| rb3-xenon `w16-rx` (`eeef8d548`), `native/build` with `MILO_ENGINE_PATH` = this worktree (read back from `CMakeCache.txt`) | `tools/native_build_gate.sh` | `NATIVE_GATE_RESULT verdict=PASS expected=18 verified=18 skipped=0 partial=0 failed=0 rc=0` |
+| same | `tools/native_health.sh` | `NATIVE_HEALTH_RESULT verdict=PASS link=PASS link_verified=18 link_expected=18 link_skipped=0 runtime=PASS runtime_ran=18 runtime_total=18 gates_pass=77 gates_fail=0 unrunnable=none selftest=SKIPPED … rc=0`; 77 gates, as at W16-RU |
+| rb3 `master` (`beb08ab14`), `native/build-native`, desktop, dc3 flavor, `MILO_ENGINE_PATH` = this worktree | `ctest` | **100% tests passed out of 132**, 7 skipped (the seven of 20.7), rc=0 |
+
+- rb3's `RndTestPoint.FlareBehindGeometryReadsZero` passes. It checks that
+  the answers arrive at `DoWorldEnd` on the RB3-Wii shape, so the moved
+  override still does what 20.5 tested. It calls `TheRnd->DoWorldEnd()`, an
+  `Rnd*`, which now dispatches to `WgpuRnd::DoWorldEnd`.
+- The rb3 change is engine-only; rb3's source is untouched.
+
+### 21.5 Not done
+
+- **dc3-decomp** was not built or run. Its renderer shape is the one
+  rb3-xenon compiles (`MILO_ENGINE_RNDOBJ_SHAPE=dc3`), and on DC3 the new step
+  runs with an empty queue (see 21.2).
+- **A real UI over flares** was not captured. The occluder stands in for it.
+  rb3-xenon has no native target that draws a `PanelDir` over a venue.
+- **SavePreBuffer** (the third step of retail's `DoWorldEnd`) still has no
+  native counterpart.
+- **No merge, pin bump or push.** That is for the coordinator. rb3-xenon's pin
+  (`76a355a`) predates `d51d304`; with that pin, `flare-tests-at-world-end`
+  fails on any flare cell (base row in 21.3), so `eeef8d548` should land
+  together with a pin bump.
