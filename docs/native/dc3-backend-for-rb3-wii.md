@@ -3339,8 +3339,289 @@ The world end itself changes no pixels:
 - **A real UI over flares** was not captured. The occluder stands in for it.
   rb3-xenon has no native target that draws a `PanelDir` over a venue.
 - **SavePreBuffer** (the third step of retail's `DoWorldEnd`) still has no
-  native counterpart.
+  native counterpart. **Done in section 22 (W16-RZ).**
 - **No merge, pin bump or push.** That is for the coordinator. rb3-xenon's pin
   (`76a355a`) predates `d51d304`; with that pin, `flare-tests-at-world-end`
   fails on any flare cell (base row in 21.3), so `eeef8d548` should land
   together with a pin bump.
+
+## 22. SavePreBuffer and world refraction, from retail (lane W16-RZ, 2026-10-07)
+
+Retail `DxRnd::DoWorldEnd` runs `Rnd::DoWorldEnd`, then the point tests
+(section 21), then `SavePreBuffer`. Section 21.5 left `SavePreBuffer` without a
+native counterpart. This section establishes what that buffer is and which
+effects read it, then ports the one reader rb3 content reaches through the dc3
+backend: world refraction.
+
+| repo | branch | commit |
+|---|---|---|
+| milo-native-engine | `w16-rz` | `528f9a6` (on `1eadb7a`), and this section |
+| rb3 | `w16-rz` | `802bdcdc4` (test only; on `e1dbd2a00`) |
+
+### 22.1 What the buffer is
+
+All references are rb3-xenon (retail-matched) `src/system/rnddx9/Rnd_Xbox.cpp`
+unless noted.
+
+- `SavePreBuffer` (l.616) makes two `D3DDevice_Resolve` calls out of EDRAM:
+  - flags `0x14` (DEPTHSTENCIL | FRAGMENT0) resolve the world's **depth** into
+    `mFrontBufferDepth`;
+  - flags `0x300` (RT0 | CLEARRENDERTARGET | CLEARDEPTHSTENCIL) resolve the
+    world's **colour** into `mPreProcessBuffer` (A8R8G8B8, screen size, l.932).
+    They clear colour to the clear colour with alpha 0, and depth to 0.
+- `CreatePostTextures` (l.962) wraps the two buffers as `PreProcessTexture()`
+  and `PreDepthTexture()`. `SetFrameBuffersAsSource` (l.484) binds sampler 6
+  to the pre colour, 9 to the pre depth and 14 to the post buffer.
+- `GetCurrentFrameTex(bool resolve)` (l.669) returns `PreProcessTexture()`
+  until `mPostProcDone`, then `PostProcessTexture()`. `mPostProcDone` is set
+  at the end of `DoPostProcess` (l.295) and cleared in `EndDrawing` (l.764).
+  The post buffer is filled by `SavePostBuffer` in `FinishPostProcess`. With
+  `resolve` set, it would resolve the current EDRAM into the pre buffer
+  first, but every retail caller passes `false`.
+
+So the pre buffer is **the world, as it stands at world end, before
+post-processing**: colour plus depth.
+
+### 22.2 Who reads it
+
+**From code** (all retail RB3; each is in `splits.txt` / `objects.json`):
+
+| reader | reads | how |
+|---|---|---|
+| `NgPostProc` bloom / grade (`PostProc_NG.cpp`) | colour | `PreProcessTexture()` as the bloom source; already ported (sections 7 and 18) |
+| `DOFProc_NG` | colour + depth | already ported (section 18), reading `mDepthSampleView` directly |
+| `NgMat` refraction (`Mat_NG.cpp:331`) | colour | `GetCurrentFrameTex(false)` bound as PS texture 6 when `GetRefractEnabled(false)` |
+| `RndSoftParticleBuffer::DoPost` | depth | `PreDepthTexture()` into sampler 9 |
+| `RndVelocityBuffer` (motion blur, fed by `RndMotionBlur` → `RndPostProc::QueueMotionBlurObject`) | depth | `PreDepthTexture()` into sampler 9 |
+| `SpotlightDrawer_NG` | size only | `PreProcessTexture()->Width()/Height()` |
+
+**From shader microcode.** I disassembled all 5,670 xbox_shaders pixel-shader
+permutations (`tools/rb3-dc3-parity/xobx.py` dump, then the xenia shader
+compiler; 5,654 disassembled). These fetch from `tf6` (pre colour) or `tf9`
+(pre depth):
+
+| shader | `tf6` | `tf9` |
+|---|---|---|
+| postprocess | 1,343 | 672 |
+| postproc_error | 2 | — |
+| standard | **38, every one with option bit 46 `mRefractWorld`** | — |
+| particles | 2 | 11 (soft depth) |
+| velocity_camera, velocity_object | — | yes |
+| depthvolume | — | 6 (not traced further) |
+
+**Which of these rb3 content can reach on the dc3 backend:**
+
+- RB3-Wii's `RndMotionBlur::DrawShowing` is empty, its `SoftParticles` drops
+  its particle list, and its `GetCurrentFrameTex` returns 0. So on the RB3-Wii
+  shape, soft particles and motion blur never draw, whatever the backend does.
+- On rb3-xenon (NgRnd shape), soft particles are skipped because
+  `NgRnd::PreDepthTexture()` is null natively.
+- Bloom/grade and DoF are already ported and read their own copies.
+- **That leaves refraction.** rb3's `RndMat` loads its fields
+  (`rndobj/Mat.cpp:310`), and the engine can draw it.
+
+### 22.3 Content census
+
+`~/tmp/w16rz/scan_prebuffer.py` (scratch) inflates every milo and counts:
+- directory entries of type `Mat`, `SoftParticles` and `MotionBlur`;
+- for every chunk that starts with Mat rev 0x44, the refraction tail (u8
+  enabled, f32 strength, string normal map; `BaseMaterial.cpp:436`).
+
+It self-validates: the parsed rev-0x44 chunks match the `Mat` entries to
+within one, with 0 unparsed.
+
+| class | Xbox (`.milo_xbox`, 4,455 files) | Wii (`.milo_wii`, 4,506 files) |
+|---|---|---|
+| `Mat` entries / rev-0x44 tails parsed / unparsed | 19,285 / 19,286 / 0 | 18,422 / 18,423 / 0 |
+| refraction enabled, strength > 0 | **184 in 122 files** | **178 in 116 files** |
+| `MotionBlur` objects (crowd/extras `*.blur`) | 186 in 82 files | 176 in 78 files |
+| `SoftParticles` objects (`SoftParticles.soft`) | 37 | 38 |
+
+Where the refracting materials are:
+- **Almost all are UI glass**: `ui/resource` 48, `ui/accomplishments` 20,
+  `ui/tour` 13, `ui/overshell` 11, and others. Their normal maps are
+  `header_song_bg_normal*.tex` and `song_bg_normal*.tex`, mostly at
+  strength 20.
+- **World ones**:
+  - `world/vignette/shell/gen/sv8_a` (the title and hub city);
+  - `sv2_a` and `world/vignette/transition/gen/tv1_a`
+    (`recordplayer_lid_norm.tex`, strength 25);
+  - on Xbox only, 15 `big_club` venues (`heat_distortion_norm.tex`,
+    strength 100).
+- 6 Xbox materials name no refract normal map. They rely on
+  `GetRefractNormalMap`'s fallback to the material's normal map.
+
+On the title, exactly **one** material takes the refraction path. A temporary
+probe (not committed) printed
+`city_road.mat strength=20 normal=city_road_norm.tex`. It has no diffuse map,
+colour (1, 1, 1, 0.9), SrcAlpha blend, vertex lighting, and next pass
+`city_road_diffuse.mat`, which alpha-blends `city_road.tex` over it at colour
+0.6. About 6.6 road draws per frame, all before the frame's world end.
+
+### 22.4 Retail refraction math
+
+From the disassembly of `standard_0000400000000000` (option bit 46 alone) and
+its variants (`…20000`, `…10`, `…400000`, `…4000000`):
+
+```
+n   = (tex1.g * 2 - 1, tex1.r * 2 - 1)               tf1 = refract normal map, material uv
+uv  = (clip.xy + n * c119.w) * (0.5, -0.5) / clip.w + 0.5
+                                                     c119 = kPS_RefractStrength (raw strength)
+scr = tfetch(tf6, uv).rgb                            alpha forced to 1; linear, clamp
+oC0.rgb = scr * [diffuse.rgb] * r3.rgb [+ r4]        r3 = the vertex shader's lit colour
+```
+
+- The literal constant is c255 = (0.5, −0.5, −1, 2).
+- `Mat_NG.cpp:331` passes a literal `false` (`li r4, 0`), so the fetch reads
+  the buffer the **last** world end saved. A refracting world surface
+  therefore sees the previous frame's world, itself included.
+- `Shader.cpp:718` sets bit 46 when `GetRefractEnabled(b) &&
+  GetRefractNormalMap()`. `GetRefractEnabled` (`Mat.cpp:286`) is
+  `mRefractEnabled && mRefractStrength > 0 && (mRefractNormalMap ?:
+  mNormalMap)`.
+
+### 22.5 Change
+
+Engine `528f9a6`:
+
+- **`WgpuRnd::SavePreBuffer`** runs last in `WgpuRnd::DoWorldEnd`, after
+  `RunPointTests`. It ends the frame pass, copies the colour texture the frame
+  pass writes (recorded by `BeginFramePass`: the post-processing intermediate,
+  or the frame target) into a persistent `mPreTex`, and resumes the pass.
+  - It saves once per frame. A frame that never ends its world saves at
+    `EndDrawing`, as retail's `Rnd::EndDrawing` → `EndWorld` would.
+  - The intermediate texture gains `CopySrc`. The headless and web frame
+    textures already had it; a desktop surface without `CopySrc` simply
+    skips the copy.
+  - **Depth is not saved.** The engine draws no reader of it (22.2).
+  - Retail's resolve also clears the EDRAM, because retail's post chain
+    redraws the frame from the buffers. Here the frame pass keeps its
+    contents, so nothing is cleared.
+- **`RefractFrameView`** stands in for `GetCurrentFrameTex(false)`. It returns
+  `mPostOutView` once this frame's `FlushWorldPost` has run (retail
+  `mPostProcDone`, RB3-Wii shape only), otherwise the pre buffer, and black
+  before the first save.
+- **Material bind group, bindings 11–13**: the refract normal map, the frame,
+  and a linear clamp sampler (`PipelineManager`, `CreateMaterialBindGroup`,
+  and BandRnd's three bind-group builders, which bind placeholders).
+- **`MaterialUniforms` stays 256 bytes.** The strength rides as an f16 in the
+  high 16 bits of `colorMod.w`; the colour-mod mode keeps the low 16. Growing
+  the struct to 272 bytes would have doubled every draw's ring slot to 512.
+- **`rndshape::MatRefract`** (`RndShape.h` `RefractTerms`):
+  - RB3-Wii: `mRefractEnabled && mRefractStrength > 0` and
+    `mRefractNormalMap`, falling back to `mXbNormalMap` (the Xbox
+    `GetRefractNormalMap`).
+  - DC3 / rb3-xenon: the decomp's own `RndMat::GetRefractEnabled(true)`,
+    `GetRefractStrength`, `GetRefractNormalMap`.
+  - `MaterialSetup` fills it for the primary material and every next pass.
+- **`standard_wgsl.inc` `refractScreen`**: the math of 22.4. The screen rgb
+  multiplies the texel before intensify, lighting and fog. A linear-space
+  (DC3) material decodes the 8-bit frame with `srgbToLinear` first; a
+  gamma-space (RB3) one uses it as stored, as retail does.
+
+### 22.6 Results
+
+**Title** (`title_capture.sh`, frames 60/200/400, rb3 `w16-rz`, dc3 flavor).
+Legs:
+- before = engine `1eadb7a`;
+- after = `528f9a6`.
+
+Each binary ran twice, because the title is not frame-deterministic: two
+before runs differ in 20–22% of pixels by more than 8. The rb3-native built
+after removing the probes is byte-identical (`cmp`) to the measured "after"
+binary.
+
+By eye (`~/tmp/w16rz/street_tcrf_before_after.png`): the bright orange
+asphalt the baseline drew between the Capitol theater and the parked cars is
+gone. TCRF shows no orange asphalt there.
+
+Street sub-regions, mean over 6 shots per leg, |dRGB| to TCRF (1920×1080
+resized to 1280×720):
+
+| region (1280×720 box) | TCRF luma | before luma / \|dRGB\| | after luma / \|dRGB\| |
+|---|---|---|---|
+| street_L (300,640)–(410,712) | 60.2 | 76.5 / 18.5 | **65.2 / 8.0** |
+| crowd under the marquee (430,640)–(590,712) | 104.3 | 125.3 / 17.3 | **113.2 / 7.4** |
+| street_R (600,650)–(740,712) | 92.8 | 88.0 / **23.0** | 37.5 / 49.3 |
+
+`title_fidelity.py` (sky_dE / city_dE / city_edge, means over frames
+60/200/400 and both runs):
+
+| leg | sky_dE | city_dE | city_edge | chroma |
+|---|---|---|---|---|
+| before | 13.70 | **10.30** | 0.918 | 21.8 |
+| after | 13.70 | 10.85 | **0.921** | 19.3 |
+
+- Run-to-run spread is about ±0.1 on city_dE. **The whole-title figure gets
+  slightly worse (+0.55)**, while two of the three street regions move
+  sharply toward TCRF.
+- The right-hand street turns much darker than TCRF's olive haze. My reading,
+  **not tested**:
+  - The road is a feedback loop. Each frame it multiplies last frame's road by
+    its vertex lighting at alpha 0.9. Its steady state scales as
+    1 / (1 − 0.9·L), so a lighting deficit is amplified.
+  - The title's city is already dimmer than TCRF (`city_mid` 49.6 against
+    55.0, section 19).
+  - Retail's olive tint is what a near-unity loop gain looks like: the
+    channel with the highest gain wins.
+- I prefer this port to the baseline. It is retail's code and math (22.4),
+  and it removes an orange street retail never shows. It is still a fidelity
+  trade, not a win.
+
+**Hub** (`screen_capture.py`, `main_hub_screen`, +120/+240): the QUICKPLAY
+glass header now shows the scene through it, darker and bluer, instead of a
+flat lavender bar (`~/tmp/w16rz/hub_menu_crop.png`).
+- The bar's mean RGB goes from (69, 72, 93) to (18, 20, 40).
+- Xenia's clean-TU5 front buffer (W16-QT `x4` frame 1800) has (46, 44, 79)
+  with visible distortion. But that frame's background is the rooftop band,
+  while ours is the Baboon Nest sign. Glass shows what is behind it, so the
+  distance to Xenia is confounded and **not** a fidelity measure.
+
+**WebGPU errors.** Counted as `WebGPU error` lines (`GpuDevice.cpp:156`):
+
+| run | errors |
+|---|---|
+| title, before (2 runs) | 0 |
+| title, after (2 runs) | 0 |
+| hub, before | 0 |
+| hub, after | 0 |
+| BandRnd (rb3 flavor) title, after | 0 |
+
+Each run logs one `device lost … destroyed` line at shutdown, as before.
+
+### 22.7 Verification
+
+| check | result |
+|---|---|
+| rb3 `w16-rz`, `native/build-native`, desktop, dc3 flavor, `MILO_ENGINE_PATH` = this worktree, `ctest` | **100% tests passed out of 134** (132 before, plus 2 new), 7 skipped (the seven of 20.7), rc=0 |
+| new `RefractTest.RefractingSurfaceShowsTheSavedWorld` | passes: a red world saved at world end, then a green world; a white refracting quad over the right half reads red |
+| same test with both save sites removed (`DoWorldEnd` and the `EndDrawing` fallback; sabotage, reverted) | **fails**, `right.r` = 0 (the black placeholder); the control `NonRefractingSurfaceKeepsItsColour` still passes |
+| DC3 shape compile (`cmake -C cmake/dc3-reference.cmake`, pointed at `~/code/milohax/dc3-decomp`) | `MaterialSetup`, `Mesh_Wgpu`, `Rnd_Wgpu`, `PipelineManager` compile |
+| rb3 flavor (`RB3_GPU_BACKEND=rb3`) build + title | builds; 0 WebGPU errors |
+| `test_wgsl_validation` (in the ctest above) | passes with the new shader |
+
+### 22.8 Not done
+
+- **Pre-depth** (`mFrontBufferDepth` / `PreDepthTexture`) is not saved. Its
+  readers are:
+  - soft particles and motion blur: unreachable on the RB3-Wii shape (22.2);
+    not drawn on rb3-xenon (`PreDepthTexture` null);
+  - DoF: reads the live depth.
+- **Soft particles** (37 Xbox venues) and **motion blur** (186 crowd/extras
+  objects) stay unported for the same reason.
+- **The depth clear after world end.** Retail clears depth twice: in the
+  `0x300` resolve, and in `DoPostProcess`'s `BeginTiling` (`0x31`, l.288).
+  So the draws after world end start with empty depth. `FlushWorldPost`
+  keeps the world's depth ("depth and stencil carry on from the world").
+  This is a separate deviation, not measured here.
+- **UI glass semantics after world end.** The bind group chooses
+  `mPostOutView` only when `FlushWorldPost` ran. A frame whose world end has
+  no post-processing falls back to the pre buffer, which holds the same
+  world. Retail's `CopyPostProcess` path for that case was not traced.
+- **The right-hand street hypothesis** (22.6) is untested. It would need
+  retail's vertex lighting for `city_road.mat`.
+- **rb3-xenon and dc3-decomp were not run.** Their shape now refracts any
+  material with `GetRefractEnabled(true)` (only the compile was checked), and
+  rb3-xenon's main checkout was not built, per the brief.
+- **BandRnd** (rb3 flavor) binds placeholders and does not refract.
+- **No merge, pin bump or push.** That is for the coordinator.
