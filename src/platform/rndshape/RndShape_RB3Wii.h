@@ -530,13 +530,15 @@ void FillRetailPost(const RndPostProc *pp, float flickerMul, ::RetailPostParams 
 // MILO_RB3_RETAIL_POST: unset or anything else = 1 (retail chain), "0" = 0
 // (PostProcPass's DC3 composite, as before the chain existed), "raw" = 2
 // (scene passed through ungraded), "mask" = 3 / "bloom" = 4 (the retail chain,
-// showing the bloom mask or the bloom term instead; for inspection).
+// showing the bloom mask or the bloom term instead; for inspection), "grade" =
+// 5 (the chain without bloom), "beams" = 6 (the chain, showing the blurred
+// spotlight beam target instead; gfx/SpotBeamPass).
 int RetailPostMode();
 // The frame's alpha carries the bloom mask this frame (the retail chain, or
 // its mask/bloom inspection views).
 inline bool RetailBloomMaskActive() {
     const int m = RetailPostMode();
-    return m == 1 || m == 3 || m == 4;
+    return m == 1 || m == 3 || m == 4 || m == 6;
 }
 // The pseudo-HDR bloom mask (ShaderOptions bit 22): retail's standard.ps writes
 // a = dot(rgb, c7.rgb) for a material whose NgMat::AllowHDR() holds, drawn into

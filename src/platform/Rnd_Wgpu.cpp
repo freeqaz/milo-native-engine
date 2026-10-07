@@ -362,6 +362,15 @@ void WgpuRnd::InitGpuResources() {
     mTexBlendComposer.rnd = this;
     SetNativeTexBlendComposer(&mTexBlendComposer);
 
+    // Draw volumetric spotlight beams (SpotBeamHook.h) where the world is
+    // graded at EndWorld (the RB3 retail post chain), which composites them.
+    // MILO_NO_SPOT_BEAMS=1 registers none, so the consumer draws its beam
+    // meshes the old way.
+    mSpotBeamRenderer.rnd = this;
+    if constexpr (rndshape::kRetailPostChain) {
+        if (!getenv("MILO_NO_SPOT_BEAMS")) SetNativeSpotBeamRenderer(&mSpotBeamRenderer);
+    }
+
     // Native port: disable Xbox 360 safe area shrink (TVs need overscan
     // compensation, but PC/Mac monitors don't).
     SetShrinkToSafeArea(false);
@@ -468,6 +477,10 @@ void WgpuRnd::Terminate() {
     mDrawRect2D.Terminate();
     if (GetNativePointTester() == &mPointTester) SetNativePointTester(nullptr);
     if (GetNativeTexBlendComposer() == &mTexBlendComposer) SetNativeTexBlendComposer(nullptr);
+    if (GetNativeSpotBeamRenderer() == &mSpotBeamRenderer) SetNativeSpotBeamRenderer(nullptr);
+    mSpotBeamDraws.clear();
+    mSpotBeamFog = nullptr;
+    mSpotBeamPass.Terminate();
     mTexBlendPass.Terminate();
     mPointTestQueue.clear();
     mPointTestPass.Terminate(&mGpu);
@@ -670,6 +683,17 @@ void WgpuRnd::FlushWorldPost() {
             mPostOutWidth = w;
             mPostOutHeight = h;
         }
+        // NgSpotlightDrawer::DoPost: the beams against the world's depth, then
+        // the blur; the composite adds them (postprocess.ps option bit 51).
+        if (!mSpotBeamDraws.empty() &&
+            mSpotBeamPass.Run(mEncoder, mSpotBeamCam, mSpotBeamDraws.data(), mSpotBeamDraws.size(),
+                              mDepthSampleView, kMSAASamples, w, h, mGpu)) {
+            mPostProcPass.SetSpotBeams(mSpotBeamPass.OutputView(), mSpotBeamFog,
+                                       mSpotBeamComposite);
+            mSpotBeamsDrawn = (int)mSpotBeamDraws.size();
+        }
+        mSpotBeamDraws.clear();
+        mSpotBeamFog = nullptr;
         mPostProcPass.Run(mEncoder, mIntermediateView, mIntermediateTex, w, h,
                           mDepthSampleView, kMSAASamples, mPostOutView, mBlackTexView, mGpu);
         mPostProcFlushed = true;
@@ -825,6 +849,68 @@ bool WgpuRnd::ComposeTexBlend(RndTex* output, RndTex* base, const NativeTexBlend
 // ----------------------------------------------------------------------------
 
 static void CamSceneMatrices(RndCam* cam, float* viewProj, float* viewOut);
+
+// ----------------------------------------------------------------------------
+// Volumetric spotlight beams (platform/SpotBeamHook.h, gfx/SpotBeamPass.h)
+// ----------------------------------------------------------------------------
+
+bool WgpuRnd::SubmitSpotBeams(const NativeSpotBeamFrame& frame, const NativeSpotBeam* beams,
+                              int count) {
+    mSpotBeamDraws.clear();
+    mSpotBeamFog = nullptr;
+    if (!mGpuResourcesReady || !mGpu.IsReady() || !mFrameView || !mDrawing) return false;
+    RndCam* cam = frame.camera ? (RndCam*)frame.camera : RndCam::Current();
+    if (!cam) return false;
+
+    // NgSpotlightDrawer::RenderScene's mSpotCam: the world camera.
+    SpotBeamPass::Camera& c = mSpotBeamCam;
+    CamSceneMatrices(cam, c.viewProj, nullptr);
+    const Transform& xfm = cam->WorldXfm();
+    c.pos[0] = xfm.v.x;
+    c.pos[1] = xfm.v.y;
+    c.pos[2] = xfm.v.z;
+    c.fwd[0] = xfm.m.y.x;
+    c.fwd[1] = xfm.m.y.y;
+    c.fwd[2] = xfm.m.y.z;
+    c.nearPlane = cam->NearPlane();
+    c.farPlane = cam->FarPlane();
+    const Vector2& zr = rndshape::CamZRange(cam);
+    c.zRange[0] = zr.x;
+    c.zRange[1] = zr.y;
+
+    for (int i = 0; i < count; i++) {
+        const NativeSpotBeam& b = beams[i];
+        RndMesh* mesh = (RndMesh*)b.mesh;
+        if (!mesh) continue;
+        SpotBeamPass::Draw d;
+        if (!SpotBeamPass::BeamConstants(b, c, d.k)) continue;
+        if (!EnsureMeshUploaded(mesh)) continue;
+        GpuMeshData* m = GetMeshGpuData(mesh);
+        if (!m || !m->uploaded || m->numIndices <= 0) continue;
+        for (int j = 0; j < 12; j++) d.meshXfm[j] = b.meshXfm[j];
+        d.vertexBuffer = m->vertexBuffer;
+        d.vertexStride = m->skinned ? (uint32_t)sizeof(GpuVertexSkinned) : (uint32_t)sizeof(GpuVertex);
+        d.vertexBytes = (uint64_t)m->numVertices * d.vertexStride;
+        d.indexBuffer = m->indexBuffer;
+        d.indexCount = (uint32_t)m->numIndices;
+        if (RndTex* xs = (RndTex*)b.xsection) {
+            xs->PresyncBitmap();
+            d.xsection = GetGpuTexView(xs);
+        }
+        mSpotBeamDraws.push_back(d);
+    }
+    if (mSpotBeamDraws.empty()) return false;
+
+    SpotBeamPass::CompositeConstants(frame, mSpotBeamComposite);
+    // SetupFogDensityMap's tf5: the proxy's density map (not rendered here:
+    // black), else the drawer's texture, else black.
+    if (!frame.hasProxy && frame.fogTexture) {
+        RndTex* fog = (RndTex*)frame.fogTexture;
+        fog->PresyncBitmap();
+        mSpotBeamFog = GetGpuTexView(fog);
+    }
+    return true;
+}
 
 namespace {
 void DeliverPointTestAnswer(const PointTestPass::Answer& a, void* user) {
@@ -1232,6 +1318,9 @@ void WgpuRnd::BeginDrawing() {
     mPointTestQueue.clear();
     mPointTestsRan = false;
     mPointTestPass.DiscardUnsubmitted();
+    mSpotBeamDraws.clear();
+    mSpotBeamFog = nullptr;
+    mSpotBeamsDrawn = 0;
     mPointTestSeqBeforeFrame = mPointTestPass.LastSeq();
     RndMesh_ResetFrameStats();
     rndshape::DrawLogFrameBegin();

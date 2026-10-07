@@ -278,6 +278,11 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& i
                        GpuDevice& gpu) {
     EnsurePipeline(gpu);
 
+    // The beams are this frame's only, whichever composite runs.
+    wgpu::TextureView spotBeams = mSpotBeams, spotFog = mSpotFog;
+    mSpotBeams = nullptr;
+    mSpotFog = nullptr;
+
     RndPostProc* pp = RndPostProc::Current();
     if (!pp) return;
 
@@ -298,7 +303,15 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& i
             if (mode != 2) rndshape::FillRetailPost(pp, StepFlicker(pp, dt), rp);
             if (mode == 3 || mode == 4) rp.debugView = mode - 2;
             if (mode == 5) rp.bloom = false;
+            if (mode == 6) rp.debugView = 3;
             rp.time = mNoiseTime;
+            if (spotBeams && mode != 2) {
+                rp.spotBeams = spotBeams;
+                rp.spotFog = spotFog;
+                rp.spotScale = mSpotK[0];
+                rp.spotBase = mSpotK[1];
+                rp.spotSmoke = mSpotK[2];
+            }
             mRetail.Run(encoder, sceneView, intermediateView, intermediateW, intermediateH, frameView, rp,
                         gpu);
             return;

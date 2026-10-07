@@ -15,6 +15,7 @@ const ShippedWgslModule* ShippedWgslModules(int* count) {
         {"gfx/DisplayRamp.cpp", DisplayRampWgslSource()},
         {"gfx/PointTestPass.cpp", PointTestPassWgslSource()},
         {"gfx/ShadowPass.cpp", ShadowPassWgslSource()},
+        {"gfx/SpotBeamPass.cpp", SpotBeamPassWgslSource()},
         {"platform/Part_Wgpu.cpp", ParticleWgslSource()},
     };
     if (count) *count = (int)(sizeof(kModules) / sizeof(kModules[0]));

@@ -21,8 +21,9 @@ struct CompositeUniforms {
     float vignetteColor[4];
     float misc0[4];           // vignetteIntensity, posterLevels, posterMin, chromaticOffset
     float misc1[4];           // chromaticSharpen, noiseIntensity, noiseMidtone, time
+    float spot[4];            // c91.x, c127.x, c127.y, w = 1 when beams are bound
 };
-static_assert(sizeof(CompositeUniforms) == 112, "CompositeUniforms layout");
+static_assert(sizeof(CompositeUniforms) == 128, "CompositeUniforms layout");
 
 const char* kShader = R"WGSL(
 struct PassUB {
@@ -39,6 +40,7 @@ struct CompUB {
     vignetteColor: vec4f,
     misc0: vec4f,
     misc1: vec4f,
+    spot: vec4f,
 };
 
 @group(0) @binding(0) var srcTex: texture_2d<f32>;
@@ -49,6 +51,8 @@ struct CompUB {
 @group(0) @binding(3) var bloom0: texture_2d<f32>;
 @group(0) @binding(4) var bloom1: texture_2d<f32>;
 @group(0) @binding(5) var bloom2: texture_2d<f32>;
+@group(0) @binding(7) var spotBeams: texture_2d<f32>;
+@group(0) @binding(8) var spotFog: texture_2d<f32>;
 
 struct VOut {
     @builtin(position) pos: vec4f,
@@ -137,7 +141,10 @@ const kW = array<f32, 15>(0.0159283932, 0.0270778369, 0.0424231887, 0.0612547919
     // postprocess.ps: screen-blend the three bloom sets, then the colour
     // transform (dp4_sat against c92..c94).
     // Inspection views (RetailPostParams::debugView): the bloom mask (scene
-    // alpha), or the bloom term b * c6 the screen blend adds.
+    // alpha), the bloom term b * c6 the screen blend adds, or the beam target.
+    if (cu.bloomColor.w > 3.5) {
+        return vec4f(textureSampleLevel(spotBeams, samp, in.uv, 0.0).rgb, 1.0);
+    }
     if (cu.bloomColor.w > 2.5) {
         let b = textureSampleLevel(bloom0, samp, in.uv, 0.0).rgb
               + textureSampleLevel(bloom1, samp, in.uv, 0.0).rgb
@@ -154,6 +161,13 @@ const kW = array<f32, 15>(0.0159283932, 0.0270778369, 0.0424231887, 0.0612547919
               + textureSampleLevel(bloom1, samp, in.uv, 0.0).rgb
               + textureSampleLevel(bloom2, samp, in.uv, 0.0).rgb;
         c = 1.0 - (1.0 - b * cu.bloomColor.rgb) * (1.0 - c);
+    }
+    // Option bit 51: NgSpotlightDrawer's blurred beams (tf12), weighted by the
+    // fog density (tf5).
+    if (cu.spot.w > 0.5) {
+        let beam = textureSampleLevel(spotBeams, samp, in.uv, 0.0).rgb;
+        let fog = textureSampleLevel(spotFog, samp, in.uv, 0.0).r;
+        c += beam * (fog * cu.spot.z + cu.spot.y) * cu.spot.x;
     }
     let c4 = vec4f(c, 1.0);
     c = clamp(vec3f(dot(cu.xfm0, c4), dot(cu.xfm1, c4), dot(cu.xfm2, c4)),
@@ -235,13 +249,14 @@ void RB3RetailPost::EnsurePipelines(GpuDevice& gpu) {
         mPassBGL = dev.CreateBindGroupLayout(&d);
     }
     {
-        wgpu::BindGroupLayoutEntry e[6] = {texEntry(0), samp, {}, texEntry(3), texEntry(4), texEntry(5)};
+        wgpu::BindGroupLayoutEntry e[8] = {texEntry(0), samp, {}, texEntry(3), texEntry(4), texEntry(5),
+                                           texEntry(7), texEntry(8)};
         e[2].binding = 6;
         e[2].visibility = wgpu::ShaderStage::Fragment;
         e[2].buffer.type = wgpu::BufferBindingType::Uniform;
         e[2].buffer.minBindingSize = sizeof(CompositeUniforms);
         wgpu::BindGroupLayoutDescriptor d{};
-        d.entryCount = 6;
+        d.entryCount = 8;
         d.entries = e;
         mCompositeBGL = dev.CreateBindGroupLayout(&d);
     }
@@ -410,11 +425,16 @@ void RB3RetailPost::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& 
     cu.misc1[1] = p.noiseIntensity;
     cu.misc1[2] = p.noiseMidtone;
     cu.misc1[3] = p.time;
+    const bool haveSpot = (bool)p.spotBeams;
+    cu.spot[0] = p.spotScale;
+    cu.spot[1] = p.spotBase;
+    cu.spot[2] = p.spotSmoke;
+    cu.spot[3] = haveSpot ? 1.0f : 0.0f;
     uint64_t off = (uint64_t)(mSlot++ % kSlots) * kSlotStride;
     gpu.Queue().WriteBuffer(mUniforms, off, &cu, sizeof(cu));
 
     const bool haveBloom = p.bloom && mView[0][0];
-    wgpu::BindGroupEntry e[6] = {};
+    wgpu::BindGroupEntry e[8] = {};
     e[0].binding = 0;
     e[0].textureView = sceneView;
     e[1].binding = 1;
@@ -427,9 +447,13 @@ void RB3RetailPost::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& 
         e[3 + s].binding = 3 + s;
         e[3 + s].textureView = haveBloom ? mView[s][0] : mBlackView;
     }
+    e[6].binding = 7;
+    e[6].textureView = haveSpot ? p.spotBeams : mBlackView;
+    e[7].binding = 8;
+    e[7].textureView = haveSpot && p.spotFog ? p.spotFog : mBlackView;
     wgpu::BindGroupDescriptor bgd{};
     bgd.layout = mCompositeBGL;
-    bgd.entryCount = 6;
+    bgd.entryCount = 8;
     bgd.entries = e;
     wgpu::BindGroup bg = gpu.Device().CreateBindGroup(&bgd);
 

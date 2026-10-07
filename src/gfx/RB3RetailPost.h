@@ -53,7 +53,18 @@ struct RetailPostParams {
     float noiseIntensity = 0.0f;
     float noiseMidtone = 0.0f;
     float time = 0.0f;
-    int debugView = 0;            // 1: show the bloom mask, 2: show the bloom term
+    int debugView = 0;            // 1: show the bloom mask, 2: show the bloom term,
+                                  // 3: show the spotlight beam target
+    // NgSpotlightDrawer's beams (postprocess.ps option bit 51), added after the
+    // screen blend and before the colour transform:
+    //   c += beam.rgb * (fog.r * spotSmoke + spotBase) * spotScale
+    // spotBeams is gfx/SpotBeamPass's blurred target (null: no beams), spotFog
+    // its tf5 fog density texture (null: black). See gfx/SpotBeamPass.h.
+    wgpu::TextureView spotBeams;
+    wgpu::TextureView spotFog;
+    float spotScale = 0.0f;       // c91.x: SpotDrawParams::mIntensity * 32
+    float spotBase = 0.0f;        // c127.x: mBaseIntensity / 100
+    float spotSmoke = 0.0f;       // c127.y: mSmokeIntensity / 100 * (1 - c127.x)
 };
 
 class RB3RetailPost {
@@ -87,7 +98,7 @@ private:
 
     wgpu::ShaderModule mShader;
     wgpu::BindGroupLayout mPassBGL;       // src tex, sampler, uniform
-    wgpu::BindGroupLayout mCompositeBGL;  // scene, sampler, uniform, set0..2
+    wgpu::BindGroupLayout mCompositeBGL;  // scene, sampler, uniform, set0..2, beams, fog
     wgpu::PipelineLayout mPassPL, mCompositePL;
     wgpu::RenderPipeline mBloomDownPipe;  // scene -> set0 (rgb * mask)
     wgpu::RenderPipeline mDown4Pipe;      // set k -> set k+1
