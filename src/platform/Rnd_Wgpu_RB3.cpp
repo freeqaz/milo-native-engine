@@ -2162,7 +2162,7 @@ void BandRnd::EndFrame() {
 
 // Build a material bind group against an explicit buffer (used for pre-warm).
 wgpu::BindGroup BandRnd::MakeMaterialBindGroupRaw(wgpu::Buffer buf, uint32_t off) {
-    wgpu::BindGroupEntry e[11] = {};
+    wgpu::BindGroupEntry e[14] = {};
     e[0].binding = 0;  e[0].buffer = buf; e[0].offset = off; e[0].size = sizeof(MaterialUniforms);
     e[1].binding = 1;  e[1].textureView = mWhiteView;
     e[2].binding = 2;  e[2].sampler = mSampler;
@@ -2174,9 +2174,14 @@ wgpu::BindGroup BandRnd::MakeMaterialBindGroupRaw(wgpu::Buffer buf, uint32_t off
     e[8].binding = 8;  e[8].textureView = mBlackCubeView;
     e[9].binding = 9;  e[9].sampler = mSampler;
     e[10].binding = 10; e[10].textureView = mFlatNormalView;
+    // 11-13: world refraction (refract normal, frame, its sampler). The band
+    // flavor never sets a refraction strength, so these are placeholders.
+    e[11].binding = 11; e[11].textureView = mFlatNormalView;
+    e[12].binding = 12; e[12].textureView = mBlackView;
+    e[13].binding = 13; e[13].sampler = mSampler;
     wgpu::BindGroupDescriptor bd{};
     bd.layout = mPipelines.MaterialLayout();
-    bd.entryCount = 11; bd.entries = e;
+    bd.entryCount = 14; bd.entries = e;
     return mGpu.Device().CreateBindGroup(&bd);
 }
 
@@ -2212,7 +2217,7 @@ void BandRnd::ResolveMaterialViews(RndMat* mat, wgpu::TextureView& diffuse,
 wgpu::BindGroup BandRnd::MakeMaterialBindGroupCached(wgpu::Buffer buf,
                                                      wgpu::TextureView diffuse,
                                                      wgpu::TextureView emissive) {
-    wgpu::BindGroupEntry e[11] = {};
+    wgpu::BindGroupEntry e[14] = {};
     e[0].binding = 0;  e[0].buffer = buf; e[0].offset = 0; e[0].size = sizeof(MaterialUniforms);
     e[1].binding = 1;  e[1].textureView = diffuse;
     e[2].binding = 2;  e[2].sampler = mSampler;
@@ -2224,9 +2229,14 @@ wgpu::BindGroup BandRnd::MakeMaterialBindGroupCached(wgpu::Buffer buf,
     e[8].binding = 8;  e[8].textureView = mBlackCubeView;
     e[9].binding = 9;  e[9].sampler = mSampler;
     e[10].binding = 10; e[10].textureView = mFlatNormalView;
+    // 11-13: world refraction (refract normal, frame, its sampler). The band
+    // flavor never sets a refraction strength, so these are placeholders.
+    e[11].binding = 11; e[11].textureView = mFlatNormalView;
+    e[12].binding = 12; e[12].textureView = mBlackView;
+    e[13].binding = 13; e[13].sampler = mSampler;
     wgpu::BindGroupDescriptor bd{};
     bd.layout = mPipelines.MaterialLayout();
-    bd.entryCount = 11; bd.entries = e;
+    bd.entryCount = 14; bd.entries = e;
     return mGpu.Device().CreateBindGroup(&bd);
 }
 
@@ -2254,7 +2264,7 @@ wgpu::BindGroup BandRnd::MakeMaterialBindGroup(uint32_t off, RndMat* mat) {
             if (v) emissive = v;
         }
     }
-    wgpu::BindGroupEntry e[11] = {};
+    wgpu::BindGroupEntry e[14] = {};
     e[0].binding = 0;  e[0].buffer = mMaterialRing.Buffer(); e[0].offset = off; e[0].size = sizeof(MaterialUniforms);
     e[1].binding = 1;  e[1].textureView = diffuse;
     e[2].binding = 2;  e[2].sampler = mSampler;
@@ -2266,9 +2276,14 @@ wgpu::BindGroup BandRnd::MakeMaterialBindGroup(uint32_t off, RndMat* mat) {
     e[8].binding = 8;  e[8].textureView = mBlackCubeView;
     e[9].binding = 9;  e[9].sampler = mSampler;
     e[10].binding = 10; e[10].textureView = mFlatNormalView;
+    // 11-13: world refraction (refract normal, frame, its sampler). The band
+    // flavor never sets a refraction strength, so these are placeholders.
+    e[11].binding = 11; e[11].textureView = mFlatNormalView;
+    e[12].binding = 12; e[12].textureView = mBlackView;
+    e[13].binding = 13; e[13].sampler = mSampler;
     wgpu::BindGroupDescriptor bd{};
     bd.layout = mPipelines.MaterialLayout();
-    bd.entryCount = 11; bd.entries = e;
+    bd.entryCount = 14; bd.entries = e;
     return mGpu.Device().CreateBindGroup(&bd);
 }
 

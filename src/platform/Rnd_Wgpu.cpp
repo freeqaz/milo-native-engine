@@ -462,6 +462,12 @@ void WgpuRnd::Terminate() {
     mPostOutTex = nullptr;
     mPostOutView = nullptr;
     mPostOutWidth = mPostOutHeight = 0;
+    mFramePassColorTex = nullptr;
+    mPreTex = nullptr;
+    mPreView = nullptr;
+    mPreWidth = mPreHeight = 0;
+    mPreSaved = mPreSavedThisFrame = false;
+    mFrameSampler = nullptr;
 
 #ifdef __EMSCRIPTEN__
     mFrameResolvedTex = nullptr;
@@ -638,6 +644,7 @@ void WgpuRnd::FlushWorldPost() {
         mPostProcPass.Run(mEncoder, mIntermediateView, mIntermediateTex, w, h,
                           mDepthSampleView, kMSAASamples, mPostOutView, mBlackTexView, mGpu);
         mPostProcFlushed = true;
+        mWorldPostDone = true;
 
         // Resume the frame pass (now resolving to the frame target) and lay the
         // graded image over it; depth and stencil carry on from the world.
@@ -662,16 +669,74 @@ void WgpuRndBase::DoPostProcess() {
 }
 #endif
 
-// Retail DxRnd::DoWorldEnd: Rnd::DoWorldEnd, then DoPointTests (then
-// SavePreBuffer, which has no native counterpart), on both rndobj shapes. The
-// tests therefore read the world's depth, before anything the frame draws after
-// the world (UI, HUD) writes over it. Retail runs both only when the frame
-// processes the world (mProcCmds & kProcessWorld); WgpuRnd never narrows
-// mProcCmds (BeginDrawing does not run the proc counter), so that test would
-// always pass here and is left out.
+// Retail DxRnd::DoWorldEnd: Rnd::DoWorldEnd, then DoPointTests, then
+// SavePreBuffer, on both rndobj shapes. The tests therefore read the world's
+// depth, and the pre-process buffer holds the world's colour, before anything
+// the frame draws after the world (UI, HUD) writes over them. Retail runs both
+// only when the frame processes the world (mProcCmds & kProcessWorld); WgpuRnd
+// never narrows mProcCmds (BeginDrawing does not run the proc counter), so
+// that test would always pass here and is left out.
 void WgpuRnd::DoWorldEnd() {
     WgpuRndBase::DoWorldEnd();
     RunPointTests();
+    SavePreBuffer();
+}
+
+// Retail DxRnd::SavePreBuffer (rb3-xenon rnddx9/Rnd_Xbox.cpp) resolves the
+// world twice: its depth into mFrontBufferDepth (flags 0x14, DEPTHSTENCIL |
+// FRAGMENT0) and its colour into mPreProcessBuffer (0x300, RT0 |
+// CLEARRENDERTARGET | CLEARDEPTHSTENCIL). CreatePostTextures wraps those as
+// PreDepthTexture and PreProcessTexture. Here only the colour is kept: the
+// one reader the dc3 backend draws is world refraction (standard.ps option
+// bit 46), which samples the colour through GetCurrentFrameTex; the depth's
+// readers (soft particles, motion blur's velocity buffer, depth of field) are
+// not drawn from it (dc3-backend-for-rb3-wii.md section 22). Retail's resolve
+// also clears the EDRAM, because its post chain redraws the frame from the
+// buffer; the frame pass here keeps its contents, so nothing is cleared.
+void WgpuRnd::SavePreBuffer() {
+    if (mPreSavedThisFrame) return;
+    if (!mFrameView || !mFramePassValid || mActiveTargetTex || !mFramePassColorTex) return;
+    const bool resume = mInPass;
+    EndActivePass();
+    CopyWorldToPreBuffer();
+    if (resume) {
+        BeginFramePass(false);
+        mLastSceneCam = nullptr;  // the new pass has no scene bind group yet
+    }
+}
+
+void WgpuRnd::CopyWorldToPreBuffer() {
+    const wgpu::Texture& src = mFramePassColorTex;
+    if (!src || !(src.GetUsage() & wgpu::TextureUsage::CopySrc)) return;
+    const uint32_t w = src.GetWidth(), h = src.GetHeight();
+    if (!mPreTex || mPreWidth != w || mPreHeight != h ||
+        mPreTex.GetFormat() != src.GetFormat()) {
+        wgpu::TextureDescriptor d{};
+        d.label = "RB3PreProcessBuffer";
+        d.size = {w, h, 1};
+        d.format = src.GetFormat();
+        d.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
+        d.mipLevelCount = 1;
+        mPreTex = mGpu.Device().CreateTexture(&d);
+        mPreView = mPreTex.CreateView();
+        mPreWidth = w;
+        mPreHeight = h;
+        mPreSaved = false;
+    }
+    wgpu::TexelCopyTextureInfo from{};
+    from.texture = src;
+    wgpu::TexelCopyTextureInfo to{};
+    to.texture = mPreTex;
+    wgpu::Extent3D size = {w, h, 1};
+    mEncoder.CopyTextureToTexture(&from, &to, &size);
+    mPreSaved = true;
+    mPreSavedThisFrame = true;
+}
+
+wgpu::TextureView& WgpuRnd::RefractFrameView() {
+    if (mWorldPostDone && mPostOutView) return mPostOutView;
+    if (mPreSaved && mPreView) return mPreView;
+    return mBlackTexView;
 }
 
 // ----------------------------------------------------------------------------
@@ -825,7 +890,8 @@ void WgpuRnd::BeginFramePass(bool clear) {
                 iDesc.label = "PostProcIntermediate";
                 iDesc.size = {(uint32_t)curW, (uint32_t)curH, 1};
                 iDesc.format = mGpu.SurfaceFormat();
-                iDesc.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding;
+                iDesc.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding |
+                              wgpu::TextureUsage::CopySrc;  // SavePreBuffer
                 iDesc.mipLevelCount = 1;
                 mIntermediateTex = mGpu.Device().CreateTexture(&iDesc);
                 mIntermediateView = mIntermediateTex.CreateView();
@@ -846,7 +912,8 @@ void WgpuRnd::BeginFramePass(bool clear) {
                 iDesc.label = "PostProcIntermediate";
                 iDesc.size = {(uint32_t)curW, (uint32_t)curH, 1};
                 iDesc.format = mGpu.SurfaceFormat();
-                iDesc.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding;
+                iDesc.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding |
+                              wgpu::TextureUsage::CopySrc;  // SavePreBuffer
                 iDesc.mipLevelCount = 1;
                 mIntermediateTex = mGpu.Device().CreateTexture(&iDesc);
                 mIntermediateView = mIntermediateTex.CreateView();
@@ -890,6 +957,7 @@ void WgpuRnd::BeginFramePass(bool clear) {
     mInPass = true;
     mActiveTargetTex = nullptr;
     mFramePassValid = true;
+    mFramePassColorTex = hasPostProc ? mIntermediateTex : FrameTargetTexture();
     mCurrentTargetFormat = mGpu.SurfaceFormat();
     mCurrentSampleCount = kMSAASamples;
     mCurrentPassHasDepth = true;
@@ -1045,6 +1113,8 @@ void WgpuRnd::BeginDrawing() {
     RndMesh_ResetFrameStats();
     rndshape::DrawLogFrameBegin();
     mPostProcFlushed = false;
+    mWorldPostDone = false;
+    mPreSavedThisFrame = false;
 
     // Frame capture: set target frame via MILO_CAPTURE_FRAME env var
     {
@@ -1296,6 +1366,9 @@ void WgpuRnd::EndDrawing() {
 
     if (mInPass) {
         EndActivePass();
+        // Likewise the pre-process buffer (retail Rnd::EndDrawing -> EndWorld
+        // -> DoWorldEnd -> SavePreBuffer).
+        if (!mPreSavedThisFrame && mFramePassValid && !mActiveTargetTex) CopyWorldToPreBuffer();
 
         // Post-processing: if active, read from intermediate and draw to frame target
         // Skip if already flushed (e.g., FlushPostProcessingForOverlay was called)
@@ -1515,6 +1588,14 @@ void WgpuRnd::CreateDefaultTextures() {
     {
         SamplerDesc sd{};
         mDefaultSampler = mGpu.GetSampler(sd);
+    }
+    // The frame refraction samples (retail SetFrameBuffersAsSource: linear,
+    // clamped).
+    {
+        SamplerDesc sd{};
+        sd.addressU = wgpu::AddressMode::ClampToEdge;
+        sd.addressV = wgpu::AddressMode::ClampToEdge;
+        mFrameSampler = mGpu.GetSampler(sd);
     }
 }
 
@@ -1968,7 +2049,7 @@ wgpu::BindGroup WgpuRnd::CreateMaterialBindGroup(
     const MaterialTexViews& texViews,
     wgpu::Sampler& diffuseSampler, wgpu::Sampler& mapSampler)
 {
-    wgpu::BindGroupEntry entries[11] = {};
+    wgpu::BindGroupEntry entries[14] = {};
 
     entries[0].binding = 0;
     entries[0].buffer = mMaterialRing.Buffer();
@@ -2005,9 +2086,21 @@ wgpu::BindGroup WgpuRnd::CreateMaterialBindGroup(
     entries[10].binding = 10;
     entries[10].textureView = texViews.normDetail;
 
+    // World refraction: the refract normal map, and the frame it refracts as
+    // it stands at this draw (retail GetCurrentFrameTex).
+    entries[11].binding = 11;
+    entries[11].textureView = texViews.refractNormal ? texViews.refractNormal
+                                                     : mFlatNormalTexView;
+
+    entries[12].binding = 12;
+    entries[12].textureView = RefractFrameView();
+
+    entries[13].binding = 13;
+    entries[13].sampler = mFrameSampler;
+
     wgpu::BindGroupDescriptor desc{};
     desc.layout = mPipelines.MaterialLayout();
-    desc.entryCount = 11;
+    desc.entryCount = 14;
     desc.entries = entries;
 
     return mGpu.Device().CreateBindGroup(&desc);

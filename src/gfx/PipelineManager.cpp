@@ -81,7 +81,7 @@ void PipelineManager::Init(GpuDevice* device) {
     mLayouts[0] = dev.CreateBindGroupLayout(&sceneLayoutDesc);
 
     // Group 1: Material uniforms + textures + samplers
-    wgpu::BindGroupLayoutEntry matEntries[11] = {};
+    wgpu::BindGroupLayoutEntry matEntries[14] = {};
     matEntries[0].binding = 0;
     matEntries[0].visibility = wgpu::ShaderStage::Vertex | wgpu::ShaderStage::Fragment;
     matEntries[0].buffer.type = wgpu::BufferBindingType::Uniform;
@@ -142,9 +142,28 @@ void PipelineManager::Init(GpuDevice* device) {
     matEntries[10].texture.sampleType = wgpu::TextureSampleType::Float;
     matEntries[10].texture.viewDimension = wgpu::TextureViewDimension::e2D;
 
+    // Bindings 11-13: retail refraction (RB3 standard.ps option bit 46,
+    // mRefractWorld). 11 the refract normal map (retail tf1), 12 the frame
+    // the material refracts (retail tf6, DxRnd::GetCurrentFrameTex: the
+    // pre-process buffer SavePreBuffer fills at world end, or the post buffer
+    // once the world's post-processing has run), 13 its linear clamp sampler.
+    matEntries[11].binding = 11;
+    matEntries[11].visibility = wgpu::ShaderStage::Fragment;
+    matEntries[11].texture.sampleType = wgpu::TextureSampleType::Float;
+    matEntries[11].texture.viewDimension = wgpu::TextureViewDimension::e2D;
+
+    matEntries[12].binding = 12;
+    matEntries[12].visibility = wgpu::ShaderStage::Fragment;
+    matEntries[12].texture.sampleType = wgpu::TextureSampleType::Float;
+    matEntries[12].texture.viewDimension = wgpu::TextureViewDimension::e2D;
+
+    matEntries[13].binding = 13;
+    matEntries[13].visibility = wgpu::ShaderStage::Fragment;
+    matEntries[13].sampler.type = wgpu::SamplerBindingType::Filtering;
+
     wgpu::BindGroupLayoutDescriptor matLayoutDesc{};
     matLayoutDesc.label = "MaterialBGL";
-    matLayoutDesc.entryCount = 11;
+    matLayoutDesc.entryCount = 14;
     matLayoutDesc.entries = matEntries;
     mLayouts[1] = dev.CreateBindGroupLayout(&matLayoutDesc);
 
