@@ -42,7 +42,11 @@ void RndBitmap::Load(BinStream &bs) {
 }
 
 // --- RndTex::Load ---
-void RndTex::Load(BinStream &bs) {
+// WEAK: a fallback. A consumer whose decomp compiles the real body (DC3:
+// src/system/rndobj/Tex.cpp) must win without --allow-multiple-definition, which Apple ld
+// does not have; a strong duplicate here is a macOS link error and, on Linux,
+// a silent "first object wins" choice.
+__attribute__((weak)) void RndTex::Load(BinStream &bs) {
     PreLoad(bs);
     PostLoad(bs);
 }
@@ -52,7 +56,7 @@ void RndTex::Load(BinStream &bs) {
 // Pushes revision to rev stack for PostLoad to pop.
 // Based on DC3 Save: SAVE_REVS(11, 0), SAVE_SUPERCLASS(Object),
 //   bs << mWidth << mHeight << mBpp << mFilepath
-void RndTex::PreLoad(BinStream &bs) {
+__attribute__((weak)) void RndTex::PreLoad(BinStream &bs) {
     LOAD_REVS(bs);
 #ifdef HX_NATIVE
     if (d.rev > 20) {
@@ -69,7 +73,7 @@ void RndTex::PreLoad(BinStream &bs) {
 // Reads remaining properties and bitmap data.
 // Based on DC3 Save: bs << mMipMapK << mType << (bool)mNumMips << mOptimizeForPS3;
 //   if (bs.Cached()) mBitmap.Save(bs);
-void RndTex::PostLoad(BinStream &bs) {
+__attribute__((weak)) void RndTex::PostLoad(BinStream &bs) {
     int revs = bs.PopRev(this);
     unsigned short rev = getHmxRev(revs);
 

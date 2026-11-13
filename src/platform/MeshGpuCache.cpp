@@ -92,6 +92,18 @@ GpuMeshData* GetMeshGpuData(RndMesh* mesh) {
 }
 
 // Invalidate GPU cache when mesh data changes (called from RndMesh::Sync)
+// WEAK in the DC3 rndobj shape only: a fallback. A consumer whose decomp
+// compiles the real body (DC3: src/system/rndobj/Mesh.cpp, which calls
+// InvalidateGpuMesh()) must win without --allow-multiple-definition, which
+// Apple ld does not have; a strong duplicate here is a macOS link error and,
+// on Linux, a silent "first object wins" choice.
+// STRONG in the RB3-Wii shape: rb3 links its own WEAK assert-unreachable stub
+// for this symbol (rb3 native/src/rndobj_synth_link_stubs.s), so a weak engine
+// body would let the stub win -- RndMesh::Sync would stop invalidating the GPU
+// mesh cache and rb3's stub census would fail.
+#if !defined(MILO_RNDOBJ_SHAPE_RB3WII)
+__attribute__((weak))
+#endif
 void RndMesh::OnSync(int flags) {
     auto it = sMeshGpuData.find(this);
     if (it != sMeshGpuData.end()) {
