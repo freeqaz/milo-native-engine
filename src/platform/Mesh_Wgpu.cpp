@@ -264,6 +264,20 @@ void DrawMeshImmediate(RndMesh* mesh) {
     // --- Material (group 1) ---
     MaterialParams matParams = BuildMaterialParams(mat, isTextMesh);
     matParams.uniforms.bloomMaskScale = bloomMaskScale;
+    // Text glyph colour. BuildMaterialParams routes a text mesh's atlas alpha
+    // into RGB (useAlphaAsRGB), which is right for an atlas that keeps its
+    // glyphs in alpha with RGB == 0 and throws away the colour of one that
+    // does not. A game whose font atlases carry glyph colour in RGB says so
+    // through QueryDrawMaterialPolicy().isColorIcon -- the same field, and the
+    // same exclusion, as RB3MaterialBinder's colour-icon fonts. Without it
+    // DC3's button glyphs (icons_buttons.mat: a coloured disc with a dark
+    // letter) draw as blank white discs and its two checkbox glyphs ('a'/'b'
+    // in icons.mat) as the same white square.
+    if (isTextMesh && matParams.uniforms.useAlphaAsRGB != 0.0f &&
+        TextMeshKeepsAtlasRGB(mesh, rawMat, skinned)) {
+        matParams.uniforms.useAlphaAsRGB = 0.0f;
+        matParams.heuristics &= ~(uint32_t)kHeuristicTextAlphaAsRGB;
+    }
     heuristics |= matParams.heuristics;
 
     uint32_t matOffset = gWgpuRnd->MaterialRing().Write(
