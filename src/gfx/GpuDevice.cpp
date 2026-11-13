@@ -282,7 +282,8 @@ void GpuDevice::ConfigureSurface() {
     config.usage = wgpu::TextureUsage::RenderAttachment;
     // CopySrc where the surface offers it: a full-frame pass that reads the
     // finished frame (gfx/DisplayRamp) copies it out first.
-    if (caps.usages & wgpu::TextureUsage::CopySrc)
+    mSurfaceCopySrc = (caps.usages & wgpu::TextureUsage::CopySrc) != 0;
+    if (mSurfaceCopySrc)
         config.usage = config.usage | wgpu::TextureUsage::CopySrc;
     config.presentMode = wgpu::PresentMode::Fifo; // VSync
     config.alphaMode = wgpu::CompositeAlphaMode::Opaque;
@@ -331,6 +332,23 @@ wgpu::TextureView GpuDevice::AcquireHeadlessFrame() {
 bool GpuDevice::ReadbackHeadlessFrame(uint8_t* outPixels, size_t outSize) {
     if (!mHeadlessTex) return false;
     return ReadbackTexture(mHeadlessTex, mWidth, mHeight, outPixels, outSize);
+}
+
+bool GpuDevice::ReadbackFrame(uint8_t* outPixels, size_t outSize) {
+    if (mHeadless) return ReadbackHeadlessFrame(outPixels, outSize);
+    if (!mSurfaceTex || !mSurfaceCopySrc) return false;
+    int w = (int)mSurfaceTex.GetWidth(), h = (int)mSurfaceTex.GetHeight();
+    if ((size_t)w * h * 4 > outSize) return false;
+    if (!ReadbackTexture(mSurfaceTex, w, h, outPixels, outSize)) return false;
+    if (mSurfaceFormat == wgpu::TextureFormat::BGRA8Unorm ||
+        mSurfaceFormat == wgpu::TextureFormat::BGRA8UnormSrgb) {
+        for (size_t i = 0, n = (size_t)w * h * 4; i < n; i += 4) {
+            uint8_t b = outPixels[i];
+            outPixels[i] = outPixels[i + 2];
+            outPixels[i + 2] = b;
+        }
+    }
+    return true;
 }
 
 bool GpuDevice::ReadbackTexture(const wgpu::Texture& tex, int w, int h,

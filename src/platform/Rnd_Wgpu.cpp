@@ -20,6 +20,7 @@
 #include "rndobj/Dir.h"
 #include "rndobj/HiResScreen.h"
 #include "rndobj/Mesh.h"
+#include "rndobj/Trans.h"
 #include "rndobj/Utl.h"
 #include "gfx/VertexFormats.h"
 #include "obj/Dir.h"
@@ -563,6 +564,7 @@ void WgpuRnd::EndActivePass() {
     FlushTransparentDraws();
     mPass.End();
     mInPass = false;
+    mClipScissorSet = false; // the next pass starts with a full scissor
 }
 
 void WgpuRnd::ClearDepthForOverlay() {
@@ -1118,6 +1120,126 @@ void WgpuRnd::ApplyViewport() {
     uint32_t width = vp.Width ? vp.Width : mCurrentTargetWidth;
     uint32_t height = vp.Height ? vp.Height : mCurrentTargetHeight;
     mPass.SetViewport((float)vp.X, (float)vp.Y, (float)width, (float)height, vp.MinZ, vp.MaxZ);
+    // A pass begun while clip planes are pushed starts with a full scissor.
+    if (!mClipStack.empty()) ApplyClipScissor();
+}
+
+// ----------------------------------------------------------------------------
+// Clip planes (RndDrawable::mClipPlanes) as a scissor rectangle
+// ----------------------------------------------------------------------------
+
+// The hooks exist only in shapes whose Rnd declares them; see RndShape_DC3.h.
+#ifdef MILO_RNDOBJ_SHAPE_HAS_CLIP_PLANES
+namespace {
+struct ScreenPoint { float x, y; bool ok; };
+
+// `p` through the row-major, row-vector view-projection `vp` (CamSceneMatrices)
+// to pixels of a viewport at (vx, vy, vw, vh): WebGPU/D3D NDC, y up.
+ScreenPoint ProjectToPixels(const float* vp, const Vector3& p, float vx, float vy, float vw,
+                            float vh) {
+    float c[4];
+    for (int j = 0; j < 4; j++)
+        c[j] = p.x * vp[0 * 4 + j] + p.y * vp[1 * 4 + j] + p.z * vp[2 * 4 + j] + vp[3 * 4 + j];
+    if (!(c[3] > 1e-6f)) return {0, 0, false};
+    const float nx = c[0] / c[3], ny = c[1] / c[3];
+    return {vx + (nx * 0.5f + 0.5f) * vw, vy + (0.5f - ny * 0.5f) * vh, true};
+}
+} // namespace
+
+void WgpuRnd::PushClipPlanesInternal(ObjPtrVec<RndTransformable>& planes) {
+    uint32_t tw = mCurrentTargetWidth ? mCurrentTargetWidth : (uint32_t)mGpu.WindowWidth();
+    uint32_t th = mCurrentTargetHeight ? mCurrentTargetHeight : (uint32_t)mGpu.WindowHeight();
+    ClipRect r = mClipStack.empty() ? ClipRect{0.0f, 0.0f, (float)tw, (float)th}
+                                    : mClipStack.back();
+    RndCam* cam = RndCam::Current();
+    if (cam) {
+        float vp[16];
+        CamSceneMatrices(cam, vp, nullptr);
+        const Viewport& v = GetViewport();
+        const float vx = (float)v.X, vy = (float)v.Y;
+        const float vw = (float)(v.Width ? v.Width : tw), vh = (float)(v.Height ? v.Height : th);
+        const Vector3& fwd = cam->WorldXfm().m.y; // Milo cameras look down +y
+        for (int i = 0; i < (int)planes.size(); i++) {
+            RndTransformable* t = planes[i];
+            if (!t) continue;
+            const Transform& xfm = t->WorldXfm();
+            // DxRnd: Plane(xfm.v, -xfm.m.z), the kept side is where it is >= 0.
+            Vector3 n(-xfm.m.z.x, -xfm.m.z.y, -xfm.m.z.z);
+            const float nLen = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+            if (!(nLen > 0.0f)) continue;
+            n.Set(n.x / nLen, n.y / nLen, n.z / nLen);
+            // A direction in the plane, across the camera's view: its screen
+            // image is the plane's line at the origin's depth.
+            Vector3 along(n.y * fwd.z - n.z * fwd.y, n.z * fwd.x - n.x * fwd.z,
+                          n.x * fwd.y - n.y * fwd.x);
+            const float aLen = std::sqrt(along.x * along.x + along.y * along.y + along.z * along.z);
+            const ScreenPoint o = ProjectToPixels(vp, xfm.v, vx, vy, vw, vh);
+            const ScreenPoint a = ProjectToPixels(
+                vp, Vector3(xfm.v.x + along.x / aLen, xfm.v.y + along.y / aLen,
+                            xfm.v.z + along.z / aLen), vx, vy, vw, vh);
+            const ScreenPoint in = ProjectToPixels(
+                vp, Vector3(xfm.v.x + n.x, xfm.v.y + n.y, xfm.v.z + n.z), vx, vy, vw, vh);
+            const float dx = a.x - o.x, dy = a.y - o.y;
+            const bool vertical = std::fabs(dx) <= 0.01f * std::fabs(dy);
+            const bool horizontal = std::fabs(dy) <= 0.01f * std::fabs(dx);
+            if (!(aLen > 1e-6f) || !o.ok || !a.ok || !in.ok || (!vertical && !horizontal)) {
+                static bool sWarned = false;
+                if (!sWarned) {
+                    sWarned = true;
+                    fprintf(stderr, "WgpuRnd: clip plane %s is not edge-on to the camera "
+                                    "(screen direction %.2f,%.2f); not clipped (a scissor "
+                                    "edge must be vertical or horizontal on screen)\n",
+                            t->Name(), dx, dy);
+                }
+                continue;
+            }
+            if (vertical) {
+                if (in.x >= o.x) r.x0 = std::max(r.x0, o.x);
+                else r.x1 = std::min(r.x1, o.x);
+            } else {
+                if (in.y >= o.y) r.y0 = std::max(r.y0, o.y);
+                else r.y1 = std::min(r.y1, o.y);
+            }
+        }
+    }
+    mClipStack.push_back(r);
+    ApplyClipScissor();
+}
+
+void WgpuRnd::PopClipPlanesInternal(ObjPtrVec<RndTransformable>&) {
+    if (!mClipStack.empty()) mClipStack.pop_back();
+    ApplyClipScissor();
+}
+#endif // MILO_RNDOBJ_SHAPE_HAS_CLIP_PLANES
+
+bool WgpuRnd::ClipScissor(int rect[4]) const {
+    if (mClipStack.empty()) return false;
+    const ClipRect& r = mClipStack.back();
+    const int x0 = (int)std::floor(std::max(r.x0, 0.0f));
+    const int y0 = (int)std::floor(std::max(r.y0, 0.0f));
+    const int x1 = std::max(x0, (int)std::ceil(r.x1));
+    const int y1 = std::max(y0, (int)std::ceil(r.y1));
+    rect[0] = x0;
+    rect[1] = y0;
+    rect[2] = x1 - x0;
+    rect[3] = y1 - y0;
+    return true;
+}
+
+void WgpuRnd::ApplyClipScissor() {
+    if (!mInPass) return;
+    const uint32_t tw = mCurrentTargetWidth, th = mCurrentTargetHeight;
+    int r[4];
+    if (!ClipScissor(r)) {
+        if (mClipScissorSet) mPass.SetScissorRect(0, 0, tw, th);
+        mClipScissorSet = false;
+        return;
+    }
+    // The pass's attachment bounds the scissor (a validation error otherwise).
+    const uint32_t x = std::min((uint32_t)r[0], tw), y = std::min((uint32_t)r[1], th);
+    const uint32_t w = std::min((uint32_t)r[2], tw - x), h = std::min((uint32_t)r[3], th - y);
+    mPass.SetScissorRect(x, y, w, h);
+    mClipScissorSet = true;
 }
 
 void WgpuRnd::BeginFramePass(bool clear) {
@@ -1687,6 +1809,7 @@ void WgpuRnd::EndDrawing() {
         MaybeCaptureFrame();
         MaybeEncodeVideoFrame();
         FrameCapture::Get().EndFrame();
+        if (mFrameReadyCallback) mFrameReadyCallback();
 
         if (!mGpu.IsHeadless()) {
             mGpu.PresentFrame();

@@ -83,6 +83,13 @@ public:
     // outPixels (tightly packed rows). Synchronous; a debugging/capture aid.
     bool ReadbackTexture(const wgpu::Texture& tex, int w, int h, uint8_t* outPixels, size_t outSize);
     wgpu::Texture& HeadlessTex() { return mHeadlessTex; }
+    // The frame being drawn, as RGBA8 rows: the headless target, or -- windowed
+    // -- the swapchain texture, which exists only between AcquireNextFrame and
+    // PresentFrame, so a windowed caller reads it from WgpuRnd's frame-ready
+    // callback (after the frame's submit, before present). BGRA surfaces are
+    // swizzled. False when there is no frame to read or the surface was not
+    // configured with CopySrc.
+    bool ReadbackFrame(uint8_t* outPixels, size_t outSize);
 
     // Synchronously spin up + drain the driver's first-use submission/allocator
     // machinery, so it never races a thread started right after (e.g. audio).
@@ -131,6 +138,7 @@ private:
 
     // Surface texture (stored for CopyTextureToTexture in web frame resolve)
     wgpu::Texture mSurfaceTex;
+    bool mSurfaceCopySrc = false; // surface configured with CopySrc usage
 
     // Headless offscreen target
     wgpu::Texture mHeadlessTex;
