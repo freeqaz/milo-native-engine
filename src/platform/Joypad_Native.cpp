@@ -22,6 +22,7 @@
 #include "rndobj/Rnd.h"
 #include "ui/UI.h"
 #include "platform/JoypadScriptHook.h"
+#include "platform/JoypadKeyMap.h"
 #ifdef DC3_HTTP_SERVER
 #include "platform/HttpServer.h"
 #endif
@@ -36,6 +37,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <vector>
 #include <algorithm>
 
@@ -167,6 +169,141 @@ static void InitWebInput() {
 #endif // __EMSCRIPTEN__
 
 static const float kTriggerThreshold = 0.3f;
+
+// ============================================================================
+// Desktop keyboard map (platform/JoypadKeyMap.h)
+// ============================================================================
+
+const char *JoypadXboxButtonName(int button) {
+    switch (button) {
+    case kPad_L2:          return "LT";
+    case kPad_R2:          return "RT";
+    case kPad_L1:          return "LB";
+    case kPad_R1:          return "RB";
+    case kPad_Tri:         return "Y";
+    case kPad_Circle:      return "B";
+    case kPad_X:           return "A";
+    case kPad_Square:      return "X";
+    case kPad_Select:      return "Back";
+    case kPad_L3:          return "L3";
+    case kPad_R3:          return "R3";
+    case kPad_Start:       return "Start";
+    case kPad_DUp:         return "D-pad up";
+    case kPad_DRight:      return "D-pad right";
+    case kPad_DDown:       return "D-pad down";
+    case kPad_DLeft:       return "D-pad left";
+    case kPad_LStickUp:    return "LS up";
+    case kPad_LStickRight: return "LS right";
+    case kPad_LStickDown:  return "LS down";
+    case kPad_LStickLeft:  return "LS left";
+    case kPad_RStickUp:    return "RS up";
+    case kPad_RStickRight: return "RS right";
+    case kPad_RStickDown:  return "RS down";
+    case kPad_RStickLeft:  return "RS left";
+    default:               return "?";
+    }
+}
+
+#ifndef __EMSCRIPTEN__
+// Mirrors the web map in InitWebInput (minus its WASD D-pad). X, Y, Z and C are
+// free in every Milo port's map: rb3's own keyboard (rb3_joypad_native.cpp)
+// uses 1-5/A-S-D-F-G (frets), J/K (strum), Enter, Backspace, Esc, Tab, Q, E and
+// Space. Z/C sit either side of X under the left hand, as LT/RT sit either side
+// of the bumpers' Q/E row.
+static const JoypadKeyBinding kKeyBindings[] = {
+    {GLFW_KEY_UP,        kPad_DUp,     "Up",        "D-pad"},
+    {GLFW_KEY_DOWN,      kPad_DDown,   "Down",      "D-pad"},
+    {GLFW_KEY_LEFT,      kPad_DLeft,   "Left",      "D-pad"},
+    {GLFW_KEY_RIGHT,     kPad_DRight,  "Right",     "D-pad"},
+    {GLFW_KEY_ENTER,     kPad_X,       "Enter",     "A"},
+    {GLFW_KEY_ESCAPE,    kPad_Circle,  "Esc",       "B"},
+    {GLFW_KEY_BACKSPACE, kPad_Circle,  "Backspace", "B"},
+    {GLFW_KEY_X,         kPad_Square,  "X",         "X"},
+    {GLFW_KEY_Y,         kPad_Tri,     "Y",         "Y"},
+    {GLFW_KEY_SPACE,     kPad_Start,   "Space",     "Start"},
+    {GLFW_KEY_TAB,       kPad_Select,  "Tab",       "Back"},
+    {GLFW_KEY_Q,         kPad_L1,      "Q",         "LB"},
+    {GLFW_KEY_E,         kPad_R1,      "E",         "RB"},
+    {GLFW_KEY_Z,         kPad_L2,      "Z",         "LT"},
+    {GLFW_KEY_C,         kPad_R2,      "C",         "RT"},
+};
+static const int kNumKeyBindings = (int)(sizeof(kKeyBindings) / sizeof(kKeyBindings[0]));
+#else
+static const JoypadKeyBinding *const kKeyBindings = nullptr;
+static const int kNumKeyBindings = 0;
+#endif
+
+static JoypadQuitKeyFn gQuitKeyHandler = nullptr;
+
+const JoypadKeyBinding *JoypadKeyBindings(int *count) {
+    if (count) *count = kNumKeyBindings;
+    return kKeyBindings;
+}
+
+void JoypadSetQuitKeyHandler(JoypadQuitKeyFn fn) { gQuitKeyHandler = fn; }
+
+#ifndef __EMSCRIPTEN__
+static bool HostModifierHeld(JoypadKeyDownFn keyDown, void *ctx) {
+    return keyDown(GLFW_KEY_LEFT_CONTROL, ctx) || keyDown(GLFW_KEY_RIGHT_CONTROL, ctx) ||
+           keyDown(GLFW_KEY_LEFT_ALT, ctx) || keyDown(GLFW_KEY_RIGHT_ALT, ctx) ||
+           keyDown(GLFW_KEY_LEFT_SUPER, ctx) || keyDown(GLFW_KEY_RIGHT_SUPER, ctx);
+}
+#endif
+
+unsigned int JoypadKeyboardButtons(JoypadKeyDownFn keyDown, void *ctx) {
+#ifndef __EMSCRIPTEN__
+    if (HostModifierHeld(keyDown, ctx)) return 0;
+    unsigned int buttons = 0;
+    for (int i = 0; i < kNumKeyBindings; i++) {
+        if (keyDown(kKeyBindings[i].key, ctx)) buttons |= (1u << kKeyBindings[i].button);
+    }
+    return buttons;
+#else
+    (void)keyDown;
+    (void)ctx;
+    return 0;
+#endif
+}
+
+bool JoypadKeyboardQuitChordHeld(JoypadKeyDownFn keyDown, void *ctx) {
+#ifndef __EMSCRIPTEN__
+    bool ctrl = keyDown(GLFW_KEY_LEFT_CONTROL, ctx) || keyDown(GLFW_KEY_RIGHT_CONTROL, ctx);
+    return ctrl && keyDown(GLFW_KEY_Q, ctx);
+#else
+    (void)keyDown;
+    (void)ctx;
+    return false;
+#endif
+}
+
+void JoypadPrintKeyMap(const char *prefix) {
+    std::string line = prefix ? prefix : "";
+    for (int i = 0; i < kNumKeyBindings;) {
+        int j = i;
+        std::string keys;
+        while (j < kNumKeyBindings && !strcmp(kKeyBindings[j].padName, kKeyBindings[i].padName)) {
+            if (j > i) keys += "/";
+            keys += kKeyBindings[j].keyName;
+            j++;
+        }
+        if (i > 0) line += ", ";
+        line += keys + " = " + kKeyBindings[i].padName;
+        i = j;
+    }
+    if (gQuitKeyHandler) line += ", Ctrl+Q = quit";
+    printf("%s\n", line.c_str());
+    fflush(stdout);
+}
+
+// MILO_INPUT_LOG=1: one line per pad button message JoypadPoll sends, so a
+// test (or a person) can see which button and action a key produced.
+static bool InputLogEnabled() {
+    static const bool on = [] {
+        const char *v = getenv("MILO_INPUT_LOG");
+        return v && v[0] && strcmp(v, "0") != 0;
+    }();
+    return on;
+}
 
 // ============================================================================
 // Headless scripted input
@@ -502,18 +639,48 @@ void JoypadPoll() {
                 data->mSticks[1][1] = gpState.axes[GLFW_GAMEPAD_AXIS_RIGHT_Y];
             }
 
-            // --- Keyboard as pad 0 fallback ---
+            // --- Keyboard as pad 0 fallback (platform/JoypadKeyMap.h) ---
             if (pad == 0) {
-                if (glfwGetKey(gNativeWindow, GLFW_KEY_UP)    == GLFW_PRESS) newButtons |= (1 << kPad_DUp);
-                if (glfwGetKey(gNativeWindow, GLFW_KEY_DOWN)  == GLFW_PRESS) newButtons |= (1 << kPad_DDown);
-                if (glfwGetKey(gNativeWindow, GLFW_KEY_LEFT)  == GLFW_PRESS) newButtons |= (1 << kPad_DLeft);
-                if (glfwGetKey(gNativeWindow, GLFW_KEY_RIGHT) == GLFW_PRESS) newButtons |= (1 << kPad_DRight);
-                if (glfwGetKey(gNativeWindow, GLFW_KEY_ENTER) == GLFW_PRESS) newButtons |= (1 << kPad_X);
-                if (glfwGetKey(gNativeWindow, GLFW_KEY_ESCAPE)== GLFW_PRESS) newButtons |= (1 << kPad_Circle);
-                if (glfwGetKey(gNativeWindow, GLFW_KEY_SPACE) == GLFW_PRESS) newButtons |= (1 << kPad_Start);
-                if (glfwGetKey(gNativeWindow, GLFW_KEY_TAB)   == GLFW_PRESS) newButtons |= (1 << kPad_Select);
-                if (glfwGetKey(gNativeWindow, GLFW_KEY_Q)     == GLFW_PRESS) newButtons |= (1 << kPad_L1);
-                if (glfwGetKey(gNativeWindow, GLFW_KEY_E)     == GLFW_PRESS) newButtons |= (1 << kPad_R1);
+                // Sticky keys: a tap that starts and ends between two polls
+                // (a slow frame, `xdotool key`) still reads as pressed once,
+                // instead of being lost.
+                static GLFWwindow *sStickyWindow = nullptr;
+                if (sStickyWindow != gNativeWindow) {
+                    glfwSetInputMode(gNativeWindow, GLFW_STICKY_KEYS, GLFW_TRUE);
+                    sStickyWindow = gNativeWindow;
+                }
+                // Read each key at most once per poll, on first use: with
+                // sticky keys a second glfwGetKey of a tapped key would
+                // already say RELEASE.
+                struct KeySnapshot {
+                    bool read[GLFW_KEY_LAST + 1];
+                    bool down[GLFW_KEY_LAST + 1];
+                } snapshot;
+                memset(&snapshot, 0, sizeof(snapshot));
+                auto fromSnapshot = [](int key, void *ctx) -> bool {
+                    KeySnapshot *s = (KeySnapshot *)ctx;
+                    if (key < GLFW_KEY_SPACE || key > GLFW_KEY_LAST) return false;
+                    if (!s->read[key]) {
+                        s->read[key] = true;
+                        s->down[key] = glfwGetKey(gNativeWindow, key) == GLFW_PRESS;
+                    }
+                    return s->down[key];
+                };
+                unsigned int kb = JoypadKeyboardButtons(fromSnapshot, &snapshot);
+                newButtons |= kb;
+                if (!hasGamepad) {
+                    // A key is a fully pulled trigger.
+                    data->mTriggers[0] = (kb & (1 << kPad_L2)) ? 1.0f : 0.0f;
+                    data->mTriggers[1] = (kb & (1 << kPad_R2)) ? 1.0f : 0.0f;
+                }
+                // Quit chord: once per press.
+                static bool sQuitChordWasHeld = false;
+                bool quitHeld = JoypadKeyboardQuitChordHeld(fromSnapshot, &snapshot);
+                if (quitHeld && !sQuitChordWasHeld && gQuitKeyHandler) {
+                    printf("Joypad: Ctrl+Q pressed: quitting\n");
+                    gQuitKeyHandler();
+                }
+                sQuitChordWasHeld = quitHeld;
             }
         } else if (pad == 0) {
             // --- Headless mode: scripted input (pad 0 only) ---
@@ -538,21 +705,27 @@ void JoypadPoll() {
         data->mNewReleased = oldButtons & ~newButtons;
         data->mButtons = newButtons;
 
-        // Native button-to-action mapping (DTA config may not be loaded)
+        // Native button-to-action mapping, for presses ButtonToAction cannot
+        // map yet (the first press of a session, before the pad has a
+        // controller type). It must agree with joypad.dta's
+        // DEFAULT_BUTTON_MEANINGS / GLOBAL_BUTTON_MEANINGS, which answer every
+        // later press: X = ShellOption, Y = Option, Back = ViewModify. (It
+        // had X/Y/Back as ViewModify/ShellOption/Option, so a session's first
+        // X press and its release carried different actions.)
         auto nativeButtonToAction = [](JoypadButton btn) -> JoypadAction {
             switch (btn) {
             case kPad_X:        return kAction_Confirm;     // A button
             case kPad_Circle:   return kAction_Cancel;      // B button
             case kPad_Start:    return kAction_Start;
-            case kPad_Select:   return kAction_Option;
+            case kPad_Select:   return kAction_ViewModify;  // Back
             case kPad_DUp:      return kAction_Up;
             case kPad_DDown:    return kAction_Down;
             case kPad_DLeft:    return kAction_Left;
             case kPad_DRight:   return kAction_Right;
             case kPad_L1:       return kAction_PageUp;      // LB
             case kPad_R1:       return kAction_PageDown;    // RB
-            case kPad_Square:   return kAction_ViewModify;  // X button
-            case kPad_Tri:      return kAction_ShellOption;  // Y button
+            case kPad_Square:   return kAction_ShellOption; // X button
+            case kPad_Tri:      return kAction_Option;      // Y button
             case kPad_LStickUp:    return kAction_Up;
             case kPad_LStickDown:  return kAction_Down;
             case kPad_LStickLeft:  return kAction_Left;
@@ -567,6 +740,9 @@ void JoypadPoll() {
                 JoypadAction action = ButtonToAction((JoypadButton)b, data->mControllerType);
                 if (action == kAction_None)
                     action = nativeButtonToAction((JoypadButton)b);
+                if (InputLogEnabled())
+                    printf("Joypad: down pad=%d button=%d (%s) action=%d\n", pad, b,
+                        JoypadXboxButtonName(b), (int)action);
                 ButtonDownMsg msg(data->mUser, (JoypadButton)b, action, pad);
                 JoypadPushThroughMsg(msg);
             }
@@ -576,6 +752,9 @@ void JoypadPoll() {
                 JoypadAction action = ButtonToAction((JoypadButton)b, data->mControllerType);
                 if (action == kAction_None)
                     action = nativeButtonToAction((JoypadButton)b);
+                if (InputLogEnabled())
+                    printf("Joypad: up pad=%d button=%d (%s) action=%d\n", pad, b,
+                        JoypadXboxButtonName(b), (int)action);
                 ButtonUpMsg msg(data->mUser, (JoypadButton)b, action, pad);
                 JoypadPushThroughMsg(msg);
             }
