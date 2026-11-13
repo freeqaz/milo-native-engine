@@ -225,9 +225,38 @@ constexpr int kDrawModeReflection = 8;
 constexpr bool kCamSelectSetsViewport = true;
 
 // ---- render-to-texture -----------------------------------------------------
-// DC3's RndTexRenderer::DrawToTexture leaves each material's alpha-write state
-// alone while it draws into the output texture.
-constexpr bool kRenderTargetForcesAlphaWrite = false;
+// DC3 writes destination alpha for every material drawn into a render target.
+// The image's colour-write mask is chosen per material select by
+// SetColorWriteMask (dc3-decomp src/system/rndobj/Shader.cpp, 0x8269E770,
+// 100% matched):
+//     alpha = mForceAlphaWrite ? mAlphaWrite
+//                              : (optAlpha || TheNgRnd.Offscreen() || mAlphaWrite)
+// and Offscreen() (DxRnd::Offscreen, also 100% matched) is
+// D3DDevice_GetRenderTarget(0) != BackBuffer(): true for ANY bound target.
+// Nothing in the image's render-target or RndTexRenderer setup narrows this
+// per target, so neither does this rule.
+// So a target's alpha holds what was drawn into it unless the material pins
+// its alpha write with force_alpha_write (MatPinsAlphaWrite below). rb3-xenon,
+// which also compiles this shape, has the same rule without the exemption
+// (its SetColorWriteMask, retail 0x824A5AF8: optAlpha || Offscreen() ||
+// mAlphaWrite), and its material has no force_alpha_write member.
+// Rehearse depends on it: the dancer is hidden by the practice camshots and
+// shown only through world/shared/chars_base.milo's projection.rndtex ->
+// projection.tex -> projection_mesh.mesh (projection.mat, SrcAlpha); with
+// alpha writes off the target's alpha stayed at the clear value 0 and the
+// dancer was invisible (dc3-decomp PLAN G-11).
+constexpr bool kRenderTargetForcesAlphaWrite = true;
+// force_alpha_write: the material's own alpha_write decides, offscreen or not.
+template <class M, class = void> struct MatHasForceAlphaWrite : std::false_type {};
+template <class M>
+struct MatHasForceAlphaWrite<M, std::void_t<decltype(std::declval<const M &>().GetForceAlphaWrite())>>
+    : std::true_type {};
+template <class M> inline bool MatPinsAlphaWrite(const M *m) {
+    if constexpr (MatHasForceAlphaWrite<M>::value)
+        return m && m->GetForceAlphaWrite();
+    else
+        return false;
+}
 // DC3 draws into render targets with the same sRGB-encoded output as the frame.
 constexpr bool kRenderTargetStoresLinear = false;
 

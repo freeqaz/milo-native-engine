@@ -496,6 +496,8 @@ constexpr bool kCamSelectSetsViewport = false;
 // sky by sky_dome.mat with SrcAlpha blending, so without the override the
 // target's alpha stays at the clear value 0 and the cloud layer is invisible.
 constexpr bool kRenderTargetForcesAlphaWrite = true;
+// WiiMat::SetOverrideAlphaWrite has no per-material exemption.
+template <class M> inline bool MatPinsAlphaWrite(const M *) { return false; }
 // The standard shader sRGB-encodes its output (gfx/standard_wgsl.inc,
 // linearToSrgb) for the non-sRGB surface, and a render target (RGBA8Unorm on
 // that surface) is sampled back as raw data, so a material drawn through a
