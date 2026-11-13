@@ -98,7 +98,11 @@ GLFWwindow *gNativeWindow = nullptr;
 #ifndef MILO_RNDOBJ_SHAPE_RB3WII
 // DC3-shaped consumers link no UIManager instance of their own here; RB3-Wii's
 // fork defines `UIManager& TheUI` itself (ui/UIManager.cpp).
-UIManager* TheUI = nullptr;
+// WEAK: a fallback. A consumer whose decomp compiles the real body (DC3:
+// src/lazer/meta_ham/HamUI.cpp) must win without --allow-multiple-definition, which Apple ld
+// does not have; a strong duplicate here is a macOS link error and, on Linux,
+// a silent "first object wins" choice.
+__attribute__((weak)) UIManager* TheUI = nullptr;
 #endif
 
 #ifdef MILO_RNDOBJ_SHAPE_HAS_NGRND

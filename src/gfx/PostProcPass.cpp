@@ -4,6 +4,7 @@
 #include "rndobj/ColorXfm.h"
 #include "platform/rndshape/RndShape.h"
 #include "gfx/RB3RetailPost.h"
+#include "platform/TexGpu.h"
 
 #include <cstring>
 #include <cstdlib>
@@ -28,11 +29,13 @@ struct PostProcUniforms {
     float flickerMul;
     float bloomColor[4];
     float time;
-    float _pad0;
+    float noiseMode;     // 0 procedural grain (noiseIntensity), 1 map overlay, 2 map midtone
     float _pad1;
     float _pad2;
+    float noiseSeeds[4];   // retail kPS_NoiseSeeds (c112)
+    float noiseParams[4];  // retail kPS_NoiseParams (c113): baseScale.xy, topScale, intensity
 };
-static_assert(sizeof(PostProcUniforms) == 160, "PostProcUniforms must be 160 bytes");
+static_assert(sizeof(PostProcUniforms) == 192, "PostProcUniforms must be 192 bytes");
 
 static const char* kPostProcShaderSource = R"WGSL(
 struct PostProcUB {
@@ -55,15 +58,19 @@ struct PostProcUB {
     flickerMul: f32,
     bloomColor: vec4f,
     time: f32,
-    _pad0: f32,
+    noiseMode: f32,
     _pad1: f32,
     _pad2: f32,
+    noiseSeeds: vec4f,
+    noiseParams: vec4f,
 };
 
 @group(0) @binding(0) var sceneTex: texture_2d<f32>;
 @group(0) @binding(1) var sceneSampler: sampler;
 @group(0) @binding(2) var<uniform> pp: PostProcUB;
 @group(0) @binding(3) var bloomTex: texture_2d<f32>;
+@group(0) @binding(4) var noiseTex: texture_2d<f32>;
+@group(0) @binding(5) var noiseSampler: sampler;
 
 struct VOut {
     @builtin(position) pos: vec4f,
@@ -140,8 +147,9 @@ struct VOut {
         color = color * pp.flickerMul;
     }
 
-    // Noise/grain: procedural hash-based noise overlay
-    if (pp.noiseIntensity != 0.0) {
+    // Noise/grain: procedural hash-based noise, for a consumer whose post-process
+    // exposes no noise map (noiseMode 0). DC3 takes the map path below instead.
+    if (pp.noiseMode < 0.5 && pp.noiseIntensity != 0.0) {
         let px = in.uv * vec2f(textureDimensions(sceneTex));
         let n1 = fract(sin(dot(px + pp.time * 43.17, vec2f(12.9898, 78.233))) * 43758.5453);
         let noise = (n1 - 0.5) * pp.noiseIntensity;
@@ -164,6 +172,34 @@ struct VOut {
         color = 1.0 - (1.0 - color) * (1.0 - bloomContrib * 0.25);
     }
 
+    // The image's noise (postprocess.ps option bits 0x4 / 0x800000000000, read
+    // from the shipped xbox_shaders microcode; constants from NgPostProc::
+    // CheckNoise). n = map(base uv) * map(top uv), overlay-blended into the
+    // bloom-screened colour S. Plain form: per channel, 2nS below 0.5 and
+    // 1 - 2(1-n)(1-S) above, mixed in at the intensity. Midtone form: the overlay
+    // takes sqrt(n) and branches on the luma L = (0.3,0.59,0.11).S, and its weight
+    // is intensity * 6.75 L (1-L)^2, which peaks at 1 for L = 1/3.
+    if (pp.noiseMode > 0.5) {
+        let baseUv = (in.uv + pp.noiseSeeds.xy) * pp.noiseParams.xy;
+        let topUv = (in.uv + pp.noiseSeeds.zw) * pp.noiseParams.xy * pp.noiseParams.z;
+        let n = textureSample(noiseTex, noiseSampler, baseUv).rgb *
+                textureSample(noiseTex, noiseSampler, topUv).rgb;
+        let s = clamp(color, vec3f(0.0), vec3f(1.0));
+        let intensity = pp.noiseParams.w;
+        if (pp.noiseMode < 1.5) {
+            let lo = 2.0 * n * s;
+            let hi = 1.0 - 2.0 * (1.0 - n) * (1.0 - s);
+            color = mix(s, select(hi, lo, s < vec3f(0.5)), intensity);
+        } else {
+            let r = sqrt(n);
+            let luma = dot(s, vec3f(0.3, 0.59, 0.11));
+            let lo = 2.0 * r * s;
+            let hi = 1.0 - 2.0 * (1.0 - r) * (1.0 - s);
+            let k = intensity * 6.75 * luma * (1.0 - luma) * (1.0 - luma);
+            color = s + k * (select(hi, lo, luma <= 0.5) - s);
+        }
+    }
+
     return vec4f(clamp(color, vec3f(0.0), vec3f(1.0)), 1.0);
 }
 )WGSL";
@@ -172,6 +208,11 @@ void PostProcPass::Init(GpuDevice& gpu) {
     mBloom.Init(gpu);
     SamplerDesc sd{};
     mDefaultSampler = gpu.GetSampler(sd);
+    // The noise map: linear, wrapping (CheckNoise: SetTextureFilter(0xd, 1),
+    // SetTextureClamp(0xd, 0)), no mip filtering.
+    SamplerDesc nd{};
+    nd.mipmapFilter = wgpu::MipmapFilterMode::Nearest;
+    mNoiseSampler = gpu.GetSampler(nd);
 }
 
 void PostProcPass::EnsurePipeline(GpuDevice& gpu) {
@@ -184,7 +225,7 @@ void PostProcPass::EnsurePipeline(GpuDevice& gpu) {
     smDesc.nextInChain = &src;
     mPostProcShader = dev.CreateShaderModule(&smDesc);
 
-    wgpu::BindGroupLayoutEntry entries[4] = {};
+    wgpu::BindGroupLayoutEntry entries[6] = {};
     entries[0].binding = 0;
     entries[0].visibility = wgpu::ShaderStage::Fragment;
     entries[0].texture.sampleType = wgpu::TextureSampleType::Float;
@@ -200,9 +241,16 @@ void PostProcPass::EnsurePipeline(GpuDevice& gpu) {
     entries[3].visibility = wgpu::ShaderStage::Fragment;
     entries[3].texture.sampleType = wgpu::TextureSampleType::Float;
     entries[3].texture.viewDimension = wgpu::TextureViewDimension::e2D;
+    entries[4].binding = 4;
+    entries[4].visibility = wgpu::ShaderStage::Fragment;
+    entries[4].texture.sampleType = wgpu::TextureSampleType::Float;
+    entries[4].texture.viewDimension = wgpu::TextureViewDimension::e2D;
+    entries[5].binding = 5;
+    entries[5].visibility = wgpu::ShaderStage::Fragment;
+    entries[5].sampler.type = wgpu::SamplerBindingType::Filtering;
 
     wgpu::BindGroupLayoutDescriptor bglDesc{};
-    bglDesc.entryCount = 4;
+    bglDesc.entryCount = 6;
     bglDesc.entries = entries;
     mPostProcBGL = dev.CreateBindGroupLayout(&bglDesc);
 
@@ -364,7 +412,42 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& i
     uni.time = mNoiseTime;
 
     // Noise/grain
-    uni.noiseIntensity = rndshape::PostProcGrain(pp);
+    wgpu::TextureView noiseView = blackTexView;
+    rndshape::PostProcNoise noise;
+    if (rndshape::PostProcNoiseMap(pp, noise)) {
+        // NgPostProc::CheckNoise: no noise unless the intensity is non-zero AND
+        // there is a map. The map path replaces the procedural grain outright.
+        uni.noiseIntensity = 0.0f;
+        wgpu::TextureView mapView =
+            (noise.intensity != 0.0f && noise.map) ? GetGpuTexView(noise.map) : wgpu::TextureView();
+        if (mapView) {
+            noiseView = mapView;
+            uni.noiseMode = noise.midtone ? 2.0f : 1.0f;
+            // Stationary noise keeps the seed pair NgPostProc::Select rolled
+            // (mRandomSeed, re-rolled here when the selected post-process
+            // changes) and samples both layers at the base scale; otherwise
+            // four fresh seeds every frame and the top layer at mNoiseTopScale.
+            if (pp != mNoiseSeedOwner) {
+                mNoiseSeedOwner = pp;
+                mStationarySeed[0] = (float)rand() / (float)RAND_MAX;
+                mStationarySeed[1] = (float)rand() / (float)RAND_MAX;
+            }
+            if (noise.stationary) {
+                uni.noiseSeeds[0] = mStationarySeed[0];
+                uni.noiseSeeds[1] = mStationarySeed[1];
+                uni.noiseSeeds[2] = mStationarySeed[0];
+                uni.noiseSeeds[3] = mStationarySeed[1];
+            } else {
+                for (float& seed : uni.noiseSeeds) seed = (float)rand() / (float)RAND_MAX;
+            }
+            uni.noiseParams[0] = noise.baseScale[0];
+            uni.noiseParams[1] = noise.baseScale[1];
+            uni.noiseParams[2] = noise.stationary ? 1.0f : noise.topScale;
+            uni.noiseParams[3] = noise.intensity;
+        }
+    } else {
+        uni.noiseIntensity = rndshape::PostProcGrain(pp);
+    }
     uni.noiseMidtone = pp->GetNoiseMidtone() ? 1.0f : 0.0f;
 
     uni.flickerMul = StepFlicker(pp, dt);
@@ -374,7 +457,7 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& i
     wgpu::TextureView bloomView = (bloomIntensity > 0.0f && mBloom.HasOutput())
         ? mBloom.OutputView() : blackTexView;
 
-    wgpu::BindGroupEntry bgEntries[4] = {};
+    wgpu::BindGroupEntry bgEntries[6] = {};
     bgEntries[0].binding = 0;
     bgEntries[0].textureView = sceneView;
     bgEntries[1].binding = 1;
@@ -384,10 +467,14 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& i
     bgEntries[2].size = sizeof(PostProcUniforms);
     bgEntries[3].binding = 3;
     bgEntries[3].textureView = bloomView;
+    bgEntries[4].binding = 4;
+    bgEntries[4].textureView = noiseView;
+    bgEntries[5].binding = 5;
+    bgEntries[5].sampler = mNoiseSampler;
 
     wgpu::BindGroupDescriptor bgDesc{};
     bgDesc.layout = mPostProcBGL;
-    bgDesc.entryCount = 4;
+    bgDesc.entryCount = 6;
     bgDesc.entries = bgEntries;
     wgpu::BindGroup bg = gpu.Device().CreateBindGroup(&bgDesc);
 
@@ -419,6 +506,8 @@ void PostProcPass::Terminate() {
     mPostProcPipeline = nullptr;
     mPostProcUniformBuffer = nullptr;
     mDefaultSampler = nullptr;
+    mNoiseSampler = nullptr;
+    mNoiseSeedOwner = nullptr;
     mPostProcReady = false;
 }
 

@@ -470,6 +470,15 @@ wgpu::CullMode PipelineManager::MapCull(WgpuCull cull) {
     }
 }
 
+bool BlendSkipsFringeFade(int blend) {
+    // NgMat::SetupFade (dc3-decomp src/system/rndobj/Mat_NG.cpp) makes the same
+    // split for the image's own fade-out: (0,0,0,0) for Add/SrcAlphaAdd/
+    // Subtract/Screen/Lighten, (1,1,1,1) for Multiply/Darken. Those two are the
+    // blends whose "no change" colour is not black, and the image's blend state
+    // for both ignores source alpha, so the faithful answer is no fade at all.
+    return blend == (int)WgpuBlend::Multiply || blend == (int)WgpuBlend::Darken;
+}
+
 wgpu::RenderPipeline PipelineManager::CreatePipeline(const PipelineKey& key) {
     wgpu::ShaderModule shader = GetOrCreateShader(key.shaderType);
 
@@ -496,6 +505,15 @@ wgpu::RenderPipeline PipelineManager::CreatePipeline(const PipelineKey& key) {
     fragment.entryPoint = "fs_main";
     fragment.targetCount = 1;
     fragment.targets = &colorTarget;
+    // The standard shader's alpha fringe fade is skipped under a blend that
+    // ignores alpha and whose identity is white or "keep dst" rather than black
+    // (standard_wgsl.inc kSkipFringeFade). Keyed on the pipeline's own blend,
+    // so it holds for every draw path that reaches the standard pipeline.
+    wgpu::ConstantEntry skipFringeFade{};
+    skipFringeFade.key = "kSkipFringeFade";
+    skipFringeFade.value = BlendSkipsFringeFade((int)key.blend) ? 1.0 : 0.0;
+    fragment.constantCount = 1;
+    fragment.constants = &skipFringeFade;
 
     wgpu::DepthStencilState ds{};
     if (key.hasDepth) {

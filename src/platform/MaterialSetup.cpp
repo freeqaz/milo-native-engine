@@ -3,6 +3,8 @@
 // for both primary materials and multi-pass materials.
 
 #include "platform/MaterialSetup.h"
+#include "platform/GameRenderHook.h"
+#include "rndobj/Cam.h"
 #include "platform/Rnd_Wgpu.h"
 #include "platform/TexGpu.h"
 #include "gfx/FrameCapture.h"
@@ -144,6 +146,14 @@ static void FillRefract(const MatT& mat, MaterialUniforms& uni,
     if (!rndshape::MatRefract(mat, r)) return;
     uni.colorMod[3] |= FloatToHalfBits(r.strength) << 16;
     views.refractNormal = ResolveMap(r.normalTex, gWgpuRnd->FlatNormalTexView());
+}
+
+bool TextMeshKeepsAtlasRGB(RndMesh* mesh, RndMat* mat, bool skinned) {
+    GameRenderHook* hook = GetGameRenderHook();
+    if (!hook) return false;
+    RndCam* cam = RndCam::Current();
+    const char* camName = cam ? cam->Name() : nullptr;
+    return hook->QueryDrawMaterialPolicy(mesh, mat, skinned, nullptr, camName).isColorIcon;
 }
 
 MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh) {

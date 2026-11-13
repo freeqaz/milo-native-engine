@@ -518,6 +518,17 @@ inline float PostProcGrain(const RndPostProc *pp) {
     float n = std::fabs(pp->GetNoiseIntensity());
     return (n < 3.0f ? n : 3.0f) * 0.04f;
 }
+// The DC3 shape's noise-map seam (RndShape_DC3.h). RB3's grain stays the
+// screen-space grain above, so the composite never sees a map here.
+struct PostProcNoise {
+    RndTex *map = nullptr;
+    float baseScale[2] = {0.0f, 0.0f};
+    float topScale = 1.0f;
+    float intensity = 0.0f;
+    bool stationary = false;
+    bool midtone = false;
+};
+inline bool PostProcNoiseMap(const RndPostProc *, PostProcNoise &) { return false; }
 // RB3 grades through its retail Xbox 360 post chain (gfx/RB3RetailPost: the
 // pseudo-HDR luminance bloom mask, three quarter-size blurred bloom sets
 // screen-blended at bloomColor * BloomIntensity(), then the RndColorXfm matrix)

@@ -8,8 +8,12 @@
 #include <cmath>
 #include <cstdio>
 
-// Define the static factory pointer (declared in StreamReceiver.h)
-StreamReceiverFactoryFunc *StreamReceiver::sFactory = nullptr;
+// Define the static factory pointer (declared in StreamReceiver.h).
+// WEAK: a fallback. A consumer whose decomp compiles the real body (DC3:
+// src/system/synth/StreamReceiver.cpp) must win without --allow-multiple-definition, which Apple ld
+// does not have; a strong duplicate here is a macOS link error and, on Linux,
+// a silent "first object wins" choice.
+__attribute__((weak)) StreamReceiverFactoryFunc *StreamReceiver::sFactory = nullptr;
 
 #ifdef HX_WEB
 static int gNextWebReceiverId = 1;
