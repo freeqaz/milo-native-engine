@@ -101,7 +101,8 @@ static void FillRetailTerms(const MatT& mat, MaterialUniforms& uni,
 }
 
 // RB3's material colour modulation (rndshape::MatColorMod): the three colours
-// as RGBA8 in colorMod.xyz and the mode in colorMod.w, which the shader's
+// as RGBA8 in colorMod.xyz and the mode in colorMod.w (low byte; bit 8 is the
+// band-selector flag below), which the shader's
 // colorModScale / colorModAlpha read. Zero (none) for DC3 materials.
 static uint32_t PackUnorm8(const float c[4]) {
     uint32_t v = 0;
@@ -119,6 +120,9 @@ static void FillColorMod(const MatT& mat, MaterialUniforms& uni) {
     if (mode == 0) return;
     for (int i = 0; i < 3; i++) uni.colorMod[i] = PackUnorm8(c[i]);
     uni.colorMod[3] = (uint32_t)mode;
+    // Bit 8: the texel alpha is a band selector, not coverage, so the shader's
+    // alpha fringe fade skips it (rndshape::ColorModAlphaIsBandSelector).
+    if (rndshape::ColorModAlphaIsBandSelector(mat, mode)) uni.colorMod[3] |= 1u << 8;
 }
 
 // World refraction (rndshape::MatRefract, dc3-backend-for-rb3-wii.md

@@ -262,7 +262,15 @@ fn isEnabled(value: f32) -> bool {
 //                          output alpha is 10a (RB3 permutation 0x4202000010)
 //   1 AlphaPack:           output alpha 0.1 + 0.9a, colour unchanged
 fn colorModMode() -> u32 {
-    return material.colorMod.w & 0xFFFFu;
+    return material.colorMod.w & 0xFFu;
+}
+
+// Bit 8 of colorMod.w: the shape says this material's texel alpha selects a
+// colour-mod band instead of carrying coverage (rndshape::
+// ColorModAlphaIsBandSelector), so the alpha fringe fade must not read it.
+// Never set by the RB3-Wii shape.
+fn colorModAlphaIsBandSelector() -> bool {
+    return ((material.colorMod.w >> 8u) & 1u) != 0u;
 }
 
 // RndMat::GetRefractStrength for a material whose refraction is on
@@ -1326,7 +1334,9 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
     // Black is the identity of every blend this fade is kept for (the alpha
     // blends weight by alpha anyway; Add/Subtract/Screen/Lighten add nothing).
     // Multiply and Darken are skipped per pipeline: see kSkipFringeFade.
-    if (baseColor.a < kAlphaFringeFadeStart && !kSkipFringeFade) {
+    // A native heuristic (no retail counterpart), so it must not fire when the
+    // texel alpha is not coverage -- see colorModAlphaIsBandSelector.
+    if (baseColor.a < kAlphaFringeFadeStart && !kSkipFringeFade && !colorModAlphaIsBandSelector()) {
         finalColor *= baseColor.a / kAlphaFringeFadeStart;
     }
 

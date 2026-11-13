@@ -54,11 +54,67 @@ inline bool MatPrelitAmbient(const T &) { return false; }
 // shader's own specular/normal/rim model.
 template <class T>
 inline bool MatRetailTerms(const T &, RetailMatTerms &) { return false; }
-// RB3's material colour modulation (RndShape_RB3Wii.h). Returns the mode, 0
-// for none. DC3's BaseMaterial exposes no colour-mod state here, so DC3 and
-// rb3-xenon draw every material unmodulated, as before.
+// Material colour modulation (RndShape.h; the shader's colorModScale /
+// colorModAlpha). Returns the mode, 0 for none. DC3's RndMat carries it as
+// mColorModFlags / mColorMod (rndobj/Mat.h): WorldCrowd::Draw3DChars sets
+// kColorModModulate plus a crowd member's three random*.pal colours on the
+// character's materials before each draw (world/Crowd.cpp SetMatColorFlags),
+// and the Xbox shader permutation (key bits 32-33) multiplies them in.
+//
+// rb3-xenon compiles this shape too, and its RndMat has no GetColorMods()
+// accessor: there (HasColorModAccessors false) the function keeps its old
+// answer, 0, so an rb3-xenon render is unchanged.
+} // namespace rndshape
+#include <type_traits>
+#include <utility>
+namespace rndshape {
+template <class M, class = void>
+struct HasColorModAccessors : std::false_type {};
+template <class M>
+struct HasColorModAccessors<
+    M, std::void_t<decltype(std::declval<const M &>().GetColorMods()),
+                   decltype(std::declval<const M &>().GetColorModFlags())> >
+    : std::true_type {};
+// DependentMatT<T>::type is RndMat, spelled so the discarded branch below is not
+// checked for a game whose RndMat lacks the accessors.
 template <class T>
-inline int MatColorMod(const T &, float (*)[4]) { return 0; }
+struct DependentMatT { using type = RndMat; };
+template <class T>
+inline int MatColorMod(T *m, float colours[3][4]) {
+    using MatT = typename DependentMatT<T>::type;
+    if constexpr (!HasColorModAccessors<MatT>::value) {
+        (void)m;
+        (void)colours;
+        return 0;
+    } else {
+        MatT *mat = dynamic_cast<MatT *>(m);
+        if (!mat) return 0;
+        const int mode = mat->GetColorModFlags();
+        if (mode == MatT::kColorModAlphaPack) return mode;
+        if (mode != MatT::kColorModAlphaUnpackModulate && mode != MatT::kColorModModulate)
+            return 0;
+        const std::vector<Hmx::Color> &mods = mat->GetColorMods();
+        if (mods.size() < 3) return 0;
+        for (int i = 0; i < 3; i++) {
+            colours[i][0] = mods[i].red;
+            colours[i][1] = mods[i].green;
+            colours[i][2] = mods[i].blue;
+            colours[i][3] = 1.0f;
+        }
+        return mode;
+    }
+}
+// Whether a colour-modulated material's texel alpha selects the tint band
+// rather than carrying coverage (MaterialSetup FillColorMod -> colorMod.w bit
+// 8 -> the shader skips its native alpha fringe fade, which would otherwise
+// scale rgb by a / 0.1). True for DC3 kColorModModulate: the crowd characters'
+// textures paint skin at texel alpha 0 -- band 0, tinted by the random1.pal
+// skin tone -- on opaque kBlendSrc materials, and the fade blacked out every
+// crowd face and hand.
+template <class T>
+inline bool ColorModAlphaIsBandSelector(const T &, int mode) {
+    return mode == RndMat::kColorModModulate;
+}
 // World refraction (RndShape.h RefractTerms): the decomp's own RndMat
 // accessors. GetRefractEnabled(true) skips its GetCurrentFrameTex test; the
 // frame is bound whatever it holds (black before the first SavePreBuffer).

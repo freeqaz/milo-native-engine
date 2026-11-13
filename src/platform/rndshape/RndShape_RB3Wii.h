@@ -242,6 +242,10 @@ inline int MatColorMod(const MatView &m, float colours[3][4]) {
     return mode;
 }
 
+// RB3 keeps the native alpha fringe fade on colour-modulated texels: never
+// flags the band selector (RndShape_DC3.h ColorModAlphaIsBandSelector).
+inline bool ColorModAlphaIsBandSelector(const MatView &, int) { return false; }
+
 // World refraction (RndShape.h RefractTerms) as the Xbox RndMat answers it:
 // GetRefractEnabled is mRefractEnabled && mRefractStrength > 0 && a normal
 // map, and GetRefractNormalMap is mRefractNormalMap, else the material's
