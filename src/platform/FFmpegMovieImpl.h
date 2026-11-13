@@ -80,6 +80,14 @@ private:
     bool DecodeNextVideoFrame();
     void Close();
 
+    // The game file the demuxer reads, and the AVIOContext over it.  Movies
+    // are game data like any other: "videos/intro.bik" lives in the ark (and
+    // under DC3_DATA), so it is opened through NewFile -- the archive / data
+    // dir / overlay resolution every other asset read uses -- never handed to
+    // FFmpeg as a path relative to the working directory (PLAN G-15).
+    class File *mFile;
+    AVIOContext *mAvio;
+
     // FFmpeg state
     AVFormatContext *mFmtCtx;
     AVCodecContext *mVideoCtx;
