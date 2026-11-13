@@ -58,7 +58,8 @@ StreamReceiverNative::StreamReceiverNative(int numBuffers, bool slip)
       mTotalBytesPlayed(0)
 #ifdef HX_WEB
       , mDebugId(gNextWebReceiverId++), mInMixer(false), mSilentRenderCount(0),
-      mActiveRenderCount(0), mLastPeak(0.0f)
+      mActiveRenderCount(0), mLastPeak(0.0f), mHeardFirst(0), mHeardCount(0),
+      mHeardFloor(0)
 #endif
 {
     memset(mPCMBuf, 0, sizeof(mPCMBuf));
@@ -164,7 +165,50 @@ int StreamReceiverNative::GetPlayCursor() {
     return mPlayCursor % kStreamRcvrBufSize;
 }
 
+#ifdef HX_WEB
 int StreamReceiverNative::RenderAudio(float *output, int frameCount) {
+    const long long start = AudioDevice::GetInstance().MixFramesPulled();
+    const int before = mPlayCursor;
+    const int ret = RenderAudioImpl(output, frameCount);
+    if (mHeardCount == kHeardMarks) { // overflow: treat the oldest as heard
+        mHeardFloor = mHeardMarks[mHeardFirst].after;
+        mHeardFirst = (mHeardFirst + 1) % kHeardMarks;
+        mHeardCount--;
+    }
+    HeardMark &m = mHeardMarks[(mHeardFirst + mHeardCount) % kHeardMarks];
+    m.start = start;
+    m.end = start + frameCount;
+    m.before = before;
+    m.after = mPlayCursor;
+    mHeardCount++;
+    return ret;
+}
+
+int StreamReceiverNative::HeardBytes() {
+    if (mState == kInit)
+        return 0; // as GetBytesPlayed
+    const long long consumed = AudioDevice::GetInstance().MixFramesConsumed();
+    // Drop the chunks the output has played past.
+    while (mHeardCount > 0 && consumed >= mHeardMarks[mHeardFirst].end) {
+        mHeardFloor = mHeardMarks[mHeardFirst].after;
+        mHeardFirst = (mHeardFirst + 1) % kHeardMarks;
+        mHeardCount--;
+    }
+    if (mHeardCount == 0)
+        return mHeardFloor;
+    const HeardMark &m = mHeardMarks[mHeardFirst];
+    if (consumed <= m.start)
+        return m.before;
+    // Mono int16: two bytes a frame; the chunk's real bytes come first.
+    const long long into = consumed - m.start;
+    const int real = (m.after - m.before) / 2;
+    return m.before + 2 * (int)std::min<long long>(into, real);
+}
+
+int StreamReceiverNative::RenderAudioImpl(float *output, int frameCount) {
+#else
+int StreamReceiverNative::RenderAudio(float *output, int frameCount) {
+#endif
     if (!mPlaying || mPaused) {
         memset(output, 0, frameCount * 2 * sizeof(float));
 #ifdef HX_WEB
