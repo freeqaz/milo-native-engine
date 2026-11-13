@@ -74,6 +74,14 @@ struct PipelineKeyHash {
     }
 };
 
+// True when the standard shader's alpha fringe fade (rgb *= a / 0.1 for
+// a < 0.1) must not run under this blend (BaseMaterial::Blend / WgpuBlend
+// numbering, which are identical): Multiply and Darken, whose identity is not
+// black and which ignore source alpha. Faded, a white alpha-0 Multiply quad
+// (DC3's mod_frame_debloom.mesh, bloom_block.mat) blacks out what is under it.
+// PipelineManager::CreatePipeline feeds it to the shader's kSkipFringeFade.
+bool BlendSkipsFringeFade(int blend);
+
 class PipelineManager {
 public:
     void Init(GpuDevice* device);

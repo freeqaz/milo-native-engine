@@ -20,6 +20,14 @@ const kTexGenXfmOrigin = 4.0;
 const kTexGenEnviron = 5.0;
 const kHighlightCompressionKnee = 0.9;
 const kAlphaFringeFadeStart = 0.1;
+// True for a pipeline whose blend ignores source alpha AND whose identity is
+// not black -- Multiply (dst * src.rgb) and Darken (min(src, dst)) -- set per
+// pipeline by PipelineManager::CreatePipeline (BlendSkipsFringeFade). The
+// alpha fringe fade (fs_main, near the end) then leaves the colour alone:
+// fading toward black would turn a white, alpha-0 Multiply quad into a full
+// darken, which the image never draws (its NgMat Multiply is src Zero / dst
+// SrcColor and its Darken One/One Min, neither reads alpha).
+override kSkipFringeFade: bool = false;
 // Soft-clip ("GX saturate") of the per-channel LIGHTING SUM (ambient + Σ light
 // diffuse) before it modulates the base/texture colour. On Wii the rasterised
 // channel colour is clamped to [0,1] *before* the TEV texture multiply, so
@@ -1315,7 +1323,10 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
     }
 
     // Fade RGB down with alpha for nearly transparent texels to suppress fringes.
-    if (baseColor.a < kAlphaFringeFadeStart) {
+    // Black is the identity of every blend this fade is kept for (the alpha
+    // blends weight by alpha anyway; Add/Subtract/Screen/Lighten add nothing).
+    // Multiply and Darken are skipped per pipeline: see kSkipFringeFade.
+    if (baseColor.a < kAlphaFringeFadeStart && !kSkipFringeFade) {
         finalColor *= baseColor.a / kAlphaFringeFadeStart;
     }
 
