@@ -209,7 +209,17 @@ if(MILO_ENGINE_HAVE_CONTEXT AND MILO_ENGINE_BUILD_GFX AND NOT EMSCRIPTEN)
         pkg_check_modules(FFMPEG QUIET IMPORTED_TARGET
             libavformat libavcodec libswscale libavutil)
     endif()
-    set(MILO_ENGINE_HAVE_FFMPEG ${FFMPEG_FOUND})
+    # FFmpegMovieImpl resamples a movie's Bink sound track to the mixer's rate.
+    # Its own prefix: a consumer may already have run pkg_check_modules(FFMPEG
+    # ...) with its own module list, and the two calls share cache entries.
+    if(PkgConfig_FOUND AND NOT TARGET PkgConfig::MILO_SWRESAMPLE)
+        pkg_check_modules(MILO_SWRESAMPLE QUIET IMPORTED_TARGET libswresample)
+    endif()
+    if(FFMPEG_FOUND AND MILO_SWRESAMPLE_FOUND)
+        set(MILO_ENGINE_HAVE_FFMPEG TRUE)
+    else()
+        set(MILO_ENGINE_HAVE_FFMPEG FALSE)
+    endif()
 
     # Dear ImGui — debug overlay, built into the engine by default.
     if(NOT TARGET imgui)
@@ -547,7 +557,7 @@ if(MILO_ENGINE_HAVE_CONTEXT)
         if(MILO_ENGINE_HAVE_FFMPEG)
             target_compile_definitions(milo-engine PRIVATE HX_FFMPEG=1)
             target_include_directories(milo-engine PUBLIC ${FFMPEG_INCLUDE_DIRS})
-            target_link_libraries(milo-engine PUBLIC PkgConfig::FFMPEG)
+            target_link_libraries(milo-engine PUBLIC PkgConfig::FFMPEG PkgConfig::MILO_SWRESAMPLE)
         endif()
         if(NOT EMSCRIPTEN)
             target_link_libraries(milo-engine PUBLIC dawn::webgpu_dawn glfw imgui)

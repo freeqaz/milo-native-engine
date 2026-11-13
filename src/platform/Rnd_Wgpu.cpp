@@ -534,6 +534,24 @@ void WgpuRnd::Terminate() {
 }
 
 void WgpuRnd::Clear(unsigned int flags, const Hmx::Color& color) {
+    // With a render target bound this is the retail D3DDevice_Clear of that
+    // target (DxRnd::Clear: bit 0 colour, bit 1 depth/stencil), alpha included.
+    // RndTexRenderer::DrawToTexture issues it after selecting its camera when
+    // clear_buffer is set, and what it draws next may never write alpha: DC3's
+    // augmented crew photo (ui/augmented_photo.milo, clear_alpha 1, every
+    // material alpha_write 0) owes its opaque alpha to this clear, and the
+    // results screen shows the snapshot through SrcAlpha materials.  Dropping
+    // it left the target at the pass's transparent black.
+    if (mInPass && mActiveTargetTex && (flags & 3)) {
+        RndTex* tex = mActiveTargetTex;
+        EndActivePass();
+        TexturePassLoad load;
+        load.clearColor = (flags & 1) != 0;
+        load.color = color;
+        load.clearDepth = (flags & 2) != 0;
+        BeginTexturePass(tex, load);
+    }
+    // Unchanged: the colour is also kept as the next frame pass's clear colour.
     mClearColor = color;
 }
 
@@ -1203,7 +1221,9 @@ void WgpuRnd::BeginFramePass(bool clear) {
     }
 }
 
-void WgpuRnd::BeginTexturePass(RndTex* tex) {
+void WgpuRnd::BeginTexturePass(RndTex* tex) { BeginTexturePass(tex, TexturePassLoad()); }
+
+void WgpuRnd::BeginTexturePass(RndTex* tex, const TexturePassLoad& load) {
     if (!tex) return;
     // Ensure the GPU render target exists (lazy creation).
     // GetGpuTexView calls EnsureRenderTargetData for render-target textures,
@@ -1221,12 +1241,14 @@ void WgpuRnd::BeginTexturePass(RndTex* tex) {
 
     wgpu::RenderPassColorAttachment colorAtt{};
     colorAtt.view = colorView;
-    colorAtt.loadOp = wgpu::LoadOp::Clear;
+    colorAtt.loadOp = load.clearColor ? wgpu::LoadOp::Clear : wgpu::LoadOp::Load;
     colorAtt.storeOp = wgpu::StoreOp::Store;
-    // Use transparent black so impostor/billboard RTT can alpha-cut
-    // the background away. Other RTT users (TexRenderer) don't rely on
-    // background alpha — they overwrite every pixel.
-    colorAtt.clearValue = {0.0, 0.0, 0.0, 0.0};
+    // Selecting a target clears to transparent black so impostor/billboard
+    // RTT can alpha-cut the background away; a TexRenderer that wants another
+    // background (clear_buffer / clear_color / clear_alpha) clears again
+    // through WgpuRnd::Clear.
+    colorAtt.clearValue = {(double)load.color.red, (double)load.color.green,
+                           (double)load.color.blue, (double)load.color.alpha};
 
     wgpu::RenderPassDepthStencilAttachment depthAtt{};
     wgpu::RenderPassDescriptor rpDesc{};
@@ -1237,10 +1259,11 @@ void WgpuRnd::BeginTexturePass(RndTex* tex) {
     wgpu::TextureView depthView = GetGpuTexDepthView(tex);
     if (depthView) {
         depthAtt.view = depthView;
-        depthAtt.depthLoadOp = wgpu::LoadOp::Clear;
+        const wgpu::LoadOp depthLoad = load.clearDepth ? wgpu::LoadOp::Clear : wgpu::LoadOp::Load;
+        depthAtt.depthLoadOp = depthLoad;
         depthAtt.depthStoreOp = wgpu::StoreOp::Store;
         depthAtt.depthClearValue = 1.0f;
-        depthAtt.stencilLoadOp = wgpu::LoadOp::Clear;
+        depthAtt.stencilLoadOp = depthLoad;
         depthAtt.stencilStoreOp = wgpu::StoreOp::Store;
         depthAtt.stencilClearValue = 0;
         rpDesc.depthStencilAttachment = &depthAtt;
