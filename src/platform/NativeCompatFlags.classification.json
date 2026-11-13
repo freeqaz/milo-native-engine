@@ -2140,5 +2140,11 @@
     "faithfulStatus": "n/a: W16-SI beam diagnostics: prints the SpotDrawParams and each submitted beam (screen projection, axis, mesh axis) for the first 3 frames [world/SpotlightDrawer.cpp]. Render output unchanged.",
     "default": "off",
     "read": "presence"
+  },
+  "MILO_INPUT_LOG": {
+    "class": "probe",
+    "owner": "input",
+    "faithfulStatus": "n/a: logs one line per pad button message JoypadPoll sends (dc3 key tests); Joypad_Native.cpp is compiled by dc3 only",
+    "default": "off"
   }
 }
