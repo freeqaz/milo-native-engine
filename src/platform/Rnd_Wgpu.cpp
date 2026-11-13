@@ -549,6 +549,9 @@ void WgpuRnd::EndActivePass() {
 
 void WgpuRnd::ClearDepthForOverlay() {
     if (!mInPass || !mFrameView) return;
+    // The overlay pass has no depth to clear, and leaving it for the MSAA
+    // frame pass would resolve over what it holds (see BeginOverlayPass).
+    if (mFrameInOverlay) return;
     // End current pass, restart with depth cleared but color preserved
     EndActivePass();
     BeginFramePass(false); // false = Load color (preserve), but we override depth below
@@ -603,23 +606,15 @@ void WgpuRnd::ClearDepthForOverlay() {
     mLastSceneCam = nullptr;
 }
 
-void WgpuRnd::FlushPostProcessingForOverlay() {
-    if (!mInPass || !mFrameView) {
-        return;
-    }
-
-    // End the current pass (venue + any existing draws)
-    EndActivePass();
-
-    // Run post-processing now (reads intermediate, writes to framebuffer).
-    // Only run once per frame — subsequent calls just start a new overlay pass
-    // without re-running post-proc (which would overwrite previous HUD draws).
-    if (mIntermediateView && RndPostProc::Current() && !mPostProcFlushed) {
-        mPostProcPass.Run(mEncoder, mIntermediateView, mIntermediateTex,
-                          mIntermediateWidth, mIntermediateHeight,
-                          mDepthSampleView, kMSAASamples, FrameTarget(), mBlackTexView, mGpu);
-    }
-
+// The overlay pass FlushPostProcessingForOverlay opens. Once the frame is in
+// it, every later resume of the frame pass (SavePreBuffer at a second
+// EndWorld, a render target finishing, a texture blend, point tests) reopens
+// this pass instead of the MSAA frame pass: that pass resolves the MSAA buffer
+// into the frame target on End, and the MSAA buffer holds nothing drawn since
+// the flush. The DC3 attract movie (MoviePanel draws after the flush; the
+// blacklight panel's EndWorld then ran SavePreBuffer) was drawn and then wiped
+// every frame on web, and the whole frame went black on desktop.
+void WgpuRnd::BeginOverlayPass() {
     int curW = mGpu.WindowWidth();
     int curH = mGpu.WindowHeight();
 
@@ -641,6 +636,7 @@ void WgpuRnd::FlushPostProcessingForOverlay() {
     rpDesc.depthStencilAttachment = nullptr; // no depth for 2D HUD
 
     mPass = mEncoder.BeginRenderPass(&rpDesc);
+    mFrameInOverlay = true;
     rndshape::DrawLogPassOpen(2);
     mInPass = true;
     mActiveTargetTex = nullptr;
@@ -653,6 +649,26 @@ void WgpuRnd::FlushPostProcessingForOverlay() {
 
     // Force scene uniforms re-bind on the new pass
     mLastSceneCam = nullptr;
+}
+
+void WgpuRnd::FlushPostProcessingForOverlay() {
+    if (!mInPass || !mFrameView) {
+        return;
+    }
+
+    // End the current pass (venue + any existing draws)
+    EndActivePass();
+
+    // Run post-processing now (reads intermediate, writes to framebuffer).
+    // Only run once per frame — subsequent calls just start a new overlay pass
+    // without re-running post-proc (which would overwrite previous HUD draws).
+    if (mIntermediateView && RndPostProc::Current() && !mPostProcFlushed) {
+        mPostProcPass.Run(mEncoder, mIntermediateView, mIntermediateTex,
+                          mIntermediateWidth, mIntermediateHeight,
+                          mDepthSampleView, kMSAASamples, FrameTarget(), mBlackTexView, mGpu);
+    }
+
+    BeginOverlayPass();
     // Mark post-proc as already done so EndDrawing doesn't run it again
     mPostProcFlushed = true;
 
@@ -1087,6 +1103,12 @@ void WgpuRnd::ApplyViewport() {
 }
 
 void WgpuRnd::BeginFramePass(bool clear) {
+    if (clear) {
+        mFrameInOverlay = false;
+    } else if (mFrameInOverlay && mFrameView) {
+        BeginOverlayPass();
+        return;
+    }
     if (!mFrameView) {
         return;
     }
@@ -1334,6 +1356,7 @@ void WgpuRnd::BeginDrawing() {
     RndMesh_ResetFrameStats();
     rndshape::DrawLogFrameBegin();
     mPostProcFlushed = false;
+    mFrameInOverlay = false;
     mWorldPostDone = false;
     mPreSavedThisFrame = false;
 

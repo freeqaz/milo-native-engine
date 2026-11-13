@@ -252,6 +252,9 @@ private:
     // (rndshape::kCamSelectSetsViewport).
     void ApplyCameraViewport(RndCam* cam);
     void BeginFramePass(bool clear);
+    // The 1x, depthless pass on the frame target that FlushPostProcessingForOverlay
+    // opens; BeginFramePass(false) reopens it once the frame is in it.
+    void BeginOverlayPass();
     void BeginTexturePass(RndTex* tex);
     void EndActivePass();
 public:
@@ -336,6 +339,10 @@ public:
     wgpu::TextureView mFrameView;
     bool mInPass = false;
     bool mPostProcFlushed = false;
+    // FlushPostProcessingForOverlay has moved the frame onto the overlay pass:
+    // everything drawn since sits only in the frame target. Resuming the MSAA
+    // frame pass from here would resolve the MSAA buffer over it on End.
+    bool mFrameInOverlay = false;
     RndTex* mActiveTargetTex = nullptr;
     wgpu::TextureFormat mCurrentTargetFormat = wgpu::TextureFormat::Undefined;
     uint32_t mCurrentSampleCount = 1;
