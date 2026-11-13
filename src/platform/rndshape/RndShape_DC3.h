@@ -19,6 +19,9 @@
 #include "rndobj/PostProc.h"
 #include "math/Mtx.h"
 
+#include <type_traits>
+#include <utility>
+
 // The NG renderer layer (NgRnd: viewport, Clear, DrawRect(ShaderType), and the
 // RndShaderMgr constant cache) exists in this shape.
 #define MILO_RNDOBJ_SHAPE_HAS_NGRND 1
@@ -153,8 +156,52 @@ constexpr bool kRenderTargetStoresLinear = false;
 constexpr bool kRectModulatesMatColor = false;
 
 // ---- post-processing -------------------------------------------------------
-// The grain strength the post-process shader adds per pixel, as authored.
+// The grain strength the post-process shader adds per pixel, as authored. Only
+// read when PostProcNoiseMap below cannot see the noise map (a consumer whose
+// RndPostProc has no noise-map accessors, today rb3-xenon).
 inline float PostProcGrain(const RndPostProc *pp) { return pp->GetNoiseIntensity(); }
+
+// The image's post-process noise (NgPostProc::CheckNoise + postprocess.ps option
+// bit 0x4, and 0x800000000000 for the midtone form; disassembled from the
+// shipped xbox_shaders): a TEXTURE, mNoiseMap, sampled twice at
+// (uv + seed) * mNoiseBaseScale (the second also * mNoiseTopScale, or * 1 when
+// stationary), the two samples multiplied and overlay-blended into the scene at
+// mNoiseIntensity. CheckNoise turns it off when the map is null. Filled only
+// when the consumer's RndPostProc exposes GetNoiseMap/GetNoiseBaseScale/
+// GetNoiseTopScale; otherwise returns false and PostProcPass keeps its
+// procedural grain from PostProcGrain.
+struct PostProcNoise {
+    RndTex *map = nullptr;
+    float baseScale[2] = {0.0f, 0.0f};
+    float topScale = 1.0f;
+    float intensity = 0.0f;
+    bool stationary = false;
+    bool midtone = false;
+};
+template <class P, class = void> struct HasPostProcNoiseMap : std::false_type {};
+template <class P>
+struct HasPostProcNoiseMap<
+    P, std::void_t<decltype(std::declval<const P &>().GetNoiseMap()),
+                   decltype(std::declval<const P &>().GetNoiseBaseScale()),
+                   decltype(std::declval<const P &>().GetNoiseTopScale())>>
+    : std::true_type {};
+template <class P> inline bool PostProcNoiseMap(const P *pp, PostProcNoise &out) {
+    if constexpr (HasPostProcNoiseMap<P>::value) {
+        out.map = pp->GetNoiseMap();
+        const auto &base = pp->GetNoiseBaseScale();
+        out.baseScale[0] = base.x;
+        out.baseScale[1] = base.y;
+        out.topScale = pp->GetNoiseTopScale();
+        out.intensity = pp->GetNoiseIntensity();
+        out.stationary = pp->GetNoiseStationary();
+        out.midtone = pp->GetNoiseMidtone();
+        return true;
+    } else {
+        (void)pp;
+        (void)out;
+        return false;
+    }
+}
 // DC3 and rb3-xenon grade through gfx/PostProcPass's own composite; the RB3
 // retail chain (gfx/RB3RetailPost) never runs for them.
 constexpr bool kRetailPostChain = false;

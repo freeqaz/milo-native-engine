@@ -8,6 +8,11 @@
 class GpuDevice;
 class RndPostProc;
 
+// The composite draws the image's texture noise (NgPostProc::CheckNoise:
+// mNoiseMap overlay-blended, see rndshape::PostProcNoiseMap) for a consumer
+// whose RndPostProc exposes the map. Consumers' tests key on this.
+#define MILO_POSTPROC_NOISE_MAP 1
+
 class PostProcPass {
 public:
     void Init(GpuDevice& gpu);
@@ -53,7 +58,13 @@ private:
     wgpu::RenderPipeline mPostProcPipeline;
     wgpu::Buffer mPostProcUniformBuffer;
     wgpu::Sampler mDefaultSampler;
+    wgpu::Sampler mNoiseSampler;
     bool mPostProcReady = false;
+
+    // NgPostProc::mRandomSeed: the stationary noise's seed pair, rolled when
+    // the selected post-process changes (as NgPostProc::Select rolls it).
+    const RndPostProc* mNoiseSeedOwner = nullptr;
+    float mStationarySeed[2] = {0.0f, 0.0f};
 
     // Flicker state
     float mFlickerTarget = 1.0f;
