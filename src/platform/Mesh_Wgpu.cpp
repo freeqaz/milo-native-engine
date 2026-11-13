@@ -170,6 +170,13 @@ void RndMesh::DrawShowing() {
         return;
     }
 
+    // The image's DxMesh::DrawShowing refills the geometry owner's buffers
+    // before drawing when the property system dirtied its verts (see
+    // rndshape::MeshSyncDirtyVerts); RndMesh::Sync -> OnSync marks the GPU
+    // copy for re-upload.
+    if (RndMesh* geom = rndshape::MeshGeomOwner(this))
+        rndshape::MeshSyncDirtyVerts(geom);
+
     IncrementMeshDrawCalls();
     DrawMeshImmediate(this);
 }

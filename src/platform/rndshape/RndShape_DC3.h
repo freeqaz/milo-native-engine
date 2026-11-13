@@ -6,6 +6,9 @@
 // platform/rndshape/RndShape.h, never directly.
 #pragma once
 
+#include <type_traits>
+#include <utility>
+
 #include "rndobj/Rnd.h"
 #include "rndobj/Rnd_NG.h"
 #include "rndobj/BaseMaterial.h"
@@ -153,6 +156,27 @@ inline const Hmx::Rect &CamScreenRect(RndCam *c) { return c->GetScreenRect(); }
 inline RndMesh *MeshGeomOwner(RndMesh *m) { return m->GetGeomOwner(); }
 inline int MeshNumCompressedVerts(RndMesh *m) { return (int)m->NumCompressedVerts(); }
 inline unsigned char *MeshCompressedVerts(RndMesh *m) { return m->CompressedVerts(); }
+// DxMesh::DrawShowing (826229B0; dc3-decomp src/system/rnddx9/Mesh.cpp, 100%
+// matched) refills the geometry owner's vertex buffer before it draws when the
+// verts were written through the property system since the last Sync:
+//     if (geom->Verts().unkc) geom->Sync(0x1f);
+// PropSync(RndMesh::VertVector) sets that flag on every `(verts N ...)` set, and
+// RndMesh::Sync clears it. A PropAnim that keys vertex positions (Rehearse's
+// projection_mesh.mesh reveal, world/shared/chars_base.milo) moves verts only
+// this way; without the refill the GPU keeps the geometry of its first upload.
+// rb3-xenon compiles this shape too and its VertVector has no such flag (its
+// Mesh.h: retail VertVector is exactly 0xc), so the test is made only where the
+// member exists; elsewhere this is a no-op, as before.
+template <class M, class = void> struct MeshHasVertDirtyFlag : std::false_type {};
+template <class M>
+struct MeshHasVertDirtyFlag<M, std::void_t<decltype(std::declval<M &>().Verts().unkc)>>
+    : std::true_type {};
+template <class M> inline void MeshSyncDirtyVerts(M *geom) {
+    if constexpr (MeshHasVertDirtyFlag<M>::value) {
+        if (geom->Verts().unkc)
+            geom->Sync(0x1f);
+    }
+}
 
 inline void VertColor(const RndMesh::Vert &v, float out[4]) {
     out[0] = v.color.red;

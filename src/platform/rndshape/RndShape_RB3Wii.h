@@ -422,6 +422,9 @@ inline int MeshNumCompressedVerts(RndMesh *m) {
 inline unsigned char *MeshCompressedVerts(RndMesh *m) {
     return m->GeomOwner()->mCompressedVerts;
 }
+// DC3's DxMesh::DrawShowing refills a mesh whose verts the property system
+// dirtied (see RndShape_DC3.h). Not established for RB3-Wii; no-op.
+inline void MeshSyncDirtyVerts(RndMesh *) {}
 
 inline void VertColor(const RndMesh::Vert &v, float out[4]) {
     out[0] = v.color.fr();
