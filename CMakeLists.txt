@@ -498,10 +498,21 @@ target_compile_features(milo-engine PUBLIC cxx_std_17)
 
 set_source_files_properties(src/gfx/mikktspace.c PROPERTIES LANGUAGE C)
 
-# STL ABI seam: the host-STL shim headers (include/bits, include/__iterator) and
-# the STLport-shape shims (src/stl) MUST precede the system + decomp headers so
-# host clang STL wins. BEFORE forces them ahead of everything.
+# STL ABI seam: the host-STL iterator shim and the vendored headers in include/
+# MUST precede the system + decomp headers so host clang STL wins. BEFORE forces
+# them ahead of everything.
+#
+# The shim (libstdc++ bits/stl_iterator.h or libc++ __iterator/wrap_iter.h plus
+# one implicit conversion to T*) is GENERATED from this toolchain's own header,
+# never checked in: a copy of one library version's header broke every TU on
+# GCC 14 and 867/874 on libc++ 23. See cmake/MiloHostStlShim.cmake.
+# Included by path, not via CMAKE_MODULE_PATH: a consumer's own module of the
+# same name would otherwise shadow this one.
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/MiloHostStlShim.cmake")
+milo_generate_host_stl_shim("${CMAKE_CURRENT_BINARY_DIR}/host_stl_shim"
+    MILO_ENGINE_HOST_STL_SHIM_DIR)
 target_include_directories(milo-engine BEFORE PUBLIC
+    ${MILO_ENGINE_HOST_STL_SHIM_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 target_include_directories(milo-engine PUBLIC
@@ -552,6 +563,19 @@ if(MILO_ENGINE_HAVE_CONTEXT)
     set_source_files_properties(
         ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/File_Native.cpp
         PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+
+    # macOS: the TUs that include SDK / framework headers cannot take the decomp
+    # MSVC-compat flags or the PCH (ConditionalMacros.h cannot identify the
+    # compiler under -fms-compatibility). The consumer used to set this on its
+    # own, long-dead copies of these files, so the live engine TUs got the flags.
+    if(APPLE)
+        set_source_files_properties(
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/gfx/MetalSurface.mm
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/gfx/GpuDevice.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/audio/AudioDevice.cpp
+            PROPERTIES SKIP_PRECOMPILE_HEADERS ON
+                       COMPILE_OPTIONS "-fno-ms-extensions;-fno-ms-compatibility;-fno-delayed-template-parsing")
+    endif()
 
     if(MILO_ENGINE_DECOMP_PCH AND NOT "${MILO_ENGINE_DECOMP_PCH}" STREQUAL "")
         target_precompile_headers(milo-engine PRIVATE
