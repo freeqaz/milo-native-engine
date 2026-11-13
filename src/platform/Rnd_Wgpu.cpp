@@ -1641,6 +1641,7 @@ void WgpuRnd::EndDrawing() {
         MaybeCaptureFrame();
         MaybeEncodeVideoFrame();
         FrameCapture::Get().EndFrame();
+        if (mFrameReadyCallback) mFrameReadyCallback();
 
         if (!mGpu.IsHeadless()) {
             mGpu.PresentFrame();

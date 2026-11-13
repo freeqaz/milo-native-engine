@@ -120,6 +120,12 @@ public:
 
     // Accessors for Mesh_Wgpu.cpp / Tex_Wgpu.cpp
     GpuDevice& Gpu() { return mGpu; }
+    // Called once per drawn frame after its command buffer is submitted and
+    // before it is presented: the one point where a windowed frame can be read
+    // back (GpuDevice::ReadbackFrame). A consumer's frame grab (dc3's
+    // /api/screenshot) registers here. nullptr clears it.
+    using FrameReadyCallback = void (*)();
+    void SetFrameReadyCallback(FrameReadyCallback cb) { mFrameReadyCallback = cb; }
     PipelineManager& Pipelines() { return mPipelines; }
     wgpu::RenderPassEncoder& CurrentPass() { return mPass; }
     bool IsInPass() const { return mInPass; }
@@ -275,6 +281,7 @@ public:
     void InvalidateSceneUniforms() { mLastSceneEnv = nullptr; }
     void MaybeCaptureFrame();
     void MaybeEncodeVideoFrame();
+    FrameReadyCallback mFrameReadyCallback = nullptr;
 #ifdef HX_IMGUI
     void RenderImGuiOverlay();
 #endif
