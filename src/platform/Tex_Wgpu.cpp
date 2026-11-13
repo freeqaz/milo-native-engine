@@ -323,6 +323,17 @@ struct GpuCubeTexData {
 
 static std::unordered_map<RndCubeTex*, GpuCubeTexData> sCubeTexGpuData;
 
+bool ReadbackGpuRenderTarget(RndTex* tex, std::vector<uint8_t>& texels, int& w, int& h) {
+    if (!gWgpuRnd || !tex) return false;
+    auto it = sTexGpuData.find(tex);
+    if (it == sTexGpuData.end() || !it->second.renderTarget || !it->second.texture) return false;
+    const wgpu::Texture& t = it->second.texture;
+    w = (int)t.GetWidth();
+    h = (int)t.GetHeight();
+    texels.resize((size_t)w * h * 4);
+    return gWgpuRnd->Gpu().ReadbackTexture(t, w, h, texels.data(), texels.size());
+}
+
 // Debug aid: write every live render target's colour contents to
 // <dir>/rt_<frame>_<texname>.png. Driven from WgpuRnd::MaybeCaptureFrame when
 // MILO_DUMP_RT is set, so the dump lands next to that frame's screenshot.
@@ -330,11 +341,9 @@ void DumpGpuRenderTargets(const char* dir, int frame) {
     if (!gWgpuRnd || !dir) return;
     for (auto& kv : sTexGpuData) {
         RndTex* tex = kv.first;
-        GpuTexData& d = kv.second;
-        if (!d.renderTarget || !d.texture) continue;
-        int w = (int)d.texture.GetWidth(), h = (int)d.texture.GetHeight();
-        std::vector<uint8_t> px((size_t)w * h * 4);
-        if (!gWgpuRnd->Gpu().ReadbackTexture(d.texture, w, h, px.data(), px.size())) continue;
+        int w = 0, h = 0;
+        std::vector<uint8_t> px;
+        if (!ReadbackGpuRenderTarget(tex, px, w, h)) continue;
         char name[128];
         snprintf(name, sizeof(name), "%s", tex->Name() ? tex->Name() : "anon");
         for (char* c = name; *c; ++c) if (*c == '/' || *c == ' ') *c = '_';

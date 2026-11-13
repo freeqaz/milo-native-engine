@@ -252,7 +252,16 @@ private:
     // (rndshape::kCamSelectSetsViewport).
     void ApplyCameraViewport(RndCam* cam);
     void BeginFramePass(bool clear);
+    // How a texture pass starts.  Selecting a target clears it to transparent
+    // black (colour and depth); Rnd::Clear on a bound target restarts the pass
+    // with what the clear asks for and keeps the rest (TexturePassLoad below).
+    struct TexturePassLoad {
+        bool clearColor = true;
+        Hmx::Color color = Hmx::Color(0.0f, 0.0f, 0.0f, 0.0f);
+        bool clearDepth = true;
+    };
     void BeginTexturePass(RndTex* tex);
+    void BeginTexturePass(RndTex* tex, const TexturePassLoad& load);
     void EndActivePass();
 public:
     // Clear depth buffer for 2D overlay rendering (HUD on top of 3D scene).
@@ -470,6 +479,15 @@ public:
 
 // Global accessor — set during Init
 extern WgpuRnd* gWgpuRnd;
+
+// Copy a render target's colour texture back to the CPU: w*h texels, 4 bytes
+// each, in the target's own channel order (ChooseRenderTargetFormat). False
+// when the texture has no GPU render target. Synchronous (Tex_Wgpu.cpp);
+// MILO_DUMP_RT and consumers' tests use it.
+bool ReadbackGpuRenderTarget(RndTex* tex, std::vector<uint8_t>& texels, int& w, int& h);
+// Feature mark for consumers' tests: this engine clears a bound render target
+// on Rnd::Clear (WgpuRnd::Clear) and can read one back.
+#define MILO_READBACK_GPU_RENDER_TARGET 1
 
 // Free function wrapper — callable from engine code via extern declaration.
 // Flushes PostProc to framebuffer, then starts a new pass for HUD overlay.
