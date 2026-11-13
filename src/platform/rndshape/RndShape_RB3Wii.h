@@ -242,6 +242,10 @@ inline int MatColorMod(const MatView &m, float colours[3][4]) {
     return mode;
 }
 
+// RB3 keeps the native alpha fringe fade on colour-modulated texels: never
+// flags the band selector (RndShape_DC3.h ColorModAlphaIsBandSelector).
+inline bool ColorModAlphaIsBandSelector(const MatView &, int) { return false; }
+
 // World refraction (RndShape.h RefractTerms) as the Xbox RndMat answers it:
 // GetRefractEnabled is mRefractEnabled && mRefractStrength > 0 && a normal
 // map, and GetRefractNormalMap is mRefractNormalMap, else the material's
@@ -418,6 +422,9 @@ inline int MeshNumCompressedVerts(RndMesh *m) {
 inline unsigned char *MeshCompressedVerts(RndMesh *m) {
     return m->GeomOwner()->mCompressedVerts;
 }
+// DC3's DxMesh::DrawShowing refills a mesh whose verts the property system
+// dirtied (see RndShape_DC3.h). Not established for RB3-Wii; no-op.
+inline void MeshSyncDirtyVerts(RndMesh *) {}
 
 inline void VertColor(const RndMesh::Vert &v, float out[4]) {
     out[0] = v.color.fr();
@@ -489,6 +496,8 @@ constexpr bool kCamSelectSetsViewport = false;
 // sky by sky_dome.mat with SrcAlpha blending, so without the override the
 // target's alpha stays at the clear value 0 and the cloud layer is invisible.
 constexpr bool kRenderTargetForcesAlphaWrite = true;
+// WiiMat::SetOverrideAlphaWrite has no per-material exemption.
+template <class M> inline bool MatPinsAlphaWrite(const M *) { return false; }
 // The standard shader sRGB-encodes its output (gfx/standard_wgsl.inc,
 // linearToSrgb) for the non-sRGB surface, and a render target (RGBA8Unorm on
 // that surface) is sampled back as raw data, so a material drawn through a

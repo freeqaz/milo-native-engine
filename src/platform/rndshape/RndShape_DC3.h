@@ -6,6 +6,9 @@
 // platform/rndshape/RndShape.h, never directly.
 #pragma once
 
+#include <type_traits>
+#include <utility>
+
 #include "rndobj/Rnd.h"
 #include "rndobj/Rnd_NG.h"
 #include "rndobj/BaseMaterial.h"
@@ -54,11 +57,67 @@ inline bool MatPrelitAmbient(const T &) { return false; }
 // shader's own specular/normal/rim model.
 template <class T>
 inline bool MatRetailTerms(const T &, RetailMatTerms &) { return false; }
-// RB3's material colour modulation (RndShape_RB3Wii.h). Returns the mode, 0
-// for none. DC3's BaseMaterial exposes no colour-mod state here, so DC3 and
-// rb3-xenon draw every material unmodulated, as before.
+// Material colour modulation (RndShape.h; the shader's colorModScale /
+// colorModAlpha). Returns the mode, 0 for none. DC3's RndMat carries it as
+// mColorModFlags / mColorMod (rndobj/Mat.h): WorldCrowd::Draw3DChars sets
+// kColorModModulate plus a crowd member's three random*.pal colours on the
+// character's materials before each draw (world/Crowd.cpp SetMatColorFlags),
+// and the Xbox shader permutation (key bits 32-33) multiplies them in.
+//
+// rb3-xenon compiles this shape too, and its RndMat has no GetColorMods()
+// accessor: there (HasColorModAccessors false) the function keeps its old
+// answer, 0, so an rb3-xenon render is unchanged.
+} // namespace rndshape
+#include <type_traits>
+#include <utility>
+namespace rndshape {
+template <class M, class = void>
+struct HasColorModAccessors : std::false_type {};
+template <class M>
+struct HasColorModAccessors<
+    M, std::void_t<decltype(std::declval<const M &>().GetColorMods()),
+                   decltype(std::declval<const M &>().GetColorModFlags())> >
+    : std::true_type {};
+// DependentMatT<T>::type is RndMat, spelled so the discarded branch below is not
+// checked for a game whose RndMat lacks the accessors.
 template <class T>
-inline int MatColorMod(const T &, float (*)[4]) { return 0; }
+struct DependentMatT { using type = RndMat; };
+template <class T>
+inline int MatColorMod(T *m, float colours[3][4]) {
+    using MatT = typename DependentMatT<T>::type;
+    if constexpr (!HasColorModAccessors<MatT>::value) {
+        (void)m;
+        (void)colours;
+        return 0;
+    } else {
+        MatT *mat = dynamic_cast<MatT *>(m);
+        if (!mat) return 0;
+        const int mode = mat->GetColorModFlags();
+        if (mode == MatT::kColorModAlphaPack) return mode;
+        if (mode != MatT::kColorModAlphaUnpackModulate && mode != MatT::kColorModModulate)
+            return 0;
+        const std::vector<Hmx::Color> &mods = mat->GetColorMods();
+        if (mods.size() < 3) return 0;
+        for (int i = 0; i < 3; i++) {
+            colours[i][0] = mods[i].red;
+            colours[i][1] = mods[i].green;
+            colours[i][2] = mods[i].blue;
+            colours[i][3] = 1.0f;
+        }
+        return mode;
+    }
+}
+// Whether a colour-modulated material's texel alpha selects the tint band
+// rather than carrying coverage (MaterialSetup FillColorMod -> colorMod.w bit
+// 8 -> the shader skips its native alpha fringe fade, which would otherwise
+// scale rgb by a / 0.1). True for DC3 kColorModModulate: the crowd characters'
+// textures paint skin at texel alpha 0 -- band 0, tinted by the random1.pal
+// skin tone -- on opaque kBlendSrc materials, and the fade blacked out every
+// crowd face and hand.
+template <class T>
+inline bool ColorModAlphaIsBandSelector(const T &, int mode) {
+    return mode == RndMat::kColorModModulate;
+}
 // World refraction (RndShape.h RefractTerms): the decomp's own RndMat
 // accessors. GetRefractEnabled(true) skips its GetCurrentFrameTex test; the
 // frame is bound whatever it holds (black before the first SavePreBuffer).
@@ -97,6 +156,27 @@ inline const Hmx::Rect &CamScreenRect(RndCam *c) { return c->GetScreenRect(); }
 inline RndMesh *MeshGeomOwner(RndMesh *m) { return m->GetGeomOwner(); }
 inline int MeshNumCompressedVerts(RndMesh *m) { return (int)m->NumCompressedVerts(); }
 inline unsigned char *MeshCompressedVerts(RndMesh *m) { return m->CompressedVerts(); }
+// DxMesh::DrawShowing (826229B0; dc3-decomp src/system/rnddx9/Mesh.cpp, 100%
+// matched) refills the geometry owner's vertex buffer before it draws when the
+// verts were written through the property system since the last Sync:
+//     if (geom->Verts().unkc) geom->Sync(0x1f);
+// PropSync(RndMesh::VertVector) sets that flag on every `(verts N ...)` set, and
+// RndMesh::Sync clears it. A PropAnim that keys vertex positions (Rehearse's
+// projection_mesh.mesh reveal, world/shared/chars_base.milo) moves verts only
+// this way; without the refill the GPU keeps the geometry of its first upload.
+// rb3-xenon compiles this shape too and its VertVector has no such flag (its
+// Mesh.h: retail VertVector is exactly 0xc), so the test is made only where the
+// member exists; elsewhere this is a no-op, as before.
+template <class M, class = void> struct MeshHasVertDirtyFlag : std::false_type {};
+template <class M>
+struct MeshHasVertDirtyFlag<M, std::void_t<decltype(std::declval<M &>().Verts().unkc)>>
+    : std::true_type {};
+template <class M> inline void MeshSyncDirtyVerts(M *geom) {
+    if constexpr (MeshHasVertDirtyFlag<M>::value) {
+        if (geom->Verts().unkc)
+            geom->Sync(0x1f);
+    }
+}
 
 inline void VertColor(const RndMesh::Vert &v, float out[4]) {
     out[0] = v.color.red;
@@ -145,9 +225,38 @@ constexpr int kDrawModeReflection = 8;
 constexpr bool kCamSelectSetsViewport = true;
 
 // ---- render-to-texture -----------------------------------------------------
-// DC3's RndTexRenderer::DrawToTexture leaves each material's alpha-write state
-// alone while it draws into the output texture.
-constexpr bool kRenderTargetForcesAlphaWrite = false;
+// DC3 writes destination alpha for every material drawn into a render target.
+// The image's colour-write mask is chosen per material select by
+// SetColorWriteMask (dc3-decomp src/system/rndobj/Shader.cpp, 0x8269E770,
+// 100% matched):
+//     alpha = mForceAlphaWrite ? mAlphaWrite
+//                              : (optAlpha || TheNgRnd.Offscreen() || mAlphaWrite)
+// and Offscreen() (DxRnd::Offscreen, also 100% matched) is
+// D3DDevice_GetRenderTarget(0) != BackBuffer(): true for ANY bound target.
+// Nothing in the image's render-target or RndTexRenderer setup narrows this
+// per target, so neither does this rule.
+// So a target's alpha holds what was drawn into it unless the material pins
+// its alpha write with force_alpha_write (MatPinsAlphaWrite below). rb3-xenon,
+// which also compiles this shape, has the same rule without the exemption
+// (its SetColorWriteMask, retail 0x824A5AF8: optAlpha || Offscreen() ||
+// mAlphaWrite), and its material has no force_alpha_write member.
+// Rehearse depends on it: the dancer is hidden by the practice camshots and
+// shown only through world/shared/chars_base.milo's projection.rndtex ->
+// projection.tex -> projection_mesh.mesh (projection.mat, SrcAlpha); with
+// alpha writes off the target's alpha stayed at the clear value 0 and the
+// dancer was invisible (dc3-decomp PLAN G-11).
+constexpr bool kRenderTargetForcesAlphaWrite = true;
+// force_alpha_write: the material's own alpha_write decides, offscreen or not.
+template <class M, class = void> struct MatHasForceAlphaWrite : std::false_type {};
+template <class M>
+struct MatHasForceAlphaWrite<M, std::void_t<decltype(std::declval<const M &>().GetForceAlphaWrite())>>
+    : std::true_type {};
+template <class M> inline bool MatPinsAlphaWrite(const M *m) {
+    if constexpr (MatHasForceAlphaWrite<M>::value)
+        return m && m->GetForceAlphaWrite();
+    else
+        return false;
+}
 // DC3 draws into render targets with the same sRGB-encoded output as the frame.
 constexpr bool kRenderTargetStoresLinear = false;
 

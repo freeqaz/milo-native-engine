@@ -170,6 +170,13 @@ void RndMesh::DrawShowing() {
         return;
     }
 
+    // The image's DxMesh::DrawShowing refills the geometry owner's buffers
+    // before drawing when the property system dirtied its verts (see
+    // rndshape::MeshSyncDirtyVerts); RndMesh::Sync -> OnSync marks the GPU
+    // copy for re-upload.
+    if (RndMesh* geom = rndshape::MeshGeomOwner(this))
+        rndshape::MeshSyncDirtyVerts(geom);
+
     IncrementMeshDrawCalls();
     DrawMeshImmediate(this);
 }
@@ -245,7 +252,8 @@ void DrawMeshImmediate(RndMesh* mesh) {
     key.hasDepth = gWgpuRnd->CurrentPassHasDepth();
     key.alphaCut = mat->GetAlphaCut();
     key.alphaWrite = mat->GetAlphaWrite();
-    if (rndshape::kRenderTargetForcesAlphaWrite && gWgpuRnd->ActiveTargetTex())
+    if (rndshape::kRenderTargetForcesAlphaWrite && gWgpuRnd->ActiveTargetTex()
+        && !rndshape::MatPinsAlphaWrite(rawMat))
         key.alphaWrite = true;
     // RB3's pseudo-HDR bloom mask (rndshape::BloomMaskScale; 0 for DC3): an
     // AllowHDR material drawn into the main frame writes its luma to alpha.
@@ -391,7 +399,8 @@ void DrawMeshImmediate(RndMesh* mesh) {
         npKey.stencil = (WgpuStencil)rndshape::Mat(nextPass)->GetStencil();
         npKey.alphaCut = rndshape::Mat(nextPass)->GetAlphaCut();
         npKey.alphaWrite = rndshape::Mat(nextPass)->GetAlphaWrite();
-        if (rndshape::kRenderTargetForcesAlphaWrite && gWgpuRnd->ActiveTargetTex())
+        if (rndshape::kRenderTargetForcesAlphaWrite && gWgpuRnd->ActiveTargetTex()
+            && !rndshape::MatPinsAlphaWrite(nextPass))
             npKey.alphaWrite = true;
         npKey.alphaToCoverage = rndshape::Mat(nextPass)->GetAlphaCut();
 
