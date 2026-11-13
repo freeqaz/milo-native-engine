@@ -1,13 +1,13 @@
 // milo-native-engine - ThreadCall (POSIX)
 // SDK-agnostic, matched-fork-symbol-preserving implementation of the
-// ThreadCall.h surface declared by the consuming decomp. Uses pthread + sem_t
-// directly — no Win32 type names (no HANDLE / DWORD / WaitForSingleObject), no
+// ThreadCall.h surface declared by the consuming decomp. Uses pthread + a
+// mutex/condvar semaphore (WorkerSem below) directly — no Win32 type names (no HANDLE / DWORD / WaitForSingleObject), no
 // xdk/ includes.
 //
 // Maps the Xbox ThreadCall_Win.cpp semantics:
 //   - one worker thread, started in ThreadCallInit
 //   - a count==1 binary semaphore signals "data available in gData[gCurCall]"
-//     (ReleaseSemaphore -> sem_post, WaitForSingleObject(INFINITE) -> sem_wait)
+//     (ReleaseSemaphore -> WorkerSem::Post, WaitForSingleObject(INFINITE) -> Wait)
 //   - work entries are queued in a fixed 12-slot ring (gData), filled by
 //     ThreadCall(), drained by the worker, completion posted via gCallDone
 //   - ThreadCallPoll() advances the ring on the main thread
@@ -20,7 +20,6 @@
 #include <cstring>
 #ifndef __EMSCRIPTEN__
 #include <pthread.h>
-#include <semaphore.h>
 #include <cstdlib>
 #include <ctime>
 
@@ -123,14 +122,39 @@ namespace {
     // pages are demand-faulted (RSS at the crash was 64 KB of a 64 KB stack).
     constexpr size_t kWorkerStackSize = 8u * 1024u * 1024u;
 
+    // The worker's wake-up semaphore. Not a POSIX sem_t: macOS does not
+    // implement unnamed semaphores (sem_init fails with ENOSYS), so with sem_t
+    // the worker never started there, gWorkerStarted stayed false and every
+    // queued ThreadCall waited forever. A counting semaphore over a pthread
+    // mutex + condvar has the same post/wait semantics on every POSIX host and
+    // cannot fail to initialise.
+    struct WorkerSem {
+        pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+        pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
+        unsigned count = 0;
+        void Post() {
+            pthread_mutex_lock(&mutex);
+            ++count;
+            pthread_cond_signal(&cond);
+            pthread_mutex_unlock(&mutex);
+        }
+        void Wait() {
+            pthread_mutex_lock(&mutex);
+            while (count == 0)
+                pthread_cond_wait(&cond, &mutex);
+            --count;
+            pthread_mutex_unlock(&mutex);
+        }
+    };
+
     pthread_t gWorker;
     bool gWorkerStarted;
-    sem_t gWorkerSem;
+    WorkerSem gWorkerSem;
 
     void *WorkerMain(void *) {
         // First wait — entry: matches the Xbox flow where the worker blocks
         // immediately on the semaphore until the main thread posts work.
-        sem_wait(&gWorkerSem);
+        gWorkerSem.Wait();
         while (!gTerminate) {
             LoadDetWorkerJitter();  // W0.3d-b: env-gated fail-red jitter (default no-op)
             switch (gData[gCurCall].mType) {
@@ -146,9 +170,8 @@ namespace {
                 MILO_ASSERT(false, 199);
                 break;
             }
-            sem_wait(&gWorkerSem);
+            gWorkerSem.Wait();
         }
-        sem_destroy(&gWorkerSem);
         return nullptr;
     }
 #endif
@@ -164,11 +187,6 @@ void ThreadCallInit() {
     // Single-threaded WASM: no worker thread. Work runs synchronously in
     // ThreadCallPoll() below.
 #else
-    if (sem_init(&gWorkerSem, 0, 0) != 0) {
-        MILO_LOG("sem_init() failed.\n");
-        gWorkerStarted = false;
-        return;
-    }
     pthread_attr_t attr;
     pthread_attr_init(&attr);
     pthread_attr_setstacksize(&attr, kWorkerStackSize);
@@ -176,7 +194,6 @@ void ThreadCallInit() {
     pthread_attr_destroy(&attr);
     if (rc != 0) {
         MILO_LOG("pthread_create() failed.\n");
-        sem_destroy(&gWorkerSem);
         gWorkerStarted = false;
     } else {
         gWorkerStarted = true;
@@ -233,7 +250,7 @@ void ThreadCallPoll() {
 #else
     // W0.3d-b (Wave 12, A-S2): determinism seam's synchronous-drain lever. When
     // RB3_FIXED_CLOCK && RB3_LOAD_DETERMINISM, run the pending job inline on the
-    // main thread (no worker sem_post) so the worker<->main alloc race that
+    // main thread (no worker Post) so the worker<->main alloc race that
     // shuffles object addresses — and thus the mAnims consumer order feeding the
     // per-frame rejection samplers — is removed at source. Mirrors the proven
     // __EMSCRIPTEN__ single-threaded drain above. Default-OFF: the async worker
@@ -289,7 +306,7 @@ void ThreadCallPoll() {
     if (gReadyForNext && gData[gCurCall].mType != kTCDT_None) {
         gReadyForNext = false;
         if (gWorkerStarted) {
-            sem_post(&gWorkerSem);
+            gWorkerSem.Post();
         }
     }
 #endif
@@ -315,7 +332,7 @@ void ThreadCallTerminate() {
 #ifndef __EMSCRIPTEN__
     if (gWorkerStarted) {
         gTerminate = true;
-        sem_post(&gWorkerSem);
+        gWorkerSem.Post();
     }
 #endif
 }
