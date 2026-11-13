@@ -96,6 +96,20 @@ public:
     // resamples mSampleRate -> this rate. == mSampleRate when the browser honored
     // the requested rate.
     int GetDeviceSampleRate() const { return mDeviceSampleRate; }
+
+    // Web only: where the output is, in mix-rate frames. MixSources hands each
+    // source frames for the SharedArrayBuffer ring, and the AudioWorklet plays
+    // them up to the queue depth later (140-500 ms, adaptive), so how far a
+    // source has RENDERED is not how far it has been HEARD. MixFramesPulled()
+    // counts the frames MixSources has pulled from the sources since Init (a
+    // source's RenderAudio sees the value before its own chunk);
+    // MixFramesConsumed() subtracts what is still queued ahead of the
+    // worklet's read cursor (plus the resampler's carried frames), read live.
+    // A clock built on rendered frames runs a queue depth early, moves with
+    // the queue target, and jumps back and forth across a main-thread stall
+    // (behind before the next pump refills, ahead after).
+    long long MixFramesPulled() const { return mMixFramesPulled; }
+    long long MixFramesConsumed();
 #endif
 
     // Source management (thread-safe)
@@ -172,6 +186,7 @@ private:
     static const int kResampleCarryMax = 8;
     float mResampleCarry[kResampleCarryMax * 2] = {0}; // interleaved stereo
     int mResampleCarryN = 0;       // valid carried frames at the front of the next mix
+    long long mMixFramesPulled = 0; // MixSources frames since Init (MixFramesPulled)
 
     // ---- Off-main music-stem registry (RB3_WEB_OFFMAIN_MIX) ----
     // Live music stems registered for off-main publishing. Indexed by SAB slot
