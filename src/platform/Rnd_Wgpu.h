@@ -260,6 +260,9 @@ private:
         Hmx::Color color = Hmx::Color(0.0f, 0.0f, 0.0f, 0.0f);
         bool clearDepth = true;
     };
+    // The 1x, depthless pass on the frame target that FlushPostProcessingForOverlay
+    // opens; BeginFramePass(false) reopens it once the frame is in it.
+    void BeginOverlayPass();
     void BeginTexturePass(RndTex* tex);
     void BeginTexturePass(RndTex* tex, const TexturePassLoad& load);
     void EndActivePass();
@@ -345,6 +348,10 @@ public:
     wgpu::TextureView mFrameView;
     bool mInPass = false;
     bool mPostProcFlushed = false;
+    // FlushPostProcessingForOverlay has moved the frame onto the overlay pass:
+    // everything drawn since sits only in the frame target. Resuming the MSAA
+    // frame pass from here would resolve the MSAA buffer over it on End.
+    bool mFrameInOverlay = false;
     RndTex* mActiveTargetTex = nullptr;
     wgpu::TextureFormat mCurrentTargetFormat = wgpu::TextureFormat::Undefined;
     uint32_t mCurrentSampleCount = 1;
