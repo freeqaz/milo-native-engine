@@ -29,6 +29,12 @@
 // RndShaderMgr constant cache) exists in this shape.
 #define MILO_RNDOBJ_SHAPE_HAS_NGRND 1
 
+// Rnd::PushClipPlanesInternal / PopClipPlanesInternal(ObjPtrVec<RndTransformable>&)
+// are virtual hooks WgpuRnd overrides (RndDrawable::mClipPlanes): DC3's Rnd
+// declares them for DxRnd, rb3-xenon's under HX_NATIVE (RND_DC3_VIRTUAL). The
+// RB3-Wii shape has neither the hooks nor ObjPtrVec, so it stays undefined there.
+#define MILO_RNDOBJ_SHAPE_HAS_CLIP_PLANES 1
+
 // WgpuRnd derives from the shape's renderer base.
 using WgpuRndBase = NgRnd;
 

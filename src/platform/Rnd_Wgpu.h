@@ -261,8 +261,12 @@ public:
     // horizontal), which is what a UI box's clip planes are (the main menu's
     // motd.lbl marquee: motd_clip_left/right.trans). A plane whose screen line
     // is oblique cannot be a scissor edge and does not clip (one log line).
+    // Only shapes whose Rnd has the hooks (MILO_RNDOBJ_SHAPE_HAS_CLIP_PLANES);
+    // elsewhere the clip stack below stays empty and every scissor is full.
+#ifdef MILO_RNDOBJ_SHAPE_HAS_CLIP_PLANES
     void PushClipPlanesInternal(ObjPtrVec<RndTransformable>& planes) override;
     void PopClipPlanesInternal(ObjPtrVec<RndTransformable>& planes) override;
+#endif
     // The scissor the innermost pushed planes give, in pixels of the target
     // current when they were pushed (x, y, w, h; w or h may be 0). False when
     // no clip plane is in effect.

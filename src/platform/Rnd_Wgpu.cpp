@@ -1094,6 +1094,8 @@ void WgpuRnd::ApplyViewport() {
 // Clip planes (RndDrawable::mClipPlanes) as a scissor rectangle
 // ----------------------------------------------------------------------------
 
+// The hooks exist only in shapes whose Rnd declares them; see RndShape_DC3.h.
+#ifdef MILO_RNDOBJ_SHAPE_HAS_CLIP_PLANES
 namespace {
 struct ScreenPoint { float x, y; bool ok; };
 
@@ -1174,6 +1176,7 @@ void WgpuRnd::PopClipPlanesInternal(ObjPtrVec<RndTransformable>&) {
     if (!mClipStack.empty()) mClipStack.pop_back();
     ApplyClipScissor();
 }
+#endif // MILO_RNDOBJ_SHAPE_HAS_CLIP_PLANES
 
 bool WgpuRnd::ClipScissor(int rect[4]) const {
     if (mClipStack.empty()) return false;
