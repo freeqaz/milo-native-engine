@@ -1617,3 +1617,18 @@ MetaMaterials, which is why the tex_xfm probes above worked.
 4. shockwave: no native implementation; MEASURED never active.
 5. tex_gen Sphere / Projected / Environ: native approximations unchanged;
    MEASURED unused by shipped materials and absent from the cache.
+
+### 11.6 Verification, round 6
+
+Heads: engine `np-gfx-light` 65c12c7 (code at 9b98a27; np-gfx ab2be8a merged),
+dc3 `np-gfx-light` d596f3c16 (np-gfx fd56094e0 merged; the engine pin stays
+570205a).
+
+- dc3 `scripts/native_test.sh` at d596f3c16 against engine 65c12c7:
+  registered 1060, executed 990, passed 990, failed 0, skipped 70, budget 70,
+  rc 0.
+- rb3-xenon `rb3-render` (tree a3ddb13ea), engine 65c12c7 against np-gfx
+  ab2be8a: 11 of 11 frames byte-identical, all gates passed on both.
+- rb3 main a49c0afce built against engine 65c12c7: 158 of 158 pass,
+  `native_compat_census.check` included.
+- No new render pass, bind group, buffer or getenv.
