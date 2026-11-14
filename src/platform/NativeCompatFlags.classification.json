@@ -2237,5 +2237,12 @@
     "faithfulStatus": "n/a: external variable owned by RenderDoc's implicit layer, only read: set (non-empty, not 0) means a capture/debug layer is loading, which turns MILO_GPU_LABELS' default on so the capture keeps object names [GpuDevice.cpp]",
     "default": "off",
     "read": "truthy"
+  },
+  "MILO_HEADLESS_FRAMES_IN_FLIGHT": {
+    "class": "perf",
+    "owner": "render/perf",
+    "faithfulStatus": "n/a: headless GPU only. How many frames a headless loop may run ahead of the GPU (default 2): WgpuRnd::EndDrawing's headless path calls GpuDevice::EndHeadlessFrame, which processes Dawn's events and waits on an OnSubmittedWorkDone future while more than this many frames are queued (a window is paced by present instead). 0 = unbounded, the pre-H-75 behaviour, under which an uncapped headless loop let the driver grow its descriptor/command/staging pools to the deepest backlog (dc3 PLAN H-45/H-75). Same frames, same bytes; only when the CPU waits changes. Web: empty definition [GpuDevice.cpp, Rnd_Wgpu.cpp]",
+    "default": "2",
+    "read": "value"
   }
 }

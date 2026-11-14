@@ -221,6 +221,9 @@ bool GpuDevice::ReadbackTexture(const wgpu::Texture&, int, int, uint8_t*, size_t
 
 bool GpuDevice::ShouldClose() const { return false; }
 
+// The browser has no headless mode; requestAnimationFrame paces the frames.
+void GpuDevice::EndHeadlessFrame() {}
+
 void GpuDevice::PollEvents() {
     if (mInstance) mInstance.ProcessEvents();
 }
