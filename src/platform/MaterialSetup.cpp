@@ -160,6 +160,20 @@ bool TextMeshKeepsAtlasRGB(RndMesh* mesh, RndMat* mat, bool skinned) {
     return hook->QueryDrawMaterialPolicy(mesh, mat, skinned, nullptr, camName).isColorIcon;
 }
 
+// material.gammaShading for this draw: the shape's model (RB3-Wii: always),
+// or, for a game whose UI shades in gamma space (GameRenderHook::
+// UiShadesInGammaSpace; dc3), any draw after the frame's world has ended. The
+// Xbox 360 DxRnd multiplies stored texel and colour values and writes them to
+// an A8R8G8B8 target with no encode; the dc3 shader's linear->sRGB output
+// encode lifted every UI colour (a 0.32 purple drew as 0.60: washed-out move
+// cards, a pale score).
+static bool DrawShadesInGammaSpace() {
+    if (rndshape::kGammaSpaceShading) return true;
+    if (!gWgpuRnd || !gWgpuRnd->FrameInOverlay()) return false;
+    GameRenderHook* hook = GetGameRenderHook();
+    return hook && hook->UiShadesInGammaSpace();
+}
+
 MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh) {
     // DC3 BaseMaterial getters, whatever the rndobj shape (platform/rndshape/).
     auto mat = rndshape::Mat(rawMat);
@@ -281,7 +295,7 @@ MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh) {
     // vertex colour, which an unlit Wii material never sees.
     const bool unlit = rndshape::MatUnlit(mat);
     matUni.unlit = unlit ? 1.0f : 0.0f;
-    matUni.gammaShading = rndshape::kGammaSpaceShading ? 1.0f : 0.0f;
+    matUni.gammaShading = DrawShadesInGammaSpace() ? 1.0f : 0.0f;
     bool isMultiplyBlend = (matBlend == BaseMaterial::kBlendMultiply) && !unlit;
     bool forcePrelit = IsSimpleRender() || isOverlayPass || isMultiplyBlend;
     if (isMultiplyBlend) heuristics |= kHeuristicMultiplyPrelit;
@@ -391,7 +405,7 @@ MaterialParams BuildPassMaterialParams(BaseMaterial* rawNextPass) {
     // Force prelit for multiply-blend passes (same rationale as primary material)
     const bool npUnlit = rndshape::MatUnlit(nextPass);
     npMatUni.unlit = npUnlit ? 1.0f : 0.0f;
-    npMatUni.gammaShading = rndshape::kGammaSpaceShading ? 1.0f : 0.0f;
+    npMatUni.gammaShading = DrawShadesInGammaSpace() ? 1.0f : 0.0f;
     bool npMultiply = (nextPass->GetBlend() == BaseMaterial::kBlendMultiply) && !npUnlit;
     npMatUni.prelit = (nextPass->Prelit() || npMultiply) ? 1.0f : 0.0f;
     if (nextPass->Prelit() && !npMultiply && rndshape::MatPrelitAmbient(nextPass))

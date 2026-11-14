@@ -328,6 +328,20 @@ public:
         return false;
     }
 
+    // Does the game's UI shade in gamma space? When true, every draw the frame
+    // makes after its world ends (the overlay phase FlushPostProcessingForOverlay
+    // opens: the UI, the gameplay HUD, and render targets those draw) takes the
+    // standard shader's gamma-space route (material.gammaShading): texel *
+    // colour as stored, saturated, with no linear->sRGB output encode. That is
+    // the Xbox 360 DxRnd's model (A8R8G8B8 frame and textures, no gamma sign,
+    // shaders multiply stored values), the one the RB3-Wii shape already uses
+    // everywhere (kGammaSpaceShading). The world before EndWorld is untouched.
+    // Default false: a consumer opts in, so rb3-xenon, which shares the dc3
+    // shape, keeps its output.
+    virtual bool UiShadesInGammaSpace() {
+        return false;
+    }
+
 protected:
     GameRenderHook() = default;
 };
