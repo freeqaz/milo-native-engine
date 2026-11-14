@@ -6910,3 +6910,242 @@ frames; round 4's final binary (r4fix) has 3.
     reach rb3-xenon.
   - `native_compat_census.py check` reports OK: 454 flags, regen clean, no
     getenv added.
+
+## 36. DC3 post chain, round 6: throneroom against Xenia, and depth of field (lane np-gfx-post, 2026-11-14)
+
+The brief came from the Xenia ground-truth lane's round 2 (dc3-decomp
+`archive/np-gfx-2026-11-14/xenia/INDEX.md`, cells 1–4), which listed three
+post-chain gaps: the throneroom normal carpet, depth of field in intro and
+venue shots, and the throneroom peak's post lift. Evidence for all of this
+section: dc3-decomp `archive/np-gfx-2026-11-14/lanes/post/round6/`
+(`measure/`, `native/`, `xenia/`, `dof/`, `sheets/`, `sabotage/`, `tools/`,
+`dta/`). Native ran with `DC3_DISPLAY_GAMMA=off`, since Xenia frames are
+pre-ramp.
+
+**Verdicts.**
+- The carpet is Xenia's MAX alpha (§35), not native's grade. No code change.
+- Depth of field never ran on native. Fixed in dc3 (`DOFProc.cpp`); no
+  engine code change.
+- The peak's post lift agrees once it is measured on the same frame:
+  1.53× native vs 1.54–1.58× Xenia. No code change.
+
+### 36.1 Throneroom normal carpet (MEASURED)
+
+The Xenia lane reported that native's grade takes the carpet down 32% and
+Xenia's 15%. I decomposed it stage by stage on matched camshots: same shot by
+the lane's edge correlation, cut 0.45, `tools/states_region.py`,
+`measure/tr_region.txt`. Five states are set on
+`throneroom_performance_high.pp` every ~1.2 s (native) or 1 s (Xenia): full;
+bloom off; the three Multiply overlays hidden, with and without bloom; and
+levels off.
+
+Carpet box, shot `tr_far03`, mean luma:
+
+| state | Xenia | native (shipped) | native, factorless MAX |
+|---|---|---|---|
+| full | 28.7 | 22.3 | 27.6 |
+| bloom off | 22.7 | 21.7 | 21.7 |
+| overlays hidden, full | 47.2 | 46.0 | 45.9 |
+| overlays hidden, bloom off | 43.9 | 42.4 | 42.2 |
+| levels off (in_lo 0) | 39.6 | 33.7 | 38.4 |
+
+Shot `tr_062`, carpet box: full 12.2 / 7.7 / 12.0; bloom off 7.7 / 7.4.
+
+- With bloom off, the carpet agrees to within 1 level on both shots. So the
+  colour matrix, contrast and levels match on this saturated magenta; the
+  brief's "the grade" suspects (hue/saturation order, a clamp before the
+  matrix, the converge term) are all cleared.
+- The whole gap is the bloom term over `carpetShadow.mesh`
+  (`THR_carpetShadow.mat`: blend 6 Multiply, AllowHDR). Xenia adds +6.0 there,
+  native +0.6, and the factorless-MAX build +5.9.
+- With the overlays hidden, all three agree (+3.3 / +3.6 / +3.7). Over the
+  lower third of the frame (`measure/tr_ab.txt`): Xenia's bloom term is +5.0,
+  native +2.9, MAX +7.6, and all about +5 with the overlays hidden.
+- This is the §35 rink mechanism on another venue. The shipped rule stays
+  (`DC3RetailPostTest.BlendedAlphaFollowsTheDrawsEquation`).
+- INFERRED: the lane's "−32% vs −15%" mixes two things. Its raw state is
+  `toggle_all_postprocs`, which on native also clears the spotlights (its
+  own cell 3 finding), so "raw → full" is not a pure post measurement on
+  native.
+
+### 36.2 Depth of field (fixed in dc3)
+
+**Cause.** Retail installs `NgDOFProc` from `NgRnd`'s init
+(`rnddx9/Rnd_Xbox.cpp`), which native never runs.
+- So DC3 native's `TheDOFProc` was the base `DOFProc`: `Set` was a no-op and
+  `Enabled()` returned 0.
+- Every `CameraShot` with `use_depth_of_field 1` and a target
+  (intro CLOSEUP and VENUE shots) therefore reached a proc that dropped it.
+- The engine's `DofPass` (the `NgDOFProc::DoPost`
+  downsample/blur/composite, `postprocess.ps` bit 3) returned at its first
+  check.
+
+**Fix.** dc3 `src/system/rndobj/DOFProc.cpp` (`e7d3c680e`): under
+`HX_NATIVE`, `DOFProc::Init` registers a `NativeDOFProc` that keeps
+`NgDOFProc::Set`'s parameters.
+- blurDepth = max(scale·bd + offset, 0), floored at 0.001.
+- max/min blur go through `DOFOverrides` and are clamped to [0, 1].
+- Enable is set only when maxBlur > 0 and `TheUI->IsGameScreenActive()`,
+  and is cleared only by `UnSet`.
+- The Xbox build is unchanged (`REGISTER_OBJ_FACTORY(DOFProc)`).
+- `NgDOFProc::DoPost` also checks the DataVariable `disable_dof`. That is a
+  debug variable that no shipped data sets, so it is not honoured.
+
+**Guard.** `DC3RetailPostTest.DOFProcKeepsNgDOFProcSetParameters`
+(`native/tests/test_dc3_retail_post.cpp`). It checks:
+- the parameters are kept;
+- the proc stays disabled off the game screen and enables on it;
+- a later Set with maxBlur 0 does not disable it;
+- the 0.001 floor and both clamps;
+- `UnSet` disables it.
+
+Sabotages, all caught, with a vacuity check that a run executing no test is
+not a pass (`sabotage/sab_dof.sh`, `sab_dof.log`):
+- S1: register the base proc again;
+- S2: drop the game-screen gate;
+- S3: clear the enable in `Set`;
+- S4: drop the clamps.
+
+**Before/after** (`measure/dof_sharpness.txt`,
+`sheets/intro_dof_same_shot.png`, `sheets/intro_dof_before_after.png`).
+Sharpness is the Xenia lane's mean |Laplacian| at 1280×720.
+
+Houseparty intro, natural shots:
+- venue03: 14.15 → 9.40;
+- cu01: 15.13 → 10.04;
+- gameplay shot (control, DOF off): 14.54 → 14.55.
+
+The same forced shots on both sides (`{$hamdirector force_shot …}`; the
+camera's position within a shot differs in time between the sides):
+
+| shot | Xenia frame / background | native before | native after |
+|---|---|---|---|
+| venue05 | 11.43 / 13.49 | 13.19 / 14.58 | 10.20 / 11.13 |
+| cu02 | 11.80 / 10.09 | 16.09 / 14.57 | 10.73 / 8.18 |
+
+**Cost** (RTX 3090, 720p, `MILO_GPU_TIMERS=1`, A/B on `force_shot cu02`,
+`measure/dof_cost.txt`):
+
+| pass | ms/frame |
+|---|---|
+| DofComposite | 0.0187 |
+| DofDownsample4x | 0.0104 |
+| DofBlurH | 0.0053 |
+| DofBlurV | 0.0047 |
+| total | ≈0.039 |
+
+- With DOF off the passes are not recorded at all, so it costs nothing.
+- No pass was added or renamed. These four existed and now run on intro
+  shots.
+
+### 36.3 Throneroom peak: post lift (MEASURED on frozen frames)
+
+The brief: post lifts the scene 1.62× on Xenia and 1.39× on native (1.21×
+with native bloom off). It also asked me to check the Multiply overlays
+first, and to use the base with the light-colour fix
+(`Hmx::Color::Unpack` × `(1.0f/255.0f)`, np-gfx-blend `d560e63f0`).
+
+**Method.**
+- That fix is not on np-gfx yet, so native ran on the merged base plus
+  `d560e63f0`: binary `dc3-native-r6color`; with factorless MAX alpha,
+  `r6colormax`.
+- A live state cycle cannot measure the peak. Its cameras move every frame,
+  so within one 0.27 s set only 2 of 17 cycles stay on one camera
+  (`measure/trp_paired_native.txt`).
+- Instead each set is taken on a frozen frame, on both sides:
+  - `{game_panel cheat_pause TRUE}` (the debug build's own cheat pause: no
+    count-in, no pause screen; taskmgr seconds hold still);
+  - then four states, each screenshotted;
+  - then restore and unpause.
+- Native: `tools/npause.sh`. Xenia: `tools/xgt_driver_r6.py --pausecycle`
+  with `tools/xtrpz.sh` / `tools/xtrpg.sh`.
+- States set `bloom_intensity` on `throneroom_performance_awesome.pp` (the
+  force pp HamDirector copies into `world.pp`) and on `world.pp`. "Raw" is
+  `Rnd::mDisablePostProc` via `toggle_all_postprocs`.
+- A fourth state, full again after the toggle pair, is the side-effect
+  control: 1.000 on native and 1.001 on Xenia.
+- Gain = scene luma ratio on the same frozen frame, `tools/paired_states.py`.
+  A set is kept only when all four frames correlate ≥ 0.85 with its first.
+
+Bloom with the three Multiply overlays as captured vs hidden
+(`measure/trpz_paired_native.txt`, `measure/r6p-xtrpz1_paired.txt`):
+
+| build | n | gain, overlays as-is | gain, hidden | overlay effect on the bloom term |
+|---|---|---|---|---|
+| Xenia | 12 | 1.266 | 1.266 | −0.03 |
+| native, Color fix | 15 | 1.235 | 1.235 | −0.00 |
+| native, Color fix, factorless MAX | 15 | 1.263 | 1.263 | +0.01 |
+
+Raw / grade / full (`measure/trpg_paired_native_cut085.txt`,
+`measure/r6p-xtrpg1_paired_cut085.txt`,
+`measure/trpg_paired_native_nocolorfix.txt`; medians in brackets; one frozen
+set of each side, `sheets/trp_frozen_full_grade_raw.png`):
+
+| build | n | grade (grade/raw) | bloom (full/grade) | post (full/raw) |
+|---|---|---|---|---|
+| Xenia | 12 | 1.234 (1.237) | 1.276 (1.270) | 1.575 (1.572) |
+| native, Color fix | 15 | 1.228 (1.226) | 1.245 (1.265) | 1.528 (1.557) |
+| native, no Color fix (`r6dof`) | 15 | 1.221 (1.222) | 1.238 (1.236) | 1.512 (1.514) |
+
+Reading it:
+- **The grade agrees:** 1.228 vs 1.234.
+- **The bloom medians agree:** 1.265 vs 1.270. The means differ by 2.5%
+  (1.245 vs 1.276). Factorless MAX alone closes most of that (1.235 → 1.263
+  on the overlay set), so it is the §35 alpha artifact.
+- **The Multiply overlays play no part at the peak:** hiding
+  `carpetShadow`, `throne_shadow` and `throne_shadow_peak` moves the bloom
+  term by 0.00.
+- **Where the residual sits.** The MAX difference comes from the many
+  blended draws the peak adds (`native/probe_trp_blended.txt`). Blend 3
+  (SrcAlpha): the floors `THR_floor_main`/`THR_floor_raised`,
+  `peak_columns_*`, smoke, clouds, `projection`. Blend 4 (SrcAlphaAdd):
+  sparks, fire, `god_rays`, `THR_lightrays`, `peak_carpet*`. On those,
+  factorless MAX leaves max(src.a, dst.a) where the draw equation leaves
+  src.a² + dst.a·(1 − src.a).
+- **No term is left to fix.** The Color fix is not what moved the number:
+  without it the same frozen-frame measurement gives 1.51× (row 3), and it
+  changes the stages by under 1%. INFERRED: the brief's 1.39× and 1.62×
+  compare frame means across separate runs, so different frames and
+  cameras, at a venue state whose cameras and lights move every frame (the
+  native raw and grade figures are separate `DC3_RETAIL_POST=raw` / `grade`
+  runs).
+- **Net.** On the fixed base, the same frozen frame lifts 1.53× on native
+  and 1.54–1.58× on Xenia.
+
+### 36.4 Softness (MEASURED, no change)
+
+The Xenia lane measured native sharpness at 8–13 against Xenia's 13–17. Its
+own JSON (`xenia/round2/tables/json`) shows that this is not the post chain
+and not uniform:
+- throneroom native raw and post read the same (8.0 vs 7.9, 8.4 vs 8.4),
+  against Xenia ~13;
+- houseparty native is *sharper* than Xenia (16.4 vs 14.7).
+
+The full-screen passes sample at texel centres:
+- the composite uses uv = (px + 0.5)/size between targets of equal size;
+- `DisplayRampPass` uses `textureLoad`.
+
+So there is no half-texel or filter term to fix. INFERRED: it is scene
+content or rendering on throneroom, not post. The velocity blur and the
+motion-blur feedback do not apply: `motion_blur_blend` is 0.00 on
+`throneroom_performance_high.pp` and `world.pp` (`native/probe_tr`), and the
+frozen frames of 36.3 have no camera motion for the velocity blur to act on.
+
+### 36.5 Consumers, passes, cost
+
+- **Render passes.** None added, split or renamed. The four `Dof*` passes now
+  run on intro shots.
+- **Frame time.** DOF costs ≈0.039 ms on a DOF shot and 0 otherwise. Nothing
+  else changed.
+- **No new getenv.**
+- **Engine code.** No change this round (docs only), on top of the np-gfx
+  merge `b7dea75` (np-gfx `6e187ec`).
+- **Consumers.** rb3 master `3e36eb5d2` and rb3-xenon main `15ce9d4bb`
+  were configured with `MILO_ENGINE_PATH` at the lane head `b7dea75`, whose
+  code is np-gfx `6e187ec`:
+  - rb3 `all`: built, and ctest passed 158 of 158 (7 skipped, as on main).
+  - rb3-xenon `rb3-render`: 11 frames, 0 differing pixels against round 5's
+    `3c55115`.
+  - `native_compat_census.py check` reports OK: 455 flags, regen clean. The
+    one flag added since round 5 came in with the np-gfx merges; this lane
+    added no getenv.
