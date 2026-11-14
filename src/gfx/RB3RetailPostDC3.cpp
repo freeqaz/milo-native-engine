@@ -43,8 +43,12 @@ struct DC3CompositeUniforms {
     float noiseSeeds[4];   // c112
     float noiseParams[4];  // c113
     float noiseMode[4];    // x: 0 off, 1 overlay, 2 midtone
+    float motion[4];       // c105 (CheckMotionBlur)
+    float motionMode[4];   // x: 0 off, 1 prev valid, 2 first frame (no prev yet);
+                           // y: 1 = the glare composite (bit 37) instead of bit 4
+    float hue[4];          // c222 (CheckHueConverge); z (blend_amount) 0 = off
 };
-static_assert(sizeof(DC3CompositeUniforms) == 144, "DC3CompositeUniforms layout");
+static_assert(sizeof(DC3CompositeUniforms) == 192, "DC3CompositeUniforms layout");
 
 const char* kDC3Shader = R"WGSL(
 struct TapUB {
@@ -60,6 +64,9 @@ struct DC3UB {
     noiseSeeds: vec4f,
     noiseParams: vec4f,
     noiseMode: vec4f,
+    motion: vec4f,
+    motionMode: vec4f,
+    hue: vec4f,
 };
 
 @group(0) @binding(0) var srcTex: texture_2d<f32>;
@@ -72,6 +79,7 @@ struct DC3UB {
 @group(0) @binding(5) var bloom2: texture_2d<f32>;
 @group(0) @binding(7) var noiseTex: texture_2d<f32>;
 @group(0) @binding(8) var noiseSamp: sampler;
+@group(0) @binding(9) var prevTex: texture_2d<f32>;
 
 struct VOut {
     @builtin(position) pos: vec4f,
@@ -98,6 +106,28 @@ struct VOut {
     return vec4f(acc * 0.25, 1.0);
 }
 
+// bloom_glare.ps (kBloomGlareShader, DoBloom's glare arm), decoded: ten taps
+// from uv towards and through the screen centre (step 0.2 (0.5 - uv), so the
+// last tap is at 1 - uv - step), each weighted by w = (1 - 4 min(|p - 0.5|^2,
+// 0.25))^2 at its own position, combined as a harmonic mean:
+//   out = 2 - 2 * 10 / sum(1 / (1 - w t))       (the 8-bit target saturates)
+// The loop count is INFERRED from the literal 10 the sum is scaled by
+// (c254.z); the loop constant itself is not in the dumped literals.
+@fragment fn fs_glare(in: VOut) -> @location(0) vec4f {
+    let stepUv = (1.0 - 2.0 * in.uv) * 0.1;
+    var p = in.uv;
+    var acc = vec3f(0.0);
+    for (var i = 0; i < 10; i++) {
+        let t = textureSampleLevel(srcTex, samp, p, 0.0).rgb;
+        let d = p - 0.5;
+        var w = 1.0 - 4.0 * min(dot(d, d), 0.25);
+        w = w * w;
+        acc += 1.0 / max(vec3f(1.0) - w * t, vec3f(1e-6));
+        p += stepUv;
+    }
+    return vec4f(2.0 - 20.0 / acc, 1.0);
+}
+
 // blur.ps with SetBloomBlurWeightsStreak's seven taps.
 @fragment fn fs_streak(in: VOut) -> @location(0) vec4f {
     var acc = vec4f(0.0);
@@ -107,50 +137,44 @@ struct VOut {
     return acc;
 }
 
-@fragment fn fs_composite_dc3(in: VOut) -> @location(0) vec4f {
-    // Inspection views: the bloom mask (scene alpha) and the bloom term.
-    if (cu.bloomColor.w > 2.5) {
-        let b = textureSampleLevel(bloom0, samp, in.uv, 0.0).rgb
-              + textureSampleLevel(bloom1, samp, in.uv, 0.0).rgb
-              + textureSampleLevel(bloom2, samp, in.uv, 0.0).rgb;
-        return vec4f(clamp(b * cu.bloomColor.rgb, vec3f(0.0), vec3f(1.0)), 1.0);
-    }
-    if (cu.bloomColor.w > 1.5) {
-        let a = textureSampleLevel(srcTex, samp, in.uv, 0.0).a;
-        return vec4f(a, a, a, 1.0);
-    }
-
+// postprocess.ps up to the motion blur: the graded colour, UNCLAMPED (the
+// shader's single saturate is on the final write).
+fn grade_dc3(uv: vec2f) -> vec3f {
     // Bit 15 (chroma, c121): three taps on a triangle; bit 43 sharpens with them.
     var scene: vec3f;
     if (cu.chroma.z > 0.5) {
         let o = cu.chroma.xy;
-        let t0 = textureSampleLevel(srcTex, samp, in.uv + vec2f(-o.x, 0.0), 0.0).rgb;
-        let t1 = textureSampleLevel(srcTex, samp, in.uv + vec2f(0.5 * o.x, 0.866 * o.y), 0.0).rgb;
-        let t2 = textureSampleLevel(srcTex, samp, in.uv + vec2f(0.5 * o.x, -0.866 * o.y), 0.0).rgb;
+        let t0 = textureSampleLevel(srcTex, samp, uv + vec2f(-o.x, 0.0), 0.0).rgb;
+        let t1 = textureSampleLevel(srcTex, samp, uv + vec2f(0.5 * o.x, 0.866 * o.y), 0.0).rgb;
+        let t2 = textureSampleLevel(srcTex, samp, uv + vec2f(0.5 * o.x, -0.866 * o.y), 0.0).rgb;
         if (cu.chroma.w > 0.5) {
-            let center = textureSampleLevel(srcTex, samp, in.uv, 0.0).rgb;
+            let center = textureSampleLevel(srcTex, samp, uv, 0.0).rgb;
             scene = 4.0 * center - t0 - t1 - t2;
         } else {
             scene = vec3f(t0.r, t1.g, t2.b);
         }
     } else {
-        scene = textureSampleLevel(srcTex, samp, in.uv, 0.0).rgb;
+        scene = textureSampleLevel(srcTex, samp, uv, 0.0).rgb;
     }
 
+    // Bit 37 (DoBloom's glare arm, unk28): the glare set ADDED at half the
+    // bloom colour, c = scene + 0.5 * c6 * tf7 (postprocess_0000002001200000).
     // Bit 4: screen blend with the three bloom sets (unclamped).
     var c = scene;
-    if (cu.bloomColor.w > 0.5) {
-        let b = textureSampleLevel(bloom0, samp, in.uv, 0.0).rgb
-              + textureSampleLevel(bloom1, samp, in.uv, 0.0).rgb
-              + textureSampleLevel(bloom2, samp, in.uv, 0.0).rgb;
+    if (cu.motionMode.y > 0.5) {
+        c = scene + 0.5 * cu.bloomColor.rgb * textureSampleLevel(bloom0, samp, uv, 0.0).rgb;
+    } else if (cu.bloomColor.w > 0.5) {
+        let b = textureSampleLevel(bloom0, samp, uv, 0.0).rgb
+              + textureSampleLevel(bloom1, samp, uv, 0.0).rgb
+              + textureSampleLevel(bloom2, samp, uv, 0.0).rgb;
         c = 1.0 - (1.0 - b * cu.bloomColor.rgb) * (1.0 - c);
     }
 
     // Bits 2 / 47: the noise map, overlay-blended into the screen result S
     // (no clamp on S in the microcode). n = map(base uv) * map(top uv).
     if (cu.noiseMode.x > 0.5) {
-        let baseUv = (in.uv + cu.noiseSeeds.xy) * cu.noiseParams.xy;
-        let topUv = (in.uv + cu.noiseSeeds.zw) * cu.noiseParams.xy * cu.noiseParams.z;
+        let baseUv = (uv + cu.noiseSeeds.xy) * cu.noiseParams.xy;
+        let topUv = (uv + cu.noiseSeeds.zw) * cu.noiseParams.xy * cu.noiseParams.z;
         let n = textureSampleLevel(noiseTex, noiseSamp, baseUv, 0.0).rgb *
                 textureSampleLevel(noiseTex, noiseSamp, topUv, 0.0).rgb;
         let s = c;
@@ -176,11 +200,125 @@ struct VOut {
 
     // Bit 36: the vignette (c123), after the matrix.
     if (cu.vignette.w != 0.0) {
-        let d = in.uv - 0.5;
+        let d = uv - 0.5;
         let w0 = clamp((dot(d, d) + cu.vignette.w) * 3.724 - 4.655, 0.0, 1.0);
         c = c + (w0 * w0) * (cu.vignette.rgb - c);
     }
+    return c;
+}
+
+// Bit 62, NgPostProc::CheckHueConverge (postprocess_4000000001200010 and its
+// siblings, decoded and checked against a Xenos interpreter of the listing):
+// the colour (after motion blur, unclamped) to HSV, the hue moved to
+// frac(T + 2 dist (1 - focus)), dist = the circular distance of H from T =
+// c222.x, V raised to c222.w unless it is 1, back to RGB, mixed in by c222.z.
+fn hue_converge(c: vec3f) -> vec3f {
+    let mx = max(max(c.r, c.g), c.b);
+    let mn = min(min(c.r, c.g), c.b);
+    let delta = mx - mn;
+    var h = 0.0;
+    var s = 0.0;
+    if (delta != 0.0) {
+        s = delta / mx;
+        let d = ((vec3f(mx) - c) * (1.0 / 6.0) + vec3f(delta * 0.5)) / delta;
+        if (c.r == mx) {
+            h = d.b - d.g;
+        } else if (c.g == mx) {
+            h = 1.0 / 3.0 + d.r - d.b;
+        } else if (c.b == mx) {
+            h = 2.0 / 3.0 + d.g - d.r;
+        }
+        if (h < 0.0) { h = h + 1.0; }
+        if (h > 1.0) { h = h - 1.0; }
+    }
+    let dd = abs(h - cu.hue.x);
+    let dist = select(dd, 1.0 - dd, dd > 0.5);
+    var hn = cu.hue.x + 2.0 * dist * (1.0 - cu.hue.y);
+    if (hn > 1.0) { hn = hn - 1.0; }
+    if (hn < 0.0) { hn = hn + 1.0; }
+    var v = mx;
+    if (cu.hue.w != 1.0) {
+        v = select(exp2(cu.hue.w * log2(abs(mx))), 0.0, mx == 0.0);
+    }
+    var rgb = vec3f(v);
+    if (s != 0.0) {
+        let h6 = hn * 6.0;
+        let i = floor(h6);
+        let f = h6 - i;
+        let p = v * (1.0 - s);
+        let q = v * (1.0 - f * s);
+        let t = v * (1.0 - (1.0 - f) * s);
+        if (i == 0.0) {
+            rgb = vec3f(v, t, p);
+        } else if (i == 1.0) {
+            rgb = vec3f(q, v, p);
+        } else if (i == 2.0) {
+            rgb = vec3f(p, v, t);
+        } else if (i == 3.0) {
+            rgb = vec3f(p, q, v);
+        } else if (i == 4.0) {
+            rgb = vec3f(t, p, v);
+        } else {
+            rgb = vec3f(v, p, q);
+        }
+    }
+    return c + (rgb - c) * cu.hue.z;
+}
+
+@fragment fn fs_composite_dc3(in: VOut) -> @location(0) vec4f {
+    // Inspection views: the bloom mask (scene alpha) and the bloom term.
+    if (cu.bloomColor.w > 2.5) {
+        let b = textureSampleLevel(bloom0, samp, in.uv, 0.0).rgb
+              + textureSampleLevel(bloom1, samp, in.uv, 0.0).rgb
+              + textureSampleLevel(bloom2, samp, in.uv, 0.0).rgb;
+        return vec4f(clamp(b * cu.bloomColor.rgb, vec3f(0.0), vec3f(1.0)), 1.0);
+    }
+    if (cu.bloomColor.w > 1.5) {
+        let a = textureSampleLevel(srcTex, samp, in.uv, 0.0).a;
+        return vec4f(a, a, a, 1.0);
+    }
+    var c = grade_dc3(in.uv);
+    if (cu.hue.z > 0.0) {
+        c = hue_converge(c);
+    }
     return vec4f(clamp(c, vec3f(0.0), vec3f(1.0)), 1.0);
+}
+
+// Bit 24, NgPostProc::CheckMotionBlur (postprocess_0000000001000010 and its
+// siblings, decoded): tf14 is the previous frame's post-process output. Its
+// alpha is the previous output's, and this output's alpha is what the next
+// frame reads. Xenos rcp(0) = inf with 0 * inf = 0 makes r 0 when prev.a is 0.
+struct MBOut {
+    @location(0) frame: vec4f,
+    @location(1) next: vec4f,
+};
+@fragment fn fs_composite_dc3_mb(in: VOut) -> MBOut {
+    let c = grade_dc3(in.uv);
+    let sa = clamp(textureSampleLevel(srcTex, samp, in.uv, 0.0).a, 0.0, 1.0);
+    var o: vec3f;
+    var a: f32;
+    if (cu.motionMode.x > 1.5) {
+        o = c;
+        a = sa;
+    } else {
+        let prev = textureSampleLevel(prevTex, samp, in.uv, 0.0);
+        var r = 0.0;
+        if (prev.a > 0.0) {
+            r = clamp(cu.motion.w * (prev.a - sa) / prev.a, 0.0, 1.0);
+        }
+        let k = max(vec3f(r), cu.motion.xyz);
+        o = c + (prev.rgb - c) * k;
+        a = clamp(sa + r * (prev.a - sa), 0.0, 1.0);
+    }
+    // Bit 62 follows the motion blur, so the next frame's tf14 carries it.
+    if (cu.hue.z > 0.0) {
+        o = hue_converge(o);
+    }
+    o = clamp(o, vec3f(0.0), vec3f(1.0));
+    var out: MBOut;
+    out.frame = vec4f(o, 1.0);
+    out.next = vec4f(o, a);
+    return out;
 }
 )WGSL";
 
@@ -253,10 +391,11 @@ void RB3RetailPost::EnsureDC3Pipelines(GpuDevice& gpu) {
         mDC3PassBGL = dev.CreateBindGroupLayout(&d);
     }
     {
-        wgpu::BindGroupLayoutEntry e[8] = {texEntry(0), sampEntry(1), uniEntry(6, sizeof(DC3CompositeUniforms)),
-                                           texEntry(3), texEntry(4), texEntry(5), texEntry(7), sampEntry(8)};
+        wgpu::BindGroupLayoutEntry e[9] = {texEntry(0), sampEntry(1), uniEntry(6, sizeof(DC3CompositeUniforms)),
+                                           texEntry(3), texEntry(4), texEntry(5), texEntry(7), sampEntry(8),
+                                           texEntry(9)};
         wgpu::BindGroupLayoutDescriptor d{};
-        d.entryCount = 8;
+        d.entryCount = 9;
         d.entries = e;
         mDC3CompositeBGL = dev.CreateBindGroupLayout(&d);
     }
@@ -288,7 +427,30 @@ void RB3RetailPost::EnsureDC3Pipelines(GpuDevice& gpu) {
     };
     mDC3BloomTapsPipe = make("fs_bloom_taps", mDC3PassPL, mBloomFormat);
     mDC3StreakPipe = make("fs_streak", mDC3PassPL, mBloomFormat);
+    mDC3GlarePipe = make("fs_glare", mDC3PassPL, mBloomFormat);
     mDC3CompositePipe = make("fs_composite_dc3", mDC3CompositePL, mDC3FrameFormat);
+    {
+        // The motion-blur composite: the frame, and the feedback target the
+        // next frame reads as tf14 (A8R8G8B8, as mPostProcessBuffer).
+        wgpu::ColorTargetState ct[2] = {};
+        ct[0].format = mDC3FrameFormat;
+        ct[0].writeMask = wgpu::ColorWriteMask::All;
+        ct[1].format = wgpu::TextureFormat::RGBA8Unorm;
+        ct[1].writeMask = wgpu::ColorWriteMask::All;
+        wgpu::FragmentState frag{};
+        frag.module = mDC3Shader;
+        frag.entryPoint = "fs_composite_dc3_mb";
+        frag.targetCount = 2;
+        frag.targets = ct;
+        wgpu::RenderPipelineDescriptor pd{};
+        pd.label = "fs_composite_dc3_mb";
+        pd.layout = mDC3CompositePL;
+        pd.vertex.module = mDC3Shader;
+        pd.vertex.entryPoint = "vs_full";
+        pd.fragment = &frag;
+        pd.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+        mDC3CompositeMBPipe = dev.CreateRenderPipeline(&pd);
+    }
     mDC3Ready = true;
 }
 
@@ -365,6 +527,29 @@ static TapUniforms StreakTaps(bool horizontal, float w, float h, float attenuati
 void RB3RetailPost::RunDC3Bloom(wgpu::CommandEncoder& encoder, const wgpu::TextureView& bloomSrc,
                                 int sceneW, int sceneH, const RetailPostParams& p, GpuDevice& gpu) {
     EnsureTextures(sceneW, sceneH, gpu);
+    if (p.glare) {
+        // DoBloom's glare arm (mBloomGlare, not the hi-res screen): bloom.ps
+        // into set0, the plain 15-tap blur across and down, then one
+        // bloom_glare.ps pass; set0 alone feeds the composite (tf7), whose
+        // bit 37 adds it. Retail ping-pongs on one texture (tex[1] == tex[0]);
+        // ordered here to end in [0][0].
+        struct { float srcTexel[2], dir[2], lumaScale, pad[3]; } u{};
+        u.srcTexel[0] = 1.0f / sceneW;
+        u.srcTexel[1] = 1.0f / sceneH;
+        u.lumaScale = 1.0f;
+        Pass(encoder, mBloomDownPipe, mView[0][1], bloomSrc, &u.srcTexel[0], sizeof(u), gpu);
+        decltype(u) b{};
+        b.srcTexel[0] = 1.0f / mW[0];
+        b.srcTexel[1] = 1.0f / mH[0];
+        b.dir[0] = 1.0f;
+        Pass(encoder, mBlurPipe, mView[0][0], mView[0][1], &b.srcTexel[0], sizeof(b), gpu);
+        b.dir[0] = 0.0f;
+        b.dir[1] = 1.0f;
+        Pass(encoder, mBlurPipe, mView[0][1], mView[0][0], &b.srcTexel[0], sizeof(b), gpu);
+        TapUniforms t{};
+        PassDC3(encoder, mDC3GlarePipe, mView[0][0], mView[0][1], &t.tap[0][0], sizeof(t), gpu);
+        return;
+    }
     if (!p.streak) {
         // The plain arm is RB3's: bloom.ps into set0, then 15-tap blurs and
         // downsample_4x into set1 and set2 (identical in DC3's DoBloom).
@@ -457,13 +642,49 @@ void RB3RetailPost::RunDC3Composite(wgpu::CommandEncoder& encoder, const wgpu::T
         std::memcpy(cu.noiseParams, p.noiseParams, sizeof(cu.noiseParams));
         cu.noiseMode[0] = p.noiseMidtone > 0.5f ? 2.0f : 1.0f;
     }
+    // CheckMotionBlur. Retail resolves mPostProcessBuffer on EVERY frame; this
+    // keeps the feedback target only while motion blur is on, so the first
+    // frame after it turns on (or after a resize) has no previous output and
+    // passes the graded colour through (one frame, then retail's feedback).
+    const uint64_t run = ++mRunIndex;
+    const bool mb = p.motionBlur && p.debugView == 0;
+    wgpu::TextureView prevRead = mBlackView, prevWrite;
+    if (mb) {
+        if (!mPrevTex[0] || mPrevW != sceneW || mPrevH != sceneH) {
+            for (int i = 0; i < 2; i++) {
+                wgpu::TextureDescriptor td{};
+                td.label = "DC3PostProcessBuffer";
+                td.size = {(uint32_t)sceneW, (uint32_t)sceneH, 1};
+                td.format = wgpu::TextureFormat::RGBA8Unorm;
+                td.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding;
+                td.mipLevelCount = 1;
+                mPrevTex[i] = gpu.Device().CreateTexture(&td);
+                mPrevView[i] = mPrevTex[i].CreateView();
+            }
+            mPrevW = sceneW;
+            mPrevH = sceneH;
+            mPrevRun = ~0ull;
+        }
+        const bool valid = mPrevRun == run - 1;
+        std::memcpy(cu.motion, p.motionBlurParams, sizeof(cu.motion));
+        cu.motionMode[0] = valid ? 1.0f : 2.0f;
+        if (valid) prevRead = mPrevView[mPrevCur];
+        mPrevCur ^= 1;
+        prevWrite = mPrevView[mPrevCur];
+        mPrevRun = run;
+    }
+    // Bit 37 (the glare composite) replaces bit 4's screen blend.
+    cu.motionMode[1] = (p.glare && p.bloom && p.debugView == 0) ? 1.0f : 0.0f;
+    if (p.hueConverge && p.debugView == 0) {
+        std::memcpy(cu.hue, p.hueParams, sizeof(cu.hue));
+    }
     uint64_t off = (uint64_t)(mSlot++ % kSlots) * kSlotStride;
     gpu.Queue().WriteBuffer(mUniforms, off, &cu, sizeof(cu));
 
     // The plain arm fills all three sets; the streak arm two (tf15 black).
     const bool haveBloom = (p.bloom || p.debugView == 2) && mView[0][0];
-    const int setsUsed = p.streak ? 2 : 3;
-    wgpu::BindGroupEntry e[8] = {};
+    const int setsUsed = p.glare ? 1 : p.streak ? 2 : 3;
+    wgpu::BindGroupEntry e[9] = {};
     e[0].binding = 0;
     e[0].textureView = sceneView;
     e[1].binding = 1;
@@ -480,9 +701,11 @@ void RB3RetailPost::RunDC3Composite(wgpu::CommandEncoder& encoder, const wgpu::T
     e[6].textureView = haveNoise ? p.noiseMap : mBlackView;
     e[7].binding = 8;
     e[7].sampler = mNoiseSampler;
+    e[8].binding = 9;
+    e[8].textureView = prevRead;
     wgpu::BindGroupDescriptor bgd{};
     bgd.layout = mDC3CompositeBGL;
-    bgd.entryCount = 8;
+    bgd.entryCount = 9;
     bgd.entries = e;
     wgpu::BindGroup bg = gpu.Device().CreateBindGroup(&bgd);
 
@@ -491,12 +714,16 @@ void RB3RetailPost::RunDC3Composite(wgpu::CommandEncoder& encoder, const wgpu::T
     ca.loadOp = wgpu::LoadOp::Clear;
     ca.storeOp = wgpu::StoreOp::Store;
     ca.clearValue = {0, 0, 0, 1};
+    wgpu::RenderPassColorAttachment cas[2] = {ca, ca};
+    cas[1].view = prevWrite;
+    cas[1].loadOp = wgpu::LoadOp::Clear;
+    cas[1].clearValue = {0, 0, 0, 0};
     wgpu::RenderPassDescriptor rp{};
     rp.label = "DC3RetailPostComposite";
-    rp.colorAttachmentCount = 1;
-    rp.colorAttachments = &ca;
+    rp.colorAttachmentCount = mb ? 2 : 1;
+    rp.colorAttachments = cas;
     auto pass = encoder.BeginRenderPass(&rp);
-    pass.SetPipeline(mDC3CompositePipe);
+    pass.SetPipeline(mb ? mDC3CompositeMBPipe : mDC3CompositePipe);
     pass.SetBindGroup(0, bg);
     pass.Draw(3);
     pass.End();

@@ -1,7 +1,8 @@
 // DC3PostChain.cpp — np-gfx-post: fills gfx/RB3RetailPost's DC3 parameters
 // from a dc3-decomp RndPostProc the way NgPostProc::DoPost sets the retail
 // shader constants (dc3-decomp rndobj/PostProc_NG.cpp: DoBloom, SetBloomColor,
-// ModulateColorXfm, CheckNoise, CheckChromaticAberration, CheckVignette), and
+// ModulateColorXfm, CheckNoise, CheckChromaticAberration, CheckVignette,
+// CheckMotionBlur), and
 // the display ramp (DxRnd::SetupGamma). Built for the DC3 shape on the dc3
 // backend, i.e. for dc3-decomp AND rb3-xenon; everything here is gated on
 // rndshape::kDC3RetailPost, which only dc3-decomp's accessors turn on, so
@@ -12,14 +13,38 @@
 
 #include "rndobj/PostProc.h"
 #include "rndobj/ColorXfm.h"
+#include "rndobj/HiResScreen.h"
+#include "rndobj/Rnd.h"
 #include "obj/Data.h"
 #include "os/System.h"
 #include "os/Debug.h"
 
 #include <cstdlib>
 #include <cstring>
+#include <type_traits>
+#include <utility>
 
 namespace rndshape {
+
+namespace {
+template <class R, class = void> struct RndHasBlacklightOverride : std::false_type {};
+template <class R>
+struct RndHasBlacklightOverride<
+    R, std::void_t<decltype(std::declval<const R &>().GetPostProcBlacklightOverride()),
+                   decltype(static_cast<RndPostProc *>(std::declval<R &>().GetPostProcOverride()))>>
+    : std::true_type {};
+template <class R> RndPostProc *ActiveOf(R &rnd) {
+    if constexpr (RndHasBlacklightOverride<R>::value) {
+        if (RndPostProc *b = rnd.GetPostProcBlacklightOverride()) return b;
+        if (RndPostProc *o = rnd.GetPostProcOverride()) return o;
+    } else {
+        (void)rnd;
+    }
+    return RndPostProc::Current();
+}
+}  // namespace
+
+RndPostProc *ActivePostProc() { return ActiveOf(TheRnd); }
 
 int RetailPostMode() {
     if constexpr (!kDC3RetailPost) {
@@ -100,9 +125,10 @@ void FillDC3(const P *pp, float flickerMul, RetailPostParams &out) {
         out.bloomColor[1] = bc.green * k;
         out.bloomColor[2] = bc.blue * k;
         out.bloomLumaScale = BloomLumaScale(pp);
-        // The streak arm runs when mBloomStreak and not mBloomGlare (glare
-        // takes the plain arm on the hi-res screen, its own otherwise; the
-        // glare composite is not ported -- three UI post-processes use it).
+        // The streak arm runs when mBloomStreak and not mBloomGlare; glare
+        // takes its own arm (doGlare = mBloomGlare && !TheHiResScreen.
+        // IsActive()), the plain one on the hi-res screen.
+        out.glare = pp->GetBloomGlare() && !TheHiResScreen.IsActive();
         out.streak = pp->GetBloomStreak() && !pp->GetBloomGlare();
         out.streakAttenuation = pp->GetBloomStreakAttenuation();
         out.streakAngle = pp->GetBloomStreakAngle();
@@ -136,6 +162,29 @@ void FillDC3(const P *pp, float flickerMul, RetailPostParams &out) {
         out.chromaticOffset = pp->GetChromaticAberrationOffset();
         out.chromaticSharpen = pp->GetChromaticSharpen() ? 1.0f : 0.0f;
         out.noiseMidtone = pp->GetNoiseMidtone() ? 1.0f : 0.0f;
+        // CheckMotionBlur: DoMotionBlur() = blend > 0 && weight.Pack() > 0 &&
+        // !TheHiResScreen.IsActive(); c105 = (weight.rgb * blend, weight.a).
+        // (DoVelocity's camera velocity buffer, bit 42, is not ported.)
+        out.motionBlur = pp->DoMotionBlur();
+        if (out.motionBlur) {
+            const Hmx::Color &mw = pp->GetMotionBlurWeight();
+            const float blend = pp->GetMotionBlurBlend();
+            out.motionBlurParams[0] = mw.red * blend;
+            out.motionBlurParams[1] = mw.green * blend;
+            out.motionBlurParams[2] = mw.blue * blend;
+            out.motionBlurParams[3] = mw.alpha;
+        }
+        // CheckHueConverge (DoHueConverge() is the merged_Returns1 ICF stub,
+        // always true): c222 = (hue_target / 360 + 0.5, hue_focus,
+        // blend_amount, brightness_power); bit 62 (unk2a) = blend_amount > 0.
+        const float hueBlend = pp->GetHueBlendAmount();
+        out.hueConverge = hueBlend > 0.0f;
+        if (out.hueConverge) {
+            out.hueParams[0] = pp->GetHueTarget() * (1.0f / 360.0f) + 0.5f;
+            out.hueParams[1] = pp->GetHueFocus();
+            out.hueParams[2] = hueBlend;
+            out.hueParams[3] = pp->GetHueBrightnessPower();
+        }
         // The noise map, seeds and scales are filled by PostProcPass, which
         // owns the stationary seed (NgPostProc::mRandomSeed).
     }

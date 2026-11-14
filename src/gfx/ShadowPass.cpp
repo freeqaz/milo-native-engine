@@ -3,6 +3,10 @@
 #include "gfx/UniformRingBuffer.h"
 #include "gfx/VertexFormats.h"
 #include "platform/Rnd_Wgpu.h"
+#include "platform/BoneSetup.h"
+#include "platform/MeshGpuCache.h"
+#include "platform/TransformUtils.h"
+#include "gfx/UniformStructs.h"
 #include "rndobj/Cam.h"
 #include "rndobj/Env.h"
 #include "rndobj/Lit.h"
@@ -11,7 +15,10 @@
 #include "obj/Dir.h"
 #include "platform/rndshape/RndShape.h"
 
+#include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <vector>
 #include <cstdio>
 #include <cstring>
 
@@ -124,7 +131,9 @@ void ShadowPass::EnsurePipelines(GpuDevice& gpu) {
     texDesc.label = "ShadowDepth";
     texDesc.size = {kShadowMapSize, kShadowMapSize, 1};
     texDesc.format = wgpu::TextureFormat::Depth32Float;
-    texDesc.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding;
+    // CopySrc: lets a test read the caster map back (ShadowPass::DepthTexture).
+    texDesc.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding |
+                    wgpu::TextureUsage::CopySrc;
     texDesc.mipLevelCount = 1;
     mShadowDepthTex = dev.CreateTexture(&texDesc);
     mShadowDepthView = mShadowDepthTex.CreateView();
@@ -343,23 +352,226 @@ void ShadowPass::Render(wgpu::CommandEncoder& encoder, UniformRingBuffer& object
     mShadowAvailable = true;
 }
 
+// ---------------------------------------------------------------------------
+// The DC3 projected-shadow caster pass, self-contained.
+//
+// It used to draw each caster through Mesh_Wgpu's DrawMeshShadow (the generic
+// pass's per-mesh path), which per mesh wrote the object ring, created an
+// object bind group, and for a skinned mesh wrote the bone ring and created a
+// bone bind group: 20 of the pass's ~100 perf samples were CreateBindGroup.
+// Here the layouts take a dynamic offset, every caster's world matrix (and
+// bone palette) goes into this pass's own two buffers in ONE WriteBuffer each,
+// and the bind groups are created once, again only when a buffer has to grow.
+// Same shader, same vertex layouts, same depth state as the generic pipelines,
+// so the map is the same; nothing here touches Mesh_Wgpu, MaterialSetup or
+// the shared object/bone rings.
+// ---------------------------------------------------------------------------
+namespace {
+constexpr uint64_t kCasterObjectSize = 128;   // ObjectUB: world + worldInvTranspose
+constexpr uint64_t kCasterObjectStride = 256; // minUniformBufferOffsetAlignment
+constexpr uint64_t kCasterBoneSize = sizeof(BoneUniforms);   // 2560, a multiple of 256
+constexpr uint64_t kCasterClipStride = 256;   // one light's clip transform (64 bytes used)
+constexpr int kCasterTiles = 4;                // 2x2 atlas over the depth texture
+static_assert(kCasterBoneSize % 256 == 0, "bone palette stride must stay 256-aligned");
+static_assert(offsetof(ObjectUniforms, worldInvTranspose) == 64,
+              "the caster shader reads ObjectUniforms' first 128 bytes");
+}
+
+void ShadowPass::EnsureCasterPipelines(GpuDevice& gpu) {
+    if (mCasterReady) return;
+    auto& dev = gpu.Device();
+
+    // Group 0: one light's clip transform per atlas tile, at a dynamic offset.
+    wgpu::BindGroupLayoutEntry sceneEntry{};
+    sceneEntry.binding = 0;
+    sceneEntry.visibility = wgpu::ShaderStage::Vertex;
+    sceneEntry.buffer.type = wgpu::BufferBindingType::Uniform;
+    sceneEntry.buffer.hasDynamicOffset = true;
+    sceneEntry.buffer.minBindingSize = 64;
+    wgpu::BindGroupLayoutDescriptor sceneDesc{};
+    sceneDesc.label = "CasterSceneBGL";
+    sceneDesc.entryCount = 1;
+    sceneDesc.entries = &sceneEntry;
+    mCasterSceneBGL = dev.CreateBindGroupLayout(&sceneDesc);
+
+    wgpu::BindGroupLayoutEntry objEntry{};
+    objEntry.binding = 0;
+    objEntry.visibility = wgpu::ShaderStage::Vertex;
+    objEntry.buffer.type = wgpu::BufferBindingType::Uniform;
+    objEntry.buffer.hasDynamicOffset = true;
+    objEntry.buffer.minBindingSize = kCasterObjectSize;
+    wgpu::BindGroupLayoutDescriptor objDesc{};
+    objDesc.label = "CasterObjectBGL";
+    objDesc.entryCount = 1;
+    objDesc.entries = &objEntry;
+    mCasterObjectBGL = dev.CreateBindGroupLayout(&objDesc);
+
+    wgpu::BindGroupLayoutEntry boneEntry = objEntry;
+    boneEntry.buffer.minBindingSize = kCasterBoneSize;
+    wgpu::BindGroupLayoutDescriptor boneDesc{};
+    boneDesc.label = "CasterBoneBGL";
+    boneDesc.entryCount = 1;
+    boneDesc.entries = &boneEntry;
+    mCasterBoneBGL = dev.CreateBindGroupLayout(&boneDesc);
+
+    wgpu::PipelineLayout staticLayout, skinnedLayout;
+    {
+        wgpu::BindGroupLayout layouts[2] = {mCasterSceneBGL, mCasterObjectBGL};
+        wgpu::PipelineLayoutDescriptor d{};
+        d.bindGroupLayoutCount = 2;
+        d.bindGroupLayouts = layouts;
+        staticLayout = dev.CreatePipelineLayout(&d);
+    }
+    {
+        wgpu::BindGroupLayout layouts[3] = {mCasterSceneBGL, mCasterObjectBGL, mCasterBoneBGL};
+        wgpu::PipelineLayoutDescriptor d{};
+        d.bindGroupLayoutCount = 3;
+        d.bindGroupLayouts = layouts;
+        skinnedLayout = dev.CreatePipelineLayout(&d);
+    }
+
+    wgpu::DepthStencilState ds{};   // as EnsurePipelines
+    ds.format = wgpu::TextureFormat::Depth32Float;
+    ds.depthWriteEnabled = wgpu::OptionalBool::True;
+    ds.depthCompare = wgpu::CompareFunction::Less;
+    ds.depthBias = 2;
+    ds.depthBiasSlopeScale = 1.5f;
+    for (int skinned = 0; skinned < 2; skinned++) {
+        wgpu::RenderPipelineDescriptor pd{};
+        pd.label = skinned ? "CasterSkinned" : "CasterStatic";
+        pd.layout = skinned ? skinnedLayout : staticLayout;
+        pd.vertex.module = mShadowShader;
+        pd.vertex.entryPoint = skinned ? "vs_shadow_skinned" : "vs_shadow";
+        pd.vertex.bufferCount = 1;
+        pd.vertex.buffers = skinned ? &VertexFormats::SkinnedLayout() : &VertexFormats::StaticLayout();
+        pd.depthStencil = &ds;
+        pd.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+        pd.primitive.frontFace = wgpu::FrontFace::CCW;
+        pd.primitive.cullMode = wgpu::CullMode::Back;
+        (skinned ? mCasterSkinnedPipeline : mCasterStaticPipeline) = dev.CreateRenderPipeline(&pd);
+    }
+
+    wgpu::BufferDescriptor clipDesc{};
+    clipDesc.label = "CasterClips";
+    clipDesc.size = kCasterClipStride * kCasterTiles;
+    clipDesc.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
+    mCasterClipBuf = dev.CreateBuffer(&clipDesc);
+    wgpu::BindGroupEntry clipEntry{};
+    clipEntry.binding = 0;
+    clipEntry.buffer = mCasterClipBuf;
+    clipEntry.size = 64;
+    wgpu::BindGroupDescriptor sceneBgDesc{};
+    sceneBgDesc.layout = mCasterSceneBGL;
+    sceneBgDesc.entryCount = 1;
+    sceneBgDesc.entries = &clipEntry;
+    mCasterSceneBindGroup = dev.CreateBindGroup(&sceneBgDesc);
+    mCasterStats.bindGroupsCreated++;
+    mCasterReady = true;
+}
+
+// Grow `buf` to hold `need` bytes (doubling), and rebuild its bind group.
+void ShadowPass::EnsureCasterBuffer(GpuDevice& gpu, wgpu::Buffer& buf, uint64_t& capacity,
+                                    wgpu::BindGroup& group, const wgpu::BindGroupLayout& layout,
+                                    uint64_t bindingSize, uint64_t need, const char* label) {
+    if (buf && capacity >= need) return;
+    uint64_t cap = capacity ? capacity : bindingSize * 16;
+    while (cap < need) cap *= 2;
+    wgpu::BufferDescriptor bd{};
+    bd.label = label;
+    bd.size = cap;
+    bd.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
+    buf = gpu.Device().CreateBuffer(&bd);
+    capacity = cap;
+
+    wgpu::BindGroupEntry e{};
+    e.binding = 0;
+    e.buffer = buf;
+    e.offset = 0;
+    e.size = bindingSize;
+    wgpu::BindGroupDescriptor gd{};
+    gd.layout = layout;
+    gd.entryCount = 1;
+    gd.entries = &e;
+    group = gpu.Device().CreateBindGroup(&gd);
+    mCasterStats.bindGroupsCreated++;
+}
+
 void ShadowPass::RenderCasters(wgpu::CommandEncoder& encoder, GpuDevice& gpu,
-                               const float clipFromWorld[16], RndMesh* const* meshes,
-                               int numMeshes) {
+                               const CasterSet* sets, int numSets) {
     EnsurePipelines(gpu);
     if (!mShadowReady) return;
+    EnsureCasterPipelines(gpu);
 
-    gpu.Queue().WriteBuffer(mShadowLightVPBuffer, 0, clipFromWorld, 64);
-    wgpu::BindGroupEntry sceneEntry{};
-    sceneEntry.binding = 0;
-    sceneEntry.buffer = mShadowLightVPBuffer;
-    sceneEntry.size = 64;
-    wgpu::BindGroupDescriptor sceneBgDesc{};
-    sceneBgDesc.layout = mShadowSceneBGL;
-    sceneBgDesc.entryCount = 1;
-    sceneBgDesc.entries = &sceneEntry;
-    mShadowSceneBindGroup = gpu.Device().CreateBindGroup(&sceneBgDesc);
+    // Gather: one 256-byte object slot per drawn caster, one bone palette per
+    // skinned caster, all on the CPU, then one upload each.
+    struct CasterDraw {
+        GpuMeshData* data;
+        uint32_t objOffset;
+        uint32_t boneOffset;
+    };
+    struct TileDraws {
+        int tile;
+        uint32_t clipOffset;
+        size_t first, count;
+    };
+    std::vector<CasterDraw> draws;
+    std::vector<TileDraws> tiles;
+    float clips[kCasterTiles][kCasterClipStride / sizeof(float)] = {};
+    mCasterObjectStaging.clear();
+    mCasterBoneStaging.clear();
+    for (int si = 0; si < numSets; si++) {
+        const CasterSet& set = sets[si];
+        if (set.tile < 0 || set.tile >= kCasterTiles || !set.clipFromWorld) continue;
+        memcpy(clips[set.tile], set.clipFromWorld, 64);
+        TileDraws td{set.tile, (uint32_t)(set.tile * kCasterClipStride), draws.size(), 0};
+        for (int i = 0; i < set.numMeshes; i++) {
+            RndMesh* mesh = set.meshes[i];
+            if (!mesh || !EnsureMeshUploaded(mesh)) continue;
+            GpuMeshData* data = GetMeshGpuData(mesh);
+            if (!data || !data->vertexBuffer || !data->indexBuffer || data->numIndices == 0) continue;
 
+            ObjectUniforms obj{};
+            if (data->skinned) {
+                Transform identity;   // the palette carries the world, as DrawMeshShadow
+                identity.Reset();
+                FillObjectUniforms(identity, obj);
+            } else {
+                FillObjectUniforms(mesh->WorldXfm(), obj);
+            }
+            CasterDraw d{data, (uint32_t)mCasterObjectStaging.size(), 0};
+            mCasterObjectStaging.resize(mCasterObjectStaging.size() + kCasterObjectStride, 0);
+            memcpy(mCasterObjectStaging.data() + d.objOffset, &obj, kCasterObjectSize);
+            if (data->skinned) {
+                BoneUniforms bones{};
+                FillBoneUniforms(mesh, bones);
+                d.boneOffset = (uint32_t)mCasterBoneStaging.size();
+                mCasterBoneStaging.resize(mCasterBoneStaging.size() + kCasterBoneSize);
+                memcpy(mCasterBoneStaging.data() + d.boneOffset, &bones, kCasterBoneSize);
+            }
+            draws.push_back(d);
+        }
+        td.count = draws.size() - td.first;
+        tiles.push_back(td);
+    }
+
+    EnsureCasterBuffer(gpu, mCasterObjectBuf, mCasterObjectCap, mCasterObjectBindGroup,
+                       mCasterObjectBGL, kCasterObjectSize,
+                       std::max<uint64_t>(mCasterObjectStaging.size(), kCasterObjectStride),
+                       "CasterObjects");
+    EnsureCasterBuffer(gpu, mCasterBoneBuf, mCasterBoneCap, mCasterBoneBindGroup,
+                       mCasterBoneBGL, kCasterBoneSize,
+                       std::max<uint64_t>(mCasterBoneStaging.size(), kCasterBoneSize),
+                       "CasterBones");
+    gpu.Queue().WriteBuffer(mCasterClipBuf, 0, clips, sizeof(clips));
+    if (!mCasterObjectStaging.empty())
+        gpu.Queue().WriteBuffer(mCasterObjectBuf, 0, mCasterObjectStaging.data(),
+                                mCasterObjectStaging.size());
+    if (!mCasterBoneStaging.empty())
+        gpu.Queue().WriteBuffer(mCasterBoneBuf, 0, mCasterBoneStaging.data(),
+                                mCasterBoneStaging.size());
+
+    // One pass over the whole texture: every tile clears to 1, and each light
+    // draws through a viewport on its own tile (its clip -1..1 fills the tile).
     wgpu::RenderPassDepthStencilAttachment depthAtt{};
     depthAtt.view = mShadowDepthView;
     depthAtt.depthLoadOp = wgpu::LoadOp::Clear;
@@ -370,15 +582,35 @@ void ShadowPass::RenderCasters(wgpu::CommandEncoder& encoder, GpuDevice& gpu,
     rpDesc.label = "ProjShadowCasters";
     rpDesc.depthStencilAttachment = &depthAtt;
 
-    mShadowPass = encoder.BeginRenderPass(&rpDesc);
-    mShadowPass.SetBindGroup(0, mShadowSceneBindGroup);
-    mInShadowPass = true;
-    for (int i = 0; i < numMeshes; i++) {
-        if (meshes[i]) DrawMeshShadow(meshes[i]);
+    const float tileSize = kShadowMapSize / 2.0f;
+    wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&rpDesc);
+    for (const TileDraws& td : tiles) {
+        pass.SetViewport((td.tile % 2) * tileSize, (td.tile / 2) * tileSize, tileSize, tileSize,
+                         0.0f, 1.0f);
+        pass.SetBindGroup(0, mCasterSceneBindGroup, 1, &td.clipOffset);
+        int bound = -1;   // 0 static, 1 skinned
+        for (size_t k = td.first; k < td.first + td.count; k++) {
+            const CasterDraw& d = draws[k];
+            const int skinned = d.data->skinned ? 1 : 0;
+            if (skinned != bound) {
+                pass.SetPipeline(skinned ? mCasterSkinnedPipeline : mCasterStaticPipeline);
+                bound = skinned;
+            }
+            pass.SetBindGroup(1, mCasterObjectBindGroup, 1, &d.objOffset);
+            if (skinned) pass.SetBindGroup(2, mCasterBoneBindGroup, 1, &d.boneOffset);
+            const size_t vertexSize = skinned ? sizeof(GpuVertexSkinned) : sizeof(GpuVertex);
+            pass.SetVertexBuffer(0, d.data->vertexBuffer, 0, d.data->numVertices * vertexSize);
+            pass.SetIndexBuffer(d.data->indexBuffer, wgpu::IndexFormat::Uint16, 0,
+                                d.data->numIndices * sizeof(uint16_t));
+            pass.DrawIndexed(d.data->numIndices);
+        }
     }
-    mShadowPass.End();
-    mShadowPass = nullptr;
-    mInShadowPass = false;
+    pass.End();
+    mCasterStats.frames++;
+    mCasterStats.lastDraws = (uint32_t)draws.size();
+    mCasterStats.lastTiles = (uint32_t)tiles.size();
+    mCasterStats.lastUploadBytes =
+        mCasterObjectStaging.size() + mCasterBoneStaging.size() + sizeof(clips);
 }
 
 void ShadowPass::Terminate() {
@@ -396,6 +628,19 @@ void ShadowPass::Terminate() {
     mShadowLightVPBuffer = nullptr;
     mShadowSceneBindGroup = nullptr;
     mShadowReady = false;
+    mCasterObjectBGL = nullptr;
+    mCasterBoneBGL = nullptr;
+    mCasterStaticPipeline = nullptr;
+    mCasterSkinnedPipeline = nullptr;
+    mCasterSceneBindGroup = nullptr;
+    mCasterSceneBGL = nullptr;
+    mCasterClipBuf = nullptr;
+    mCasterObjectBuf = nullptr;
+    mCasterBoneBuf = nullptr;
+    mCasterObjectBindGroup = nullptr;
+    mCasterBoneBindGroup = nullptr;
+    mCasterObjectCap = mCasterBoneCap = 0;
+    mCasterReady = false;
 }
 
 // Shipped WGSL accessor (gfx/ShippedWgsl.h): lets the validation test compile

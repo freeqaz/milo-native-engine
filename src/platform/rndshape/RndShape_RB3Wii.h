@@ -560,6 +560,12 @@ inline bool PostProcNoiseMap(const RndPostProc *, PostProcNoise &) { return fals
 constexpr bool kRetailPostChain = true;
 // DC3's retail chain (RndShape_DC3.h, np-gfx-post) is the DC3 shape's only.
 constexpr bool kDC3RetailPost = false;
+// The DC3 shape's Rnd::DoPostProcess selection (blacklight override, then
+// set_postproc_override, then the registered post-proc). PostProcPass names it
+// under `if constexpr (kDC3RetailPost)`, which outside a template still needs
+// the declaration; that statement is discarded here, so nothing odr-uses it and
+// no definition is needed for this shape.
+RndPostProc *ActivePostProc();
 void FillRetailPost(const RndPostProc *pp, float flickerMul, ::RetailPostParams &out);
 // MILO_RB3_RETAIL_POST: unset or anything else = 1 (retail chain), "0" = 0
 // (PostProcPass's DC3 composite, as before the chain existed), "raw" = 2
@@ -588,7 +594,8 @@ constexpr bool kAlphaBlendMax = true;
 // weights the scene by that alpha. Returns c7's scale (SetBloomColor:
 // 1/threshold above 1, else 1) for such a material while the retail chain runs
 // with a current RndPostProc, else 0 (no mask). The caller decides "main frame".
-float BloomMaskScale(const MatView &m);
+// envFadeOutCancels: the DC3 shape's rect switch; not established for RB3-Wii, ignored.
+float BloomMaskScale(const MatView &m, bool envFadeOutCancels = true);
 // RB3 shades in gamma space: retail's standard.ps multiplies the texel by the
 // material colour and the ambient + diffuse lighting sum as stored and
 // authored, and writes the product straight to an 8-bit target
@@ -601,6 +608,9 @@ float BloomMaskScale(const MatView &m);
 // (standard_wgsl.inc, material.gammaShading; particles likewise, Part_Wgpu).
 // Display gamma is separate: see DisplayGamma below.
 constexpr bool kGammaSpaceShading = true;
+// Multiply-blend materials stay forced prelit (MaterialSetup); see the DC3
+// shape's kMultiplyBlendIsLit. Not measured for RB3 Wii.
+constexpr bool kMultiplyBlendIsLit = false;
 // The display gamma ramp. DxRnd::InitRenderState ends in DxRnd::SetupGamma,
 // which reads the system config's (rnd (gamma g)) and, when present, sets
 // D3DDevice_SetGammaRamp with entry i = (u16)(pow(i / 256, g) * 1024) * 64
@@ -644,6 +654,7 @@ void FillMeshApproxLighting(RndMesh *mesh, float box[6][4], float retail[4]);
 constexpr bool kGenericShadowPass = true;
 constexpr bool kSelectDefaultEnvEachFrame = false;
 inline bool CollectProjShadowCasters(ProjShadowCasters &) { return false; }
+inline int CollectProjShadowCasterSets(std::vector<ProjShadowCasters> &) { return 0; }
 inline RndTex *SceneProjTexture() { return nullptr; }
 
 // ---- per-draw state log ----------------------------------------------------

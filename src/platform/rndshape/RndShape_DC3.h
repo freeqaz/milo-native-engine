@@ -281,9 +281,37 @@ inline void VertBoneWeights(const RndMesh::Vert &v, float out[4]) {
 inline int PartTilesAcross(RndParticleSys *s) { return s->NumTilesAcross(); }
 inline int PartTilesDown(RndParticleSys *s) { return s->NumTilesDown(); }
 inline int PartTileIndex(const RndParticle *p) { return p->mCurrentTileIndex; }
-// DC3 particle positions are already in world space.
-inline Vector3 PartWorldPos(RndParticleSys *, RndParticle *p) {
-    return Vector3(p->pos.x, p->pos.y, p->pos.z);
+// Particle positions live in the system's relative space, not world space:
+// retail DxParticleSys::DrawShowing (dc3 src/system/rnddx9/Part.cpp, and
+// rb3-xenon's identical one) draws them under
+// TheShaderMgr.SetTransform(mRelativeXfm), with the billboard basis taken as
+// Invert(mRelativeXfm.m) * camera so that, once transformed, the quad still
+// faces the camera -- i.e. world corner = mRelativeXfm * pos + camera axes.
+// mRelativeXfm is identity only while the motion parent has never moved: with
+// a relative_motion in (0,1) UpdateRelativeXfm accumulates relative_motion *
+// the parent's displacement, so a system placed after SetRelativeMotion ran
+// (streetside's manholeSteam: relative_motion 0.8) stores its particles 80% of
+// the way back toward the origin. Drawing p->pos raw put that steam column in
+// the middle of the stage instead of on its manhole.
+//
+// A consumer whose RndParticleSys has no RelativeXfm() accessor keeps the old
+// raw-position behaviour (rb3-xenon until it adds the accessor its retail
+// code already implies).
+template <typename Sys, typename = void>
+struct PartHasRelativeXfm : std::false_type {};
+template <typename Sys>
+struct PartHasRelativeXfm<Sys, std::void_t<decltype(std::declval<const Sys &>().RelativeXfm())>>
+    : std::true_type {};
+template <typename Sys>
+inline Vector3 PartWorldPos(Sys *s, RndParticle *p) {
+    if constexpr (PartHasRelativeXfm<Sys>::value) {
+        Vector3 rel(p->pos.x, p->pos.y, p->pos.z), w;
+        Multiply(rel, s->RelativeXfm(), w);
+        return w;
+    } else {
+        (void)s;
+        return Vector3(p->pos.x, p->pos.y, p->pos.z);
+    }
 }
 // No Wii-TEV tint model here: this shape scales particle colour the way its
 // retail Xbox particle shader does (Part_Wgpu.cpp, ParticleShaderColor).
@@ -450,6 +478,13 @@ inline bool RetailBloomMaskActive() {
         return m == 1 || m == 3 || m == 4;
     }
 }
+// The post-process Rnd::DoPostProcess runs and Rnd::BeginDrawing takes the
+// bloom colour from: the blacklight override (set_postproc_blacklight_override,
+// the voice-control letterbox's PostProc_Blacklight.pp), else the override
+// (set_postproc_override), else RndPostProc::Current(). dc3-decomp's Rnd
+// carries the HX_NATIVE accessor; rb3-xenon (no blacklight field, and an
+// override typed PostProcessor*) gets Current() (DC3PostChain.cpp).
+RndPostProc *ActivePostProc();
 // Fills the chain's parameters from the current RndPostProc (DC3PostChain.cpp).
 void FillRetailPost(const RndPostProc *pp, float flickerMul, ::RetailPostParams &out);
 // SetBloomColor's c7 scale: 1/threshold above 1, else 1 (DC3PostChain.cpp).
@@ -480,6 +515,18 @@ constexpr bool kAlphaBlendMax = !kDC3RetailPost;
 // target saturates the product (material.gammaShading). rb3-xenon keeps the
 // linear model with the sRGB output encode.
 constexpr bool kGammaSpaceShading = kDC3RetailModel;
+// A Multiply-blend material is lit like any other (np-gfx-light round 3).
+// NgMat::SetBasicState gives kBlendMultiply src ZERO / dest SRCCOLOR and fade
+// params (1,1,1,1), and nothing in CalcShaderOpts or SetupAmbient looks at the
+// blend, so the image shades it c0 * (c1 + box + points + proj) * texel and the
+// target multiplies the frame by that (dc3-decomp rndobj/Mat_NG.cpp). The
+// rollerrink floor's Rink*_overlay.mesh (Rink_lightCatcher.mat, no texture,
+// Rink_lightCatcher.env: ambient 0.365 and mirrorball_spotlight_02's gobo) is
+// such a "light catcher": it darkens the floor to 0.365 outside the light.
+// MaterialSetup forced every Multiply material prelit (identity) for the old
+// heuristic lighting, which brightened it; the DC3 retail model does not
+// need that. rb3-xenon keeps the forced prelit.
+constexpr bool kMultiplyBlendIsLit = kDC3RetailModel;
 // The pseudo-HDR bloom mask (ShaderOptions bit 22): retail DC3's standard.ps /
 // particles.ps / multimesh write alpha = sat(dot(rgb, c7) * c5.z) for a
 // material whose NgMat::AllowHDR() holds, drawn into the main frame
@@ -497,16 +544,27 @@ constexpr bool kGammaSpaceShading = kDC3RetailModel;
 // (Multiply, white, bloom_multiplier 0) zeroes the icon's mask under the
 // draw's alpha equation (dst.a * 0), so the mode-select icon does not burn
 // (dc3-backend-for-rb3-wii.md 31.6).
+//
+// The mask also needs the environ not to fade out: RndShaderStandard,
+// RndShaderParticles, RndShaderMultimesh and RndShaderSyncTrack::CalcShaderOpts
+// (dc3-decomp rndobj/Shader.cpp) set mPseudoHDR only when !fadeOut, with
+// fadeOut = env->FadeOut() && env->FadeEnd() != env->FadeStart() for the
+// current environ. RndShaderDrawRect::CalcShaderOpts has no such test, so a
+// rect passes envFadeOutCancels = false.
 template <class M>
-inline float BloomMaskScale(const M &m) {
+inline float BloomMaskScale(const M &m, bool envFadeOutCancels = true) {
     using Raw = std::remove_cv_t<std::remove_pointer_t<std::decay_t<M>>>;
     if constexpr (!kDC3RetailPost || !MatHasBloomMultiplier<Raw>::value) {
         (void)m;
         return 0.0f;
     } else {
         if (!m || !RetailBloomMaskActive()) return 0.0f;
-        const RndPostProc *pp = RndPostProc::Current();
+        const RndPostProc *pp = ActivePostProc();
         if (!pp) return 0.0f;
+        if (envFadeOutCancels) {
+            const RndEnviron *env = RndEnviron::Current();
+            if (env && env->FadeOut() && env->FadeEnd() != env->FadeStart()) return 0.0f;
+        }
         // NgMat::AllowHDR (dc3-decomp rndobj/Mat_NG.cpp).
         const auto b = m->GetBlend();
         if (b == Raw::kBlendSrcAlpha || b == Raw::kBlendSrcAlphaAdd || b == Raw::kPreMultAlpha ||
@@ -545,8 +603,9 @@ const float *CapturedVConstant(int reg);
 // 1 - 0.75 * coverage * colour * sat(c65 . N) (standard.ps 0x100010030011).
 // The native form: WriteSceneLighting finds that light (as NgEnviron::Select
 // does) and puts its cone in SceneUniforms.lightViewProj with
-// shadowEnabled = 2; WgpuRnd::EndDrawing then calls CollectProjShadowCasters
-// and draws the casters into ShadowPass's map, which the next frame samples.
+// shadowEnabled = 2 + its atlas tile; WgpuRnd::EndDrawing then calls
+// CollectProjShadowCasterSets and draws each light's casters into its tile of
+// ShadowPass's map, which the next frame samples.
 // rb3-xenon keeps the generic pre-pass. Defined in DC3SceneLighting.cpp.
 constexpr bool kGenericShadowPass = !kDC3RetailModel;
 
@@ -557,6 +616,14 @@ constexpr bool kGenericShadowPass = !kDC3RetailModel;
 // follows the image; rb3-xenon keeps the native rule (its renders are pinned
 // byte-identical).
 constexpr bool kSelectDefaultEnvEachFrame = kDC3RetailModel;
+// Every projected light with shadow objects that this frame's environs
+// published (up to kMaxProjShadowMaps, in first-published order), one set per
+// light with its atlas tile; ends the frame (the next frame's receivers read
+// these maps). Returns the number of sets.
+constexpr int kMaxProjShadowMaps = 4;
+int CollectProjShadowCasterSets(std::vector<ProjShadowCasters> &out);
+// The same, keeping only the first set (tile 0). For callers that drive one
+// light at a time (tests).
 bool CollectProjShadowCasters(ProjShadowCasters &out);
 // The projected light's gobo for the scene WriteSceneLighting just wrote
 // (projected_blend 0: tf10, added as (1 - coverage) gobo c69 sat(c65 . N),
