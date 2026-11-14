@@ -240,6 +240,15 @@ void MaterialShaderColor(const Hmx::Color& matColor, BaseMaterial::Blend blend, 
     out[3] = matColor.alpha;
 }
 
+// Alpha-to-coverage for a material's pipeline: only its alpha cut asks for it,
+// and only a shape whose alpha cut is more than the alpha test
+// (rndshape::kAlphaCutUsesCoverage). The pipeline enables it only when the
+// pass is multisampled.
+bool MaterialAlphaToCoverage(BaseMaterial* mat) {
+    if (!rndshape::kAlphaCutUsesCoverage || !mat) return false;
+    return rndshape::Mat(mat)->GetAlphaCut();
+}
+
 float MaterialAlphaScale(bool intensify, bool retailMaterialTerms) {
     // UI phase: the retail terms. World: the DC3 shape's standard.ps rule
     // (rndshape::kIntensifyScalesAlpha); rb3-xenon and rb3 keep 1.
