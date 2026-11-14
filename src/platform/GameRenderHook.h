@@ -337,23 +337,15 @@ public:
         return false;
     }
 
-    // Does the game's UI shade in gamma space? When true, every draw the frame
-    // makes after its world ends (the overlay phase FlushPostProcessingForOverlay
-    // opens: the UI, the gameplay HUD, and render targets those draw) takes the
-    // standard shader's gamma-space route (material.gammaShading): texel *
-    // colour as stored, saturated, with no linear->sRGB output encode. That is
-    // the Xbox 360 DxRnd's model (A8R8G8B8 frame and textures, no gamma sign,
-    // shaders multiply stored values), the one the RB3-Wii shape already uses
-    // everywhere (kGammaSpaceShading). The world before EndWorld is untouched.
-    // Default false: a consumer opts in, so rb3-xenon, which shares the dc3
-    // shape, keeps its output.
-    virtual bool UiShadesInGammaSpace() {
-        return false;
-    }
+    // (UiShadesInGammaSpace, retired in np-gfx-light round 3: its one
+    // implementer was dc3, whose render shape already shades every draw in
+    // gamma space -- rndshape::kGammaSpaceShading = kDC3RetailModel -- so the
+    // hook could only ever OR true into true. rb3 and rb3-xenon never set it.)
 
     // Does the game's UI take the retail material terms the engine's generic
-    // UI path replaces? When true, a draw in the overlay phase (see
-    // UiShadesInGammaSpace):
+    // UI path replaces? When true, a draw in the overlay phase (everything the
+    // frame draws after its world ends: the UI, the gameplay HUD, and render
+    // targets those draw; WgpuRnd::FrameInOverlay):
     //  - keeps the material's prelit flag instead of being forced prelit
     //    (every overlay-pass mesh and every text mesh otherwise is), so a lit
     //    material is shaded by the environ the game selected for it, as the

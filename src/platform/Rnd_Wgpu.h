@@ -330,6 +330,9 @@ public:
     void CreateDepthTexture(int w, int h);
     void CreateDefaultTextures();
     void WriteSceneUniforms();
+    // Slot 3 of the scene bind group as WriteSceneUniforms last chose it
+    // (null = the white fallback).
+    wgpu::TextureView ProjLightTexView() const { return mProjLightTexView; }
     // Invalidate cached scene uniforms — forces re-upload next frame.
     // Call when light properties are modified externally (e.g. debug UI).
     void InvalidateSceneUniforms() { mLastSceneEnv = nullptr; }

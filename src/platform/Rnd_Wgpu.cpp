@@ -1818,14 +1818,18 @@ void WgpuRnd::EndDrawing() {
         }
 #endif
 
-        // The shape's projected shadow light (DC3: projected_blend 1): its
-        // casters as this frame left them, into the map the next frame's
-        // receivers sample (rndshape::CollectProjShadowCasters).
+        // The shape's projected shadow lights (DC3: every projected light
+        // with shadow objects): their casters as this frame left them, each
+        // into its tile of the map the next frame's receivers sample
+        // (rndshape::CollectProjShadowCasterSets).
         {
-            rndshape::ProjShadowCasters casters;
-            if (rndshape::CollectProjShadowCasters(casters))
-                mShadowPass.RenderCasters(mEncoder, mGpu, casters.clipFromWorld,
-                                          casters.meshes.data(), (int)casters.meshes.size());
+            std::vector<rndshape::ProjShadowCasters> lights;
+            if (rndshape::CollectProjShadowCasterSets(lights) > 0) {
+                std::vector<ShadowPass::CasterSet> sets;
+                for (const rndshape::ProjShadowCasters& l : lights)
+                    sets.push_back({l.clipFromWorld, l.meshes.data(), (int)l.meshes.size(), l.tile});
+                mShadowPass.RenderCasters(mEncoder, mGpu, sets.data(), (int)sets.size());
+            }
         }
 
         wgpu::CommandBuffer cmd = mEncoder.Finish();
@@ -2166,9 +2170,25 @@ void WgpuRnd::WriteSceneUniforms() {
         // The content's own lighting model (RB3-Wii: rndshape/RB3WiiSceneLighting.cpp;
         // DC3: rndshape/DC3SceneLighting.cpp, docs/native/dc3-retail-lighting.md).
         // DC3's projected_blend 0 light binds its gobo here; RB3-Wii has none.
+        // Upload on demand: textures reach the GPU when a material binds them
+        // (PresyncBitmap), and a gobo is bound by a light alone. Rollerrink's
+        // light_glow01.tex and discoBallReflection.tex are referenced by no
+        // material, so without this the view was null, slot 3 fell back to
+        // white, and every blend-0 light lit its whole cone at full colour
+        // instead of its pool (docs/native/dc3-retail-lighting.md 8.1).
         RndTex* gobo = rndshape::SceneProjTexture();
+        if (gobo) gobo->PresyncBitmap();
         mProjLightTexView = gobo ? GetGpuTexView(gobo) : nullptr;
     } else if (env && rndshape::EnvHasAmbientFogOwner(env)) {
+        // The engine's heuristic light model. WHO STILL REACHES THIS ARM: rb3-xenon
+        // (the dc3 render shape without DC3's HX_NATIVE accessors, so
+        // WriteSceneLighting returns false there) -- its captures are pinned
+        // byte-identical by each lane's rb3-render A/B -- and RB3-Wii on any
+        // frame its own RB3WiiSceneLighting declines (it returns false when
+        // neither its retail model nor its venue-light arm applies). DC3 never
+        // does: its shape claims every frame through WriteDC3Retail
+        // (retailLighting 2) since np-gfx-light round 1. Do not delete this arm
+        // while those render with it; do not tune it for DC3, which never sees it.
         // Ambient color (with minimum floor for visibility)
         const Hmx::Color& amb = env->AmbientColor();
         float minAmbient = 0.08f;
