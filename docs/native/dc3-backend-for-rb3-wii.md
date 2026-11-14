@@ -7149,3 +7149,51 @@ frozen frames of 36.3 have no camera motion for the velocity blur to act on.
   - `native_compat_census.py check` reports OK: 455 flags, regen clean. The
     one flag added since round 5 came in with the np-gfx merges; this lane
     added no getenv.
+
+### 36.6 Round 7: the same measurements on np-gfx with the Color and spotlight fixes
+
+np-gfx then landed two fixes that change what a throneroom or houseparty
+frame contains:
+- `Hmx::Color::Unpack` multiplies by the image's 1/255 constant, so
+  animated light colours no longer drift (`crow_underlight_light` holds
+  255/200/3);
+- the spotlight list is cleared each frame (`NgSpotlightDrawer::RenderScene`
+  was an empty native stub), so stale spotlights no longer fill all 50
+  box-map spot slots at the throneroom peak, and flares draw once.
+
+I merged np-gfx into the lane (engine `cceacb6`, np-gfx `25f6f3e`; dc3
+`d1d571ec2`, np-gfx `ae6cc55fd`). On that base I built `dc3-native-r7`
+(XXH3 `1f587c12d34a3a27`) and ran the round-6 measurements again, native
+only, with the same states, cuts and scripts (`tools/r7run.sh`,
+`measure/r7_native.txt`). The Xenia rows are round 6's: the original binary
+under Xenia does not depend on either native fix.
+
+Throneroom peak, frozen frames (`r7_trpg`, cut 0.85; medians in brackets):
+
+| build | n | grade (grade/raw) | bloom (full/grade) | post (full/raw) |
+|---|---|---|---|---|
+| Xenia (round 6) | 12 | 1.234 (1.237) | 1.276 (1.270) | 1.575 (1.572) |
+| native, round 7 base | 15 | 1.222 (1.222) | 1.261 (1.263) | 1.541 (1.546) |
+| native, round 6 Color-fix base | 15 | 1.228 (1.226) | 1.245 (1.265) | 1.528 (1.557) |
+
+The side-effect control (full again / full) reads 1.000. With the Multiply
+overlays as-is vs hidden (`r7_trpz`, cut 0.9, n=15), the bloom gain is
+1.256 (median 1.276) both ways: the overlay effect is 0.00, against
+Xenia's 1.266.
+
+- **Item 3 holds on the fixed base.** Grade 1.222 vs 1.234, bloom median
+  1.263 vs 1.270, post 1.541 vs 1.575 (medians 1.546 vs 1.572). The bloom
+  mean moved closer (1.245 → 1.261): the stale spotlights no longer add
+  pre-post light. The residual is still under 3%, and round 6's factorless
+  MAX build already reproduced it. There is no term to fix.
+- **Item 1 does not move.** Throneroom normal, `tr_far03` carpet: full 22.2,
+  bloom off 21.6, overlays hidden 46.1 / 42.5, levels off 33.7, against
+  round 6's 22.3 / 21.7 / 46.0 / 42.4 / 33.7 and Xenia's 28.7 / 22.7 / 47.2
+  / 43.9 / 39.6. `tr_062`: 7.6 / 7.4, hidden 32.9. The normal state has no
+  peak spotlights, so this is expected.
+- **Predating these fixes:** every round-6 native number, i.e. §36.1's native
+  columns, §36.3's native rows, §36.2's houseparty sharpness, and the round-6
+  gate and consumer checks. The houseparty DOF effect is a before/after on
+  one binary pair, so the stale spotlights are in both sides of it. INFERRED:
+  they do not change the conclusion, but the absolute sharpness numbers
+  (9.4/10.0 after DOF) were not re-taken.
