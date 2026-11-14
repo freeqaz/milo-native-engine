@@ -313,6 +313,92 @@ inline Vector3 PartWorldPos(Sys *s, RndParticle *p) {
         return Vector3(p->pos.x, p->pos.y, p->pos.z);
     }
 }
+// The billboard of the shipped particles vertex shader (dc3 xbox_shaders,
+// type "particles", every permutation; its non-velocity-aligned path, read
+// from the microcode). DxParticleSys::DrawShowing passes c47 = 0.5 * camera X
+// and c48 = 0.5 * mScreenAspect * camera Z (both in the system's relative
+// space), and each vertex carries size (t0), angle (t1) and swingArm (t2).
+// For corner signs p (right) and q (up) the shader places
+//
+//   pos + size/2 * (p * (cos a R - sin a S U) + q * (sin a R + cos a S U))
+//       + swingArm * (sin a R + cos a S U)
+//
+// with R/U the camera right/up axes and S the screen aspect. So:
+//   - screen_aspect scales the quad's height (streetside alleySteam: 0.7);
+//   - the swing arm moves the sprite along its own rotated up axis, so a
+//     spinning particle with a start/end_offset circles its position
+//     (throneroom's smoke systems: spin with start_offset 10);
+//   - a growing angle turns the quad clockwise on screen (the engine's old
+//     billboard turned it anticlockwise).
+// A consumer whose RndParticleSys has no ScreenAspect() accessor keeps the old
+// billboard (rb3-xenon, whose own retail DxParticleSys sets the same
+// constants, until it adds the accessor).
+//
+// Velocity-aligned systems (velocity_align) take the shader's other path.
+// DxParticleSys::DrawParticles then writes 2 * vel into the slots that carry
+// angle and swing arm, keyed on mAlignWithVelocity alone; DrawShowing passes
+// c49 = (aligned, stretched, constantArea, 2 * stretch_scale), with
+// aligned = fancy && velocity_align, stretched = aligned && stretch_with_velocity,
+// constantArea = stretched && constant_area, and c47.w = 0 only when
+// fancy && aligned && stretched && perspective. ParticleAlignedAxes
+// (Part_Wgpu.cpp) carries the decode. One retail consequence is kept:
+// velocity_align on a basic (non-fancy) pool sends the velocity down the
+// billboard path, read as angle = 2 * vel.x and swing arm = 2 * vel.y. No
+// shipped DC3 system does that (round 3 census: every aligned system is fancy).
+// A consumer whose RndParticleSys has no AlignWithVelocity() accessor keeps the
+// billboard for every system, as before.
+struct PartBillboardTerms {
+    bool retailXbox = false;
+    float screenAspect = 1.0f;
+    bool velocityVerts = false;  // mAlignWithVelocity: the vertex carries 2 * vel
+    bool aligned = false;        // c49.x
+    bool stretched = false;      // c49.y
+    bool constantArea = false;   // c49.z
+    bool perspective = false;    // !c47.w
+    float stretchScale = 1.0f;   // c49.w / 2
+    // Rows of mRelativeXfm.m: the space p->pos and p->vel live in.
+    float rel[9] = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f};
+};
+template <typename Sys, typename = void>
+struct PartHasScreenAspect : std::false_type {};
+template <typename Sys>
+struct PartHasScreenAspect<Sys, std::void_t<decltype(std::declval<const Sys &>().ScreenAspect())>>
+    : std::true_type {};
+template <typename Sys, typename = void>
+struct PartHasVelocityAlign : std::false_type {};
+template <typename Sys>
+struct PartHasVelocityAlign<
+    Sys, std::void_t<decltype(std::declval<const Sys &>().AlignWithVelocity())>>
+    : std::true_type {};
+template <typename Sys>
+inline PartBillboardTerms PartBillboard(Sys *s) {
+    PartBillboardTerms t;
+    if constexpr (PartHasScreenAspect<Sys>::value) {
+        t.retailXbox = true;
+        t.screenAspect = s->ScreenAspect();
+        if constexpr (PartHasVelocityAlign<Sys>::value && PartHasRelativeXfm<Sys>::value) {
+            const bool fancy = s->IsFancy();
+            t.velocityVerts = s->AlignWithVelocity();
+            t.aligned = fancy && t.velocityVerts;
+            t.stretched = t.aligned && s->StretchWithVelocity();
+            t.constantArea = t.stretched && s->ConstantArea();
+            t.perspective = t.stretched && s->PerspectiveStretch();
+            t.stretchScale = s->StretchScale();
+            const auto &m = s->RelativeXfm().m;
+            const float rows[9] = {m.x.x, m.x.y, m.x.z, m.y.x, m.y.y,
+                                   m.y.z, m.z.x, m.z.y, m.z.z};
+            for (int i = 0; i < 9; i++) t.rel[i] = rows[i];
+        }
+    } else {
+        (void)s;
+    }
+    return t;
+}
+inline float PartSwingArm(const RndParticle *p) { return p->swingArm; }
+// The particle's velocity, in the same space as p->pos.
+inline Vector3 PartVelocity(const RndParticle *p) {
+    return Vector3(p->vel.x, p->vel.y, p->vel.z);
+}
 // No Wii-TEV tint model here: this shape scales particle colour the way its
 // retail Xbox particle shader does (Part_Wgpu.cpp, ParticleShaderColor).
 constexpr bool kPartMaterialTint = false;
@@ -341,6 +427,17 @@ constexpr int kDrawModeReflection = 8;
 // mScreenRect scaled to the target, depth range mZRange -- through
 // TheNgRnd.SetViewport (rndobj/Cam.cpp), so WgpuRnd receives it on every select.
 constexpr bool kCamSelectSetsViewport = true;
+
+// ---- flare point tests -----------------------------------------------------
+// Whether WgpuRnd, after submitting a frame, blocks for the point-test answers
+// of earlier frames that were not ready at world end (FinishPointTestReadback),
+// so that every flare answer arrives one frame after its test, as retail
+// DxRnd::DoPointTests' do. dc3-decomp (kDC3RetailModel) does not wait: on an
+// integrated or phone GPU the wait is CPU time spent idle, and DC3 takes the
+// occasional answer a frame late instead, with the flare's last answer standing
+// in for it (gfx/PointTestStandIns.h) so its fade does not snap. rb3-xenon
+// keeps the wait it had.
+constexpr bool kPointTestWaitAfterSubmit = !kDC3RetailModel;
 
 // ---- render-to-texture -----------------------------------------------------
 // DC3 writes destination alpha for every material drawn into a render target.
@@ -539,6 +636,18 @@ constexpr bool kGammaSpaceShading = kDC3RetailModel;
 // heuristic lighting, which brightened it; the DC3 retail model does not
 // need that. rb3-xenon keeps the forced prelit.
 constexpr bool kMultiplyBlendIsLit = kDC3RetailModel;
+// Intensify doubles the texel's alpha with its colour in every draw, the world
+// included (np-gfx-light round 4). NgMat::SetRegularShaderConst sets c5.y =
+// intensify + 1, and every standard.ps permutation with option bit 53 scales
+// the whole texel before it meets the interpolated colour: shipped
+// standard_0020000000020010.ps is `mul r0, r0, c5.yyyy` then
+// `mul oC0.___w, r0.wwww, r2.wwww`, where standard_0000000000020010.ps (the
+// same key without bit 53) writes `r0.w * r2.w`. The engine applied the
+// factor in the UI phase only (MaterialAlphaScale), so a world material such
+// as streetside's peak stripes (streetside_peek_pink1..16.mat: SrcAlpha,
+// intensify, alpha 0.57 down to 0.025, alpha_write) drew half as opaque and
+// wrote half the bloom mask retail does. rb3-xenon keeps the UI-only rule.
+constexpr bool kIntensifyScalesAlpha = kDC3RetailModel;
 // The pseudo-HDR bloom mask (ShaderOptions bit 22): retail DC3's standard.ps /
 // particles.ps / multimesh write alpha = sat(dot(rgb, c7) * c5.z) for a
 // material whose NgMat::AllowHDR() holds, drawn into the main frame

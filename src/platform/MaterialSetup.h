@@ -38,7 +38,9 @@ bool MaterialShadesPrelit(bool matPrelit, bool isTextMesh, bool isOverlayPass,
                           bool isMultiplyBlend, bool simpleRender,
                           bool retailMaterialTerms);
 // Factor on the material alpha: 2 for an intensify material under the retail
-// UI terms (DC3's standard.ps: `mul r0, r0, c5.yyyy`, alpha included), else 1.
+// UI terms (DC3's standard.ps: `mul r0, r0, c5.yyyy`, alpha included), or in
+// any phase when the shape says so (rndshape::kIntensifyScalesAlpha: DC3's
+// world draws use the same shader), else 1.
 float MaterialAlphaScale(bool intensify, bool retailMaterialTerms);
 // The material colour as the shader sees it. A premultiplied-alpha material
 // (blend 7, pipeline One / OneMinusSrcAlpha) has its rgb scaled by its alpha
