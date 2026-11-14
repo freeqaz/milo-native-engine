@@ -10,6 +10,22 @@ class RndEnviron;
 // Draw a particle system's active particles as camera-facing quads.
 void DrawParticlesBillboard(RndParticleSys* sys);
 
+// One particle's quad: corner = centre +- right +- up (TL = centre - right + up).
+// camRight/camUp are the camera's world X and Z axes; halfSize is size / 2.
+// retailXbox selects the shipped Xbox particle shader's billboard
+// (rndshape::PartBillboard, DC3 shape): up scaled by screenAspect, a
+// clockwise turn by angle, and the centre moved swingArm along the turned up
+// axis. Otherwise the engine's original billboard: the angle turns the quad
+// anticlockwise, and screenAspect and swingArm are ignored.
+struct ParticleQuadAxes {
+    float centre[3];
+    float right[3];
+    float up[3];
+};
+ParticleQuadAxes ParticleBillboardAxes(const float pos[3], const float camRight[3],
+                                       const float camUp[3], float halfSize, float angle,
+                                       bool retailXbox, float screenAspect, float swingArm);
+
 // The factor every particle's colour is multiplied by before it is written to
 // the vertex buffer, for shapes without the Wii tint model
 // (rndshape::kPartMaterialTint false: DC3 and rb3-xenon). It is what retail's

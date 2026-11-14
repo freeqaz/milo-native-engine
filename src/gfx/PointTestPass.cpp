@@ -137,11 +137,14 @@ bool PointTestPass::Record(wgpu::CommandEncoder& encoder, const wgpu::TextureVie
         bd.usage = wgpu::BufferUsage::MapRead | wgpu::BufferUsage::CopyDst;
         b->readback = dev.CreateBuffer(&bd);
         b->capacity = cap;
+        mResourceCreates += 4;  // query set, vertex, resolve and readback buffers
     }
 
     // Target pixels -> clip space over the whole target (y down on screen).
     const float sx = 2.0f / (float)w, sy = 2.0f / (float)h;
-    std::vector<float> verts((size_t)count * kVertsPerQuery * 4, 0.0f);
+    // Reused across frames: no per-frame heap allocation in steady state.
+    std::vector<float>& verts = mVerts;
+    verts.assign((size_t)count * kVertsPerQuery * 4, 0.0f);
     for (size_t i = 0; i < count; i++) {
         const Query& q = queries[i];
         float* v = &verts[i * kVertsPerQuery * 4];
