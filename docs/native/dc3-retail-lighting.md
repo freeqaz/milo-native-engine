@@ -1171,3 +1171,39 @@ large flares at about 1/80 strength there; native matches Xenia with the count
 raised to 1e6, and the hardware footage. Any bulb, lamp or glow region in this
 section's Xenia frames is therefore not ground truth. That covers dclive's
 bulb wall (the brief's −47%, ranked weak), which this lane did not measure.
+
+### 9.8 Verification and frame time, round 4
+
+Final heads: engine `np-gfx-light` a9b72e5 plus this doc commit (code identical
+to 17ba5d4, the merge of np-gfx c123b34), dc3 `np-gfx-light` pinned to it.
+
+- dc3 `scripts/native_test.sh` at dc3 c4262a3a5 (engine a9b72e5): registered
+  1010, executed 940, passed 940, failed 0, skipped 70, budget 70, rc 0.
+- rb3-xenon `rb3-render`, engine np-gfx c123b34 against this branch: 11 of 11
+  frames byte-identical. `kIntensifyScalesAlpha` is false in
+  `RndShape_RB3Wii.h`, so rb3-xenon keeps the UI-only alpha rule.
+- rb3 (tree 1dee2c1f7) built against this branch: 157 of 158 pass. The one
+  failure, `native_compat_census.check`, is that tree's own ledger being
+  stale: it fails the same way against the base engine c123b34, and rb3
+  main's census script reads 454 flags, regen clean, on both engines. An
+  earlier run also failed `PointTestPassTest.CollectThroughTakesOnlyBatchesUpToSeq`
+  once while the dc3 gate ran on the same GPU; it passed 15 of 15 alone and
+  in the final run (it times a busy GPU job).
+- getenv census: `git diff c123b34 HEAD -- src include` adds no `getenv`.
+
+**Frame time, MEASURED** (`round4/frametime/`). OMG, headless, 10 s sampled
+20 s into gameplay, 3 rounds interleaved, RTX 3090, load average 26-38 on 32
+cores. Same base, the flag alone: `kIntensifyScalesAlpha = false` against the
+branch (engine e391f95's code; rebuilt from source it is byte-identical).
+
+| venue | flag off: main ms / GPU est ms (median) | branch |
+|---|---|---|
+| streetside | 3.94 / 0.75 | 3.99 / 0.76 |
+| houseparty | 3.36 / 0.70 | 3.34 / 0.52 |
+| rollerrink | 3.99 / 0.61 | 3.67 / 0.67 |
+
+No difference beyond the run-to-run spread, as expected: the change is a
+uniform value, with no new draw, pass or bind group. A first A/B against the
+pre-merge base binary showed +0.2..0.45 ms of GPU estimate; that binary
+predates the np-gfx 34cb235 merge (velocity blur), so it compared two code
+bases, not this change.
