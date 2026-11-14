@@ -341,6 +341,10 @@ MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh, const UiDraw
     // Forcing prelit makes the shader output baseColor directly: white material
     // color = multiply identity (no visible change), which is correct behavior
     // when the lighting scripts aren't driving the color.
+    // NOT for DC3: no script drives the colour there. Rink_lightCatcher.mat is
+    // white, lit by its own env (ambient 0.365 + a gobo spot), and the light
+    // IS the modulation factor, so forcing it prelit removed the rink's floor
+    // pool. See rndshape::kMultiplyBlendIsLit (RndShape_DC3.h).
     // An unlit material (rndshape::MatUnlit; RB3-Wii use_environ=0) already
     // skips lighting, and forcing prelit on top of it would pull in the raw
     // vertex colour, which an unlit Wii material never sees.
@@ -350,7 +354,10 @@ MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh, const UiDraw
     const bool unlit = rndshape::MatUnlit(mat);
     matUni.unlit = unlit ? 1.0f : 0.0f;
     matUni.gammaShading = uiTerms.gammaShading ? 1.0f : 0.0f;
-    bool isMultiplyBlend = (matBlend == BaseMaterial::kBlendMultiply) && !unlit;
+    // The DC3 retail model lights Multiply materials as the image does
+    // (rndshape::kMultiplyBlendIsLit): the heuristic above does not apply.
+    bool isMultiplyBlend = (matBlend == BaseMaterial::kBlendMultiply) && !unlit &&
+                           !rndshape::kMultiplyBlendIsLit;
     const bool uiLit = uiTerms.retailMaterialTerms;
     bool forcePrelit = IsSimpleRender() || (isOverlayPass && !uiLit) || isMultiplyBlend;
     if (isMultiplyBlend) heuristics |= kHeuristicMultiplyPrelit;
@@ -466,7 +473,8 @@ MaterialParams BuildPassMaterialParams(BaseMaterial* rawNextPass, const UiDrawTe
     const bool npUnlit = rndshape::MatUnlit(nextPass);
     npMatUni.unlit = npUnlit ? 1.0f : 0.0f;
     npMatUni.gammaShading = npUiTerms.gammaShading ? 1.0f : 0.0f;
-    bool npMultiply = (nextPass->GetBlend() == BaseMaterial::kBlendMultiply) && !npUnlit;
+    bool npMultiply = (nextPass->GetBlend() == BaseMaterial::kBlendMultiply) && !npUnlit &&
+                      !rndshape::kMultiplyBlendIsLit;
     npMatUni.prelit = (nextPass->Prelit() || npMultiply) ? 1.0f : 0.0f;
     if (nextPass->Prelit() && !npMultiply && rndshape::MatPrelitAmbient(nextPass))
         npMatUni.prelit = 2.0f;

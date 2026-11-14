@@ -480,6 +480,18 @@ constexpr bool kAlphaBlendMax = !kDC3RetailPost;
 // target saturates the product (material.gammaShading). rb3-xenon keeps the
 // linear model with the sRGB output encode.
 constexpr bool kGammaSpaceShading = kDC3RetailModel;
+// A Multiply-blend material is lit like any other (np-gfx-light round 3).
+// NgMat::SetBasicState gives kBlendMultiply src ZERO / dest SRCCOLOR and fade
+// params (1,1,1,1), and nothing in CalcShaderOpts or SetupAmbient looks at the
+// blend, so the image shades it c0 * (c1 + box + points + proj) * texel and the
+// target multiplies the frame by that (dc3-decomp rndobj/Mat_NG.cpp). The
+// rollerrink floor's Rink*_overlay.mesh (Rink_lightCatcher.mat, no texture,
+// Rink_lightCatcher.env: ambient 0.365 and mirrorball_spotlight_02's gobo) is
+// such a "light catcher": it darkens the floor to 0.365 outside the light.
+// MaterialSetup forced every Multiply material prelit (identity) for the old
+// heuristic lighting, which brightened it; the DC3 retail model does not
+// need that. rb3-xenon keeps the forced prelit.
+constexpr bool kMultiplyBlendIsLit = kDC3RetailModel;
 // The pseudo-HDR bloom mask (ShaderOptions bit 22): retail DC3's standard.ps /
 // particles.ps / multimesh write alpha = sat(dot(rgb, c7) * c5.z) for a
 // material whose NgMat::AllowHDR() holds, drawn into the main frame

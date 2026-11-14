@@ -18,13 +18,16 @@
 //    non-zero packed colour), c62+i = (position, 1 / (falloffStart - range))
 //    and c66+i = (colour, -range * that), or (.., 0) and (.., 1) when
 //    falloffStart >= range: full strength inside falloffStart, linear to zero
-//    at range; at most one projected light in slot 3 (not drawn here yet);
+//    at range; at most one projected light in slot 3 (WriteDC3ProjShadow);
 //  * approx lights: NgEnviron::UpdateApproxLighting folds mLightsApprox and
 //    RndEnviron::sGlobalLighting into the six-face box map c80..c85 at the
 //    position Select was given -- the character's origin for a Character
-//    (Character::DrawLodOrShadow's RndEnvironTracker), the RndDir's for an
-//    RndDir, none for a WorldDir (then points and spots in the approx set are
-//    skipped and only directionals and fake spots land). The native port runs
+//    (Character::DrawLodOrShadow's RndEnvironTracker), the RndDir's origin for
+//    an RndDir with its own environ (RndDir::DrawShowing, so static venue
+//    geometry gets one), none where an environ is selected with a null
+//    position (Crowd, Spotlight, TexRenderer: then points and spots in the
+//    approx set are skipped and only directionals and fake spots land). The
+//    native port runs
 //    that same decomp code, and WgpuShaderMgr keeps the registers it uploads;
 //    FillMeshApproxLighting copies them into each draw;
 //  * standard.vs/ps: colour * (ambient + box(N) + points) * texel, per vertex
