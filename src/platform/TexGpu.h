@@ -27,6 +27,9 @@ bool IsGpuTexRenderable(RndTex* tex);
 // has started tearing down (RB3-Wii's Debug::Exit takes that path).
 void ClearGpuTexCaches();
 
+// Live GPU texture entries (2D + cube), for the [GPUCOUNT] log line.
+size_t GpuTexCount();
+
 // The content fingerprint RndTex::PresyncBitmap keys re-creation on (with the
 // pixel pointer): 8 evenly spaced bytes folded as h = h*31 + byte; 0 for a null
 // or <16-byte buffer.

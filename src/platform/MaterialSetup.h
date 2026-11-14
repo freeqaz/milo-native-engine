@@ -23,7 +23,7 @@ struct MaterialParams {
 MaterialParams BuildMaterialParams(RndMat* mat, bool isTextMesh);
 
 // The overlay-phase material rules a game opts into through GameRenderHook
-// (UiShadesInGammaSpace, UiUsesRetailMaterialTerms). frameInOverlay: the frame
+// (UiUsesRetailMaterialTerms). frameInOverlay: the frame
 // has left its world (WgpuRnd::FrameInOverlay). Outside the overlay phase, or
 // with no hook, gammaShading is the shape's model and retailMaterialTerms false.
 struct UiDrawTerms {
@@ -47,11 +47,6 @@ float MaterialAlphaScale(bool intensify, bool retailMaterialTerms);
 // so a fading premult label dims with its alpha instead of adding its full
 // colour until the alpha nears 0. Every other blend: the colour unchanged.
 void MaterialShaderColor(const Hmx::Color& matColor, BaseMaterial::Blend blend, float out[4]);
-// material.unlit under the retail UI terms: a lit material with use_environ 0
-// takes an ambient of 1 and no lights (NgMat::SetupAmbient; the shader options
-// set mRealLights/mApproxLights only for use_environ materials), so it shows
-// its colour times its texture whatever environ is current.
-bool MaterialShadesUnlit(bool matPrelit, bool matUseEnviron, bool retailMaterialTerms);
 
 // Build material parameters for a multi-pass material (simplified, no heuristics)
 MaterialParams BuildPassMaterialParams(BaseMaterial* pass);

@@ -29,7 +29,7 @@ permutations cited here.
 | ambient (c1) | The environ's ambient, unscaled. A material with `use_environ` off gets (1,1,1,1). | MEASURED | `NgMat::SetupAmbient`; permutation 0x10 draws `texel * c0 * c1` |
 | real point lights | The **first three** `kPoint` lights of `mLightsReal`, in list order, that are Showing and have a non-zero packed colour. c62+i = (pos, 1/(falloffStart − range)), c66+i = (rgb, −range·that). Or (pos, 0) and (rgb, 1) when falloffStart ≥ range. So the light is full strength inside falloffStart and falls linearly to zero at range. | MEASURED | `NgEnviron::Select` / `SetPointLightRegisters` (Env_NG.cpp; Select is 98.6%, the residual is store order) |
 | projected light | At most **one**: the first `kFakeSpot` of `mLightsReal` that `CheckProjLight` accepts goes to slot 3. c65 = −m.y, c69 = (rgb, 1), c95..c97 = `RndLight::Projection()` (4x3), tf5 = shadow map, tf10 = gobo (blend 0) or white-transparent (blend 1). | MEASURED | `NgEnviron::Select`, `SetProjLightRegisters`, `CheckProjLight` |
-| approx lights | Folded into a six-face box map c80..c85 at the position `Select` was given, by `NgEnviron::UpdateApproxLighting` from `mLightsApprox` + `RndEnviron::sGlobalLighting`. Directionals and fake spots always land. Points and spots land only when there is a position: a Character passes its origin (`Character::DrawLodOrShadow`'s `RndEnvironTracker`), a WorldDir passes none. | MEASURED | BoxMap.cpp, Env_NG.cpp |
+| approx lights | Folded into a six-face box map c80..c85 at the position `Select` was given, by `NgEnviron::UpdateApproxLighting` from `mLightsApprox` + `RndEnviron::sGlobalLighting`. Directionals and fake spots always land. Points and spots land only when there is a position. A Character passes its origin (`Character::DrawLodOrShadow`'s `RndEnvironTracker`), and so does every RndDir with its own environ: `RndDir::DrawShowing` reselects `mEnv` with `&WorldXfm().v` (Dir.cpp:312). Static venue geometry sits in such dirs, so its approx points do land (round 3 probe: every rink floor/wall mesh drew with a position). Draws get no position only where an environ is selected with a null one: `Crowd` (its batched draws), `Spotlight`, `TexRenderer`, `SkeletonViz` and `HamListRibbon`. A null *environ* changes nothing (`RndEnvironTracker` selects only a non-null one), so `RndGroup::DrawShowing` keeps the enclosing dir's environ and position. (Round 1 said "a WorldDir passes none"; that was wrong.) | MEASURED | BoxMap.cpp, Env_NG.cpp, Dir.cpp, Group.cpp |
 | directional "real" lights | None. `Select` notifies "Invalid real light" for anything that is neither a point nor a fake spot. | MEASURED | `NgEnviron::Select` |
 | fill lights, ambient floor, energy cap, name priority | **None exist in retail.** | MEASURED (absence: none of the register writers has such a step) | as above |
 
@@ -111,6 +111,24 @@ light, and the retail path never read it.
    factor to the box term.
 4. The generic `ShadowPass::Render` pre-pass no longer runs for DC3
    (`rndshape::kGenericShadowPass`).
+5. (Round 3.) Every projected light with shadow objects gets a map, as on
+   retail, where each `NgLight` owns its own target. Up to four lights a
+   frame share `ShadowPass`'s 1024² depth texture as a 2x2 atlas of 512²
+   tiles; a light's tile is its index in the frame that drew it, and
+   `shadowEnabled = 2 + tile`. `dc3ProjTap` clamps every tap half a texel
+   inside the tile. Houseparty is the venue that needed it: `a2_spotlight.lit`
+   (blend 0, gobo, five shadow objects) and `ShadowDirLight01.lit` (blend 1,
+   `Shadows.env`, the dancers' floor shadow) are both live in one frame, and
+   with one map the first to publish took it and the floor shadow drew none.
+6. (Round 3.) The caster pass is self-contained (`ShadowPass::RenderCasters`):
+   its own dynamic-offset layouts, one `WriteBuffer` per frame for all object
+   slots (256 B each), bone palettes (2560 B per skinned caster) and the four
+   256 B clip slots, and bind groups created once (again only when a buffer
+   grows). Before, `DrawMeshShadow` created one or two bind groups per caster
+   per frame, and `CreateBindGroup` was 20% of the pass. The generic
+   `Render()`/`DrawMeshShadow` path is unchanged and still serves rb3-xenon.
+   Tests: `ProjShadowCasterPassTest` (GPU readback of the map) and
+   `RetailLightingTest.TwoShadowLightsInOneFrameEachGetATile`.
 
 ### The additive gobo (projected_blend 0)
 
@@ -158,9 +176,12 @@ ambient, as in retail.
   vertex-lit receiver, so it is a native-only fallback.
 - `SphereConeTest` culling of casters is skipped. It only removes casters that
   cannot land in the map.
-- The casters are drawn twice per frame. DC3's own `NgLight::RenderShadows`
-  still runs into its own render target, which nothing samples, alongside
-  the native coverage pass. That is wasted work, not a visible difference.
+- (Done in round 3.) The casters were drawn twice per frame: DC3's own
+  `NgLight::RenderShadows` drew them into a 256x256 target plus two blur
+  passes, and nothing sampled it (its only reader, `SetPConstant(PShaderConstant,
+  RndTex *)`, is empty in `WgpuRnd`). dc3-decomp's `Lit_NG.cpp` now returns
+  before that draw on native; `RetailLightingTest.NgLightRenderShadowsDraws-
+  NoCastersOnNative` guards it.
 
 ## 4. Skin, hair and the rim (round 2)
 
@@ -459,6 +480,10 @@ The shader's `dc3ProjLight` returns the identity unless
 | rb3, round 2 | `ctest` in the lane's rb3 worktree (rb3 1dee2c1f7) against 41760b4 | 158 registered, 1 failed, 7 skipped. The failure is `native_compat_census.check`: that worktree's ledger is stale against the np-gfx merge's flags. The same check fails against the base engine 5664e9d, and rb3 main's copy passes. |
 | dc3, round 2 | `scripts/native_test.sh` at dc3 30ce069ac / engine 9929879 | 895 registered, 825 executed, 824 passed, 1 failed, 70 skipped (budget 70). `RetailCharShadingTest` 2/2 pass. The failure is `LargestSongFlowTest.OmgPreloadsAndReachesGameplay`: in the full suite the engine hit its 3000-frame cap in the intro. It passes alone (2 of 2 runs), main 442e1aeff raises the cap, and the integration gate gate-int2 failed it the same way. |
 | getenv census, round 2 | rb3 main's `native_compat_census.py --engine-root <this branch> check` | OK, 446 flags, the same as on the base 5664e9d. The 4 above round 1's 442 came in with the np-gfx merge, and `git diff 5664e9d HEAD` has no `getenv`. |
+| rb3-xenon, round 3 | `rb3-render` over `xbox-zip`, engine 0ec9eab (round-3 base) vs 30ae8c0, then vs 3c8c49e | 11 of 11 PNGs byte-identical, both times |
+| rb3, round 3 | `ctest` in the lane's rb3 worktree (rb3 1dee2c1f7) against 3c8c49e | 158 registered, 150 passed, 1 failed, 7 skipped. The failure is `native_compat_census.check` (stale ledger in that worktree), the same as against the base engine. |
+| getenv census, round 3 | `git diff 0ec9eab 3c8c49e` and `git diff b2bdfdb0e dfb5f897c` | no new `getenv`. The one `getenv` line in the dc3 diff is an existing `MILO_LIB` read that moved within a test file. |
+| dc3, round 3 | `scripts/native_test.sh` at dc3 dfb5f897c / engine 3c8c49e | 934 registered, 864 executed, 864 passed, 0 failed, 70 skipped (budget 70) |
 | dc3 | `native/tests/test_retail_lighting.cpp`, 9 tests | pass. Each sabotage listed in the dc3 commits fails it. |
 | dc3 | `RehearseProjectionTest.DancerIsDrawnThroughTheProjection` | Failed under the retail model: 2-3% "character-coloured" against a 10% bar. The kept shots show the dancer drawn, saturated rather than washed out. The test's green ≥ 80 rule was measuring overexposure, so it now detects the dancer by hue. It passes on both the base and this branch, and reads 0.0% on the reveal-off shots. |
 
@@ -475,3 +500,257 @@ The shader's `dc3ProjLight` returns the identity unless
 | (c) `MaterialShadesUnlit` applied only under the UI terms. | np-gfx-hud | **covered** | `MatUnlit` above is the same rule for every DC3 draw. `MaterialShadesUnlit` adds nothing for DC3 and can be retired at merge, or kept for a consumer that opts into the UI terms without the DC3 shape. |
 | (d) The scene-light path drops RndLight intensity. | np-gfx-hud | **covered** | Intensity lives in the colour: `SetPackedColor` multiplies it in, and `Intensity()` is the max channel. `WriteDC3Retail` and the projected light read `GetColor()`, as `SetPointLightRegisters` does. Test: intensity 3 reaches c66. |
 | (e) Retail selects the default environ every frame. | np-gfx-hud | **done** | `rndshape::kSelectDefaultEnvEachFrame` (DC3 shape only). |
+
+## 8. Round 3
+
+### 8.1 The rink floor pool: a gobo that never reached the GPU
+
+**What lights the dance floor (MEASURED, paused native session).** The floor
+round the dancers is `StageCarpet.mesh` (`StageCarpet.mat`, environ
+`Stage_Carpet.env`), not the `Rink*.mesh` wood floor: hiding StageCarpet.mesh
+drops the floor band from 194 to 65-80 luma. `Stage_Carpet.env` holds ambient
+(0.227, 0.310, 0.439) and three real lights: `Stage.lit` and `Stage1.lit`
+(points, range 400, falloff_start 0) and `stage_spotlight.lit` (fake spot,
+projected_blend 0, gobo `light_glow01.tex`, colour 3.0, top/bottom radius
+100/200, range 175, five shadow objects). Light-by-light, on one paused frame
+(`{game_panel set_paused_except_sound TRUE}`; lights hidden with their
+`set_showing` handler -- `showing` is not a RndLight property, and setting it
+is silently a no-op):
+
+| state | floor centre | floor edges | centre/edge |
+|---|---|---|---|
+| all on | 193.5 | 179.2 | 1.08 |
+| `stage_spotlight` hidden | 91.6 | 77.4 | 1.18 |
+| `Stage.lit` hidden | 185.5 | 173.6 | 1.07 |
+| `Stage1.lit` hidden | 188.9 | 176.4 | 1.07 |
+| `StageCarpet_lightCatcher.mesh` hidden | 209.7 | 187.3 | 1.12 |
+| `mirrorball_spotlight_01` hidden | 87.6 | 79.4 | 1.10 |
+| all three carpet lights hidden | 35.5 | 38.2 | 0.93 |
+| retail rollerrink/01, 09, 12 | 130.0, 162.6, 90.4 | 86.9, 95.9, 77.5 | 1.50, 1.70, 1.17 |
+
+(Luma of rows 480-720; centre = columns 480-800, edges = 0-200 and
+1080-1280. Native includes the retail post chain, as the footage does.)
+
+So the spot is most of the floor, and it lit the floor flat. **The term:**
+textures are uploaded when a material binds them (`PresyncBitmap` in
+MaterialSetup), and a gobo is bound by a light only. `light_glow01.tex` and
+`discoBallReflection.tex` are referenced by no material, so
+`WriteSceneUniforms` got a null view for slot 3 and bound the white default.
+Every projected_blend 0 light then lit its whole cone at full colour. MEASURED:
+on the paused frame, setting the spot's texture to `discoBallReflection.tex`
+and back changed **no pixel** (all three frames identical to the last digit),
+while halving its radii did change the frame. `light_glow01.tex` is a radial
+glow (64x64; 0.51 at the centre, 0.19 at 0.3 of the width, 0.08 at 0.4, 0 at
+the edge), so with it the spot is a pool round the dancers, as in retail.
+Engine 3c8c49e uploads the gobo in `WriteSceneUniforms`; test
+`ProjShadowCasterPassTest.GoboOnlyALightBindsReachesSlot3` (sabotage: drop the
+`PresyncBitmap` call; slot 3 falls back to white and the test fails).
+
+Every blend-0 light in the six venues went through the same white fallback:
+rollerrink's `stage_spotlight` and both mirrorballs, and `a2_spotlight` in
+houseparty and dclive (8.3).
+
+After 3c8c49e, the same probe on a paused frame (another session, so another
+shot): swapping the texture now changes the frame (floor 133.0 -> 138.8), and
+the floor reads
+
+| | floor centre | floor edges | centre/edge | frame |
+|---|---|---|---|---|
+| before (paused, 30ae8c0) | 170.2-193.5 | 175.2-179.2 | 0.95-1.08 | 119-123 |
+| after (paused, 3c8c49e) | 133.0 | 103.6 | 1.28 | 83.4 |
+| retail rollerrink/01, 09, 12 | 90-163 | 78-96 | 1.17-1.70 | 77-93 |
+
+The pool is back round the dancers, the edges and the stage steps are darker,
+and the frame mean is inside retail's range. The remaining gap: retail's
+centre/edge runs higher (1.5-1.7 on 01 and 09). Not tuned; the shots differ
+(camera, dancers, and the mirrorball gobos move), and the post chain is the
+post lane's.
+
+**The light catchers (MEASURED from the assets).** Two Multiply materials
+modulate the rink by a light: `StageCarpet_lightCatcher.mat` on
+`StageCarpet_lightCatcher.mesh` over the dance floor, and
+`Rink_lightCatcher.mat` on `Rink_overlay.mesh` and `Rink{1..5}_overlay.mesh`,
+which copy the `Rink*.mesh` wood floor (+0.1 z) round the outside of the
+rink. Both are blend 6 (Multiply), untextured, white, `use_environ`,
+per-pixel lit, receive projected lights. Their environs hold ambient 0.365 and
+one mirrorball fake spot (colour 1.99, gobo `discoBallReflection.tex`, range
+500). Retail draws Multiply as src ZERO, dest SRCCOLOR (`NgMat::SetBasicState`,
+Mat_NG.cpp) with fade (1,1,1,1) and lights the material like any other, so the
+floor is multiplied by what the catcher receives: 0.365 away from the gobo,
+up to 1 under it.
+
+Native forced every lit Multiply material prelit (`kHeuristicMultiplyPrelit`),
+so a white catcher multiplied by 1. Engine 30ae8c0 adds
+`rndshape::kMultiplyBlendIsLit` (true only for the DC3 retail model) and keeps
+those materials lit in the primary and next-pass builder; rb3-xenon and
+RB3-Wii keep the heuristic. Test `NativeUiMaterialBuilderTest.MultiplyMaterial-
+IsLitUnderTheDC3Model`; sabotage `kMultiplyBlendIsLit = false` fails all three
+assertions. Until the gobo fix the catcher's own gobo was white too, so it
+received about 0.365 + 1.99 everywhere in its cone and clamped to 1: hiding it
+moved the paused floor by only 194 to 210.
+
+The eight lit Multiply materials the gate reaches (round-3 material census):
+
+| material | venue | texture | z mode |
+|---|---|---|---|
+| `Rink_lightCatcher` | rollerrink | none (white) | normal |
+| `StageCarpet_lightCatcher` | rollerrink | none (white) | normal |
+| `DLV_PeakTransSetFloor01` | dclive | `dlv_peakfloor_diff`, colour 0 | |
+| `DLV_PeakTransStage01` | dclive | `dlv_peakfloor_diff`, colour 0 | |
+| `Building2_shadows` | streetside | `building2_shadow.tex` | decal |
+| `building1_shadows` | streetside | `building1_shadow.tex` | decal |
+| `THR_carpetShadow` | throneroom | `thr_carpetshadow.tex` | transparent |
+| `THR_throneShadow` | throneroom | `thr_throneshadow.tex` | transparent |
+
+### 8.2 The boombox colour is a profile unlock, not a light
+
+MEASURED from the data:
+
+- `ui/global.dta`, `initialize_gameplay_data`:
+  `{hamprovider set golden_boomy {profile_mgr is_content_unlocked boomygold}}`.
+- `config/metagame_rank.dta:369`: `Golden_Boomy` rewards `(unlock boomygold)`.
+- `world/shared/gen/chars_base.milo_xbox`, `score_star_display`'s
+  `Flow1.flow`: a FlowSwitchCase on `hamprovider golden_boomy` plays
+  `boom_unlock.anim`, which swaps the boombox to `boomy_main_unlock.mat`
+  (diffuse `boomy_main_unlock.tex`, specular (0.79, 0.48, 0), no emissive)
+  from `boomy_main.mat` (`boomy_main.tex`, specular 0.23 grey, emissive
+  `boomy_ems.tex`).
+- `config/flow.dta` declares `golden_boomy` ("Is golden boomy unlocked?",
+  default FALSE). No other data file sets it: the only writer is the line in
+  `initialize_gameplay_data` above. `Golden_Boomy` is the last reward in
+  `metagame_rank.dta` ("You unlocked the Golden Boombox!").
+- Retail footage, by capture (INFERRED that it is the recording profile, from
+  the split): every Zero Conflictz capture shows the gold/orange boombox
+  (dci/12, streetside/03, rollerrink/09, dclive/04); every GleasonRyan, Venus
+  Vinnycakes and TopherFloyd capture shows the silver one (dci/05, dci/06,
+  rollerrink/01, dclive/11). Same venue, same crew, different colour, so it
+  is neither light nor crew, and the split runs by uploader, not by song or
+  difficulty (rollerrink/01 is Hard and silver).
+
+Native: `{hamprovider set golden_boomy TRUE}` during gameplay turns it gold,
+so the renderer draws both. Native's dev profile has not unlocked
+`boomygold`, so the silver one is the right default for it. **Open, not a
+renderer item**: if a gold default is wanted, it belongs to the
+profile/unlock flow.
+
+### 8.3 Projected shadows on the six venues
+
+From the round-3 native probe of each venue's environs (MEASURED in a native
+run; the light data is the shipped data):
+
+| venue | retail projected light with shadow casters | native draws it |
+|---|---|---|
+| streetside | `a2_spotlight.lit`, blend 1, 5 shadow objects | yes |
+| throneroom | `shadow.lit`, blend 1 | yes |
+| houseparty | `ShadowDirLight01.lit` blend 1 and `a2_spotlight.lit` blend 0 (gobo), both with casters | both since round 3 (atlas); before, only `a2_spotlight` |
+| rollerrink | `stage_spotlight` blend 0 (gobo), 5 casters; the mirrorballs are blend 0 with no casters | yes |
+| dclive | `a2_spotlight` blend 0 (gobo), 5 objects | yes |
+| dci | none | nothing to draw |
+
+### 8.4 What the model adds per draw
+
+Per draw (`ObjectUniforms`, 256 B slot): `boxLight[6]` (c80..c85, the box
+map at the draw's position, 96 B) and `retail` (.x baked AO, .y approx lights
+queued, .z receives projected lights). Per scene (`SceneUniforms`, written
+when the environ changes): ambient (c1), up to 4 point lights (c62.., c66..,
+of which retail fills three), `projLightDir` / `projLightColor` (.w 1 =
+multiply shadow, 2 = additive gobo), `projLightProjRow0/1`, `lightViewProj`,
+`shadowEnabled` (2 + atlas tile), `retailLighting` = 2, and fog.
+
+### 8.5 Retired hooks
+
+`GameRenderHook::UiShadesInGammaSpace` and `MaterialShadesUnlit` are gone
+(engine 1dd04b7). For DC3 both were already implied by the shape:
+`kGammaSpaceShading` and `rndshape::MatUnlit`. No other consumer overrode
+either hook. rb3-xenon's 11 renders are byte-identical across the change.
+The heuristic arm's comment in `WriteSceneUniforms` now says which shapes
+reach it.
+
+### 8.6 Depth test of the world (z mode)
+
+MEASURED from the image: `NgMat`'s `tf2cf` table at 0x8208A0F8
+(`build/373307D9/asm/system/rnddx9/Mat.s:134`, normal bank
+`[7, 1, 3, 2, 5, 4, 6, 0]`). `kZModeNormal` (TestFunc 1) is D3DCMP_LESS,
+which is what native's `Less` already uses. Transparent and decal (TestFunc 2)
+are LESSEQUAL. Nothing to change here. Out of lane:
+dc3-decomp's `src/system/rnddx9/RenderState.cpp` names indices 2 and 3 the
+other way round (EQUAL / LESSEQUAL); the data is right and the names are not.
+
+### 8.7 Saturation and brightness that belong to the post chain
+
+Same frames with `DC3_RETAIL_POST=0` and with the post chain (native, before
+the gobo fix): rink floor 138 -> 205 luma, DCI normal frame 36 -> 72, dclive
+floor with post (213, 178, 175). The chain roughly doubles the darker scenes.
+The lighting is not tuned against that; the numbers go to the post lane.
+
+### 8.8 The character's own lights in peak (item 2)
+
+MEASURED (round-3 environ probe, streetside peak): `player0.env` ambient
+0.027; real `player0_area1_01.lit`, a point (1.30, 1.09, 0.96) with range 400
+that follows the character; approx lights a rim directional (3.77, 4.29, 4.98)
+and `area1_02`, a point (0.24, 0.10, 0.46) with range 250. Native fills the
+point into c62/c66 (three slots) and the approx lights into the box map at the
+character's origin, as `NgEnviron::UpdateApproxLighting` does, and the rim
+term (c61) lights the dancers' edges in the peak captures. A numeric
+comparison with streetside/03 and dclive/04, 11 is confounded: retail's
+dancers wear white or light outfits and native's scripted route dresses them
+in dark suits, so the lit side's luma says more about the cloth than the
+light. Not tuned.
+
+**DCI peak, against retail dci/05, 06 (the post lane's pointer: retail's
+room and suits read blue/violet, native's dancers neutral grey).** MEASURED,
+live native session in peak (choreo performer, 57 Perfect, evidence
+`round3/dci_peak_charlights/`), sampled every 5 s for 70 s:
+
+- `player0_area1_01` (key), `_02` and `_rim`, and the backups' copies
+  (`color_owner` is player0's), all carry `animate_color_from_preset` 0, so
+  no LightPreset drives them. Their colour comes from `env_char_lighting.anim`
+  (a PropAnim under `environments_master.anim` in `world/dci/gen/dci.milo`),
+  whose frame is the venue's environment state.
+- Native sits at frame 100 from 10 s on: key (1.40, 1.17, 1.03) =
+  1.6 x (0.871, 0.733, 0.643), rim (4.98, 1.65, 5.00) = 5 x (0.996, 0.329,
+  1.0), fill (0.24, 0.11, 0.46). These are the anim's frame-100 keys exactly.
+- The anim's keys, decoded from the milo (MEASURED): the key light is warm at
+  frames 50, 100, 150 and 200 ((1, 0.84, 0.74), (0.87, 0.73, 0.64)) and blue
+  only at 220 (0.18, 0.25, 0.39) and violet at 240 (0.48, 0.22, 0.49). The
+  peak flow in the same file (`peak_sky_frame`, `peak_ribbon_*`) sends
+  `environments_master` to 50 or 100; 170 and 250 are sent by other triggers
+  (250 is `Frame250_DangerRedAlert`, campaign).
+
+So in both peak frames retail's own character key is warm, as native's is:
+the blue on retail's suits is not the character lights, and nothing here
+changed. INFERRED where it comes from: the same `environments_master` keys
+also drive `dci_performance_high.pp` (`bloom_color`, `bloom_threshold`,
+`bloom_intensity`, `saturation`, `lightness`), and the post lane's own
+numbers put most of native's blue in the bloom (full chain rgb 47.6, 33.5,
+102.9 vs no-bloom 38.0, 23.8, 46.4; retail dci/05 54.2, 33.3, 124.1). The
+remaining blue deficit (about 20 levels of B) goes back to the post lane with
+those keys as the lead.
+
+### 8.9 Frame time, round 3
+
+Round-3 base (engine 0ec9eab, dc3 b2bdfdb0e) against the whole round (engine
+3c8c49e, dc3 dfb5f897c): OMG, headless, 10 s sampled 20 s into gameplay,
+builds interleaved, three rounds, RTX 3090. The box was heavily loaded
+(load average 46-55 on 32 cores), and four of the nine base runs and one of
+the gobo runs read about twice their neighbours, so read medians only. Data:
+the lane archive's `round3/frametime/`.
+
+| venue | main-thread ms/frame, base (median) | round 3 (median) | GPU estimate ms, base / round 3 |
+|---|---|---|---|
+| streetside | 4.26, 4.65, 10.47 (4.65) | 4.35, 3.67, 4.10 (4.10) | 0.83 / 0.80 |
+| houseparty | 9.87, 3.68, 4.51 (4.51) | 2.52, 3.60, 3.41 (3.41) | 0.89 / 0.54 |
+| rollerrink | 4.13, 10.65, 5.30 (5.30) | 4.13, 6.44, 4.38 (4.38) | 0.68 / 0.73 |
+
+So round 3 costs nothing measurable and probably saves CPU. The `perf`
+profile (round-3 build, streetside, 3.13 ms frame) is the firmer evidence:
+
+- `NgLight::CheckShadowMap` is down from 5.0% of the frame (round 2) to
+  0.05%: DC3's unread shadow render is gone.
+- The caster pass is `ShadowPass::RenderCasters` 2.5% plus
+  `CollectProjShadowCasterSets` 2.1%.
+- The gobo upload is not visible. `RndTex::PresyncBitmap` is 1.2% of the
+  frame, all of it from `BuildMaterialParams`; no sample has
+  `WriteSceneUniforms` as its caller.
+- The next shadow-shaped cost is not this lane's: `RndShadowMap::PrepShadow`,
+  3.5%, under `Character::DrawLodOrShadow`.

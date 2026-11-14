@@ -1070,6 +1070,15 @@ struct Dc3Proj {
     add: vec3f,    // joins box(N)
 }
 
+// One compare tap of a projected light's coverage tile: uv is the light's own
+// 0..1 coordinate, clamped half a texel inside the tile (512 texels) so a tap
+// at the cone's edge never reads the neighbouring light's tile.
+fn dc3ProjTap(uv: vec2f, origin: vec2f) -> f32 {
+    let h = 0.5 / 512.0;
+    let atlas = (clamp(uv, vec2f(h), vec2f(1.0 - h)) + origin) * 0.5;
+    return textureSampleCompareLevel(shadowMap, shadowSampler, atlas, 0.5);
+}
+
 fn dc3ProjLight(worldPos: vec3f, N: vec3f) -> Dc3Proj {
     var r: Dc3Proj;
     r.mult = vec3f(1.0);
@@ -1084,17 +1093,21 @@ fn dc3ProjLight(worldPos: vec3f, N: vec3f) -> Dc3Proj {
     let inside = clip.w > 0.0 && all(uv >= vec2f(0.0)) && all(uv <= vec2f(1.0));
     var coverage = 0.0;
     if (scene.shadowEnabled > 1.5) {
+        // shadowEnabled = 2 + tile: this light's quarter of the caster atlas
+        // (ShadowPass::RenderCasters, 2x2, row-major from the top left).
+        let tile = u32(scene.shadowEnabled - 1.5);
+        let origin = vec2f(f32(tile % 2u), f32(tile / 2u));
         let t = 1.5 / 256.0;
         var lit = 0.0;
-        lit += 1.0 * textureSampleCompareLevel(shadowMap, shadowSampler, uv + vec2f(-t, -t), 0.5);
-        lit += 2.0 * textureSampleCompareLevel(shadowMap, shadowSampler, uv + vec2f(0.0, -t), 0.5);
-        lit += 1.0 * textureSampleCompareLevel(shadowMap, shadowSampler, uv + vec2f(t, -t), 0.5);
-        lit += 2.0 * textureSampleCompareLevel(shadowMap, shadowSampler, uv + vec2f(-t, 0.0), 0.5);
-        lit += 4.0 * textureSampleCompareLevel(shadowMap, shadowSampler, uv, 0.5);
-        lit += 2.0 * textureSampleCompareLevel(shadowMap, shadowSampler, uv + vec2f(t, 0.0), 0.5);
-        lit += 1.0 * textureSampleCompareLevel(shadowMap, shadowSampler, uv + vec2f(-t, t), 0.5);
-        lit += 2.0 * textureSampleCompareLevel(shadowMap, shadowSampler, uv + vec2f(0.0, t), 0.5);
-        lit += 1.0 * textureSampleCompareLevel(shadowMap, shadowSampler, uv + vec2f(t, t), 0.5);
+        lit += 1.0 * dc3ProjTap(uv + vec2f(-t, -t), origin);
+        lit += 2.0 * dc3ProjTap(uv + vec2f(0.0, -t), origin);
+        lit += 1.0 * dc3ProjTap(uv + vec2f(t, -t), origin);
+        lit += 2.0 * dc3ProjTap(uv + vec2f(-t, 0.0), origin);
+        lit += 4.0 * dc3ProjTap(uv, origin);
+        lit += 2.0 * dc3ProjTap(uv + vec2f(t, 0.0), origin);
+        lit += 1.0 * dc3ProjTap(uv + vec2f(-t, t), origin);
+        lit += 2.0 * dc3ProjTap(uv + vec2f(0.0, t), origin);
+        lit += 1.0 * dc3ProjTap(uv + vec2f(t, t), origin);
         coverage = select(0.0, 1.0 - lit / 16.0, inside);
     }
     let lightTerm = scene.projLightColor.rgb * saturate(dot(scene.projLightDir.xyz, N));

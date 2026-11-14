@@ -466,7 +466,8 @@ constexpr bool kRetailPostChain = false;
 // DC3_RETAIL_POST (rndshape/DC3PostChain.cpp): unset or anything else = 1 (the
 // retail chain), "0" = 0 (PostProcPass's previous composite), "raw" = 2 (the
 // scene ungraded), "mask" = 3 / "bloom" = 4 (the chain showing the bloom mask /
-// the bloom term; for inspection), "grade" = 5 (the chain without bloom).
+// the bloom term; for inspection), "grade" = 5 (the chain without bloom),
+// "velocity" = 6 (the chain, showing DoVelocity's velocity target instead).
 // Always 0 without kDC3RetailPost (rb3-xenon).
 int RetailPostMode();
 // The frame's alpha carries the bloom mask this frame.
@@ -475,9 +476,27 @@ inline bool RetailBloomMaskActive() {
         return false;
     } else {
         const int m = RetailPostMode();
-        return m == 1 || m == 3 || m == 4;
+        return m == 1 || m == 3 || m == 4 || m == 6;
     }
 }
+// The post-process Rnd::DoPostProcess runs and Rnd::BeginDrawing takes the
+// bloom colour from: the blacklight override (set_postproc_blacklight_override,
+// the voice-control letterbox's PostProc_Blacklight.pp), else the override
+// (set_postproc_override), else RndPostProc::Current(). dc3-decomp's Rnd
+// carries the HX_NATIVE accessor; rb3-xenon (no blacklight field, and an
+// override typed PostProcessor*) gets Current() (DC3PostChain.cpp).
+RndPostProc *ActivePostProc();
+// Rnd::DisablePP() ({rnd toggle_all_postprocs}): Rnd::DoPostProcess skips
+// DoPost and DxRnd's FinishPostProcess still copies the scene through the
+// option-free postprocess.ps, so the frame is the ungraded scene. False where
+// the consumer's Rnd has no such accessor (DC3PostChain.cpp).
+bool PostProcDisabled();
+// This frame's RndVelocityBuffer::Draw result (NgPostProc::DoVelocity, run by
+// Rnd::DoPostProcess just before the backend's post pass), taken once: false
+// when Draw did not run or failed its camera test, else `ready` (bit 42 on),
+// `scale` (c122) and the world camera. dc3-decomp's HX_NATIVE
+// RndVelocityBuffer::TakeNativeFrame; false for a consumer without it.
+bool TakeVelocityFrame(bool &ready, float &scale, RndCam *&cam);
 // Fills the chain's parameters from the current RndPostProc (DC3PostChain.cpp).
 void FillRetailPost(const RndPostProc *pp, float flickerMul, ::RetailPostParams &out);
 // SetBloomColor's c7 scale: 1/threshold above 1, else 1 (DC3PostChain.cpp).
@@ -508,6 +527,18 @@ constexpr bool kAlphaBlendMax = !kDC3RetailPost;
 // target saturates the product (material.gammaShading). rb3-xenon keeps the
 // linear model with the sRGB output encode.
 constexpr bool kGammaSpaceShading = kDC3RetailModel;
+// A Multiply-blend material is lit like any other (np-gfx-light round 3).
+// NgMat::SetBasicState gives kBlendMultiply src ZERO / dest SRCCOLOR and fade
+// params (1,1,1,1), and nothing in CalcShaderOpts or SetupAmbient looks at the
+// blend, so the image shades it c0 * (c1 + box + points + proj) * texel and the
+// target multiplies the frame by that (dc3-decomp rndobj/Mat_NG.cpp). The
+// rollerrink floor's Rink*_overlay.mesh (Rink_lightCatcher.mat, no texture,
+// Rink_lightCatcher.env: ambient 0.365 and mirrorball_spotlight_02's gobo) is
+// such a "light catcher": it darkens the floor to 0.365 outside the light.
+// MaterialSetup forced every Multiply material prelit (identity) for the old
+// heuristic lighting, which brightened it; the DC3 retail model does not
+// need that. rb3-xenon keeps the forced prelit.
+constexpr bool kMultiplyBlendIsLit = kDC3RetailModel;
 // The pseudo-HDR bloom mask (ShaderOptions bit 22): retail DC3's standard.ps /
 // particles.ps / multimesh write alpha = sat(dot(rgb, c7) * c5.z) for a
 // material whose NgMat::AllowHDR() holds, drawn into the main frame
@@ -525,16 +556,27 @@ constexpr bool kGammaSpaceShading = kDC3RetailModel;
 // (Multiply, white, bloom_multiplier 0) zeroes the icon's mask under the
 // draw's alpha equation (dst.a * 0), so the mode-select icon does not burn
 // (dc3-backend-for-rb3-wii.md 31.6).
+//
+// The mask also needs the environ not to fade out: RndShaderStandard,
+// RndShaderParticles, RndShaderMultimesh and RndShaderSyncTrack::CalcShaderOpts
+// (dc3-decomp rndobj/Shader.cpp) set mPseudoHDR only when !fadeOut, with
+// fadeOut = env->FadeOut() && env->FadeEnd() != env->FadeStart() for the
+// current environ. RndShaderDrawRect::CalcShaderOpts has no such test, so a
+// rect passes envFadeOutCancels = false.
 template <class M>
-inline float BloomMaskScale(const M &m) {
+inline float BloomMaskScale(const M &m, bool envFadeOutCancels = true) {
     using Raw = std::remove_cv_t<std::remove_pointer_t<std::decay_t<M>>>;
     if constexpr (!kDC3RetailPost || !MatHasBloomMultiplier<Raw>::value) {
         (void)m;
         return 0.0f;
     } else {
         if (!m || !RetailBloomMaskActive()) return 0.0f;
-        const RndPostProc *pp = RndPostProc::Current();
+        const RndPostProc *pp = ActivePostProc();
         if (!pp) return 0.0f;
+        if (envFadeOutCancels) {
+            const RndEnviron *env = RndEnviron::Current();
+            if (env && env->FadeOut() && env->FadeEnd() != env->FadeStart()) return 0.0f;
+        }
         // NgMat::AllowHDR (dc3-decomp rndobj/Mat_NG.cpp).
         const auto b = m->GetBlend();
         if (b == Raw::kBlendSrcAlpha || b == Raw::kBlendSrcAlphaAdd || b == Raw::kPreMultAlpha ||
@@ -573,8 +615,9 @@ const float *CapturedVConstant(int reg);
 // 1 - 0.75 * coverage * colour * sat(c65 . N) (standard.ps 0x100010030011).
 // The native form: WriteSceneLighting finds that light (as NgEnviron::Select
 // does) and puts its cone in SceneUniforms.lightViewProj with
-// shadowEnabled = 2; WgpuRnd::EndDrawing then calls CollectProjShadowCasters
-// and draws the casters into ShadowPass's map, which the next frame samples.
+// shadowEnabled = 2 + its atlas tile; WgpuRnd::EndDrawing then calls
+// CollectProjShadowCasterSets and draws each light's casters into its tile of
+// ShadowPass's map, which the next frame samples.
 // rb3-xenon keeps the generic pre-pass. Defined in DC3SceneLighting.cpp.
 constexpr bool kGenericShadowPass = !kDC3RetailModel;
 
@@ -585,6 +628,14 @@ constexpr bool kGenericShadowPass = !kDC3RetailModel;
 // follows the image; rb3-xenon keeps the native rule (its renders are pinned
 // byte-identical).
 constexpr bool kSelectDefaultEnvEachFrame = kDC3RetailModel;
+// Every projected light with shadow objects that this frame's environs
+// published (up to kMaxProjShadowMaps, in first-published order), one set per
+// light with its atlas tile; ends the frame (the next frame's receivers read
+// these maps). Returns the number of sets.
+constexpr int kMaxProjShadowMaps = 4;
+int CollectProjShadowCasterSets(std::vector<ProjShadowCasters> &out);
+// The same, keeping only the first set (tile 0). For callers that drive one
+// light at a time (tests).
 bool CollectProjShadowCasters(ProjShadowCasters &out);
 // The projected light's gobo for the scene WriteSceneLighting just wrote
 // (projected_blend 0: tf10, added as (1 - coverage) gobo c69 sat(c65 . N),

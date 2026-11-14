@@ -454,7 +454,9 @@ void DrawParticlesBillboard(RndParticleSys* sys) {
     bg1Desc.layout = sParticleBGL;
     bg1Desc.entryCount = 2;
     bg1Desc.entries = texEntries;
-    wgpu::BindGroup texBG = dev.CreateBindGroup(&bg1Desc);
+    // Same view + sampler on the same layout is the same group: cached
+    // (PLAN H-30), dropped with the texture through ForgetTextureView.
+    wgpu::BindGroup texBG = gWgpuRnd->BindGroups().GetOrCreate(dev, bg1Desc);
 
     pass.SetPipeline(pipe);
     pass.SetBindGroup(0, sceneBG);

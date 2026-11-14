@@ -8,6 +8,7 @@
 #include "platform/WebAssets.h"
 #include "platform/FrameTraceCounters.h"
 
+#include <emscripten/emscripten.h>  // emscripten_async_call, emscripten_get_now
 #include <emscripten/fetch.h>
 #include <emscripten/em_asm.h>
 #include <emscripten/em_js.h>  // EM_ASYNC_JS (Q5 JSPI-suspending fetch)
@@ -205,6 +206,129 @@ static void bundleCacheWriteThrough(const char *memfsPath, const void *bytes,
         key, bytes, (int)numBytes);
 }
 
+// The unpack runs in slices, each its own browser task (emscripten_async_call
+// -> setTimeout 0), so the browser can draw a frame between them. Unpacking a
+// whole bundle inside the XHR's onload was one main-thread task: dc3's 77.6 MB
+// title_flow bundle measured 116-170 ms there (a 120-180 ms frame stall on the
+// attract screen, PLAN W-15). A file the game asks for before its slice lands
+// takes the normal on-demand fetch, as it would with no bundle at all.
+// MILO_WEB_BUNDLE_SLICE_MS (default 6; 0 = the whole bundle in one task) is
+// the time budget per slice; one file is always written whole.
+struct BundleUnpack {
+    emscripten_fetch_t *fetch;
+    const uint8_t *ptr, *end;
+    uint32_t count, next;
+    int unpacked;
+    int slices;
+    double busyMs, startMs;
+};
+
+static double bundleSliceBudgetMs() {
+    static double sMs = -1.0;
+    if (sMs < 0.0) {
+        const char *e = getenv("MILO_WEB_BUNDLE_SLICE_MS");
+        sMs = (e && *e) ? atof(e) : 6.0;
+        if (!(sMs >= 0.0)) sMs = 6.0;
+    }
+    return sMs;
+}
+
+// Unpacks one file at u->ptr. False at the end of the bundle (or on a
+// truncated record).
+static bool bundleUnpackOne(BundleUnpack *u) {
+    const uint8_t *&ptr = u->ptr;
+    const uint8_t *end = u->end;
+    if (u->next >= u->count || ptr + 4 > end) return false;
+    // Read path
+    uint32_t pathLen = ptr[0] | (ptr[1] << 8) | (ptr[2] << 16) | (ptr[3] << 24);
+    ptr += 4;
+    if (ptr + pathLen > end) return false;
+    std::string relPath((const char *)ptr, pathLen);
+    ptr += pathLen;
+
+    // Read data
+    if (ptr + 4 > end) return false;
+    uint32_t dataLen = ptr[0] | (ptr[1] << 8) | (ptr[2] << 16) | (ptr[3] << 24);
+    ptr += 4;
+    if (ptr + dataLen > end) return false;
+    const uint8_t *data = ptr;
+    ptr += dataLen;
+    u->next++;
+
+    // Write to MEMFS — resolve ".." in path
+    std::string memfsPath = std::string("/data/") + relPath;
+
+    // Resolve ".." components to get a clean absolute path
+    // e.g. "/data/../../system/run/config/macros.dta" → "/system/run/config/macros.dta"
+    {
+        std::vector<std::string> parts;
+        size_t pos = 0;
+        while (pos < memfsPath.size()) {
+            size_t next = memfsPath.find('/', pos + 1);
+            if (next == std::string::npos) next = memfsPath.size();
+            std::string part = memfsPath.substr(pos, next - pos);
+            if (part == "/..") {
+                if (!parts.empty()) parts.pop_back();
+            } else if (part != "/.") {
+                parts.push_back(part);
+            }
+            pos = next;
+        }
+        memfsPath.clear();
+        for (const auto &p : parts) memfsPath += p;
+        if (memfsPath.empty()) memfsPath = "/";
+    }
+
+    // Create parent directories
+    std::string dir = memfsPath;
+    size_t slash = dir.rfind('/');
+    if (slash != std::string::npos) {
+        dir.resize(slash);
+        mkdirRecursive(dir.c_str());
+    }
+
+    // A file already resident (the game fetched it on demand before this
+    // slice) is left alone: same bytes, and a reader may hold it open.
+    struct stat st;
+    if (stat(memfsPath.c_str(), &st) == 0 && (size_t)st.st_size == dataLen) {
+        u->unpacked++;
+        return true;
+    }
+    FILE *f = fopen(memfsPath.c_str(), "wb");
+    if (f) {
+        fwrite(data, 1, dataLen, f);
+        fclose(f);
+        u->unpacked++;
+        // W4b (R3): write this file through to the IndexedDB warm cache so
+        // repeat boots serve it from IDB instead of re-downloading the
+        // bundle. No-op where window.__rb3CachePut is absent (DC3).
+        bundleCacheWriteThrough(memfsPath.c_str(), data, dataLen);
+    }
+    return true;
+}
+
+static void bundleUnpackSlice(void *arg) {
+    BundleUnpack *u = (BundleUnpack *)arg;
+    const double budget = bundleSliceBudgetMs();
+    const double t0 = emscripten_get_now();
+    bool more = true;
+    while ((more = bundleUnpackOne(u))) {
+        if (budget > 0.0 && emscripten_get_now() - t0 >= budget) break;
+    }
+    u->busyMs += emscripten_get_now() - t0;
+    u->slices++;
+    if (more && u->next < u->count) {
+        emscripten_async_call(bundleUnpackSlice, u, 0);
+        return;
+    }
+    printf("WebAssets: unpacked %d/%u files into MEMFS (%d slice(s), %.1f ms busy, %.1f ms wall)\n",
+           u->unpacked, u->count, u->slices, u->busyMs, emscripten_get_now() - u->startMs);
+    sCompleted += u->unpacked;
+    sPending--;
+    emscripten_fetch_close(u->fetch);
+    delete u;
+}
+
 static void onBundleSuccess(emscripten_fetch_t *fetch) {
     printf("WebAssets: bundle received (%llu bytes), unpacking...\n",
            (unsigned long long)fetch->numBytes);
@@ -224,71 +348,8 @@ static void onBundleSuccess(emscripten_fetch_t *fetch) {
     uint32_t count = ptr[0] | (ptr[1] << 8) | (ptr[2] << 16) | (ptr[3] << 24);
     ptr += 4;
 
-    int unpacked = 0;
-    for (uint32_t i = 0; i < count && ptr + 4 <= end; i++) {
-        // Read path
-        uint32_t pathLen = ptr[0] | (ptr[1] << 8) | (ptr[2] << 16) | (ptr[3] << 24);
-        ptr += 4;
-        if (ptr + pathLen > end) break;
-        std::string relPath((const char *)ptr, pathLen);
-        ptr += pathLen;
-
-        // Read data
-        if (ptr + 4 > end) break;
-        uint32_t dataLen = ptr[0] | (ptr[1] << 8) | (ptr[2] << 16) | (ptr[3] << 24);
-        ptr += 4;
-        if (ptr + dataLen > end) break;
-        const uint8_t *data = ptr;
-        ptr += dataLen;
-
-        // Write to MEMFS — resolve ".." in path
-        std::string memfsPath = std::string("/data/") + relPath;
-
-        // Resolve ".." components to get a clean absolute path
-        // e.g. "/data/../../system/run/config/macros.dta" → "/system/run/config/macros.dta"
-        {
-            std::vector<std::string> parts;
-            size_t pos = 0;
-            while (pos < memfsPath.size()) {
-                size_t next = memfsPath.find('/', pos + 1);
-                if (next == std::string::npos) next = memfsPath.size();
-                std::string part = memfsPath.substr(pos, next - pos);
-                if (part == "/..") {
-                    if (!parts.empty()) parts.pop_back();
-                } else if (part != "/.") {
-                    parts.push_back(part);
-                }
-                pos = next;
-            }
-            memfsPath.clear();
-            for (const auto &p : parts) memfsPath += p;
-            if (memfsPath.empty()) memfsPath = "/";
-        }
-
-        // Create parent directories
-        std::string dir = memfsPath;
-        size_t slash = dir.rfind('/');
-        if (slash != std::string::npos) {
-            dir.resize(slash);
-            mkdirRecursive(dir.c_str());
-        }
-
-        FILE *f = fopen(memfsPath.c_str(), "wb");
-        if (f) {
-            fwrite(data, 1, dataLen, f);
-            fclose(f);
-            unpacked++;
-            // W4b (R3): write this file through to the IndexedDB warm cache so
-            // repeat boots serve it from IDB instead of re-downloading the
-            // bundle. No-op where window.__rb3CachePut is absent (DC3).
-            bundleCacheWriteThrough(memfsPath.c_str(), data, dataLen);
-        }
-    }
-
-    printf("WebAssets: unpacked %d/%u files into MEMFS\n", unpacked, count);
-    sCompleted += unpacked;
-    sPending--;
-    emscripten_fetch_close(fetch);
+    BundleUnpack *u = new BundleUnpack{fetch, ptr, end, count, 0, 0, 0, 0.0, emscripten_get_now()};
+    bundleUnpackSlice(u);
 }
 
 static void onBundleError(emscripten_fetch_t *fetch) {
