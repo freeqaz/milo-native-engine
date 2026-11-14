@@ -52,11 +52,38 @@ struct SamplerDesc {
     wgpu::FilterMode minFilter = wgpu::FilterMode::Linear;
     wgpu::FilterMode magFilter = wgpu::FilterMode::Linear;
     wgpu::MipmapFilterMode mipmapFilter = wgpu::MipmapFilterMode::Linear;
+    // > 1 only with all three filters linear (WebGPU's rule); GetSampler
+    // falls back to 1 otherwise.
+    uint16_t maxAnisotropy = 1;
+    // Highest mip level sampled (WebGPU lodMaxClamp). 16 = no limit; 1 limits
+    // the sample to the base and the first mip, whatever the texture holds.
+    float lodMaxClamp = 16.0f;
 
     bool operator==(const SamplerDesc& o) const {
         return addressU == o.addressU && addressV == o.addressV &&
                minFilter == o.minFilter && magFilter == o.magFilter &&
-               mipmapFilter == o.mipmapFilter;
+               mipmapFilter == o.mipmapFilter && maxAnisotropy == o.maxAnisotropy &&
+               lodMaxClamp == o.lodMaxClamp;
+    }
+
+    // The WebGPU descriptor (shared by the desktop and web GpuDevice).
+    // maxAnisotropy > 1 is legal only with all three filters linear; any other
+    // combination falls back to 1.
+    wgpu::SamplerDescriptor ToWgpu() const {
+        wgpu::SamplerDescriptor sd{};
+        sd.addressModeU = addressU;
+        sd.addressModeV = addressV;
+        sd.addressModeW = wgpu::AddressMode::Repeat;
+        sd.minFilter = minFilter;
+        sd.magFilter = magFilter;
+        sd.mipmapFilter = mipmapFilter;
+        sd.lodMinClamp = 0.0f;
+        sd.lodMaxClamp = lodMaxClamp;
+        const bool allLinear = minFilter == wgpu::FilterMode::Linear &&
+                               magFilter == wgpu::FilterMode::Linear &&
+                               mipmapFilter == wgpu::MipmapFilterMode::Linear;
+        sd.maxAnisotropy = (allLinear && maxAnisotropy > 1) ? maxAnisotropy : 1;
+        return sd;
     }
 };
 
@@ -68,6 +95,8 @@ struct SamplerDescHash {
         h ^= std::hash<int>{}(static_cast<int>(s.minFilter)) + 0x9e3779b9 + (h << 6) + (h >> 2);
         h ^= std::hash<int>{}(static_cast<int>(s.magFilter)) + 0x9e3779b9 + (h << 6) + (h >> 2);
         h ^= std::hash<int>{}(static_cast<int>(s.mipmapFilter)) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        h ^= std::hash<int>{}(static_cast<int>(s.maxAnisotropy)) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        h ^= std::hash<float>{}(s.lodMaxClamp) + 0x9e3779b9 + (h << 6) + (h >> 2);
         return h;
     }
 };

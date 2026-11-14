@@ -10,6 +10,7 @@
 #include "rndobj/CubeTex.h"
 #include "rndobj/Bitmap.h"
 #include "platform/rndshape/RndShape.h"
+#include "platform/LookProfile.h"
 
 #include "gfx/Screenshot.h"
 
@@ -225,7 +226,7 @@ void RndTex::PresyncBitmap() {
     // movie, scratch) carry no mips, so the cap only ever bites on kRegular;
     // render targets and cube maps do not come through here.
     wgpu::Texture gpuTex = TextureConvert::CreateFromBitmap(
-        gWgpuRnd->Gpu(), mBitmap, numMips, rndshape::kBitmapMaxMipLevels);
+        gWgpuRnd->Gpu(), mBitmap, numMips, milo::Look().bitmapMipLevels);
 
     if (!gpuTex) {
         sPresyncCreateFail++;
@@ -396,8 +397,10 @@ wgpu::TextureView GetGpuCubeTexView(RndCubeTex* cubeTex) {
     }
     if (!allValid) return wgpu::TextureView();
 
+    // Look profile: the DC3 profiles upload the cube's whole mip chain, as
+    // DxCubeTex::Sync does; Native keeps the base level only.
     wgpu::Texture gpuTex = TextureConvert::CreateCubeFromBitmaps(
-        gWgpuRnd->Gpu(), faces, 6);
+        gWgpuRnd->Gpu(), faces, 6, milo::Look().cubeMipChain);
     if (!gpuTex) return wgpu::TextureView();
 
     // Create cube texture view
@@ -405,7 +408,7 @@ wgpu::TextureView GetGpuCubeTexView(RndCubeTex* cubeTex) {
     viewDesc.dimension = wgpu::TextureViewDimension::Cube;
     viewDesc.arrayLayerCount = 6;
     viewDesc.baseArrayLayer = 0;
-    viewDesc.mipLevelCount = 1;
+    viewDesc.mipLevelCount = gpuTex.GetMipLevelCount();
     viewDesc.baseMipLevel = 0;
 
     GpuCubeTexData data;

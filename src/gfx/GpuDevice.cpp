@@ -975,16 +975,7 @@ wgpu::Sampler GpuDevice::GetSampler(const SamplerDesc& desc) {
         return it->second;
     }
 
-    wgpu::SamplerDescriptor sd{};
-    sd.addressModeU = desc.addressU;
-    sd.addressModeV = desc.addressV;
-    sd.addressModeW = wgpu::AddressMode::Repeat;
-    sd.minFilter = desc.minFilter;
-    sd.magFilter = desc.magFilter;
-    sd.mipmapFilter = desc.mipmapFilter;
-    sd.lodMinClamp = 0.0f;
-    sd.lodMaxClamp = 16.0f;
-    sd.maxAnisotropy = 1;
+    wgpu::SamplerDescriptor sd = desc.ToWgpu();
 
     wgpu::Sampler sampler = mDevice.CreateSampler(&sd);
     mSamplerCache[desc] = sampler;

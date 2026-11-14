@@ -626,7 +626,8 @@ wgpu::Texture CreateFromBitmap(GpuDevice& gpu, const RndBitmap& bmp, int numMips
     return tex;
 }
 
-wgpu::Texture CreateCubeFromBitmaps(GpuDevice& gpu, const RndBitmap* const* faces, int numFaces) {
+wgpu::Texture CreateCubeFromBitmaps(GpuDevice& gpu, const RndBitmap* const* faces, int numFaces,
+                                    bool mipChain) {
     // All 6 faces must have the same dimensions
     int w = faces[0]->Width();
     int h = faces[0]->Height();
@@ -640,18 +641,42 @@ wgpu::Texture CreateCubeFromBitmaps(GpuDevice& gpu, const RndBitmap* const* face
     bool hasBCSupport = gpu.HasBCCompression();
     wgpu::TextureFormat fmt = MapBitmapFormat(*faces[0], hasBCSupport);
 
+    // Levels: the base alone, or (mipChain) every level all six faces carry
+    // at the halving sizes the texture's chain needs.
+    int levels = 1;
+    if (mipChain) {
+        int full = 1;
+        for (int m = (w > h ? w : h); m > 1; m >>= 1) full++;
+        levels = full;
+        for (int face = 0; face < numFaces && face < 6; face++) {
+            int n = 1;
+            int ew = w, eh = h;
+            for (const RndBitmap* mip = faces[face]->nextMip(); mip && n < full; mip = mip->nextMip()) {
+                ew = ew > 1 ? ew / 2 : 1;
+                eh = eh > 1 ? eh / 2 : 1;
+                if (mip->Width() != ew || mip->Height() != eh || !mip->Pixels() ||
+                    mip->Order() != faces[face]->Order())
+                    break;
+                n++;
+            }
+            if (n < levels) levels = n;
+        }
+    }
+
     wgpu::TextureDescriptor texDesc{};
     texDesc.size = {(uint32_t)w, (uint32_t)h, 6};
     texDesc.dimension = wgpu::TextureDimension::e2D;
     texDesc.format = fmt;
     texDesc.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
-    texDesc.mipLevelCount = 1;
+    texDesc.mipLevelCount = levels;
     texDesc.viewFormatCount = 0;
     wgpu::Texture tex = gpu.Device().CreateTexture(&texDesc);
     if (!tex) return nullptr;
 
     for (int face = 0; face < numFaces && face < 6; face++) {
-        const RndBitmap& bmp = *faces[face];
+        const RndBitmap* level = faces[face];
+        for (int mipLevel = 0; mipLevel < levels && level; mipLevel++, level = level->nextMip()) {
+        const RndBitmap& bmp = *level;
         int fw = bmp.Width();
         int fh = bmp.Height();
         if (fw == 0 || fh == 0 || !bmp.Pixels()) continue;
@@ -703,22 +728,24 @@ wgpu::Texture CreateCubeFromBitmaps(GpuDevice& gpu, const RndBitmap* const* face
         // Upload to correct array layer
         wgpu::TexelCopyTextureInfo dstInfo{};
         dstInfo.texture = tex;
-        dstInfo.mipLevel = 0;
+        dstInfo.mipLevel = mipLevel;
         dstInfo.origin = {0, 0, (uint32_t)face};
 
         wgpu::TexelCopyBufferLayout srcLayout{};
+        wgpu::Extent3D extent = {(uint32_t)fw, (uint32_t)fh, 1};
         if (dxt && hasBCSupport) {
             int blockW = (fw + 3) / 4;
             int blockBytes = (dxt == kDXT1) ? 8 : 16;
             srcLayout.bytesPerRow = blockW * blockBytes;
+            // A mip below one block is copied as its whole (physical) block.
+            extent = {(uint32_t)((fw + 3) & ~3), (uint32_t)((fh + 3) & ~3), 1};
         } else {
             srcLayout.bytesPerRow = fw * 4;
         }
 
-        wgpu::Extent3D extent = {(uint32_t)fw, (uint32_t)fh, 1};
         gpu.Queue().WriteTexture(&dstInfo, uploadData, uploadSize, &srcLayout, &extent);
-
         delete[] untiled;
+        }
     }
 
     return tex;

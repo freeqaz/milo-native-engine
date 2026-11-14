@@ -38,9 +38,26 @@ struct LookSettings {
     bool Retail() const { return profile == LookProfile::Retail; }
     bool Enhanced() const { return profile == LookProfile::Enhanced; }
 
-    // ---- enhancements (each true only under Enhanced) ----------------------
-    // (none yet: the menu-text lane adds alpha-cut coverage, the sharpness
-    // lane texture filtering / supersampling)
+    // ---- texture sampling (sharpness lane) -----------------------------------
+    // Levels of a regular bitmap texture uploaded, base included (0 = the whole
+    // authored chain). Retail and Native: the consumer's original rule,
+    // rndshape::kBitmapMaxMipLevels (DC3's DxTex::SyncBitmap uploads
+    // min(NumMips()+1, 2); rb3-xenon's 0 = all). Enhanced: see SettingsFor.
+    int bitmapMipLevels = 0;
+    // Sampler max anisotropy for material textures (diffuse/normal/spec/...).
+    // The original sets none (fetch-constant aniso_filter 0); Enhanced raises it.
+    unsigned short maxAnisotropy = 1;
+    // Text and HUD-overlay textures: highest level sampled, base included
+    // (0 = no limit). Enhanced uploads whole chains, so this keeps glyphs at
+    // the original's min(NumMips()+1, 2) -- see MaterialSetup.cpp.
+    int uiMipLevels = 0;
+    // LOD bias added to material texture samples (standard shader kLodBias).
+    // The original's fetch constants carry lod_bias 0.
+    float lodBias = 0.0f;
+    // Cube maps upload their whole authored mip chain, as DC3's
+    // DxCubeTex::Sync creates them (numMips = mNumMips + 1). Native's one
+    // level was a port shortcut; both DC3 profiles fix it, Native keeps it.
+    bool cubeMipChain = false;
 };
 
 // The process-wide settings, resolved once.

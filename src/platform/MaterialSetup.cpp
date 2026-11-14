@@ -11,6 +11,7 @@
 #include "gfx/FrameCapture.h"
 #include "rndobj/Mat.h"
 #include "platform/rndshape/RndShape.h"
+#include "platform/LookProfile.h"
 #include "rndobj/CubeTex.h"
 #include "math/Mtx.h"
 
@@ -476,6 +477,24 @@ MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh, const UiDraw
     // Map sampler -- always repeat for tiled texture maps
     result.mapSamplerDesc.addressU = wgpu::AddressMode::Repeat;
     result.mapSamplerDesc.addressV = wgpu::AddressMode::Repeat;
+
+    // Look profile, per texture class. World and character materials take the
+    // profile's anisotropy (the original sets none; Retail/Native keep 1).
+    // Text and the depthless HUD overlay are drawn screen-aligned, where
+    // anisotropy buys nothing, and keep the original's two-level look by
+    // clamping the sample to mip 1 (uiMipLevels; 0 = no clamp): the glyph
+    // atlases are authored with six mips and drawn ~2.5x minified, and
+    // blending mips 2.. into a 1-px stroke halves its intensity.
+    const milo::LookSettings& look = milo::Look();
+    if (isTextMesh || isOverlayPass) {
+        if (look.uiMipLevels > 0) {
+            sampDesc.lodMaxClamp = (float)(look.uiMipLevels - 1);
+            result.mapSamplerDesc.lodMaxClamp = (float)(look.uiMipLevels - 1);
+        }
+    } else {
+        sampDesc.maxAnisotropy = look.maxAnisotropy;
+        result.mapSamplerDesc.maxAnisotropy = look.maxAnisotropy;
+    }
 
     result.heuristics = heuristics;
     return result;

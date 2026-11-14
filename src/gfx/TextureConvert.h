@@ -27,7 +27,10 @@ wgpu::Texture CreateFromBitmap(GpuDevice& gpu, const RndBitmap& bmp, int numMips
                                int maxLevels = 0);
 
 // Create cube texture from 6 face bitmaps (for environment maps)
-wgpu::Texture CreateCubeFromBitmaps(GpuDevice& gpu, const RndBitmap* const* faces, int numFaces = 6);
+// mipChain: upload every mip level all six faces carry (DC3's DxCubeTex::Sync
+// creates mNumMips + 1 levels); false uploads the base only.
+wgpu::Texture CreateCubeFromBitmaps(GpuDevice& gpu, const RndBitmap* const* faces, int numFaces = 6,
+                                    bool mipChain = false);
 
 // Create render target texture
 wgpu::Texture CreateRenderTarget(GpuDevice& gpu, int w, int h, wgpu::TextureFormat fmt);
