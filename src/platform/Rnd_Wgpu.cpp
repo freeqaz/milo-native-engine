@@ -541,6 +541,37 @@ void WgpuRnd::Terminate() {
     mGpu.Shutdown();
 }
 
+// np-gfx-post round 3: the post-process the frame is graded by, decided the
+// way PostProcPass::Run decides it (the DC3 shape: Rnd::DoPostProcess's
+// blacklight override, else its override, else the selected post-process;
+// otherwise RndPostProc::Current()). Every site that resolves the frame into
+// the intermediate for the post pass, and every site that runs it, asks this,
+// so an override with nothing selected is graded instead of resolving the
+// world into a target nothing composites.
+static RndPostProc* FramePostProc() {
+    if constexpr (rndshape::kDC3RetailPost) return rndshape::ActivePostProc();
+    return RndPostProc::Current();
+}
+
+static void CamSceneMatrices(RndCam* cam, float* viewProj, float* viewOut);
+
+// np-gfx-post round 3: hands PostProcPass this frame's RndVelocityBuffer::Draw
+// result (NgPostProc::DoVelocity ran in Rnd::DoPostProcess, just before the
+// post pass) with the world camera's view-projection, projected the way the
+// world was drawn. Nothing when the effect is off: no Draw, no call.
+static void FeedVelocity(PostProcPass& pass) {
+    if constexpr (rndshape::kDC3RetailPost) {
+        bool ready = false;
+        float scale = 0.0f;
+        RndCam* cam = nullptr;
+        if (rndshape::TakeVelocityFrame(ready, scale, cam) && cam) {
+            float vp[16];
+            CamSceneMatrices(cam, vp, nullptr);
+            pass.SetVelocity(ready, scale, vp);
+        }
+    }
+}
+
 void WgpuRnd::Clear(unsigned int flags, const Hmx::Color& color) {
     // With a render target bound this is the retail D3DDevice_Clear of that
     // target (DxRnd::Clear: bit 0 colour, bit 1 depth/stencil), alpha included.
@@ -588,7 +619,7 @@ void WgpuRnd::ClearDepthForOverlay() {
 
     int curW = mGpu.WindowWidth();
     int curH = mGpu.WindowHeight();
-    bool hasPostProc = RndPostProc::Current() != nullptr &&
+    bool hasPostProc = FramePostProc() != nullptr &&
                        !(rndshape::kRetailPostChain && mPostProcFlushed);
 
     wgpu::RenderPassColorAttachment colorAtt{};
@@ -689,7 +720,8 @@ void WgpuRnd::FlushPostProcessingForOverlay() {
     // Run post-processing now (reads intermediate, writes to framebuffer).
     // Only run once per frame — subsequent calls just start a new overlay pass
     // without re-running post-proc (which would overwrite previous HUD draws).
-    if (mIntermediateView && RndPostProc::Current() && !mPostProcFlushed) {
+    if (mIntermediateView && FramePostProc() && !mPostProcFlushed) {
+        FeedVelocity(mPostProcPass);
         mPostProcPass.Run(mEncoder, mIntermediateView, mIntermediateTex,
                           mIntermediateWidth, mIntermediateHeight,
                           mDepthSampleView, kMSAASamples, FrameTarget(), mBlackTexView, mGpu);
@@ -719,7 +751,7 @@ void WgpuRnd::FlushWorldPost() {
         // keeps the DC3 composite at EndDrawing, as before.
         if (rndshape::RetailPostMode() == 0) return;
         if (!mInPass || !mFrameView || mActiveTargetTex || !mCurrentPassHasDepth) return;
-        if (!mIntermediateView || !RndPostProc::Current() || mPostProcFlushed) return;
+        if (!mIntermediateView || !FramePostProc() || mPostProcFlushed) return;
 
         EndActivePass();
         const int w = mIntermediateWidth, h = mIntermediateHeight;
@@ -1264,7 +1296,7 @@ void WgpuRnd::BeginFramePass(bool clear) {
     int curH = mGpu.WindowHeight();
     // After FlushWorldPost (RB3) the frame is already graded: the rest of it
     // draws straight to the frame target.
-    bool hasPostProc = RndPostProc::Current() != nullptr &&
+    bool hasPostProc = FramePostProc() != nullptr &&
                        !(rndshape::kRetailPostChain && mPostProcFlushed);
 
     wgpu::RenderPassColorAttachment colorAtt{};
@@ -1776,7 +1808,8 @@ void WgpuRnd::EndDrawing() {
 
         // Post-processing: if active, read from intermediate and draw to frame target
         // Skip if already flushed (e.g., FlushPostProcessingForOverlay was called)
-        if (mIntermediateView && RndPostProc::Current() && !mPostProcFlushed) {
+        if (mIntermediateView && FramePostProc() && !mPostProcFlushed) {
+            FeedVelocity(mPostProcPass);
             mPostProcPass.Run(mEncoder, mIntermediateView, mIntermediateTex,
                               mIntermediateWidth, mIntermediateHeight,
                               mDepthSampleView, kMSAASamples, FrameTarget(), mBlackTexView, mGpu);
