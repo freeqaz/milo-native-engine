@@ -42,6 +42,11 @@ struct SamplerDescHash {
     }
 };
 
+// Whether the device is created with Dawn's use_user_defined_labels_in_backend
+// toggle (Vulkan object names): MILO_GPU_LABELS, else on under a Vulkan
+// capture/debug layer. See GpuDevice.cpp.
+bool GpuLabelsWanted();
+
 class GpuDevice {
 public:
     GpuDevice() = default;
