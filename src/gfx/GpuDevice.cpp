@@ -15,6 +15,7 @@ extern "C" void* CreateMetalLayerForWindow(void* nsWindow);
 
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 
 GpuDevice::~GpuDevice() {
     Shutdown();
@@ -125,6 +126,21 @@ bool GpuDevice::InitAdapter() {
     return true;
 }
 
+// Backend object labels: MILO_GPU_LABELS=1/0 decides; unset, they are on when
+// the environment loads a Vulkan capture/debug layer (GFXReconstruct and the
+// validation layers through VK_INSTANCE_LAYERS / VK_LOADER_LAYERS_ENABLE,
+// RenderDoc through ENABLE_VULKAN_RENDERDOC_CAPTURE), so a capture keeps its
+// object names without anyone having to remember the flag.
+bool GpuLabelsWanted() {
+    if (const char* v = getenv("MILO_GPU_LABELS"); v && *v)
+        return !(v[0] == '0' || v[0] == 'n' || v[0] == 'N' || v[0] == 'f' || v[0] == 'F' ||
+                 ((v[0] == 'o' || v[0] == 'O') && (v[1] == 'f' || v[1] == 'F')));
+    // Read, not set: these belong to the Vulkan loader and RenderDoc.
+    auto set = [](const char* v) { return v && *v && strcmp(v, "0") != 0; };
+    return set(getenv("VK_INSTANCE_LAYERS")) || set(getenv("VK_LOADER_LAYERS_ENABLE")) ||
+           set(getenv("ENABLE_VULKAN_RENDERDOC_CAPTURE"));
+}
+
 bool GpuDevice::InitDevice() {
     wgpu::Device device;
     wgpu::DeviceDescriptor deviceDesc{};
@@ -137,13 +153,22 @@ bool GpuDevice::InitDevice() {
         deviceDesc.requiredFeatures = requiredFeatures;
     }
 
-    // Enable Dawn toggle to propagate WebGPU labels to VK_EXT_debug_utils
-    // (shows object names in RenderDoc, GFXReconstruct, validation layers)
+    // Dawn toggle that propagates WebGPU labels to VK_EXT_debug_utils (object
+    // names in RenderDoc, GFXReconstruct, validation layers). It is a debugging
+    // aid with a per-object cost: every Vulkan object Dawn creates -- each
+    // frame's bind groups, command buffers and staging buffers included -- gets
+    // an ostringstream-built name and a vkSetDebugUtilsObjectNameEXT call.
+    // Measured on DC3 (headless, RTX 3090): 5-8% of the main thread in menus
+    // and gameplay. So it is on only when a capture/debug layer is being
+    // loaded, or when asked: MILO_GPU_LABELS=1 forces it on, =0 off.
     wgpu::DawnTogglesDescriptor toggles{};
     static const char* kEnabledToggles[] = {"use_user_defined_labels_in_backend"};
-    toggles.enabledToggleCount = 1;
-    toggles.enabledToggles = kEnabledToggles;
-    deviceDesc.nextInChain = &toggles;
+    if (GpuLabelsWanted()) {
+        toggles.enabledToggleCount = 1;
+        toggles.enabledToggles = kEnabledToggles;
+        deviceDesc.nextInChain = &toggles;
+        printf("GpuDevice: backend object labels ON (MILO_GPU_LABELS / a Vulkan layer is set)\n");
+    }
 
     deviceDesc.SetDeviceLostCallback(
         wgpu::CallbackMode::AllowSpontaneous,

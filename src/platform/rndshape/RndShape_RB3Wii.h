@@ -162,6 +162,7 @@ public:
     bool Prelit() const { return mMat->mPreLit; }
     bool GetFog() const { return mMat->mFog; }
     bool GetIntensify() const { return mMat->mIntensify; }
+    bool GetUseEnviron() const { return mMat->mUseEnviron; }
     ShaderVariation GetShaderVariation() const { return mMat->mShaderVariation; }
     RndTex *GetEmissiveMap() const { return mMat->mEmissiveMap; }
     float GetEmissiveMultiplier() const { return mMat->mEmissiveMultiplier; }
@@ -636,6 +637,12 @@ bool WriteSceneLighting(SceneUniforms &s, RndCam *cam);
 // of approx lights queued (NgEnviron::UpdateApproxLighting); both 0 when the
 // retail light model does not apply.
 void FillMeshApproxLighting(RndMesh *mesh, float box[6][4], float retail[4]);
+// Shadows: RB3 keeps WgpuRnd's generic shadow pre-pass and has no projected
+// shadow light (see RndShape_DC3.h for the shape that does).
+constexpr bool kGenericShadowPass = true;
+constexpr bool kSelectDefaultEnvEachFrame = false;
+inline bool CollectProjShadowCasters(ProjShadowCasters &) { return false; }
+inline RndTex *SceneProjTexture() { return nullptr; }
 
 // ---- per-draw state log ----------------------------------------------------
 // The draw log and provenance sidecar RB3's harnesses read (RB3DrawLogDebug.h:

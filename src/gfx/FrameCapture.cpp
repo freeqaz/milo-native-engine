@@ -82,10 +82,11 @@ void FrameCapture::DumpToStderr() const {
                     r.index, r.meshName ? r.meshName : "?", r.skipReason ? r.skipReason : "?");
             continue;
         }
-        fprintf(stderr, "[%3d] DRAW  mesh='%s' mat='%s' cam='%s' blend=%d zMode=%d cull=%d",
+        fprintf(stderr, "[%3d] DRAW  mesh='%s' mat='%s' cam='%s' env='%s' blend=%d zMode=%d cull=%d",
                 r.index, r.meshName ? r.meshName : "?",
                 r.materialName ? r.materialName : "?",
                 r.cameraName ? r.cameraName : "?",
+                r.environName ? r.environName : "?",
                 r.blend, r.zMode, r.cull);
         if (r.skinned) fprintf(stderr, " SKINNED");
         if (r.hasPipeState)

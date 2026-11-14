@@ -27,6 +27,7 @@ struct DrawCallRecord {
     const char* meshName;
     const char* materialName;
     const char* cameraName;
+    const char* environName;  // RndEnviron current at the draw (lit materials shade under it)
 
     // Pipeline state
     int blend, zMode, cull, stencil;
