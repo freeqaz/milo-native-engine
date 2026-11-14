@@ -281,9 +281,37 @@ inline void VertBoneWeights(const RndMesh::Vert &v, float out[4]) {
 inline int PartTilesAcross(RndParticleSys *s) { return s->NumTilesAcross(); }
 inline int PartTilesDown(RndParticleSys *s) { return s->NumTilesDown(); }
 inline int PartTileIndex(const RndParticle *p) { return p->mCurrentTileIndex; }
-// DC3 particle positions are already in world space.
-inline Vector3 PartWorldPos(RndParticleSys *, RndParticle *p) {
-    return Vector3(p->pos.x, p->pos.y, p->pos.z);
+// Particle positions live in the system's relative space, not world space:
+// retail DxParticleSys::DrawShowing (dc3 src/system/rnddx9/Part.cpp, and
+// rb3-xenon's identical one) draws them under
+// TheShaderMgr.SetTransform(mRelativeXfm), with the billboard basis taken as
+// Invert(mRelativeXfm.m) * camera so that, once transformed, the quad still
+// faces the camera -- i.e. world corner = mRelativeXfm * pos + camera axes.
+// mRelativeXfm is identity only while the motion parent has never moved: with
+// a relative_motion in (0,1) UpdateRelativeXfm accumulates relative_motion *
+// the parent's displacement, so a system placed after SetRelativeMotion ran
+// (streetside's manholeSteam: relative_motion 0.8) stores its particles 80% of
+// the way back toward the origin. Drawing p->pos raw put that steam column in
+// the middle of the stage instead of on its manhole.
+//
+// A consumer whose RndParticleSys has no RelativeXfm() accessor keeps the old
+// raw-position behaviour (rb3-xenon until it adds the accessor its retail
+// code already implies).
+template <typename Sys, typename = void>
+struct PartHasRelativeXfm : std::false_type {};
+template <typename Sys>
+struct PartHasRelativeXfm<Sys, std::void_t<decltype(std::declval<const Sys &>().RelativeXfm())>>
+    : std::true_type {};
+template <typename Sys>
+inline Vector3 PartWorldPos(Sys *s, RndParticle *p) {
+    if constexpr (PartHasRelativeXfm<Sys>::value) {
+        Vector3 rel(p->pos.x, p->pos.y, p->pos.z), w;
+        Multiply(rel, s->RelativeXfm(), w);
+        return w;
+    } else {
+        (void)s;
+        return Vector3(p->pos.x, p->pos.y, p->pos.z);
+    }
 }
 // No Wii-TEV tint model here: this shape scales particle colour the way its
 // retail Xbox particle shader does (Part_Wgpu.cpp, ParticleShaderColor).
