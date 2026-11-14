@@ -436,6 +436,25 @@ void FillMeshApproxLighting(RndMesh *mesh, float box[6][4], float retail[4]);
 // (WgpuShaderMgr keeps Vector4 vertex constants). Defined in Rnd_Wgpu.cpp.
 const float *CapturedVConstant(int reg);
 
+// ---- shadows ---------------------------------------------------------------
+// DC3 (retail model): the image has no generic shadow map. Its dancer floor
+// shadows are a projected light with projected_blend 1 (shadow_projected):
+// NgLight::CheckShadowMap draws the light's shadow objects into a 256x256
+// coverage target from the light's cone, and every material with
+// recv_proj_lights darkens its approx-light term by
+// 1 - 0.75 * coverage * colour * sat(c65 . N) (standard.ps 0x100010030011).
+// The native form: WriteSceneLighting finds that light (as NgEnviron::Select
+// does) and puts its cone in SceneUniforms.lightViewProj with
+// shadowEnabled = 2; WgpuRnd::EndDrawing then calls CollectProjShadowCasters
+// and draws the casters into ShadowPass's map, which the next frame samples.
+// rb3-xenon keeps the generic pre-pass. Defined in DC3SceneLighting.cpp.
+constexpr bool kGenericShadowPass = !kDC3RetailModel;
+bool CollectProjShadowCasters(ProjShadowCasters &out);
+// The projected light's gobo for the scene WriteSceneLighting just wrote
+// (projected_blend 0: tf10, added as (1 - coverage) gobo c69 sat(c65 . N),
+// standard.ps 0x10030011); null otherwise, and always null for rb3-xenon.
+RndTex *SceneProjTexture();
+
 // ---- per-draw state log ----------------------------------------------------
 // RB3's draw log (RB3DrawLogDebug.h). DC3 and rb3-xenon have no consumer for
 // it, so it is off and every hook compiles away.

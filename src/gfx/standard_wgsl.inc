@@ -1027,6 +1027,65 @@ fn vs_skinned(vertex: SkinnedVertexInput) -> VertexOutput {
 //    * box(-V), the box map seen from behind; the diffuse product is scaled by
 //    1 + 0.3 r and 0.7 r is added. A rim map (bit 15) scales the colour by its
 //    texel.rgb and the power by its texel.a, at least 0.5.
+// DC3 projected light (rndshape: DC3SceneLighting.cpp WriteDC3ProjShadow;
+// docs/native/dc3-retail-lighting.md section 3). At most one per environ:
+// scene.projLightColor.w is 1 for projected_blend 1, 2 for projected_blend 0,
+// 0 for none, and it applies to materials with recv_proj_lights
+// (object.retail.z). Both forms take
+//   uv = (c95 . p, c96 . p) / (c97 . p)   (scene.lightViewProj, rebuilt so that
+//   the rasteriser's texel for p is this uv), s = tf5(uv).a
+// and differ in what they do with it:
+//   blend 1 (0x100010030011): box(N) c0 is scaled by 1 - 0.75 s c69 sat(c65 . N);
+//   blend 0 (0x10030011):     (1 - s) tf10(uv).rgb c69 sat(c65 . N) joins the
+//                             box term (gobo border 0 outside the cone).
+// tf5 is NgLight's 256x256 coverage target after BlurShadowRT's two 5-tap
+// passes (weights 0.1 0.25 0.3 0.25 0.1); a light without shadow objects
+// binds the FlatNormal default, alpha 0, so s = 0 (scene.shadowEnabled < 1.5).
+// Here: ShadowPass's map holds the casters at depth 0 over 1, and nine
+// compare taps 1.5 texels of 256 apart with weights (1 2 1)^2 / 16 stand in
+// for the blur (sigma 1.06 vs 1.14 texels).
+struct Dc3Proj {
+    mult: vec3f,   // scales box(N)
+    add: vec3f,    // joins box(N)
+}
+
+fn dc3ProjLight(worldPos: vec3f, N: vec3f) -> Dc3Proj {
+    var r: Dc3Proj;
+    r.mult = vec3f(1.0);
+    r.add = vec3f(0.0);
+    let mode = scene.projLightColor.w;
+    if (mode < 0.5 || object.retail.z < 0.5) {
+        return r;
+    }
+    let clip = scene.lightViewProj * vec4f(worldPos, 1.0);
+    let w = select(1.0, clip.w, abs(clip.w) > 1e-6);
+    let uv = vec2f(clip.x / w * 0.5 + 0.5, 0.5 - clip.y / w * 0.5);
+    let inside = clip.w > 0.0 && all(uv >= vec2f(0.0)) && all(uv <= vec2f(1.0));
+    var coverage = 0.0;
+    if (scene.shadowEnabled > 1.5) {
+        let t = 1.5 / 256.0;
+        var lit = 0.0;
+        lit += 1.0 * textureSampleCompareLevel(shadowMap, shadowSampler, uv + vec2f(-t, -t), 0.5);
+        lit += 2.0 * textureSampleCompareLevel(shadowMap, shadowSampler, uv + vec2f(0.0, -t), 0.5);
+        lit += 1.0 * textureSampleCompareLevel(shadowMap, shadowSampler, uv + vec2f(t, -t), 0.5);
+        lit += 2.0 * textureSampleCompareLevel(shadowMap, shadowSampler, uv + vec2f(-t, 0.0), 0.5);
+        lit += 4.0 * textureSampleCompareLevel(shadowMap, shadowSampler, uv, 0.5);
+        lit += 2.0 * textureSampleCompareLevel(shadowMap, shadowSampler, uv + vec2f(t, 0.0), 0.5);
+        lit += 1.0 * textureSampleCompareLevel(shadowMap, shadowSampler, uv + vec2f(-t, t), 0.5);
+        lit += 2.0 * textureSampleCompareLevel(shadowMap, shadowSampler, uv + vec2f(0.0, t), 0.5);
+        lit += 1.0 * textureSampleCompareLevel(shadowMap, shadowSampler, uv + vec2f(t, t), 0.5);
+        coverage = select(0.0, 1.0 - lit / 16.0, inside);
+    }
+    let lightTerm = scene.projLightColor.rgb * saturate(dot(scene.projLightDir.xyz, N));
+    if (mode < 1.5) {
+        r.mult = vec3f(1.0) - 0.75 * coverage * lightTerm;
+    } else {
+        let gobo = textureSampleLevel(projLightTex, projLightSampler, uv, 0.0).rgb;
+        r.add = select(vec3f(0.0), (1.0 - coverage) * gobo * lightTerm, inside);
+    }
+    return r;
+}
+
 fn retailShade(surfaceInput: VertexOutput, base: vec3f, ambientLight: vec3f, rawVtx: vec3f,
                prelitAmbient: bool) -> vec3f {
     let ao = surfaceInput.retailAO;
@@ -1035,8 +1094,14 @@ fn retailShade(surfaceInput: VertexOutput, base: vec3f, ambientLight: vec3f, raw
         ambientTerm = rawVtx * ambientLight;
     }
     let perPixel = isEnabled(material.retailFlags.x) && retailLightsOn();
+    let proj = dc3ProjLight(surfaceInput.worldPos, normalize(surfaceInput.worldNormal));
     if (!perPixel) {
-        return base * (ao.x * ambientTerm + surfaceInput.vertexLit) + surfaceInput.vertexSpec;
+        // Per-vertex lighting. The shipped cache has no vertex-lit receiver
+        // permutation (every projected-light mask has per_pixel_lit), so this
+        // form is native-only: it scales the interpolated light (box and
+        // points) and adds the gobo.
+        return base * (ao.x * ambientTerm + surfaceInput.vertexLit * proj.mult + proj.add) +
+            surfaceInput.vertexSpec;
     }
     let uv = surfaceInput.uv;
     let normalSample = textureSample(normalMapTex, diffuseSampler, uv);
@@ -1054,7 +1119,8 @@ fn retailShade(surfaceInput: VertexOutput, base: vec3f, ambientLight: vec3f, raw
     }
     let worldPos = surfaceInput.worldPos;
     let V = normalize(scene.cameraPos - worldPos);
-    var diffuse = base * (ao.x * ambientTerm + retailDiffuseLight(worldPos, N, ao));
+    var diffuse = base * (ao.x * ambientTerm + retailDiffuseLight(worldPos, N, ao) +
+                          (proj.mult - vec3f(1.0)) * ao.x * boxLightSample(N) + proj.add);
 
     var spec = vec3f(0.0);
     if (retailHasSpecular()) {

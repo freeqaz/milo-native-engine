@@ -1699,8 +1699,11 @@ void WgpuRnd::BeginDrawing() {
     encDesc.label = "FrameEncoder";
     mEncoder = mGpu.Device().CreateCommandEncoder(&encDesc);
 
-    // Shadow pre-pass: render depth from light's perspective
-    mShadowPass.Render(mEncoder, mObjectRing, mBoneRing, mGpu);
+    // Shadow pre-pass: render depth from light's perspective. Not for a shape
+    // whose shadows come from its own lights (DC3's projected shadow light,
+    // drawn at EndDrawing; rndshape::kGenericShadowPass).
+    if (rndshape::kGenericShadowPass)
+        mShadowPass.Render(mEncoder, mObjectRing, mBoneRing, mGpu);
 
     // Pre-clear: render-to-texture passes (TexRenderer, TexMovie)
     // Must happen after encoder creation but before main frame pass.
@@ -1777,7 +1780,7 @@ void WgpuRnd::EndDrawing() {
 
         // The display gamma ramp (RB3: DxRnd::SetupGamma's D3DDevice_SetGammaRamp),
         // over the finished frame, UI included, when the frame is presented.
-        // DC3 has none.
+        // DC3: DxRnd::SetupGamma's (rnd (gamma 0.85)), the same ramp.
         if (const float displayGamma = rndshape::DisplayGamma(!mGpu.IsHeadless());
             displayGamma > 0.0f) {
 #ifdef __EMSCRIPTEN__
@@ -1808,6 +1811,16 @@ void WgpuRnd::EndDrawing() {
             mEncoder.CopyTextureToTexture(&src, &dst, &size);
         }
 #endif
+
+        // The shape's projected shadow light (DC3: projected_blend 1): its
+        // casters as this frame left them, into the map the next frame's
+        // receivers sample (rndshape::CollectProjShadowCasters).
+        {
+            rndshape::ProjShadowCasters casters;
+            if (rndshape::CollectProjShadowCasters(casters))
+                mShadowPass.RenderCasters(mEncoder, mGpu, casters.clipFromWorld,
+                                          casters.meshes.data(), (int)casters.meshes.size());
+        }
 
         wgpu::CommandBuffer cmd = mEncoder.Finish();
         mGpu.Queue().Submit(1, &cmd);
@@ -2144,8 +2157,11 @@ void WgpuRnd::WriteSceneUniforms() {
     RndEnviron* env = rndshape::CurrentEnv();
     if (rndshape::kRenderTargetStoresLinear && mActiveTargetTex) scene.outputLinear = 1.0f;
     if (rndshape::WriteSceneLighting(scene, cam)) {
-        // The content's own lighting model (RB3-Wii: rndshape/RB3WiiSceneLighting.cpp).
-        mProjLightTexView = nullptr;
+        // The content's own lighting model (RB3-Wii: rndshape/RB3WiiSceneLighting.cpp;
+        // DC3: rndshape/DC3SceneLighting.cpp, docs/native/dc3-retail-lighting.md).
+        // DC3's projected_blend 0 light binds its gobo here; RB3-Wii has none.
+        RndTex* gobo = rndshape::SceneProjTexture();
+        mProjLightTexView = gobo ? GetGpuTexView(gobo) : nullptr;
     } else if (env && rndshape::EnvHasAmbientFogOwner(env)) {
         // Ambient color (with minimum floor for visibility)
         const Hmx::Color& amb = env->AmbientColor();
@@ -2425,8 +2441,9 @@ void WgpuRnd::WriteSceneUniforms() {
         scene.numLights = 3.0f;
     }
 
-    // Shadow mapping data
-    if (mShadowPass.Available()) {
+    // Shadow mapping data (the generic pre-pass; a shape with its own shadow
+    // light writes these in WriteSceneLighting)
+    if (rndshape::kGenericShadowPass && mShadowPass.Available()) {
         memcpy(scene.lightViewProj, mShadowPass.LightViewProj(), 64);
         scene.shadowEnabled = 1.0f;
         scene.shadowBias = 0.002f;
