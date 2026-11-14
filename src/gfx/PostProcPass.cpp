@@ -592,7 +592,8 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& i
     bgDesc.layout = mPostProcBGL;
     bgDesc.entryCount = 6;
     bgDesc.entries = bgEntries;
-    wgpu::BindGroup bg = gpu.Device().CreateBindGroup(&bgDesc);
+    wgpu::BindGroup bg = mBindGroups ? mBindGroups->GetOrCreate(gpu.Device(), bgDesc)
+                                     : gpu.Device().CreateBindGroup(&bgDesc);
 
     wgpu::RenderPassColorAttachment colorAtt{};
     colorAtt.view = frameView;
