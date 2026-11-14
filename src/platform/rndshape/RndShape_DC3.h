@@ -134,6 +134,7 @@ inline bool MatRetailTerms(const T &m, RetailMatTerms &t) {
             t.rimMap = t.rim && m->GetRimMap() != nullptr;
             t.rimTex = m->GetRimMap();
             t.deNormal = m->GetDeNormal();
+            t.flipNormal = m->GetCull() == kCullBackwards;
         }
         return true;
     } else {
