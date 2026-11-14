@@ -569,7 +569,15 @@ void RB3RetailPost::Terminate() {
     mDC3CompositePL = nullptr;
     mDC3BloomTapsPipe = nullptr;
     mDC3StreakPipe = nullptr;
+    mDC3GlarePipe = nullptr;
     mDC3CompositePipe = nullptr;
+    mDC3CompositeMBPipe = nullptr;
+    for (int i = 0; i < 2; i++) {
+        mPrevTex[i] = nullptr;
+        mPrevView[i] = nullptr;
+    }
+    mPrevW = mPrevH = 0;
+    mPrevRun = ~0ull;
     mNoiseSampler = nullptr;
     mDC3Ready = false;
 }

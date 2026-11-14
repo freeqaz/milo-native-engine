@@ -560,6 +560,12 @@ inline bool PostProcNoiseMap(const RndPostProc *, PostProcNoise &) { return fals
 constexpr bool kRetailPostChain = true;
 // DC3's retail chain (RndShape_DC3.h, np-gfx-post) is the DC3 shape's only.
 constexpr bool kDC3RetailPost = false;
+// The DC3 shape's Rnd::DoPostProcess selection (blacklight override, then
+// set_postproc_override, then the registered post-proc). PostProcPass names it
+// under `if constexpr (kDC3RetailPost)`, which outside a template still needs
+// the declaration; that statement is discarded here, so nothing odr-uses it and
+// no definition is needed for this shape.
+RndPostProc *ActivePostProc();
 void FillRetailPost(const RndPostProc *pp, float flickerMul, ::RetailPostParams &out);
 // MILO_RB3_RETAIL_POST: unset or anything else = 1 (retail chain), "0" = 0
 // (PostProcPass's DC3 composite, as before the chain existed), "raw" = 2
@@ -588,7 +594,8 @@ constexpr bool kAlphaBlendMax = true;
 // weights the scene by that alpha. Returns c7's scale (SetBloomColor:
 // 1/threshold above 1, else 1) for such a material while the retail chain runs
 // with a current RndPostProc, else 0 (no mask). The caller decides "main frame".
-float BloomMaskScale(const MatView &m);
+// envFadeOutCancels: the DC3 shape's rect switch; not established for RB3-Wii, ignored.
+float BloomMaskScale(const MatView &m, bool envFadeOutCancels = true);
 // RB3 shades in gamma space: retail's standard.ps multiplies the texel by the
 // material colour and the ambient + diffuse lighting sum as stored and
 // authored, and writes the product straight to an 8-bit target

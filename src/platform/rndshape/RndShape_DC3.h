@@ -450,6 +450,13 @@ inline bool RetailBloomMaskActive() {
         return m == 1 || m == 3 || m == 4;
     }
 }
+// The post-process Rnd::DoPostProcess runs and Rnd::BeginDrawing takes the
+// bloom colour from: the blacklight override (set_postproc_blacklight_override,
+// the voice-control letterbox's PostProc_Blacklight.pp), else the override
+// (set_postproc_override), else RndPostProc::Current(). dc3-decomp's Rnd
+// carries the HX_NATIVE accessor; rb3-xenon (no blacklight field, and an
+// override typed PostProcessor*) gets Current() (DC3PostChain.cpp).
+RndPostProc *ActivePostProc();
 // Fills the chain's parameters from the current RndPostProc (DC3PostChain.cpp).
 void FillRetailPost(const RndPostProc *pp, float flickerMul, ::RetailPostParams &out);
 // SetBloomColor's c7 scale: 1/threshold above 1, else 1 (DC3PostChain.cpp).
@@ -497,16 +504,27 @@ constexpr bool kGammaSpaceShading = kDC3RetailModel;
 // (Multiply, white, bloom_multiplier 0) zeroes the icon's mask under the
 // draw's alpha equation (dst.a * 0), so the mode-select icon does not burn
 // (dc3-backend-for-rb3-wii.md 31.6).
+//
+// The mask also needs the environ not to fade out: RndShaderStandard,
+// RndShaderParticles, RndShaderMultimesh and RndShaderSyncTrack::CalcShaderOpts
+// (dc3-decomp rndobj/Shader.cpp) set mPseudoHDR only when !fadeOut, with
+// fadeOut = env->FadeOut() && env->FadeEnd() != env->FadeStart() for the
+// current environ. RndShaderDrawRect::CalcShaderOpts has no such test, so a
+// rect passes envFadeOutCancels = false.
 template <class M>
-inline float BloomMaskScale(const M &m) {
+inline float BloomMaskScale(const M &m, bool envFadeOutCancels = true) {
     using Raw = std::remove_cv_t<std::remove_pointer_t<std::decay_t<M>>>;
     if constexpr (!kDC3RetailPost || !MatHasBloomMultiplier<Raw>::value) {
         (void)m;
         return 0.0f;
     } else {
         if (!m || !RetailBloomMaskActive()) return 0.0f;
-        const RndPostProc *pp = RndPostProc::Current();
+        const RndPostProc *pp = ActivePostProc();
         if (!pp) return 0.0f;
+        if (envFadeOutCancels) {
+            const RndEnviron *env = RndEnviron::Current();
+            if (env && env->FadeOut() && env->FadeEnd() != env->FadeStart()) return 0.0f;
+        }
         // NgMat::AllowHDR (dc3-decomp rndobj/Mat_NG.cpp).
         const auto b = m->GetBlend();
         if (b == Raw::kBlendSrcAlpha || b == Raw::kBlendSrcAlphaAdd || b == Raw::kPreMultAlpha ||
