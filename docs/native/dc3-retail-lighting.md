@@ -754,3 +754,456 @@ profile (round-3 build, streetside, 3.13 ms frame) is the firmer evidence:
   `WriteSceneUniforms` as its caller.
 - The next shadow-shaped cost is not this lane's: `RndShadowMap::PrepShadow`,
   3.5%, under `Character::DrawLodOrShadow`.
+
+## 9. Round 4: the peak state
+
+### 9.1 Intensify doubles alpha in the world too (streetside's peak stripes)
+
+**Retail, MEASURED.**
+
+- `NgMat::SetRegularShaderConst` sets c5 = (emissive multiplier,
+  intensify + 1, bloom multiplier, 0).
+- Every shipped `standard` permutation with option bit 53 (`mIntensify`)
+  scales the whole texel, alpha included, before it meets the interpolated
+  colour. `standard_0020000000020010.ps` (xenia-gpu-shader-compiler ucode
+  disassembly) does `mul r0, r0, c5.yyyy`, then `mul oC0.___w, r0.wwww,
+  r2.wwww`. The same key without bit 53 (`standard_0000000000020010.ps`)
+  writes `r0.w * r2.w`.
+- The world draws with the same shader as the UI. Nothing in `NgMat` takes
+  the phase into account.
+
+**Streetside's stripes, MEASURED in a live native session (awesome state,
+`/api/dta/eval`).**
+
+- `streetside_peek_pink1..16.mat` are blend 3 (SrcAlpha), intensify,
+  alpha_write, and lit (`PeakCity.env`). Their colour is (1, 0, 0.5).
+- The peak animation keys their alpha from 0.57 (`pink1`) down to 0.025.
+  The milo stores 0.
+- The red that fills the gaps on retail streetside/03 is not a material
+  colour. It is `streetside_performance_awesome.pp`'s bloom:
+  `bloom_color` (0.91, 0, 0) × intensity 1.4, which HamDirector copies into
+  the force post-proc slot. The stripes' alpha (alpha_write; blend MAX on the
+  alpha channel) is that bloom's mask.
+- `peakOrange.lit` cannot be the source. Its range is 400, and the stripes
+  are about 1900 units from it.
+- Every environ has tone map and colour adjust off.
+
+**Native before.** `MaterialAlphaScale` doubled alpha in the UI phase only, so
+the stripes drew at half their opacity and wrote half the bloom mask (stripes
+read 0.5 in the `DC3_RETAIL_POST=mask` view).
+
+**Fix.** `rndshape::kIntensifyScalesAlpha`, which is `kDC3RetailModel` in
+`RndShape_DC3.h` and false in `RndShape_RB3Wii.h`. `MaterialAlphaScale`
+returns 2 for an intensify material in any phase when it is true.
+
+- rb3-xenon keeps the UI-only rule (the flag is false there).
+- Test: dc3 `NativeUiMaterialAssetTest.PeakStripeIntensifyDoublesWorldAlpha`
+  loads `streetside_peek_pink1.mat` and checks the world builders' alpha.
+  Three older expectations moved with it.
+- Sabotage: `kIntensifyScalesAlpha = false` fails four tests (measured).
+
+**Result.** Measured at matched game time (awesome state, choreo performer,
+1 s apart).
+
+- The stripes are opaque and the gaps fill with red bloom, as on retail.
+- Mean frame rgb over six shots, base vs fix: (40.4, 15.4, 49.1) to
+  (76.6, 13.9, 55.5). Red almost doubles, which is the bloom's colour.
+- Other venues: every intensify world material is now twice as opaque.
+  Captured base vs fix at dci, dclive, houseparty and rollerrink, peak and
+  normal. The frame means moved by at most +16 levels: dclive peak blue,
+  75 to 96; DCI normal blue, 80 to 93. Nothing broke visually. The cause is
+  the shader's own rule, so it was not tuned per venue.
+
+**Remaining gap, MEASURED, pixel columns.** Retail streetside/03 against
+native after the fix, same state, different crew.
+
+| | retail | native |
+|---|---|---|
+| lower stripe | (255, 41..143, 255) | (204..216, 0, 228..250) |
+| gap between stripes | (255, 40, 0) | (108..131, 0, 0) |
+| crowd silhouette, darkest 30% | (157..185, 26..29, 3..5) | (50..53, 0, 1.5) |
+
+- Native's raw scene (`DC3_RETAIL_POST=raw`) has the crowd at 2-16 per
+  channel, so the crowd is lit about black, as retail's is.
+- The difference is downstream of lighting:
+  - bloom strength or extent: retail's red bloom is about 2-3× native's over
+    the same black;
+  - the colour transform: native's green is 0 across the lower frame, where
+    retail keeps 30-140.
+- Both belong to the post lane's code (`RB3RetailPostDC3.cpp`) and are handed
+  to it (section 9.6).
+
+### 9.2 The dancers in peak (item 2)
+
+**The "dark grey" dancers were mostly the outfit.** MEASURED, streetside
+awesome, live native session. OMG's scripted route dresses the lead and the
+crew in the DCI suits (dark cloth). Setting the lead to Mo
+(`{{gamedata player 0} set_character_outfit mo01}` at the multiuser screen)
+gives a lit lead and Bodie-type backups. Next to retail streetside/03 and 04,
+these read brightly lit and close in structure. Retail is warmer and redder
+over the dancers, which is the red bloom of section 9.1: the bloom mask
+covers the dancers as well as the stripes.
+
+**The lights, MEASURED, `player0.env` in awesome:**
+
+- ambient 0.012;
+- key `player0_area1_01.lit`: a point, (0.871, 0.733, 0.643), range 400,
+  which follows the character;
+- rim: approx, type 1, (4.82, 1.88, 5.0), that is 5 × the anim key;
+- fill: (0.243, 0.106, 0.459);
+- `battle_p0_spot`: black in this state;
+- box map at the character's origin: maximum about (4.4, 1.7, …).
+
+The box map is what the decomp's `NgEnviron::UpdateApproxLighting` computes
+from those approx lights. The animation frame is the venue's peak frame, 100,
+as in section 8.8. Nothing the native port adds or drops was found on the
+dancers, so no lighting change was made. The remaining warmth is the bloom
+strength (section 9.6). DCI and houseparty were not re-measured this round;
+section 8.8 covers DCI.
+
+### 9.3 The peak mirror floor (item 3)
+
+**What the reflection draws, MEASURED (streetside awesome, live native
+session, `get_array` on the `WorldReflection`).**
+
+- `peak_reflection.refl`: showing 1, vertical_stretch 1, no hide or show
+  list. It draws the four characters (as `lod_chars`), `score_star_display`,
+  `peak_BlueLine`, `peak_sky_1..3`, `peak_city_close`, `peak_city` and all
+  sixteen `peak_line*` meshes. **So the reflected pass includes the stripes.**
+- `bid_reflect.refl`: draws only `score_star_display`.
+- The stripes appear in two environs: `PeakCity.env` (the direct draw) and
+  `peak_reflection.env` (the reflected pass), with the same blend 3
+  (SrcAlpha) material.
+- `peak_reflection.env`: ambient (0.22, 0.216, 0.255), box map zero.
+  `PeakCity.env`: ambient (0.325, 0.271, 0.737) plus box (0, 0.24, 0.55). So
+  the data itself lights the reflected stripes more dimly.
+- The road (`Street.mat`, the `alleyRoad*` and `mainRoad*` meshes): showing in
+  peak, blend 1 (opaque), alpha 1, per-pixel lit, specular. Its environ is
+  `default_environment.env`, ambient (0.082, 0.024, 0).
+
+**The floor, MEASURED, pixel samples.** Retail streetside/03 against native
+after the 9.1 fix:
+
+| | retail | native |
+|---|---|---|
+| reflected stripes | (105..150, 24..31, 48..59) | (60..72, 0..8, 38..46) |
+| gap between reflected stripes | (75..125, 12, 0), red bloom | (55, 25, 33) |
+| far floor | black | (25, 23, 32); raw scene (22, 22, 40) |
+
+The reflection's strength relative to the direct draw roughly matches: the
+blue channel of reflected over direct stripes is about 0.22 on retail and
+0.19 native. The reflected stripes lack red for the same reason the direct
+ones do, so the bloom (section 9.6) covers most of it. `WorldReflection::
+DrawShowing` draws the mirrored world straight into the frame with a mirrored
+camera, and native follows it, flipping only the cull mode
+(`Mesh_Wgpu.cpp`), so no reflection-strength term was missing.
+
+Left open (INFERRED, not fixed): native's far floor has a small blue lift,
+(22, 22, 40) raw, where retail is black. Its likely source is the lit road
+plus the reflection showing through it. How retail orders the opaque road
+against the reflected pass was not settled this round (the draw-order query
+failed: `iterate` over meshes raises MILO_FAIL in the eval server).
+
+### 9.4 The crowd in peak (item 4)
+
+MEASURED, streetside awesome. `crowd.env`:
+
+- ambient (0.082, 0.024, 0);
+- box about (0, 0.063);
+- `sunlight_crowd`: a green directional, 0.118;
+- `crowd1` and `crowd2`: points, about 0.06.
+
+In the raw scene (`DC3_RETAIL_POST=raw`) the crowd's pixels are 2-16 per
+channel: lit about black, which is what retail's silhouettes need. The
+"texture colour" in the brief's sheet was the high state or the pre-9.1
+frame. After 9.1 the crowd reads red-black (50..53, 0, 1.5) through the
+post chain, where retail reads (157..185, 26..29, 3..5). That is a black
+crowd under a red bloom 2-3× stronger than native's, so it goes to the post
+lane (section 9.6). Nothing in the lighting was changed for it.
+
+### 9.5 Studio 675 (dclive) dancer shadows in the normal state (item 5)
+
+**Which light casts them, MEASURED (live native session, dclive, `get_array`).**
+
+- `a2_spotlight.lit` is dclive's only light with shadow objects. Its casters
+  are `backup0`, `backup1`, `player0`, `player1` (HamCharacter) and
+  `boombox.grp`.
+- It is a fake spot (light_type 2) with projected_blend 0: the additive
+  gobo. Its texture is `light_glow01.tex`, colour white, intensity 1,
+  topradius 100, botradius 300, range 1000. It is its own colour_owner.
+- `StageFloor.env`'s real lights are `DStagePointLight01.lit` and
+  `a2_spotlight.lit`, with no approx lights.
+- There is no shadow-casting projected_blend 1 light in dclive, so its
+  "shadow" is the gobo the casters block: `(1 - s) · gobo · c69 · sat(N·L)`
+  (section 3). It is not a multiply, so a shadow can be no darker than the
+  gobo is bright where it falls.
+
+**Whether it is selected and whether it lands, MEASURED.**
+
+- Native selects it, as in 8.3.
+- At its authored intensity 1, setting it to 0 changes the floor by roughly
+  25-40 levels of R. The dancers move between the two shots, so this is
+  approximate.
+- Raised to 6 (`{a2_spotlight.lit set intensity 6}`), the floor shows the
+  pool, and a soft dark shadow lies behind the lead's feet. That is the coverage term at work: the casters reach the
+  map and the `(1 - s)` lands on the floor.
+- Evidence: `round4/item5_dclive_shadow/gobo_x6_feet_zoom.png`,
+  `gobo_x1_vs_off.png`.
+
+**What is left, INFERRED, not fixed.** The mechanism works. What differs is
+how much the gobo stands out from the floor's other light: at intensity 1
+native's shadow is too faint to see against the lit floor, while retail
+dclive/01 and 14 show soft smudges. Three leads, none tested:
+
+1. The floor's other light is higher on native. The stage-floor meshes and
+   their materials were not identified this round. `curved_floor.mat`, for
+   example, is prelit and srcAlpha 0.85, so for a floor like it the prelit
+   and environ terms set the base.
+2. The venue's environment frame differs between the captures: retail's
+   "warm" frames against native's normal state.
+3. Retail's bloom amplifies the contrast. The lit floor blooms, and the
+   shadowed part writes less mask.
+
+Raising the light's intensity would be tuning, so nothing was changed.
+
+### 9.6 Handed to the post lane
+
+Every remaining peak gap measured in 9.1-9.4 sits after lighting. The
+evidence is the raw scene (`DC3_RETAIL_POST=raw`), where the lit values
+already have the right shape: black crowd, opaque stripes, a dim reflection.
+These are leads with numbers, not a diagnosis of the post code.
+
+1. **Red bloom strength or extent, streetside awesome.** The data is
+   `streetside_performance_awesome.pp`: `bloom_color` (0.91, 0, 0) ×
+   intensity 1.4. Since 9.1, native's mask is right: the stripes' alpha is
+   0.57 × 2, clamped. Where retail reads (255, 40, 0) in the gaps between
+   stripes, native reads (108..131, 0, 0). Over the crowd, retail reads
+   (157..185, 26..29, 3..5) and native (50..53, 0, 1.5). On the floor
+   between reflected stripes, retail reads (75..125, 12, 0) and native
+   (55, 25, 33). Retail's bloom over the same black is about 2-3× native's,
+   or it spreads further.
+2. **Green crushed to 0, streetside awesome.** Across the lower frame,
+   native's G is 0 where retail keeps 30-140: retail's stripes read
+   (255, 41..143, 255), native's (204..216, 0, 228..250). The stripe
+   material's colour is (1, 0, 0.5), and native's raw scene has the stripes
+   at a median G of 10 (MEASURED, 5,212 stripe pixels). Lighting cannot
+   multiply green into a green-0 material, so retail's 41..143 must come
+   from the post chain. Retail's stripes clip at 255 in R and B, which
+   points at a lift or a highlight roll-off toward white that native lacks.
+   INFERRED, not tested.
+3. **Warmth over the dancers in peak** (9.2) is the same red bloom as item 1
+   over the dancers. It is not a character-light term.
+
+**Revised after 9.7 (Xenia).** Items 1 and 2 were measured against retail
+video, not against the debug XEX. Against Xenia running that XEX with the same
+DTA values, native's post-on streetside stripes and gaps fall inside Xenia's
+range, and Xenia's stripe green is 0 as well. Items 1 and 2 are **withdrawn as
+post-lane leads**; the video's extra red and green are a capture difference
+(state, exposure or encoder), not a native defect. Item 3 goes with them. The
+lead that replaces them is the rink floor (9.7.2): raw lighting matches Xenia
+and the post chain does not.
+
+### 9.7 Against Xenia ground truth
+
+The coordinator's Xenia frames (`archive/np-gfx-2026-11-14/xenia/INDEX.md`)
+run the original debug XEX. They are pre-ramp, so native is compared with
+`DC3_DISPLAY_GAMMA=off`. Two tools made the comparison raw against raw:
+
+- `{rnd toggle_all_postprocs}` (`Rnd.cpp`, `mDisablePostProc`) turns the whole
+  post chain off. It works in Xenia (sent over the DTA channel) and in native
+  (`/api/dta/eval`), so both sides can be read with lighting only.
+- The same DTA probes, sent to both, read the data each side is using.
+
+Numbers are in 640×360 space, Rec.709 luma, averaged over three frames per
+condition. Evidence: `round4/item1_stripes/xenia_toggle/`,
+`round4/item6_rink_floor/` (Xenia frames stay in `archive/…/xenia/`).
+
+#### 9.7.1 Streetside peak: matched (MEASURED)
+
+**The inputs are identical** (Xenia probe vs native probe, awesome state):
+
+- `PeakCity.env` ambient 12338515 (0xBBGGRR: 0.325, 0.271, 0.737) on both.
+- `streetside_peek_pink1.mat` colour 8388863 (1, 0, 0.5), blend 3, intensify 1.
+  Its alpha is beat-keyed: 0.563 in the Xenia frame, 0.57 in native.
+- `streetside_performance_awesome.pp`: bloom_color 232 (0.91, 0, 0), intensity
+  1.4, threshold 8.
+- `peak2`, `peakOrange`, `peakDirectional` and `crowd.env`: the same values.
+
+**Postprocs off, raw lighting:**
+
+| | Xenia | native (engine e391f95) |
+|---|---|---|
+| stripe median rgb | (132..151, 0..1, 165..196) | (145..175, 4..29, 178..227) |
+| stripe R/B | 0.70..0.90 | 0.79..0.81 |
+| stripe region mean | (34..44, 11..13, 39..65) | (39..55, 11..25, 49..68) |
+| whole-frame mean | (34..37, 15..18, 44..58) | (35..45, 17..24, 51..62) |
+
+**Post on** (native engine e391f95, before the noise upload `ecd579f`):
+
+| | Xenia | native |
+|---|---|---|
+| stripe region mean | (126..134, 8..10, 59..74) | (146, 13, 71) and (94, 5, 47) |
+| stripe median | (210..226, 0, 215..227) | (226, 18, 215) |
+| whole-frame mean | (87..96, 11..19, 56..66) | (97, 18, 63) and (60, 11, 51) |
+
+Native's two post-on shots differ because the stripes' alpha pulses on the
+beat. Before 9.1 the brief's stripe sample read (34, 1, 34) against Xenia's
+(206, 1, 72); the single-frame r4 sample afterwards was (139, 7, 109). The
+spread between those and the table above is camera, box and the beat.
+
+**So 9.1 closes item 1.** The fix (`kIntensifyScalesAlpha`, engine `d854f7e`)
+is generic: every intensify world material on DC3 now draws at twice its
+alpha, which includes DCI's peak stripe panels. That is reported to the post
+lane, which owns DCI peak, through the coordinator, so it does not chase the
+same deficit through the bloom.
+
+**Per stage, on the merged build (engine 17ba5d4, with the post lane's noise
+upload `ecd579f`), MEASURED.** The coordinator asked for this after the post
+lane found DCI's peak deficit was the noise overlay that never ran: the
+streetside awesome post-proc authors noise too (`noise_intensity` 1,
+stationary). The same DTA state files were set on
+`streetside_performance_awesome.pp` on both sides, cycled once a second in the
+forced awesome state (Xenia frames labelled by the last applied state). Scene
+box luma and RGB, then the magenta stripe pixels (R>90, B>90, G<60):
+
+| stage | Xenia scene (RGB) | native scene (RGB) | Xenia stripes | native stripes |
+|---|---|---|---|---|
+| full | 33.3 (92, 14, 55) | 34.0 (87, 16, 60) | 13.4% (197, 14, 201) | 12.2% (190, 9, 201) |
+| noise off | 25.5 (73, 10, 44) | 24.0 (65, 10, 45) | 11.4% (177, 11, 192) | 10.5% (177, 8, 186) |
+| bloom off | 22.8 (37, 15, 56) | 24.1 (38, 16, 61) | 8.0% (166, 15, 220) | 9.8% (172, 7, 223) |
+| bloom, noise off | 17.0 (32, 9, 48) | 17.4 (29, 11, 47) | 9.5% (144, 6, 206) | 8.2% (145, 9, 208) |
+| all off | 20.3 (34, 14, 48) | 21.5 (32, 16, 48) | 8.2% (135, 13, 203) | 8.1% (143, 8, 191) |
+
+n = 17..21 frames per stage per side. Every stage agrees within a few levels,
+and so does each stage's step: the bloom takes red from about 37 to 92 on
+Xenia and 38 to 87 on native, and the noise adds about 8 scene luma on both.
+**So the red is not lost at any stage on the merged build.** The brief's
+(206, 1, 72) against (34, 1, 34) was a pre-fix native frame (before
+`d854f7e`, and before `ecd579f`), single shot, different camera.
+
+Evidence: `round4/item1_stripes/stage_decomposition_m3/` (stats.txt, state
+files, `tools/stripe_stats.py`, native frames; Xenia frames stay private).
+
+An earlier single-run reading had native's raw stripes a little greener than
+Xenia's (median G 4..29 against 0..1). The per-stage run above does not
+reproduce it (all off: G 8 native, 13 Xenia), so it is not carried as a gap.
+
+#### 9.7.2 Rink normal floor: the deficit is the bloom stage (MEASURED)
+
+**The inputs are identical** (Xenia vs native probes, normal state):
+
+- `Stage_Carpet.env` ambient 7360314; its real lights `Stage.lit` 7524062 and
+  `Stage1.lit` 13091466.
+- `stage_spotlight.lit`: white, intensity 3, top/bottom radius 100/200, range
+  175, gobo `light_glow01`.
+- `StageCarpet_lightCatcher.mesh`: blend 6, white. `Rink_lightCatcher.env`
+  ambient 6118749. The mirror-ball spots are white.
+
+**Floor band luma (paused native; Xenia three frames per condition):**
+
+| condition | Xenia | native |
+|---|---|---|
+| post on | 148.7..155.6 | 114.4..119.5 |
+| postprocs off | 113.9..116.5 | 113.7..118.1 |
+| off, light catcher hidden | | 120.8 |
+| off, stage spotlight hidden | | 78.1 |
+
+Whole-frame means agree: Xenia post on (115..118, 85..89, 73), off
+(83..90, 60..62, 49..52); native post on (96, 71, 59), off (87, 62, 49).
+
+- Raw lighting matches within a few levels. The −19% is all post chain:
+  Xenia's chain raises the floor by about +35 luma, native's by about +1.
+- The gobo pool (8.1) is in place: hiding the spot drops the floor by about
+  40 levels. The light catcher costs about 3. Neither is the gap.
+- The data active on that frame is `rollerrink_performance_high.pp`: bloom
+  colour (0.97, 0.84, 0.62), threshold 8, intensity 1.6, no streak;
+  saturation −10, contrast 5, colorxfm on, vignette on. A warm bloom that
+  lifts a mid-grey floor by +35 needs a threshold or extraction that lets
+  ~115-luma pixels through. That is a lead for the post lane, not a
+  diagnosis.
+- Caveats: the camera shots differ slightly (native's paused frame against
+  Xenia's far shots), and native draws the gameplay feedback ring and flame
+  under the lead where Xenia shows only a faint ring. The flame is gameplay
+  state (scoring), not lighting. Both are outside the floor band measured.
+
+**Which stage, on the merged build (engine 17ba5d4, MEASURED).** The post
+lane's per-stage method (`lanes/post/round4/tools`): the same DTA state files
+set on `rollerrink_performance_high.pp` on both sides, cycled once a second
+through the high state; Xenia frames labelled by the last applied state. Scene
+box and the lower third of the frame (the floor), luma, 640×360:
+
+| stage | Xenia scene / floor | native scene / floor |
+|---|---|---|
+| full chain | 97.7 / 151.0 (n 14) | 79.8 / 118.8 (n 17) |
+| bloom off | 72.9 / 119.1 | 67.7 / 114.9 |
+| vignette off | 99.5 / 157.5 | 81.9 / 122.1 |
+| colour matrix off | 99.2 / 149.3 | 81.9 / 118.1 |
+| all off | 77.0 / 122.2 | 71.8 / 118.3 |
+
+- With bloom off the two agree within 5 levels, and the vignette and the
+  colour matrix move both sides by the same few levels.
+- **The bloom is the stage that differs.** On Xenia it adds +24.8 to the scene
+  and +32 to the floor; on native +12.1 and +3.9. The same data reaches both:
+  colour (0.97, 0.84, 0.62), threshold 8, intensity 1.6, no streak.
+- The floor is mid-grey (~115-120 luma raw). Native's bloom keeps far less of
+  that level than Xenia's does, while on streetside (9.7.1), where the bloom
+  source is bright saturated stripes, the two agree. So the lead is how the
+  native bloom extracts mid-tones (the threshold or the extraction curve), not
+  its strength. INFERRED; not tested in the post code, which this lane does
+  not own.
+- The rink's normal state (`high`) has noise 0, so engine `ecd579f` (the
+  noise upload) does not touch this gap. Re-measured on the merged build:
+  native's paused toggle reads the same as before (lower third 110.1 post,
+  107.3 off).
+
+Evidence: `round4/item6_rink_floor/stage_decomposition_m3/` (stats.txt, the
+state files, native frames; the first Xenia attempt stalled before gameplay
+and was stopped, the second, `xrr2`, is the one measured).
+
+Handed to the post lane: **rollerrink high: the bloom adds +32 floor luma on
+Xenia and +4 on native; raw lighting, grade and vignette match.**
+
+#### 9.7.3 Flare-lit regions are not comparable against default Xenia
+
+The post lane measured (round 4) that the Xenia fork answers every occlusion
+query with `query_occlusion_fake_sample_count = 1000`, so `RndFlare` draws
+large flares at about 1/80 strength there; native matches Xenia with the count
+raised to 1e6, and the hardware footage. Any bulb, lamp or glow region in this
+section's Xenia frames is therefore not ground truth. That covers dclive's
+bulb wall (the brief's −47%, ranked weak), which this lane did not measure.
+
+### 9.8 Verification and frame time, round 4
+
+Final heads: engine `np-gfx-light` a9b72e5 plus this doc commit (code identical
+to 17ba5d4, the merge of np-gfx c123b34), dc3 `np-gfx-light` pinned to it.
+
+- dc3 `scripts/native_test.sh` at dc3 c4262a3a5 (engine a9b72e5): registered
+  1010, executed 940, passed 940, failed 0, skipped 70, budget 70, rc 0.
+- rb3-xenon `rb3-render`, engine np-gfx c123b34 against this branch: 11 of 11
+  frames byte-identical. `kIntensifyScalesAlpha` is false in
+  `RndShape_RB3Wii.h`, so rb3-xenon keeps the UI-only alpha rule.
+- rb3 (tree 1dee2c1f7) built against this branch: 157 of 158 pass. The one
+  failure, `native_compat_census.check`, is that tree's own ledger being
+  stale: it fails the same way against the base engine c123b34, and rb3
+  main's census script reads 454 flags, regen clean, on both engines. An
+  earlier run also failed `PointTestPassTest.CollectThroughTakesOnlyBatchesUpToSeq`
+  once while the dc3 gate ran on the same GPU; it passed 15 of 15 alone and
+  in the final run (it times a busy GPU job).
+- getenv census: `git diff c123b34 HEAD -- src include` adds no `getenv`.
+
+**Frame time, MEASURED** (`round4/frametime/`). OMG, headless, 10 s sampled
+20 s into gameplay, 3 rounds interleaved, RTX 3090, load average 26-38 on 32
+cores. Same base, the flag alone: `kIntensifyScalesAlpha = false` against the
+branch (engine e391f95's code; rebuilt from source it is byte-identical).
+
+| venue | flag off: main ms / GPU est ms (median) | branch |
+|---|---|---|
+| streetside | 3.94 / 0.75 | 3.99 / 0.76 |
+| houseparty | 3.36 / 0.70 | 3.34 / 0.52 |
+| rollerrink | 3.99 / 0.61 | 3.67 / 0.67 |
+
+No difference beyond the run-to-run spread, as expected: the change is a
+uniform value, with no new draw, pass or bind group. A first A/B against the
+pre-merge base binary showed +0.2..0.45 ms of GPU estimate; that binary
+predates the np-gfx 34cb235 merge (velocity blur), so it compared two code
+bases, not this change.
