@@ -43,6 +43,7 @@ struct GpuTexDebugInfo {
     bool uploaded = false;         // its texture and view are live
     int width = -1;                // bitmap size the texture was created at
     int height = -1;
+    int mipLevels = -1;            // levels of the GPU texture (-1 = none)
     const void* view = nullptr;    // wgpu::TextureView handle (identity only)
     const void* texture = nullptr; // wgpu::Texture handle (identity only)
     unsigned long long createCount = 0;
