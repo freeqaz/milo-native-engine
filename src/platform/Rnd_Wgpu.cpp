@@ -2011,6 +2011,8 @@ void WgpuRnd::EndDrawing() {
 
         if (!mGpu.IsHeadless()) {
             mGpu.PresentFrame();
+        } else {
+            mGpu.EndHeadlessFrame();
         }
         // MILO_GPU_TIMERS: resolve this frame's pass timestamps (gfx/GpuTimers.h).
         GpuTimers::Get().EndFrame(mGpu.Queue());

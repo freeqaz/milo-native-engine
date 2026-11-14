@@ -1,6 +1,7 @@
 #pragma once
 
 #include <webgpu/webgpu_cpp.h>
+#include <deque>
 #include <string>
 #include <unordered_map>
 
@@ -163,6 +164,17 @@ public:
     // machinery, so it never races a thread started right after (e.g. audio).
     void WarmUp();
 
+    // Headless only, after the frame's last submit: process Dawn's events
+    // (the windowed path does in PresentFrame) and keep at most
+    // HeadlessFramesInFlight() frames queued on the GPU.  Without it nothing
+    // bounds how far an uncapped headless loop runs ahead of a shared GPU,
+    // and the driver's descriptor / command / staging pools grow to the
+    // deepest backlog seen (PLAN H-45, H-75).  MILO_HEADLESS_FRAMES_IN_FLIGHT
+    // (default 2; 0 = unbounded, the old behaviour).
+    void EndHeadlessFrame();
+    int HeadlessFramesInFlight() const { return mHeadlessMaxInFlight; }
+    void SetHeadlessFramesInFlight(int n) { mHeadlessMaxInFlight = n < 0 ? 0 : n; }
+
     // Window queries
     bool ShouldClose() const;
     void PollEvents();
@@ -225,6 +237,8 @@ private:
     int mSurfaceWidth = 0;
     int mSurfaceHeight = 0;
     bool mHeadless = false;
+    int mHeadlessMaxInFlight = 2;
+    std::deque<wgpu::Future> mHeadlessInFlight;
     bool mHasBCCompression = false;
     bool mDeviceLost = false;
 
