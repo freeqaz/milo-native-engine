@@ -1,4 +1,5 @@
 #include "gfx/GpuDevice.h"
+#include "gfx/GpuTimers.h"
 
 #include <GLFW/glfw3.h>
 #if defined(__linux__)
@@ -234,6 +235,7 @@ const char* GpuDevice::WindowSystemName() const {
 }
 
 void GpuDevice::Shutdown() {
+    GpuTimers::Get().Shutdown();
     mSamplerCache.clear();
     mHeadlessView = nullptr;
     mHeadlessTex = nullptr;
@@ -340,12 +342,20 @@ bool GpuDevice::InitDevice() {
     wgpu::DeviceDescriptor deviceDesc{};
 
     // Request BC compression feature if available
-    wgpu::FeatureName requiredFeatures[1];
-    if (mHasBCCompression) {
-        requiredFeatures[0] = wgpu::FeatureName::TextureCompressionBC;
-        deviceDesc.requiredFeatureCount = 1;
-        deviceDesc.requiredFeatures = requiredFeatures;
-    }
+    wgpu::FeatureName requiredFeatures[2];
+    size_t featureCount = 0;
+    if (mHasBCCompression) requiredFeatures[featureCount++] = wgpu::FeatureName::TextureCompressionBC;
+    // GPU pass timers (MILO_GPU_TIMERS, gfx/GpuTimers.h): timestamp-query only
+    // when asked AND the adapter offers it -- never a reason for device
+    // creation to fail (a failure with it retries without it, below).
+    const bool timersWanted = GpuTimers::Requested();
+    bool timersFeature = timersWanted && mAdapter.HasFeature(wgpu::FeatureName::TimestampQuery);
+    const char* timersWhyNot = timersWanted && !timersFeature
+                                   ? "the adapter does not offer the timestamp-query feature"
+                                   : "";
+    if (timersFeature) requiredFeatures[featureCount++] = wgpu::FeatureName::TimestampQuery;
+    deviceDesc.requiredFeatureCount = featureCount;
+    deviceDesc.requiredFeatures = featureCount ? requiredFeatures : nullptr;
 
     // Dawn toggle that propagates WebGPU labels to VK_EXT_debug_utils (object
     // names in RenderDoc, GFXReconstruct, validation layers). It is a debugging
@@ -363,6 +373,15 @@ bool GpuDevice::InitDevice() {
         deviceDesc.nextInChain = &toggles;
         printf("GpuDevice: backend object labels ON (MILO_GPU_LABELS / a Vulkan layer is set)\n");
     }
+    // Dawn quantizes timestamps by default (timestamp_quantization, a
+    // fingerprinting guard) to ~65-100 us, which hides every short pass. The
+    // timers are a local profiling aid, so it is off whenever they are on.
+    static const char* kDisabledToggles[] = {"timestamp_quantization"};
+    if (timersFeature) {
+        toggles.disabledToggleCount = 1;
+        toggles.disabledToggles = kDisabledToggles;
+        deviceDesc.nextInChain = &toggles;
+    }
 
     deviceDesc.SetDeviceLostCallback(
         wgpu::CallbackMode::AllowSpontaneous,
@@ -376,18 +395,32 @@ bool GpuDevice::InitDevice() {
                     (int)type, (int)msg.length, msg.data);
         });
 
-    wgpu::Future future = mAdapter.RequestDevice(
-        &deviceDesc,
-        wgpu::CallbackMode::WaitAnyOnly,
-        [&device](wgpu::RequestDeviceStatus status, wgpu::Device result, wgpu::StringView msg) {
-            if (status != wgpu::RequestDeviceStatus::Success) {
-                fprintf(stderr, "GpuDevice: device request failed: %.*s\n",
-                        (int)msg.length, msg.data);
-                return;
-            }
-            device = std::move(result);
-        });
-    mInstance.WaitAny(future, UINT64_MAX);
+    auto requestDevice = [&]() {
+        wgpu::Future future = mAdapter.RequestDevice(
+            &deviceDesc,
+            wgpu::CallbackMode::WaitAnyOnly,
+            [&device](wgpu::RequestDeviceStatus status, wgpu::Device result, wgpu::StringView msg) {
+                if (status != wgpu::RequestDeviceStatus::Success) {
+                    fprintf(stderr, "GpuDevice: device request failed: %.*s\n",
+                            (int)msg.length, msg.data);
+                    return;
+                }
+                device = std::move(result);
+            });
+        mInstance.WaitAny(future, UINT64_MAX);
+    };
+    requestDevice();
+    if (!device && timersFeature) {
+        // Drop the timers' feature and toggle, keep everything else.
+        timersFeature = false;
+        timersWhyNot = "device creation failed with timestamp-query; retried without it";
+        deviceDesc.requiredFeatureCount = --featureCount;
+        deviceDesc.requiredFeatures = featureCount ? requiredFeatures : nullptr;
+        toggles.disabledToggleCount = 0;
+        toggles.disabledToggles = nullptr;
+        if (toggles.enabledToggleCount == 0) deviceDesc.nextInChain = nullptr;
+        requestDevice();
+    }
 
     if (!device) {
         fprintf(stderr, "GpuDevice: failed to create WebGPU device\n");
@@ -396,6 +429,7 @@ bool GpuDevice::InitDevice() {
 
     mDevice = std::move(device);
     mQueue = mDevice.GetQueue();
+    if (timersWanted) GpuTimers::Get().Init(mDevice, mInstance, timersFeature, timersWhyNot, timersFeature);
     return true;
 }
 

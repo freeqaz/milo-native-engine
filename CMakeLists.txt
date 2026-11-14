@@ -291,6 +291,7 @@ set(MILO_ENGINE_GFX_SOURCES
     src/gfx/Screenshot.cpp
     src/gfx/PipelineManager.cpp
     src/gfx/FrameCapture.cpp
+    src/gfx/GpuTimers.cpp       # MILO_GPU_TIMERS per-pass GPU time (timestamp queries)
     src/gfx/BloomPass.cpp
     src/gfx/GpuResourceRegistry.cpp
     src/gfx/UniformRingBuffer.cpp

@@ -1,5 +1,6 @@
 // PointTestPass — see PointTestPass.h.
 #include "gfx/PointTestPass.h"
+#include "gfx/GpuTimers.h"
 #include "gfx/GpuDevice.h"
 
 #include <cstdio>
@@ -171,6 +172,7 @@ bool PointTestPass::Record(wgpu::CommandEncoder& encoder, const wgpu::TextureVie
     rp.label = "PointTestPass";
     rp.depthStencilAttachment = &da;
     rp.occlusionQuerySet = b->querySet;
+    MILO_GPU_TIME_PASS(rp);
     wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&rp);
     pass.SetViewport(0.0f, 0.0f, (float)w, (float)h, 0.0f, 1.0f);
     pass.SetVertexBuffer(0, b->vertices, 0, (uint64_t)count * kVertsPerQuery * kVertexBytes);

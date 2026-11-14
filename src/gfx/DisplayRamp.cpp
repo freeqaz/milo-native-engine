@@ -1,5 +1,6 @@
 // DisplayRamp — see DisplayRamp.h.
 #include "gfx/DisplayRamp.h"
+#include "gfx/GpuTimers.h"
 #include "gfx/GpuDevice.h"
 
 #include <cstdio>
@@ -131,6 +132,7 @@ bool DisplayRamp::Apply(wgpu::CommandEncoder& encoder, const wgpu::Texture& fram
     rp.label = "DisplayRampPass";
     rp.colorAttachmentCount = 1;
     rp.colorAttachments = &att;
+    MILO_GPU_TIME_PASS(rp);
     wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&rp);
     pass.SetPipeline(mPipe);
     pass.SetBindGroup(0, bg);
