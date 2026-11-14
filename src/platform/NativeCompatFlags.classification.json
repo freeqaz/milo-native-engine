@@ -2161,6 +2161,13 @@
     "default": "off",
     "read": "value"
   },
+  "MILO_GPU_COUNTERS": {
+    "class": "perf",
+    "owner": "render/perf",
+    "faithfulStatus": "n/a: log-only. MILO_GPU_COUNTERS=N prints one [GPUCOUNT] line every N frames (0 or non-numeric: every 600) with the live bind-group cache size, creates/hits/evictions, uniform-ring sizes, grows and WriteBuffer counts, pipelines, GPU meshes and textures (lane np-drawperf, H-30/H-31 bounds check); unset = no line. No draw change [Rnd_Wgpu.cpp]",
+    "default": "off",
+    "read": "value"
+  },
   "MILO_GPU_LABELS": {
     "class": "perf",
     "owner": "render/perf",
