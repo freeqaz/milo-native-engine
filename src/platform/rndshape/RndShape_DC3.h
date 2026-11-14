@@ -580,6 +580,18 @@ constexpr bool kGammaSpaceShading = kDC3RetailModel;
 // heuristic lighting, which brightened it; the DC3 retail model does not
 // need that. rb3-xenon keeps the forced prelit.
 constexpr bool kMultiplyBlendIsLit = kDC3RetailModel;
+// Intensify doubles the texel's alpha with its colour in every draw, the world
+// included (np-gfx-light round 4). NgMat::SetRegularShaderConst sets c5.y =
+// intensify + 1, and every standard.ps permutation with option bit 53 scales
+// the whole texel before it meets the interpolated colour: shipped
+// standard_0020000000020010.ps is `mul r0, r0, c5.yyyy` then
+// `mul oC0.___w, r0.wwww, r2.wwww`, where standard_0000000000020010.ps (the
+// same key without bit 53) writes `r0.w * r2.w`. The engine applied the
+// factor in the UI phase only (MaterialAlphaScale), so a world material such
+// as streetside's peak stripes (streetside_peek_pink1..16.mat: SrcAlpha,
+// intensify, alpha 0.57 down to 0.025, alpha_write) drew half as opaque and
+// wrote half the bloom mask retail does. rb3-xenon keeps the UI-only rule.
+constexpr bool kIntensifyScalesAlpha = kDC3RetailModel;
 // The pseudo-HDR bloom mask (ShaderOptions bit 22): retail DC3's standard.ps /
 // particles.ps / multimesh write alpha = sat(dot(rgb, c7) * c5.z) for a
 // material whose NgMat::AllowHDR() holds, drawn into the main frame
