@@ -5514,20 +5514,36 @@ equation. Measured live (`/api/dta/eval`, iterating `Mat` in each dir):
 ### 31.6 Venues
 
 Six venues were captured with `look_capture.sh` (song omg; normal and peak).
-Gameplay was reached in all 12 legs. Sheets: `lanes/post/venues/venue_ab_<venue>.png`
-(before / MAX / equation / retail hero) and `contact_{before,alphamax,final}.png`.
+Gameplay was reached in all 12 legs of every run. Sheets in dc3-decomp's
+`archive/np-gfx-2026-11-14/lanes/post/venues/`:
+- `venue_ab_<venue>.png`: before / MAX / final / retail hero frame;
+- `contact_{before,alphamax,equation_only,final}.png`.
 
+Mean luma and the share of clipped pixels (luma ≥ 250):
+
+| venue, state | before | MAX | equation only | final |
+|---|---|---|---|---|
+| dclive normal | 111 / 0.6% | 165 / 9.8% | 147 / 5.7% | 163 / 8.9% |
+| rollerrink normal | 79 / 3.0% | 135 / 15.0% | 126 / 13.7% | 125 / 13.4% |
+| dci normal | 39 / 0.2% | 72 / 1.1% | 63 / 0.3% | 70 / 1.3% |
+| dclive peak | 29 / 0.0% | 62 / 0.0% | 43 / 0.0% | 57 / 0.0% |
+
+- **Run-to-run variation.** The equation-only and final runs differ only in
+  the multiplier-0 mask, which no venue draw visibly uses. Even so, they
+  differ by up to 16 in mean luma, because each capture lands on a different
+  frame. Differences of that size between columns are not meaningful.
 - **Equation vs MAX.** Venues barely change, and the lamp-bank, neon and
-  ribbon halos stay. For example, dclive normal clips (luma ≥ 250) on 5.7%
-  of pixels with the equation against 9.8% with MAX; rollerrink normal on
-  13.7% against 15.0%.
-- **Halos against retail.** The halos are present where the retail hero
-  frames show them: dclive's lamp banks and logo; the neon stripes in the
-  houseparty, dclive and streetside peak states; the ribbon glow.
-- **The mean-brightness rise from "before".** Most of it is the scan-out
-  ramp plus the merged gamma-space lighting, not bloom.
-- **Not same-state.** The native frames are not the same moment as the
-  retail frames (different dancers and camera), so this comparison is of
+  ribbon halos stay.
+- **Halos against retail.** Halos are present where the retail hero frames
+  show them:
+  - dclive's lamp banks and logo;
+  - the neon stripes in the houseparty, dclive and streetside peak states;
+  - the ribbon glow;
+  - throneroom's gold-wing peak.
+- **The rise in mean brightness from "before".** It is mostly the scan-out
+  ramp plus the merged gamma-space lighting (np-gfx-light), not bloom.
+- **Not the same moment.** The native frames and the retail frames are not
+  the same moment (different dancers and camera), so the comparison is of
   character, not pixels.
 
 ### 31.7 Cost
