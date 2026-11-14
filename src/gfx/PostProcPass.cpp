@@ -349,13 +349,16 @@ void PostProcPass::RunDC3Retail(wgpu::CommandEncoder& encoder, P* pp, int mode,
             mLoggedPostProc = pp;
             const char* dir = pp->Dir() ? pp->Dir()->Name() : "";
             fprintf(stderr, "DC3 post: %s (%s) bloom I=%.2f thr=%.2f streak=%d glare=%d c6=(%.2f %.2f %.2f) "
-                     "xfm=%d vignette=%.2f chroma=%.2f noise=%d motion_blur=%d(%.3f %.3f %.3f %.3f)\n",
+                     "xfm=%d vignette=%.2f chroma=%.2f noise=%d motion_blur=%d(%.3f %.3f %.3f %.3f) "
+                     "hue_converge=%d(%.3f %.3f %.3f %.3f)\n",
                      pp->Name(), dir, pp->BloomIntensity(), pp->GetBloomThreshold(),
                      (int)pp->GetBloomStreak(), (int)pp->GetBloomGlare(), rp.bloomColor[0],
                      rp.bloomColor[1], rp.bloomColor[2], (int)pp->ColorXfmEnabled(),
                      pp->GetVignetteIntensity(), pp->GetChromaticAberrationOffset(),
                      (int)(bool)rp.noiseMap, (int)rp.motionBlur, rp.motionBlurParams[0],
-                     rp.motionBlurParams[1], rp.motionBlurParams[2], rp.motionBlurParams[3]);
+                     rp.motionBlurParams[1], rp.motionBlurParams[2], rp.motionBlurParams[3],
+                     (int)rp.hueConverge, rp.hueParams[0], rp.hueParams[1], rp.hueParams[2],
+                     rp.hueParams[3]);
         }
         mRetail.Run(encoder, sceneView, intermediateView, w, h, frameView, rp, gpu);
     }
@@ -374,6 +377,9 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& i
     mSpotFog = nullptr;
 
     RndPostProc* pp = RndPostProc::Current();
+    // DC3: the post-process Rnd::DoPostProcess runs (its blacklight override,
+    // else its override, else the selected one).
+    if constexpr (rndshape::kDC3RetailPost) pp = rndshape::ActivePostProc();
     if (!pp) return;
 
     // Depth of field first. As in retail, where the blur is mixed in by the

@@ -14,14 +14,37 @@
 #include "rndobj/PostProc.h"
 #include "rndobj/ColorXfm.h"
 #include "rndobj/HiResScreen.h"
+#include "rndobj/Rnd.h"
 #include "obj/Data.h"
 #include "os/System.h"
 #include "os/Debug.h"
 
 #include <cstdlib>
 #include <cstring>
+#include <type_traits>
+#include <utility>
 
 namespace rndshape {
+
+namespace {
+template <class R, class = void> struct RndHasBlacklightOverride : std::false_type {};
+template <class R>
+struct RndHasBlacklightOverride<
+    R, std::void_t<decltype(std::declval<const R &>().GetPostProcBlacklightOverride()),
+                   decltype(static_cast<RndPostProc *>(std::declval<R &>().GetPostProcOverride()))>>
+    : std::true_type {};
+template <class R> RndPostProc *ActiveOf(R &rnd) {
+    if constexpr (RndHasBlacklightOverride<R>::value) {
+        if (RndPostProc *b = rnd.GetPostProcBlacklightOverride()) return b;
+        if (RndPostProc *o = rnd.GetPostProcOverride()) return o;
+    } else {
+        (void)rnd;
+    }
+    return RndPostProc::Current();
+}
+}  // namespace
+
+RndPostProc *ActivePostProc() { return ActiveOf(TheRnd); }
 
 int RetailPostMode() {
     if constexpr (!kDC3RetailPost) {
@@ -150,6 +173,17 @@ void FillDC3(const P *pp, float flickerMul, RetailPostParams &out) {
             out.motionBlurParams[1] = mw.green * blend;
             out.motionBlurParams[2] = mw.blue * blend;
             out.motionBlurParams[3] = mw.alpha;
+        }
+        // CheckHueConverge (DoHueConverge() is the merged_Returns1 ICF stub,
+        // always true): c222 = (hue_target / 360 + 0.5, hue_focus,
+        // blend_amount, brightness_power); bit 62 (unk2a) = blend_amount > 0.
+        const float hueBlend = pp->GetHueBlendAmount();
+        out.hueConverge = hueBlend > 0.0f;
+        if (out.hueConverge) {
+            out.hueParams[0] = pp->GetHueTarget() * (1.0f / 360.0f) + 0.5f;
+            out.hueParams[1] = pp->GetHueFocus();
+            out.hueParams[2] = hueBlend;
+            out.hueParams[3] = pp->GetHueBrightnessPower();
         }
         // The noise map, seeds and scales are filled by PostProcPass, which
         // owns the stationary seed (NgPostProc::mRandomSeed).

@@ -46,8 +46,9 @@ struct DC3CompositeUniforms {
     float motion[4];       // c105 (CheckMotionBlur)
     float motionMode[4];   // x: 0 off, 1 prev valid, 2 first frame (no prev yet);
                            // y: 1 = the glare composite (bit 37) instead of bit 4
+    float hue[4];          // c222 (CheckHueConverge); z (blend_amount) 0 = off
 };
-static_assert(sizeof(DC3CompositeUniforms) == 176, "DC3CompositeUniforms layout");
+static_assert(sizeof(DC3CompositeUniforms) == 192, "DC3CompositeUniforms layout");
 
 const char* kDC3Shader = R"WGSL(
 struct TapUB {
@@ -65,6 +66,7 @@ struct DC3UB {
     noiseMode: vec4f,
     motion: vec4f,
     motionMode: vec4f,
+    hue: vec4f,
 };
 
 @group(0) @binding(0) var srcTex: texture_2d<f32>;
@@ -205,6 +207,64 @@ fn grade_dc3(uv: vec2f) -> vec3f {
     return c;
 }
 
+// Bit 62, NgPostProc::CheckHueConverge (postprocess_4000000001200010 and its
+// siblings, decoded and checked against a Xenos interpreter of the listing):
+// the colour (after motion blur, unclamped) to HSV, the hue moved to
+// frac(T + 2 dist (1 - focus)), dist = the circular distance of H from T =
+// c222.x, V raised to c222.w unless it is 1, back to RGB, mixed in by c222.z.
+fn hue_converge(c: vec3f) -> vec3f {
+    let mx = max(max(c.r, c.g), c.b);
+    let mn = min(min(c.r, c.g), c.b);
+    let delta = mx - mn;
+    var h = 0.0;
+    var s = 0.0;
+    if (delta != 0.0) {
+        s = delta / mx;
+        let d = ((vec3f(mx) - c) * (1.0 / 6.0) + vec3f(delta * 0.5)) / delta;
+        if (c.r == mx) {
+            h = d.b - d.g;
+        } else if (c.g == mx) {
+            h = 1.0 / 3.0 + d.r - d.b;
+        } else if (c.b == mx) {
+            h = 2.0 / 3.0 + d.g - d.r;
+        }
+        if (h < 0.0) { h = h + 1.0; }
+        if (h > 1.0) { h = h - 1.0; }
+    }
+    let dd = abs(h - cu.hue.x);
+    let dist = select(dd, 1.0 - dd, dd > 0.5);
+    var hn = cu.hue.x + 2.0 * dist * (1.0 - cu.hue.y);
+    if (hn > 1.0) { hn = hn - 1.0; }
+    if (hn < 0.0) { hn = hn + 1.0; }
+    var v = mx;
+    if (cu.hue.w != 1.0) {
+        v = select(exp2(cu.hue.w * log2(abs(mx))), 0.0, mx == 0.0);
+    }
+    var rgb = vec3f(v);
+    if (s != 0.0) {
+        let h6 = hn * 6.0;
+        let i = floor(h6);
+        let f = h6 - i;
+        let p = v * (1.0 - s);
+        let q = v * (1.0 - f * s);
+        let t = v * (1.0 - (1.0 - f) * s);
+        if (i == 0.0) {
+            rgb = vec3f(v, t, p);
+        } else if (i == 1.0) {
+            rgb = vec3f(q, v, p);
+        } else if (i == 2.0) {
+            rgb = vec3f(p, v, t);
+        } else if (i == 3.0) {
+            rgb = vec3f(p, q, v);
+        } else if (i == 4.0) {
+            rgb = vec3f(t, p, v);
+        } else {
+            rgb = vec3f(v, p, q);
+        }
+    }
+    return c + (rgb - c) * cu.hue.z;
+}
+
 @fragment fn fs_composite_dc3(in: VOut) -> @location(0) vec4f {
     // Inspection views: the bloom mask (scene alpha) and the bloom term.
     if (cu.bloomColor.w > 2.5) {
@@ -217,7 +277,11 @@ fn grade_dc3(uv: vec2f) -> vec3f {
         let a = textureSampleLevel(srcTex, samp, in.uv, 0.0).a;
         return vec4f(a, a, a, 1.0);
     }
-    return vec4f(clamp(grade_dc3(in.uv), vec3f(0.0), vec3f(1.0)), 1.0);
+    var c = grade_dc3(in.uv);
+    if (cu.hue.z > 0.0) {
+        c = hue_converge(c);
+    }
+    return vec4f(clamp(c, vec3f(0.0), vec3f(1.0)), 1.0);
 }
 
 // Bit 24, NgPostProc::CheckMotionBlur (postprocess_0000000001000010 and its
@@ -234,7 +298,7 @@ struct MBOut {
     var o: vec3f;
     var a: f32;
     if (cu.motionMode.x > 1.5) {
-        o = clamp(c, vec3f(0.0), vec3f(1.0));
+        o = c;
         a = sa;
     } else {
         let prev = textureSampleLevel(prevTex, samp, in.uv, 0.0);
@@ -243,9 +307,14 @@ struct MBOut {
             r = clamp(cu.motion.w * (prev.a - sa) / prev.a, 0.0, 1.0);
         }
         let k = max(vec3f(r), cu.motion.xyz);
-        o = clamp(c + (prev.rgb - c) * k, vec3f(0.0), vec3f(1.0));
+        o = c + (prev.rgb - c) * k;
         a = clamp(sa + r * (prev.a - sa), 0.0, 1.0);
     }
+    // Bit 62 follows the motion blur, so the next frame's tf14 carries it.
+    if (cu.hue.z > 0.0) {
+        o = hue_converge(o);
+    }
+    o = clamp(o, vec3f(0.0), vec3f(1.0));
     var out: MBOut;
     out.frame = vec4f(o, 1.0);
     out.next = vec4f(o, a);
@@ -606,6 +675,9 @@ void RB3RetailPost::RunDC3Composite(wgpu::CommandEncoder& encoder, const wgpu::T
     }
     // Bit 37 (the glare composite) replaces bit 4's screen blend.
     cu.motionMode[1] = (p.glare && p.bloom && p.debugView == 0) ? 1.0f : 0.0f;
+    if (p.hueConverge && p.debugView == 0) {
+        std::memcpy(cu.hue, p.hueParams, sizeof(cu.hue));
+    }
     uint64_t off = (uint64_t)(mSlot++ % kSlots) * kSlotStride;
     gpu.Queue().WriteBuffer(mUniforms, off, &cu, sizeof(cu));
 

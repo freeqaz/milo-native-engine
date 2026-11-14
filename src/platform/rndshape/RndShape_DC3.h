@@ -450,6 +450,13 @@ inline bool RetailBloomMaskActive() {
         return m == 1 || m == 3 || m == 4;
     }
 }
+// The post-process Rnd::DoPostProcess runs and Rnd::BeginDrawing takes the
+// bloom colour from: the blacklight override (set_postproc_blacklight_override,
+// the voice-control letterbox's PostProc_Blacklight.pp), else the override
+// (set_postproc_override), else RndPostProc::Current(). dc3-decomp's Rnd
+// carries the HX_NATIVE accessor; rb3-xenon (no blacklight field, and an
+// override typed PostProcessor*) gets Current() (DC3PostChain.cpp).
+RndPostProc *ActivePostProc();
 // Fills the chain's parameters from the current RndPostProc (DC3PostChain.cpp).
 void FillRetailPost(const RndPostProc *pp, float flickerMul, ::RetailPostParams &out);
 // SetBloomColor's c7 scale: 1/threshold above 1, else 1 (DC3PostChain.cpp).
@@ -512,7 +519,7 @@ inline float BloomMaskScale(const M &m, bool envFadeOutCancels = true) {
         return 0.0f;
     } else {
         if (!m || !RetailBloomMaskActive()) return 0.0f;
-        const RndPostProc *pp = RndPostProc::Current();
+        const RndPostProc *pp = ActivePostProc();
         if (!pp) return 0.0f;
         if (envFadeOutCancels) {
             const RndEnviron *env = RndEnviron::Current();

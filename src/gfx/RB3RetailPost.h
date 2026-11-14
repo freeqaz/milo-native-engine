@@ -115,6 +115,14 @@ struct RetailPostParams {
     // bloom_glare.ps (ten taps towards the screen centre, harmonic mean); the
     // composite (bit 37 instead of bit 4) ADDS 0.5 * c6 * set0 to the scene.
     bool glare = false;
+    // NgPostProc::CheckHueConverge, postprocess.ps bit 62 (blend_amount > 0),
+    // last of all (after motion blur): the colour to HSV (EasyRGB), its hue
+    // replaced by frac(T + 2 dist(H, T) (1 - focus)), dist the circular hue
+    // distance and T = c222.x, V raised to brightness_power, back to RGB and
+    // mixed in by blend_amount. hueParams = c222 = (hue_target / 360 + 0.5,
+    // hue_focus, blend_amount, brightness_power).
+    bool hueConverge = false;
+    float hueParams[4] = {0, 0, 0, 1};
     // ---- end np-gfx-post ----
 };
 
