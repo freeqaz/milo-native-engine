@@ -294,7 +294,10 @@ void DrawRect2D::Draw(wgpu::RenderPassEncoder& pass, const Hmx::Rect& rect, RndM
     bgDesc.layout = m2dBindGroupLayout;
     bgDesc.entryCount = 2;
     bgDesc.entries = bgEntries;
-    wgpu::BindGroup bg = dev.CreateBindGroup(&bgDesc);
+    // Same view + sampler is the same group: cached (PLAN H-30), dropped
+    // with the texture through WgpuRnd::ForgetTextureView.
+    wgpu::BindGroup bg = gWgpuRnd ? gWgpuRnd->BindGroups().GetOrCreate(dev, bgDesc)
+                                  : dev.CreateBindGroup(&bgDesc);
 
     pass.SetPipeline(pipe);
     pass.SetBindGroup(0, bg);
