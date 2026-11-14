@@ -80,6 +80,8 @@ void ClearMeshGpuCache() {
     sMeshGpuData.clear();
 }
 
+size_t GpuMeshCount() { return sMeshGpuData.size(); }
+
 void SetMeshDebugLabel(RndMesh* mesh, const char* label) {
     sMeshGpuData[mesh].debugLabel = label;
 }

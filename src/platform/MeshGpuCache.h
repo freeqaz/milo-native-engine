@@ -46,6 +46,9 @@ void InvalidateGpuMesh(RndMesh* mesh);
 // vkDestroy* pointer).
 void ClearMeshGpuCache();
 
+// Live GPU mesh entries (vertex + index buffer pairs), for [GPUCOUNT].
+size_t GpuMeshCount();
+
 // Set a debug label for GPU buffer names + frame capture.
 void SetMeshDebugLabel(RndMesh* mesh, const char* label);
 
