@@ -55,10 +55,13 @@ float MaterialAlphaScale(bool intensify, bool retailMaterialTerms);
 //   Sharpened        DC3_LOOK=enhanced, every other alpha cut: one whose cut
 //                    is a hard step (Src hair and crowd clothing at 110-150,
 //                    SrcAlpha palms and peak bands at 90-110, ...). A coverage
-//                    mask from the TEXTURE alpha against the threshold over
-//                    the pixel footprint (standard_wgsl.inc fs_cutout), 1
-//                    inside the cut, so the blend is not attenuated twice and
-//                    a material fade does not erode the shape.
+//                    mask from the quantity retail's test tests (texel alpha
+//                    x material fade x vertex alpha) against the threshold,
+//                    sharpened over the pixel footprint (standard_wgsl.inc
+//                    fs_cutout): 1 inside the cut, so the blend is not
+//                    attenuated twice, and a fade erodes the shape exactly
+//                    where the original's test would, with an anti-aliased
+//                    edge.
 enum class CutCoverage : unsigned char { None, AlphaToCoverage, Sharpened };
 // Whether a blend weights the source by its alpha (SrcAlpha, SrcAlphaAdd,
 // PreMultAlpha).

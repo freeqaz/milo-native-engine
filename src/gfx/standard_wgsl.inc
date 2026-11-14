@@ -32,16 +32,17 @@ override kSkipFringeFade: bool = false;
 // per pipeline by PipelineManager for an alpha-cut material whose cut is a
 // hard step (MaterialCutCoverage == Sharpened) in a multisampled pass, whose
 // fragment entry is then fs_cutout. The alpha test becomes a coverage mask
-// computed from the TEXTURE alpha against the cut threshold, sharpened to the
-// pixel footprint (cutoutCoverage below), so a cutout's edge is anti-aliased
-// without thinning it. kCutoutSamples is the pass's sample count.
+// computed from the alpha the test tests (texel x material fade x vertex)
+// against the cut threshold, sharpened to the pixel footprint (cutoutCoverage
+// below), so a cutout keeps retail's shape with an anti-aliased edge.
+// kCutoutSamples is the pass's sample count.
 override kCutoutCoverage: bool = false;
 override kCutoutSamples: u32 = 4u;
 // The coverage fs_cutout turns into its sample mask (shadeStandard sets it).
 var<private> gCutCoverage: f32 = 1.0;
 
 // Coverage of a cutout texel: the edge sits at the cut threshold and ramps
-// over one pixel footprint (w = fwidth of the texel alpha), so a filtered or
+// over one pixel footprint (w = fwidth of the tested alpha), so a filtered or
 // minified edge stays as wide as the alpha test drew it and only its last
 // pixel blends. A fully transparent texel never covers anything, so a cut at
 // threshold 0 (pass where alpha > 0) does not grow a half-covered border.
@@ -1506,12 +1507,6 @@ fn shadeStandard(surfaceInput: VertexOutput) -> vec4f {
         }
     }
     var baseColor = vec4f(matRgb * vertexTint, materialAlpha * vertexAlpha);
-    // Enhanced cutout coverage (kCutoutCoverage): the alpha that is not the
-    // texel's (material fade x vertex alpha), and the texel alpha with its
-    // pixel footprint. Untextured: a texel alpha of 1.
-    let cutFadeA = baseColor.a;
-    var cutTexA = 1.0;
-    var cutTexW = 0.0;
 
     // The texel alpha colour modulation reads (1 untextured: no band tint).
     var colorModTexA = 1.0;
@@ -1524,10 +1519,14 @@ fn shadeStandard(surfaceInput: VertexOutput) -> vec4f {
             baseColor = vec4f(baseColor.rgb * diffuseSample.rgb,
                               baseColor.a * colorModAlpha(diffuseSample.a));
         }
-        cutTexA = select(colorModAlpha(diffuseSample.a), diffuseSample.a,
-                         isEnabled(material.useAlphaAsRGB));
-        cutTexW = fwidth(cutTexA);
     }
+    // Enhanced cutout coverage (kCutoutCoverage) tests the quantity the
+    // original's alpha test tests: texel alpha x material fade x vertex alpha
+    // (nothing below changes baseColor.a), with its pixel footprint taken here
+    // in uniform control flow. A fade with a constant texel alpha has no
+    // footprint, so it steps at the threshold exactly as retail's test does.
+    let cutA = baseColor.a;
+    let cutW = fwidth(cutA);
 
     // DC3 retail environment map (scene.retailLighting 2, standard.ps option
     // bit 3; permutations 0x30018, 0x30019, 0x80000030019 disassembled in
@@ -1570,12 +1569,9 @@ fn shadeStandard(surfaceInput: VertexOutput) -> vec4f {
     baseColor = vec4f(baseColor.rgb * material.intensify, baseColor.a);
 
     if (kCutoutCoverage) {
-        // A fade that alone fails the cut hides the draw, as the alpha test
-        // would; otherwise the fade does not erode the cutout's shape.
-        if (cutFadeA < material.alphaThreshold) {
-            discard;
-        }
-        gCutCoverage = cutoutCoverage(cutTexA, material.alphaThreshold, cutTexW);
+        // The fade erodes the cutout's shape as the alpha test does on retail
+        // (same product, same threshold); only the edge is anti-aliased.
+        gCutCoverage = cutoutCoverage(cutA, material.alphaThreshold, cutW);
         if (gCutCoverage <= 0.0) {
             discard;
         }
