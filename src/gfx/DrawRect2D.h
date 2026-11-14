@@ -1,6 +1,8 @@
 #pragma once
 #include <webgpu/webgpu_cpp.h>
 
+#include "gfx/RenderPipelineCache.h"
+
 class GpuDevice;
 class PipelineManager;
 class RndMat;
@@ -21,6 +23,8 @@ private:
     wgpu::ShaderModule m2dShader;
     wgpu::BindGroupLayout m2dBindGroupLayout;
     wgpu::PipelineLayout m2dPipelineLayout;
+    // Pipelines by blend/target/depth/samples/mask/texture variant.
+    RenderPipelineCache m2dPipelines;
     // Per-frame arena of 6-vertex rects: Queue::WriteBuffer runs ahead of the
     // whole frame's command buffer, so every rect needs its own slot.
     wgpu::Buffer m2dVertexBuffer;
