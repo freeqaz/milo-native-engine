@@ -215,7 +215,9 @@ void MaterialShaderColor(const Hmx::Color& matColor, BaseMaterial::Blend blend, 
 }
 
 float MaterialAlphaScale(bool intensify, bool retailMaterialTerms) {
-    return intensify && retailMaterialTerms ? 2.0f : 1.0f;
+    // UI phase: the retail terms. World: the DC3 shape's standard.ps rule
+    // (rndshape::kIntensifyScalesAlpha); rb3-xenon and rb3 keep 1.
+    return intensify && (retailMaterialTerms || rndshape::kIntensifyScalesAlpha) ? 2.0f : 1.0f;
 }
 
 static UiDrawTerms CurrentUiDrawTerms() {
