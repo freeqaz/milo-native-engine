@@ -527,6 +527,18 @@ constexpr bool kAlphaBlendMax = !kDC3RetailPost;
 // target saturates the product (material.gammaShading). rb3-xenon keeps the
 // linear model with the sRGB output encode.
 constexpr bool kGammaSpaceShading = kDC3RetailModel;
+// A Multiply-blend material is lit like any other (np-gfx-light round 3).
+// NgMat::SetBasicState gives kBlendMultiply src ZERO / dest SRCCOLOR and fade
+// params (1,1,1,1), and nothing in CalcShaderOpts or SetupAmbient looks at the
+// blend, so the image shades it c0 * (c1 + box + points + proj) * texel and the
+// target multiplies the frame by that (dc3-decomp rndobj/Mat_NG.cpp). The
+// rollerrink floor's Rink*_overlay.mesh (Rink_lightCatcher.mat, no texture,
+// Rink_lightCatcher.env: ambient 0.365 and mirrorball_spotlight_02's gobo) is
+// such a "light catcher": it darkens the floor to 0.365 outside the light.
+// MaterialSetup forced every Multiply material prelit (identity) for the old
+// heuristic lighting, which brightened it; the DC3 retail model does not
+// need that. rb3-xenon keeps the forced prelit.
+constexpr bool kMultiplyBlendIsLit = kDC3RetailModel;
 // The pseudo-HDR bloom mask (ShaderOptions bit 22): retail DC3's standard.ps /
 // particles.ps / multimesh write alpha = sat(dot(rgb, c7) * c5.z) for a
 // material whose NgMat::AllowHDR() holds, drawn into the main frame
@@ -603,8 +615,9 @@ const float *CapturedVConstant(int reg);
 // 1 - 0.75 * coverage * colour * sat(c65 . N) (standard.ps 0x100010030011).
 // The native form: WriteSceneLighting finds that light (as NgEnviron::Select
 // does) and puts its cone in SceneUniforms.lightViewProj with
-// shadowEnabled = 2; WgpuRnd::EndDrawing then calls CollectProjShadowCasters
-// and draws the casters into ShadowPass's map, which the next frame samples.
+// shadowEnabled = 2 + its atlas tile; WgpuRnd::EndDrawing then calls
+// CollectProjShadowCasterSets and draws each light's casters into its tile of
+// ShadowPass's map, which the next frame samples.
 // rb3-xenon keeps the generic pre-pass. Defined in DC3SceneLighting.cpp.
 constexpr bool kGenericShadowPass = !kDC3RetailModel;
 
@@ -615,6 +628,14 @@ constexpr bool kGenericShadowPass = !kDC3RetailModel;
 // follows the image; rb3-xenon keeps the native rule (its renders are pinned
 // byte-identical).
 constexpr bool kSelectDefaultEnvEachFrame = kDC3RetailModel;
+// Every projected light with shadow objects that this frame's environs
+// published (up to kMaxProjShadowMaps, in first-published order), one set per
+// light with its atlas tile; ends the frame (the next frame's receivers read
+// these maps). Returns the number of sets.
+constexpr int kMaxProjShadowMaps = 4;
+int CollectProjShadowCasterSets(std::vector<ProjShadowCasters> &out);
+// The same, keeping only the first set (tile 0). For callers that drive one
+// light at a time (tests).
 bool CollectProjShadowCasters(ProjShadowCasters &out);
 // The projected light's gobo for the scene WriteSceneLighting just wrote
 // (projected_blend 0: tf10, added as (1 - coverage) gobo c69 sat(c65 . N),

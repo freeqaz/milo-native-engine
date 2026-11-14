@@ -611,6 +611,9 @@ float BloomMaskScale(const MatView &m, bool envFadeOutCancels = true);
 // (standard_wgsl.inc, material.gammaShading; particles likewise, Part_Wgpu).
 // Display gamma is separate: see DisplayGamma below.
 constexpr bool kGammaSpaceShading = true;
+// Multiply-blend materials stay forced prelit (MaterialSetup); see the DC3
+// shape's kMultiplyBlendIsLit. Not measured for RB3 Wii.
+constexpr bool kMultiplyBlendIsLit = false;
 // The display gamma ramp. DxRnd::InitRenderState ends in DxRnd::SetupGamma,
 // which reads the system config's (rnd (gamma g)) and, when present, sets
 // D3DDevice_SetGammaRamp with entry i = (u16)(pow(i / 256, g) * 1024) * 64
@@ -654,6 +657,7 @@ void FillMeshApproxLighting(RndMesh *mesh, float box[6][4], float retail[4]);
 constexpr bool kGenericShadowPass = true;
 constexpr bool kSelectDefaultEnvEachFrame = false;
 inline bool CollectProjShadowCasters(ProjShadowCasters &) { return false; }
+inline int CollectProjShadowCasterSets(std::vector<ProjShadowCasters> &) { return 0; }
 inline RndTex *SceneProjTexture() { return nullptr; }
 
 // ---- per-draw state log ----------------------------------------------------
