@@ -72,8 +72,10 @@ CutCoverage CutCoverageRule(bool alphaCut, int blend, int threshold, milo::LookP
 // The rule for a material under the process look profile (milo::Look()).
 CutCoverage MaterialCutCoverage(BaseMaterial* mat);
 // The shader's alpha threshold uniform for an alpha cut at `threshold`
-// (0..255): 0 without a cut; with one, threshold / 255, nudged past it where
-// the test is retail's strict "alpha > threshold" (rndshape::kAlphaTestGreater).
+// (0..255): 0 without a cut; with one, threshold / 255, or the next float
+// above it (at least FLT_MIN) where the test is retail's strict
+// "alpha > threshold" (rndshape::kAlphaTestGreater), so the shader's
+// `a < uniform` discard is `a <= threshold`.
 float MaterialAlphaThreshold(bool alphaCut, int threshold);
 // The material colour as the shader sees it. A premultiplied-alpha material
 // (blend 7, pipeline One / OneMinusSrcAlpha) has its rgb scaled by its alpha

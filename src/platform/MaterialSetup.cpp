@@ -18,6 +18,7 @@
 #include <cstring>
 #include <cmath>
 #include <algorithm>
+#include <limits>
 #include <cstdio>
 
 // Detect venue TV/arcade screen materials that expect a dynamically-assigned
@@ -270,9 +271,16 @@ CutCoverage MaterialCutCoverage(BaseMaterial* mat) {
 
 float MaterialAlphaThreshold(bool alphaCut, int threshold) {
     if (!alphaCut) return 0.0f;
-    // Retail's strict test (rndshape::kAlphaTestGreater): the shader discards
-    // below the threshold, so nudge it past the reference value itself.
-    return threshold / 255.0f + (rndshape::kAlphaTestGreater ? 1e-5f : 0.0f);
+    const float ref = threshold / 255.0f;
+    if (!rndshape::kAlphaTestGreater) return ref;
+    // Retail's strict test (D3DCMP_GREATER): the shader discards `a < uniform`,
+    // so the uniform is the next float above the reference, making the discard
+    // `a <= ref` exactly -- threshold 0 still drops alpha-0 texels and keeps
+    // them out of the depth buffer, as GREATER 0 does. FLT_MIN floor: the next
+    // float above 0 is a denormal, which a GPU may flush to 0 (dropping
+    // nothing). After the lighting lane's MaterialAlphaTestRef (np-gfx-hud
+    // e75ea1a).
+    return std::max(std::nextafter(ref, 2.0f), std::numeric_limits<float>::min());
 }
 
 float MaterialAlphaScale(bool intensify, bool retailMaterialTerms) {
