@@ -308,9 +308,10 @@ void DrawMeshImmediate(RndMesh* mesh) {
     wgpu::Sampler sampler = gWgpuRnd->Gpu().GetSampler(matParams.samplerDesc);
     wgpu::Sampler mapSampler = gWgpuRnd->Gpu().GetSampler(matParams.mapSamplerDesc);
 
-    wgpu::BindGroup matBG = gWgpuRnd->CreateMaterialBindGroup(
-        matOffset, sizeof(MaterialUniforms), matParams.texViews, sampler, mapSampler);
-    pass.SetBindGroup(1, matBG);
+    // Groups 1-3 are cached by the resources they bind; this draw's uniform
+    // blocks are reached through the dynamic offsets (PLAN H-30).
+    wgpu::BindGroup matBG = gWgpuRnd->MaterialBindGroup(matParams.texViews, sampler, mapSampler);
+    pass.SetBindGroup(1, matBG, 1, &matOffset);
 
     // --- Object uniforms (group 2) ---
     ObjectUniforms objUni{};
@@ -329,9 +330,8 @@ void DrawMeshImmediate(RndMesh* mesh) {
     uint32_t objOffset = gWgpuRnd->ObjectRing().Write(
         gWgpuRnd->Gpu().Queue(), &objUni, sizeof(objUni));
 
-    wgpu::BindGroup objBG = gWgpuRnd->CreateObjectBindGroup(
-        objOffset, sizeof(ObjectUniforms));
-    pass.SetBindGroup(2, objBG);
+    wgpu::BindGroup objBG = gWgpuRnd->ObjectBindGroup();
+    pass.SetBindGroup(2, objBG, 1, &objOffset);
 
     // --- Bone uniforms (group 3) ---
     uint64_t boneToken = 0;   // draw-log identity of the bone data bound
@@ -342,15 +342,15 @@ void DrawMeshImmediate(RndMesh* mesh) {
         uint32_t boneOffset = gWgpuRnd->BoneRing().Write(
             gWgpuRnd->Gpu().Queue(), &boneUni, sizeof(boneUni));
 
-        wgpu::BindGroup boneBG = gWgpuRnd->CreateBoneBindGroup(
-            boneOffset, sizeof(BoneUniforms));
-        pass.SetBindGroup(3, boneBG);
+        wgpu::BindGroup boneBG = gWgpuRnd->BoneBindGroup();
+        pass.SetBindGroup(3, boneBG, 1, &boneOffset);
         if (rndshape::DrawLogActive())
             boneToken = DrawLogToken(gWgpuRnd->BoneRing().Buffer().Get(), boneOffset);
     } else {
         // Static mesh: bind dummy bone bind group (pipeline layout requires group 3)
         EnsureDummyBoneBindGroup();
-        pass.SetBindGroup(3, GetDummyBoneBindGroup());
+        const uint32_t noOffset = 0;  // the dummy buffer holds one block
+        pass.SetBindGroup(3, GetDummyBoneBindGroup(), 1, &noOffset);
         if (rndshape::DrawLogActive())
             boneToken = DrawLogToken(GetDummyBoneBindGroup().Get(), 0);
     }
@@ -433,9 +433,9 @@ void DrawMeshImmediate(RndMesh* mesh) {
             uint32_t npMatOffset = gWgpuRnd->MaterialRing().Write(
                 gWgpuRnd->Gpu().Queue(), &npParams.uniforms, sizeof(npParams.uniforms));
 
-            wgpu::BindGroup npMatBG = gWgpuRnd->CreateMaterialBindGroup(
-                npMatOffset, sizeof(MaterialUniforms), npParams.texViews, sampler, mapSampler);
-            pass.SetBindGroup(1, npMatBG);
+            wgpu::BindGroup npMatBG =
+                gWgpuRnd->MaterialBindGroup(npParams.texViews, sampler, mapSampler);
+            pass.SetBindGroup(1, npMatBG, 1, &npMatOffset);
 
             // Object + bone bind groups unchanged, just re-draw
             pass.DrawIndexed(meshData.numIndices);
@@ -478,20 +478,21 @@ void DrawMeshShadow(RndMesh* mesh) {
     uint32_t objOffset = gWgpuRnd->ObjectRing().Write(
         gWgpuRnd->Gpu().Queue(), &objUni, sizeof(objUni));
 
-    // Create object bind group using shadow-specific layout
+    // Object bind group on the shadow layout: one cached group over the ring,
+    // this draw's block reached through the dynamic offset (PLAN H-30).
     {
         wgpu::BindGroupEntry entry{};
         entry.binding = 0;
         entry.buffer = gWgpuRnd->ObjectRing().Buffer();
-        entry.offset = objOffset;
+        entry.offset = 0;
         entry.size = sizeof(ObjectUniforms);
 
         wgpu::BindGroupDescriptor bgDesc{};
         bgDesc.layout = gWgpuRnd->ShadowObjectBGL();
         bgDesc.entryCount = 1;
         bgDesc.entries = &entry;
-        wgpu::BindGroup objBG = gWgpuRnd->Gpu().Device().CreateBindGroup(&bgDesc);
-        pass.SetBindGroup(1, objBG);
+        wgpu::BindGroup objBG = gWgpuRnd->BindGroups().GetOrCreate(gWgpuRnd->Gpu().Device(), bgDesc);
+        pass.SetBindGroup(1, objBG, 1, &objOffset);
     }
 
     // Bone uniforms (group 2) — only for skinned
@@ -505,15 +506,15 @@ void DrawMeshShadow(RndMesh* mesh) {
         wgpu::BindGroupEntry entry{};
         entry.binding = 0;
         entry.buffer = gWgpuRnd->BoneRing().Buffer();
-        entry.offset = boneOffset;
+        entry.offset = 0;
         entry.size = sizeof(BoneUniforms);
 
         wgpu::BindGroupDescriptor bgDesc{};
         bgDesc.layout = gWgpuRnd->ShadowBoneBGL();
         bgDesc.entryCount = 1;
         bgDesc.entries = &entry;
-        wgpu::BindGroup boneBG = gWgpuRnd->Gpu().Device().CreateBindGroup(&bgDesc);
-        pass.SetBindGroup(2, boneBG);
+        wgpu::BindGroup boneBG = gWgpuRnd->BindGroups().GetOrCreate(gWgpuRnd->Gpu().Device(), bgDesc);
+        pass.SetBindGroup(2, boneBG, 1, &boneOffset);
     }
 
     // Draw

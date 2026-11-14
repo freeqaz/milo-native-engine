@@ -9,6 +9,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <strings.h>  // strncasecmp
 #include <sys/stat.h>
 
 #ifdef __EMSCRIPTEN__
@@ -35,8 +36,13 @@ protected:
         // mFilename is already qualified by AsyncFile::Init()
         mFp = fopen(mFilename.c_str(), fmode);
 #ifdef __EMSCRIPTEN__
-        // On-demand fetch: if file isn't in MEMFS, try fetching from server
-        if (!mFp && !(mMode & 0x300)) {  // read-only modes only
+        // On-demand fetch: if file isn't in MEMFS, try fetching from server.
+        // Not for the Xbox dev kit's HDD ("devkit:\\..."): games probe it for
+        // optional overrides (dc3: devkit:\\dancers.dta, the locale_keep.dta
+        // alternate) and a browser never has one, so the request could only
+        // 404 -- a blocking round trip and two console errors each.
+        const bool devkitDrive = strncasecmp(mFilename.c_str(), "devkit:", 7) == 0;
+        if (!mFp && !(mMode & 0x300) && !devkitDrive) {  // read-only modes only
             if (WebAssetsFetchSync(mFilename.c_str())) {
                 mFp = fopen(mFilename.c_str(), fmode);
             }

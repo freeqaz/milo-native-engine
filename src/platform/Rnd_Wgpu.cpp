@@ -98,6 +98,22 @@ Rnd* TheRnd = &gWgpuRndInstance;
 #endif
 WgpuRnd* gWgpuRnd = &gWgpuRndInstance;
 
+static NativeRenderFatalFn gNativeRenderFatalHandler = nullptr;
+void SetNativeRenderFatalHandler(NativeRenderFatalFn fn) { gNativeRenderFatalHandler = fn; }
+
+[[noreturn]] static void NativeRenderFatal(const char* reason) {
+    fflush(stdout);
+    fprintf(stderr,
+            "DC3 Native: FATAL - %s.\n"
+            "  Nothing can be drawn, so the game stops here (exit %d) rather than run\n"
+            "  without a picture. On Linux, MILO_GLFW_PLATFORM=x11 opens the window\n"
+            "  through X11/XWayland; MILO_HEADLESS=1 runs without a window.\n",
+            reason, kNativeSurfaceExitCode);
+    fflush(stderr);
+    if (gNativeRenderFatalHandler) gNativeRenderFatalHandler(reason, kNativeSurfaceExitCode);
+    exit(kNativeSurfaceExitCode);
+}
+
 // Exposed for input subsystem (Joypad_Native, Keyboard_Native)
 #ifndef __EMSCRIPTEN__
 GLFWwindow *gNativeWindow = nullptr;
@@ -311,8 +327,27 @@ void WgpuRnd::Init() {
         desc.width = getenv("MILO_WIDTH") ? atoi(getenv("MILO_WIDTH")) : 1280;
         desc.height = getenv("MILO_HEIGHT") ? atoi(getenv("MILO_HEIGHT")) : 720;
         desc.title = "DC3 Native — WebGPU";
+        // Windowed, the frame is the Rnd virtual resolution (what viewports and
+        // UI layout are computed in), scaled into whatever size the window has
+        // (dc3 PLAN H-18; gfx/PresentScale.h). MILO_WIDTH/HEIGHT size the
+        // window. Before, the frame was the window, and anything larger than
+        // the virtual resolution got the picture in its top-left corner.
+        // MILO_PRESENT_SCALE=0 restores that.
+        if (!desc.headless && mWidth > 0 && mHeight > 0) {
+            const char* ps = getenv("MILO_PRESENT_SCALE");
+            if (!(ps && ps[0] == '0' && ps[1] == '\0')) {
+                desc.frameWidth = mWidth;
+                desc.frameHeight = mHeight;
+            }
+        }
 
         if (!mGpu.Init(desc)) {
+            if (!desc.headless && mGpu.InitFailure() == GpuInitFailure::SurfaceUnusable) {
+                // A window opened and cannot be drawn into: say so and stop.
+                // Falling back to headless here ran the game invisibly.
+                NativeRenderFatal(("the window cannot be presented to: " +
+                                   mGpu.SurfaceFailureReason()).c_str());
+            }
             printf("DC3 Native: GPU init failed, falling back to headless\n");
             desc.headless = true;
             if (!mGpu.Init(desc)) {
@@ -337,7 +372,9 @@ void WgpuRnd::InitGpuResources() {
     if (mGpuResourcesReady) return; // idempotent — already initialized
     mGpuResourcesReady = true;
 
-    // Initialize pipeline manager
+    // Initialize pipeline manager. The mesh path binds its material, object
+    // and bone uniforms with dynamic offsets into cached bind groups (H-30).
+    mPipelines.SetDynamicUniformOffsets(true);
     mPipelines.Init(&mGpu);
     mPipelines.SetAlphaBlendMax(rndshape::kAlphaBlendMax);
     // Create per-draw ring buffers (64KB each — enough for ~250 draws/frame at 256-byte alignment)
@@ -347,6 +384,15 @@ void WgpuRnd::InitGpuResources() {
     mObjectRing.Init(mGpu.Device(), 64 * 1024, "ObjectUniforms");
     // Bone ring needs more space: 2560 bytes per skinned draw (rounded to 2816 at 256 alignment)
     mBoneRing.Init(mGpu.Device(), 256 * 1024, "BoneUniforms");
+    // Staged: a frame's uniform blocks reach the GPU in one WriteBuffer per
+    // ring, issued by FlushUniformRings before the frame Submit (H-31).
+    mSceneRing.SetStaged(true);
+    mMaterialRing.SetStaged(true);
+    mObjectRing.SetStaged(true);
+    mBoneRing.SetStaged(true);
+    if (const char* c = getenv("MILO_GPU_COUNTERS")) {
+        mGpuCountersEvery = atoi(c) > 0 ? atoi(c) : 600;
+    }
 
     // Create depth texture (use GPU framebuffer dimensions, not Rnd virtual resolution)
     CreateDepthTexture(mGpu.WindowWidth(), mGpu.WindowHeight());
@@ -481,6 +527,9 @@ void WgpuRnd::Terminate() {
     mProjLightTexView = nullptr;
     mMsaaTex = nullptr;
     mMsaaView = nullptr;
+
+    // Cached bind groups hold the rings' buffers and the textures' views.
+    mBindGroupCache.Clear();
 
     // Ring buffers
     mMaterialRing.Release();
@@ -1633,20 +1682,11 @@ void WgpuRnd::BeginDrawing() {
     mMaterialRing.Reset();
     mObjectRing.Reset();
     mBoneRing.Reset();
+    mBindGroupCache.BeginFrame((uint64_t)mFrameID);
 
 #ifndef __EMSCRIPTEN__
-    // Poll window size each frame and reconfigure surface if changed.
-    // This catches resize events that the callback may miss (e.g. macOS
-    // live resize where the callback fires but Dawn needs reconfiguration
-    // before the next AcquireNextFrame).
-    if (!mGpu.IsHeadless() && mGpu.Window()) {
-        int winW, winH;
-        glfwGetWindowSize(mGpu.Window(), &winW, &winH);
-        if (winW > 0 && winH > 0 &&
-            (winW != mGpu.WindowWidth() || winH != mGpu.WindowHeight())) {
-            mGpu.ResizeSurface(winW, winH);
-        }
-    }
+    // The surface follows the window inside GpuDevice::AcquireNextFrame (its
+    // framebuffer size, so HiDPI; a fixed frame stays the Rnd virtual size).
 #else
     // Web: poll canvas buffer size and sync GPU surface.
     // The JS ResizeObserver may fire before WASM is ready, leaving the
@@ -1671,6 +1711,13 @@ void WgpuRnd::BeginDrawing() {
         mFrameView = mGpu.AcquireNextFrame();
     }
     if (!mFrameView) {
+#ifndef __EMSCRIPTEN__
+        // A window that has never given a frame (dc3 PLAN H-33): stop with a
+        // message. AcquireNextFrame waited a frame period, so until then the
+        // loop runs near the display rate, not flat out.
+        if (!mGpu.IsHeadless() && mGpu.SurfaceFailed())
+            NativeRenderFatal(mGpu.SurfaceFailureReason().c_str());
+#endif
 #ifdef DEBUG_LOGS
         static int sFailCount = 0;
         if (sFailCount < 10) {
@@ -1866,8 +1913,12 @@ void WgpuRnd::EndDrawing() {
         }
 
         wgpu::CommandBuffer cmd = mEncoder.Finish();
+        // The frame's uniform blocks, staged by every ring Write since
+        // BeginDrawing, must be on the queue before the commands that read them.
+        FlushUniformRings();
         mGpu.Queue().Submit(1, &cmd);
         mPointTestPass.Submitted();
+        if (mGpuCountersEvery > 0 && mFrameID % mGpuCountersEvery == 0) LogGpuCounters();
 
         MaybeCaptureFrame();
         MaybeEncodeVideoFrame();
@@ -2543,17 +2594,17 @@ void WgpuRnd::WriteSceneUniforms() {
     mSceneBindGroup = mGpu.Device().CreateBindGroup(&bgDesc);
 }
 
-wgpu::BindGroup WgpuRnd::CreateMaterialBindGroup(
-    uint32_t bufferOffset, uint32_t bufferSize,
+wgpu::BindGroup WgpuRnd::MaterialBindGroup(
     const MaterialTexViews& texViews,
     wgpu::Sampler& diffuseSampler, wgpu::Sampler& mapSampler)
 {
     wgpu::BindGroupEntry entries[14] = {};
 
+    // The draw's MaterialUniforms block: dynamic offset (SetBindGroup).
     entries[0].binding = 0;
     entries[0].buffer = mMaterialRing.Buffer();
-    entries[0].offset = bufferOffset;
-    entries[0].size = bufferSize;
+    entries[0].offset = 0;
+    entries[0].size = sizeof(MaterialUniforms);
 
     entries[1].binding = 1;
     entries[1].textureView = texViews.diffuse;
@@ -2602,37 +2653,69 @@ wgpu::BindGroup WgpuRnd::CreateMaterialBindGroup(
     desc.entryCount = 14;
     desc.entries = entries;
 
-    return mGpu.Device().CreateBindGroup(&desc);
+    return mBindGroupCache.GetOrCreate(mGpu.Device(), desc);
 }
 
-wgpu::BindGroup WgpuRnd::CreateObjectBindGroup(uint32_t bufferOffset, uint32_t bufferSize) {
+wgpu::BindGroup WgpuRnd::ObjectBindGroup() {
     wgpu::BindGroupEntry entry{};
     entry.binding = 0;
     entry.buffer = mObjectRing.Buffer();
-    entry.offset = bufferOffset;
-    entry.size = bufferSize;
+    entry.offset = 0;
+    entry.size = sizeof(ObjectUniforms);
 
     wgpu::BindGroupDescriptor desc{};
     desc.layout = mPipelines.ObjectLayout();
     desc.entryCount = 1;
     desc.entries = &entry;
 
-    return mGpu.Device().CreateBindGroup(&desc);
+    return mBindGroupCache.GetOrCreate(mGpu.Device(), desc);
 }
 
-wgpu::BindGroup WgpuRnd::CreateBoneBindGroup(uint32_t bufferOffset, uint32_t bufferSize) {
+wgpu::BindGroup WgpuRnd::BoneBindGroup() {
     wgpu::BindGroupEntry entry{};
     entry.binding = 0;
     entry.buffer = mBoneRing.Buffer();
-    entry.offset = bufferOffset;
-    entry.size = bufferSize;
+    entry.offset = 0;
+    entry.size = sizeof(BoneUniforms);
 
     wgpu::BindGroupDescriptor desc{};
     desc.layout = mPipelines.BoneLayout();
     desc.entryCount = 1;
     desc.entries = &entry;
 
-    return mGpu.Device().CreateBindGroup(&desc);
+    return mBindGroupCache.GetOrCreate(mGpu.Device(), desc);
+}
+
+void WgpuRnd::FlushUniformRings() {
+    mSceneRing.Flush(mGpu.Queue());
+    mMaterialRing.Flush(mGpu.Queue());
+    mObjectRing.Flush(mGpu.Queue());
+    mBoneRing.Flush(mGpu.Queue());
+}
+
+// MILO_GPU_COUNTERS=N: one line every N frames (default 600) with the live
+// cached bind groups and the uniform rings, so growth across songs shows.
+void WgpuRnd::LogGpuCounters() {
+    const UniformRingBuffer* rings[4] = {&mSceneRing, &mMaterialRing, &mObjectRing, &mBoneRing};
+    uint64_t writes = 0, bytes = 0;
+    uint32_t capacity = 0;
+    for (const UniformRingBuffer* r : rings) {
+        writes += r->QueueWrites();
+        bytes += r->QueueBytes();
+        capacity += r->Capacity();
+    }
+    fprintf(stderr,
+            "[GPUCOUNT] frame=%d bindGroupsLive=%zu bgCreated=%llu bgHits=%llu bgEvicted=%llu "
+            "bgUncached=%llu ringBuffers=4 ringBytes=%u ringGrows=%u/%u/%u/%u "
+            "ringQueueWrites=%llu ringQueueBytes=%llu pipelines=%d gpuMeshes=%zu gpuTextures=%zu\n",
+            (int)mFrameID, mBindGroupCache.Size(),
+            (unsigned long long)mBindGroupCache.Creates(),
+            (unsigned long long)mBindGroupCache.Hits(),
+            (unsigned long long)mBindGroupCache.Evictions(),
+            (unsigned long long)mBindGroupCache.Uncached(), capacity, mSceneRing.Grows(),
+            mMaterialRing.Grows(), mObjectRing.Grows(), mBoneRing.Grows(),
+            (unsigned long long)writes, (unsigned long long)bytes,
+            mPipelines.CachedPipelineCount(), GpuMeshCount(), GpuTexCount());
 }
 
 #ifdef HX_IMGUI

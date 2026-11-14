@@ -181,6 +181,7 @@ void ShadowPass::EnsurePipelines(GpuDevice& gpu) {
     objEntry.visibility = wgpu::ShaderStage::Vertex;
     objEntry.buffer.type = wgpu::BufferBindingType::Uniform;
     objEntry.buffer.minBindingSize = 0;
+    objEntry.buffer.hasDynamicOffset = true;  // DrawMeshShadow: cached group + ring offset
 
     wgpu::BindGroupLayoutDescriptor objBglDesc{};
     objBglDesc.entryCount = 1;
@@ -193,6 +194,7 @@ void ShadowPass::EnsurePipelines(GpuDevice& gpu) {
     boneEntry.visibility = wgpu::ShaderStage::Vertex;
     boneEntry.buffer.type = wgpu::BufferBindingType::Uniform;
     boneEntry.buffer.minBindingSize = 0;
+    boneEntry.buffer.hasDynamicOffset = true;  // DrawMeshShadow: cached group + ring offset
 
     wgpu::BindGroupLayoutDescriptor boneBglDesc{};
     boneBglDesc.entryCount = 1;

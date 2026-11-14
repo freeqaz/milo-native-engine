@@ -86,6 +86,7 @@ void PipelineManager::Init(GpuDevice* device) {
     matEntries[0].visibility = wgpu::ShaderStage::Vertex | wgpu::ShaderStage::Fragment;
     matEntries[0].buffer.type = wgpu::BufferBindingType::Uniform;
     matEntries[0].buffer.minBindingSize = 0;
+    matEntries[0].buffer.hasDynamicOffset = mDynamicUniformOffsets;
 
     matEntries[1].binding = 1;
     matEntries[1].visibility = wgpu::ShaderStage::Fragment;
@@ -174,6 +175,7 @@ void PipelineManager::Init(GpuDevice* device) {
     objEntries[0].visibility = wgpu::ShaderStage::Vertex | wgpu::ShaderStage::Fragment;
     objEntries[0].buffer.type = wgpu::BufferBindingType::Uniform;
     objEntries[0].buffer.minBindingSize = 0;
+    objEntries[0].buffer.hasDynamicOffset = mDynamicUniformOffsets;
 
     wgpu::BindGroupLayoutDescriptor objLayoutDesc{};
     objLayoutDesc.label = "ObjectBGL";
@@ -187,6 +189,7 @@ void PipelineManager::Init(GpuDevice* device) {
     boneEntries[0].visibility = wgpu::ShaderStage::Vertex;
     boneEntries[0].buffer.type = wgpu::BufferBindingType::Uniform;
     boneEntries[0].buffer.minBindingSize = 0;
+    boneEntries[0].buffer.hasDynamicOffset = mDynamicUniformOffsets;
 
     wgpu::BindGroupLayoutDescriptor boneLayoutDesc{};
     boneLayoutDesc.label = "BoneBGL";

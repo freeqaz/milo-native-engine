@@ -83,6 +83,8 @@ static GpuTexData* EnsureRenderTargetData(RndTex* tex) {
     bool needColor = !data.texture || !data.view || (data.texture && !data.renderTarget);
     bool needDepth = NeedsDepthTarget(tex) && (!data.depthTexture || !data.depthView);
     if (needColor) {
+        // The old view (a BC upload being replaced) leaves the bind-group cache.
+        gWgpuRnd->ForgetTextureView(data.view);
         data.texture = TextureConvert::CreateRenderTarget(
             gWgpuRnd->Gpu(), texW, texH, ChooseRenderTargetFormat(tex)
         );
@@ -241,6 +243,8 @@ void RndTex::PresyncBitmap() {
     data.lastH = mBitmap.Height();
     sTexCreateCount++;
 
+    // A re-upload replaces the view: bind groups cached on the old one go.
+    if (it != sTexGpuData.end()) gWgpuRnd->ForgetTextureView(it->second.view);
     sTexGpuData[this] = data;
 }
 
@@ -291,7 +295,12 @@ void RndTex::FinishDrawTarget() {
 // TODO: Hook into RndTex destructor or add ref-counting.
 
 void CleanupGpuTex(RndTex* tex) {
-    sTexGpuData.erase(tex);
+    auto it = sTexGpuData.find(tex);
+    if (it == sTexGpuData.end()) return;
+    // Cached bind groups pin the view (and through it the texture); drop them
+    // with the texture so a dead RndTex's GPU memory is not held.
+    if (gWgpuRnd) gWgpuRnd->ForgetTextureView(it->second.view);
+    sTexGpuData.erase(it);
 }
 
 void UploadRGBAToRndTex(RndTex* tex, const uint8_t* rgba, int w, int h) {
@@ -354,9 +363,12 @@ void DumpGpuRenderTargets(const char* dir, int frame) {
 }
 
 void ClearGpuTexCaches() {
+    if (gWgpuRnd) gWgpuRnd->BindGroups().Clear();
     sTexGpuData.clear();
     sCubeTexGpuData.clear();
 }
+
+size_t GpuTexCount() { return sTexGpuData.size() + sCubeTexGpuData.size(); }
 
 wgpu::TextureView GetGpuCubeTexView(RndCubeTex* cubeTex) {
     if (!cubeTex || !gWgpuRnd) return wgpu::TextureView();
