@@ -40,6 +40,13 @@ bool MaterialShadesPrelit(bool matPrelit, bool isTextMesh, bool isOverlayPass,
 // Factor on the material alpha: 2 for an intensify material under the retail
 // UI terms (DC3's standard.ps: `mul r0, r0, c5.yyyy`, alpha included), else 1.
 float MaterialAlphaScale(bool intensify, bool retailMaterialTerms);
+// The material colour as the shader sees it. A premultiplied-alpha material
+// (blend 7, pipeline One / OneMinusSrcAlpha) has its rgb scaled by its alpha
+// before the constant is set -- NgMat::SetRegularShaderConst (Mat_NG.cpp:191,
+// 100% matched) and RB3 Wii's NgMat equivalent both call PreMultiplyAlpha --
+// so a fading premult label dims with its alpha instead of adding its full
+// colour until the alpha nears 0. Every other blend: the colour unchanged.
+void MaterialShaderColor(const Hmx::Color& matColor, BaseMaterial::Blend blend, float out[4]);
 // material.unlit under the retail UI terms: a lit material with use_environ 0
 // takes an ambient of 1 and no lights (NgMat::SetupAmbient; the shader options
 // set mRealLights/mApproxLights only for use_environ materials), so it shows
@@ -48,6 +55,12 @@ bool MaterialShadesUnlit(bool matPrelit, bool matUseEnviron, bool retailMaterial
 
 // Build material parameters for a multi-pass material (simplified, no heuristics)
 MaterialParams BuildPassMaterialParams(BaseMaterial* pass);
+
+// The same two builders with the overlay-phase terms given rather than read
+// from the frame (UiDrawTermsFor(FrameInOverlay())): the seam a test drives
+// to check the terms reach the uniforms.
+MaterialParams BuildMaterialParams(RndMat* mat, bool isTextMesh, const UiDrawTerms& uiTerms);
+MaterialParams BuildPassMaterialParams(BaseMaterial* pass, const UiDrawTerms& uiTerms);
 
 // A text mesh's material routes atlas alpha into RGB (useAlphaAsRGB), right for
 // an atlas that keeps glyphs in alpha with RGB == 0. True when the game's

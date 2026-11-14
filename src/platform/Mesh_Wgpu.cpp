@@ -273,7 +273,7 @@ void DrawMeshImmediate(RndMesh* mesh) {
     // AllowHDR material drawn into the main frame writes its luma to alpha.
     const float bloomMaskScale = (!isOverlayPass && !gWgpuRnd->ActiveTargetTex())
         ? rndshape::BloomMaskScale(mat) : 0.0f;
-    if (bloomMaskScale > 0.0f)
+    if (bloomMaskScale != 0.0f)  // DC3: negative (rndshape::BloomMaskScale)
         key.alphaWrite = true;
     key.alphaToCoverage = mat->GetAlphaCut();
     key.depthBias = meshData.depthBias;

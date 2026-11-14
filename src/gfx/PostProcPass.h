@@ -45,10 +45,21 @@ private:
     void EnsurePipeline(GpuDevice& gpu);
     float StepTime();
     float StepFlicker(RndPostProc* pp, float dt);
+    // NgPostProc::CheckNoise's constants for `pp` (false: no noise this frame).
+    bool NoiseConstants(RndPostProc* pp, float seeds[4], float params[4],
+                        wgpu::TextureView& map, bool& midtone);
+    // np-gfx-post: DC3's retail chain (rndshape::kDC3RetailPost).
+    // A template so that the RB3-Wii shape, which has no such post-process,
+    // never instantiates it.
+    template <class P>
+    void RunDC3Retail(wgpu::CommandEncoder& encoder, P* pp, int mode,
+                      const wgpu::TextureView& sceneView, const wgpu::TextureView& intermediateView,
+                      int w, int h, wgpu::TextureView& frameView, GpuDevice& gpu);
+    const RndPostProc* mLoggedPostProc = nullptr;   // the last post-process logged
 
     BloomPass mBloom;
     DofPass mDof;
-    RB3RetailPost mRetail;   // RB3 content only (rndshape::kRetailPostChain)
+    RB3RetailPost mRetail;   // RB3 (kRetailPostChain) and DC3 (kDC3RetailPost) retail chains
     wgpu::TextureView mSpotBeams, mSpotFog;  // SetSpotBeams, this frame only
     float mSpotK[3] = {};
 
