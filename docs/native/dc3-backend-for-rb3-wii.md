@@ -7379,3 +7379,69 @@ Xenia's 1.266.
   one binary pair, so the stale spotlights are in both sides of it. INFERRED:
   they do not change the conclusion, but the absolute sharpness numbers
   (9.4/10.0 after DOF) were not re-taken.
+
+### 37.7 Round 8: the same measurements with the spotlight beams (np-gfx `cf2bdfd`)
+
+The spot lane's beams (§36) are now in the retail composite, and they add
+light at the throneroom peak. I merged np-gfx again (engine `6ea6901`, np-gfx
+`cf2bdfd`; dc3 `772331126`, np-gfx `4b229da41`). This merge is where the doc
+conflict came from: both lanes appended a §36, so this section is now §37.
+On that base I built `dc3-native-r8` (XXH3 `96c64f900ffdba77`) and ran
+`tools/r8run.sh` (round 7's script and states; `measure/r8_native.txt`).
+
+Throneroom peak, frozen frames (`r8_trpg`, cut 0.85; medians in brackets):
+
+| build | n | grade (grade/raw) | bloom (full/grade) | post (full/raw) |
+|---|---|---|---|---|
+| Xenia (round 6) | 12 | 1.234 (1.237) | 1.276 (1.270) | 1.575 (1.572) |
+| native, round 8 (beams) | 15 | 1.240 (1.239) | 1.246 (1.261) | 1.544 (1.547) |
+| native, round 7 | 15 | 1.222 (1.222) | 1.261 (1.263) | 1.541 (1.546) |
+
+The control reads 1.000. Overlays as-is vs hidden (`r8_trpz`): bloom gain
+1.248 (median 1.260) both ways, overlay effect 0.00.
+
+The beams are on in these frames. A separate frozen-frame run
+(`r8_trpb`, `tools/beam_term.py`, `measure/r8_beams.txt`, n=12 of 12)
+hides every `SpotlightDrawer` with post on and with post off:
+- With post on, the drawers add median +3.2 levels (mean +2.5, +4.2% of the
+  frame). With post off they add 0.00, because `Rnd::DoPostProcess` skips
+  every post processor when `mDisablePostProc` is set, the drawer's `DoPost`
+  included.
+- So the "raw" state has no beams on either side, and "grade" (bloom
+  intensity 0) keeps them on both, because the beam term is added after the
+  bloom branch. This is why the grade stage rises (1.222 → 1.240) while
+  bloom/grade falls (1.261 → 1.246): the beams land in the grade frame
+  before bloom is measured against it.
+- MILO_GPU_TIMERS over the same run (`gput.py`, 182 gameplay windows, 117
+  with beams every frame): `DC3SpotBeams` 0.0058 ms, `DC3SpotBlur` 0.0116 ms,
+  2.4% of a 0.72 ms GPU frame. That is the spot lane's cost, quoted here only
+  to show the pass ran.
+
+Reading it:
+- **Grade:** 1.240 vs Xenia 1.234, now 0.5% over (it was 1% under without
+  beams).
+- **Bloom medians:** 1.261 vs 1.270. The 2.4% mean gap is still the
+  factorless-MAX artifact of §37.3.
+- **Post:** 1.544 vs 1.575 (medians 1.547 vs 1.572), a 2% gap. It is smaller
+  than the spread between runs. The `r8_trpb` run, on the same binary but
+  with a different frame mix (5 states per set, so the sets fall at other
+  song times), reads post 1.653 (median 1.640), and within `r8_trpg` the
+  sets range 1.369–1.637.
+- **No term to fix.** Item 3's "1.62× vs 1.39×" is closed: on every base
+  since round 6, the same frozen frame lifts within the run-to-run spread of
+  Xenia's.
+- **Carpet (item 1) is unchanged.** `tr_far03` carpet: full 22.2, bloom off
+  21.6, hidden 45.9 / 42.3, levels off 33.7. `tr_062` reads 7.8 / 7.8.
+  Native's bloom over `carpetShadow` is still +0.6, against Xenia's +6.0.
+- **Not re-taken on this base:** houseparty DOF sharpness (§37.2). The DOF
+  effect is a same-binary before/after, so the beams sit on both sides of
+  it.
+
+**Consumers, final engine head.** rb3 master `3e36eb5d2` and rb3-xenon main
+`15ce9d4bb` were configured with `MILO_ENGINE_PATH` at `6ea6901`. The doc
+commits after it change no code. Results:
+- rb3 `all`: built, ctest 158 of 158 passed (7 skipped).
+- rb3-xenon `rb3-render`: 11 frames, 0 differing pixels against round 7
+  (`27da180`). Round 7 had 0 against round 6, and round 6 had 0 against
+  round 5.
+- `native_compat_census.py check`: OK, 455 flags, regen clean.
