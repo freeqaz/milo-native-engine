@@ -1589,7 +1589,10 @@ void WgpuRnd::BeginDrawing() {
     // Only if no camera is already current (viewer sets its own orbit camera)
     if (mDefaultCam && !RndCam::Current())
         mDefaultCam->Select();
-    if (mDefaultEnv && !rndshape::CurrentEnv())
+    // rndshape::kSelectDefaultEnvEachFrame: the environ every frame, as
+    // Rnd::BeginDrawing does, so a draw that selects no environ of its own
+    // gets the default one, not whichever the last frame left current.
+    if (mDefaultEnv && (rndshape::kSelectDefaultEnvEachFrame || !rndshape::CurrentEnv()))
         mDefaultEnv->Select(nullptr);
 
     // Reset ring buffers for this frame

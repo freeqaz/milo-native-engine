@@ -449,6 +449,14 @@ const float *CapturedVConstant(int reg);
 // and draws the casters into ShadowPass's map, which the next frame samples.
 // rb3-xenon keeps the generic pre-pass. Defined in DC3SceneLighting.cpp.
 constexpr bool kGenericShadowPass = !kDC3RetailModel;
+
+// Rnd::BeginDrawing selects mDefaultEnv every frame (rndobj/Rnd.cpp), so a
+// draw that selects no environ of its own -- the UI after EndWorld -- gets the
+// default environ. WgpuRnd::BeginDrawing used to select it only when none was
+// current, which left the last frame's environ (a venue's) current. DC3
+// follows the image; rb3-xenon keeps the native rule (its renders are pinned
+// byte-identical).
+constexpr bool kSelectDefaultEnvEachFrame = kDC3RetailModel;
 bool CollectProjShadowCasters(ProjShadowCasters &out);
 // The projected light's gobo for the scene WriteSceneLighting just wrote
 // (projected_blend 0: tf10, added as (1 - coverage) gobo c69 sat(c65 . N),
