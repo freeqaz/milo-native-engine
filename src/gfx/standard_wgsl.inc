@@ -888,6 +888,13 @@ fn retailHasSpecular() -> bool {
     return dot(abs(material.retailSpec.rgb), vec3f(1.0)) > 0.0;
 }
 
+// DC3 (scene.retailLighting 2): the material uses the environ. The DC3
+// shape's MatRetailTerms fills the retail terms only for such a material, and
+// a filled set always carries a specular power of at least 0.5.
+fn dc3UsesEnviron() -> bool {
+    return material.retailSpec.a > 0.0;
+}
+
 // Specular evaluated at the vertex: a material with specular but without
 // per_pixel_lit (option bit 2 without bit 0).
 fn retailVertexSpecular(worldPos: vec3f, worldNormal: vec3f, ao: vec4f) -> vec3f {
@@ -1020,6 +1027,65 @@ fn vs_skinned(vertex: SkinnedVertexInput) -> VertexOutput {
 //    * box(-V), the box map seen from behind; the diffuse product is scaled by
 //    1 + 0.3 r and 0.7 r is added. A rim map (bit 15) scales the colour by its
 //    texel.rgb and the power by its texel.a, at least 0.5.
+// DC3 projected light (rndshape: DC3SceneLighting.cpp WriteDC3ProjShadow;
+// docs/native/dc3-retail-lighting.md section 3). At most one per environ:
+// scene.projLightColor.w is 1 for projected_blend 1, 2 for projected_blend 0,
+// 0 for none, and it applies to materials with recv_proj_lights
+// (object.retail.z). Both forms take
+//   uv = (c95 . p, c96 . p) / (c97 . p)   (scene.lightViewProj, rebuilt so that
+//   the rasteriser's texel for p is this uv), s = tf5(uv).a
+// and differ in what they do with it:
+//   blend 1 (0x100010030011): box(N) c0 is scaled by 1 - 0.75 s c69 sat(c65 . N);
+//   blend 0 (0x10030011):     (1 - s) tf10(uv).rgb c69 sat(c65 . N) joins the
+//                             box term (gobo border 0 outside the cone).
+// tf5 is NgLight's 256x256 coverage target after BlurShadowRT's two 5-tap
+// passes (weights 0.1 0.25 0.3 0.25 0.1); a light without shadow objects
+// binds the FlatNormal default, alpha 0, so s = 0 (scene.shadowEnabled < 1.5).
+// Here: ShadowPass's map holds the casters at depth 0 over 1, and nine
+// compare taps 1.5 texels of 256 apart with weights (1 2 1)^2 / 16 stand in
+// for the blur (sigma 1.06 vs 1.14 texels).
+struct Dc3Proj {
+    mult: vec3f,   // scales box(N)
+    add: vec3f,    // joins box(N)
+}
+
+fn dc3ProjLight(worldPos: vec3f, N: vec3f) -> Dc3Proj {
+    var r: Dc3Proj;
+    r.mult = vec3f(1.0);
+    r.add = vec3f(0.0);
+    let mode = scene.projLightColor.w;
+    if (mode < 0.5 || object.retail.z < 0.5) {
+        return r;
+    }
+    let clip = scene.lightViewProj * vec4f(worldPos, 1.0);
+    let w = select(1.0, clip.w, abs(clip.w) > 1e-6);
+    let uv = vec2f(clip.x / w * 0.5 + 0.5, 0.5 - clip.y / w * 0.5);
+    let inside = clip.w > 0.0 && all(uv >= vec2f(0.0)) && all(uv <= vec2f(1.0));
+    var coverage = 0.0;
+    if (scene.shadowEnabled > 1.5) {
+        let t = 1.5 / 256.0;
+        var lit = 0.0;
+        lit += 1.0 * textureSampleCompareLevel(shadowMap, shadowSampler, uv + vec2f(-t, -t), 0.5);
+        lit += 2.0 * textureSampleCompareLevel(shadowMap, shadowSampler, uv + vec2f(0.0, -t), 0.5);
+        lit += 1.0 * textureSampleCompareLevel(shadowMap, shadowSampler, uv + vec2f(t, -t), 0.5);
+        lit += 2.0 * textureSampleCompareLevel(shadowMap, shadowSampler, uv + vec2f(-t, 0.0), 0.5);
+        lit += 4.0 * textureSampleCompareLevel(shadowMap, shadowSampler, uv, 0.5);
+        lit += 2.0 * textureSampleCompareLevel(shadowMap, shadowSampler, uv + vec2f(t, 0.0), 0.5);
+        lit += 1.0 * textureSampleCompareLevel(shadowMap, shadowSampler, uv + vec2f(-t, t), 0.5);
+        lit += 2.0 * textureSampleCompareLevel(shadowMap, shadowSampler, uv + vec2f(0.0, t), 0.5);
+        lit += 1.0 * textureSampleCompareLevel(shadowMap, shadowSampler, uv + vec2f(t, t), 0.5);
+        coverage = select(0.0, 1.0 - lit / 16.0, inside);
+    }
+    let lightTerm = scene.projLightColor.rgb * saturate(dot(scene.projLightDir.xyz, N));
+    if (mode < 1.5) {
+        r.mult = vec3f(1.0) - 0.75 * coverage * lightTerm;
+    } else {
+        let gobo = textureSampleLevel(projLightTex, projLightSampler, uv, 0.0).rgb;
+        r.add = select(vec3f(0.0), (1.0 - coverage) * gobo * lightTerm, inside);
+    }
+    return r;
+}
+
 fn retailShade(surfaceInput: VertexOutput, base: vec3f, ambientLight: vec3f, rawVtx: vec3f,
                prelitAmbient: bool) -> vec3f {
     let ao = surfaceInput.retailAO;
@@ -1028,8 +1094,14 @@ fn retailShade(surfaceInput: VertexOutput, base: vec3f, ambientLight: vec3f, raw
         ambientTerm = rawVtx * ambientLight;
     }
     let perPixel = isEnabled(material.retailFlags.x) && retailLightsOn();
+    let proj = dc3ProjLight(surfaceInput.worldPos, normalize(surfaceInput.worldNormal));
     if (!perPixel) {
-        return base * (ao.x * ambientTerm + surfaceInput.vertexLit) + surfaceInput.vertexSpec;
+        // Per-vertex lighting. The shipped cache has no vertex-lit receiver
+        // permutation (every projected-light mask has per_pixel_lit), so this
+        // form is native-only: it scales the interpolated light (box and
+        // points) and adds the gobo.
+        return base * (ao.x * ambientTerm + surfaceInput.vertexLit * proj.mult + proj.add) +
+            surfaceInput.vertexSpec;
     }
     let uv = surfaceInput.uv;
     let normalSample = textureSample(normalMapTex, diffuseSampler, uv);
@@ -1047,7 +1119,8 @@ fn retailShade(surfaceInput: VertexOutput, base: vec3f, ambientLight: vec3f, raw
     }
     let worldPos = surfaceInput.worldPos;
     let V = normalize(scene.cameraPos - worldPos);
-    var diffuse = base * (ao.x * ambientTerm + retailDiffuseLight(worldPos, N, ao));
+    var diffuse = base * (ao.x * ambientTerm + retailDiffuseLight(worldPos, N, ao) +
+                          (proj.mult - vec3f(1.0)) * ao.x * boxLightSample(N) + proj.add);
 
     var spec = vec3f(0.0);
     if (retailHasSpecular()) {
@@ -1164,6 +1237,34 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
             baseColor = vec4f(baseColor.rgb * diffuseSample.rgb,
                               baseColor.a * colorModAlpha(diffuseSample.a));
         }
+    }
+
+    // DC3 retail environment map (scene.retailLighting 2, standard.ps option
+    // bit 3; permutations 0x30018, 0x30019, 0x80000030019 disassembled in
+    // docs/native/dc3-retail-lighting.md). The cube texel is added to the
+    // diffuse texel BEFORE lighting, weighted by its own alpha:
+    //   (tex + env.rgb * env.a * w) * colour * lighting,
+    // w = 1 - sat(N . V) with env falloff (bit 43), else 1. The lookup is the
+    // reflected view vector R = 2 (N . V) N - V, handed to the cube fetch as
+    // (R.x, R.z, R.y) (the `cube r1, r1.yyxz, r1.zxyy` swizzle). The option is
+    // set only inside CalcShaderOpts' "real or approx light" block, for a
+    // material that uses the environ.
+    if (scene.retailLighting > 1.5 && isEnabled(material.environMapStrength) &&
+        dc3UsesEnviron() && retailLightsOn()) {
+        let envN = normalize(surfaceInput.worldNormal);
+        let envV = normalize(scene.cameraPos - surfaceInput.worldPos);
+        let envNdotV = dot(envN, envV);
+        let envR = 2.0 * envNdotV * envN - envV;
+        let envSample = textureSample(environMapTex, environSampler, vec3f(envR.x, envR.z, envR.y));
+        var envWeight = envSample.a;
+        if (isEnabled(material.environMapFalloff)) {
+            envWeight *= 1.0 - saturate(envNdotV);
+        }
+        if (isEnabled(material.environMapSpecMask)) {
+            envWeight *= textureSample(specularMapTex, mapSampler, surfaceInput.uv).a;
+        }
+        baseColor = vec4f(baseColor.rgb + matRgb * vertexTint * envSample.rgb * envWeight,
+                          baseColor.a);
     }
 
     // Retail world refraction: the texel's rgb is the diffuse rgb times the
@@ -1299,16 +1400,29 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
         emissiveTint = vec3f(1.0);
     }
     finalColor += emissiveTint * material.emissiveMultiplier * emissiveSample.rgb;
-    finalColor += computeRimLighting(surfaceNormal, viewDir, surfaceInput.uv);
-    finalColor += computeEnvironmentReflection(surfaceNormal, viewDir, specularSample);
+    // DC3's retail model has its rim inside retailShade and its environment
+    // map in the texel (above); the native rim and reflection adds are the
+    // other models'.
+    if (scene.retailLighting < 1.5) {
+        finalColor += computeRimLighting(surfaceNormal, viewDir, surfaceInput.uv);
+        finalColor += computeEnvironmentReflection(surfaceNormal, viewDir, specularSample);
+    }
     // RB3 colour modulation scales the shaded colour, additive terms included:
     // DC3 permutation 0x300431010 computes texel * lighting + the interpolated
     // add, then multiplies by the band factors.
     finalColor *= colorModScale(colorModTexA);
 
     if (isEnabled(scene.fogEnabled) && isEnabled(material.materialFogEnabled)) {
-        let cameraDistance = length(surfaceInput.worldPos - scene.cameraPos);
-        let fogFactor = clamp((scene.fogEnd - cameraDistance) / (scene.fogEnd - scene.fogStart), 0.0, 1.0);
+        var fogFactor: f32;
+        if (scene.fogEnabled > 1.5) {
+            // DC3 retail (standard.vs option bit 18, permutation 0x70010):
+            // exp_sat(-2.88539 * clip.w * c91.y), c91.y = 1 / (end - start).
+            let clipW = (scene.viewProj * vec4f(surfaceInput.worldPos, 1.0)).w;
+            fogFactor = saturate(exp2(-2.8853900 * clipW / (scene.fogEnd - scene.fogStart)));
+        } else {
+            let cameraDistance = length(surfaceInput.worldPos - scene.cameraPos);
+            fogFactor = clamp((scene.fogEnd - cameraDistance) / (scene.fogEnd - scene.fogStart), 0.0, 1.0);
+        }
         finalColor = mix(scene.fogColor, finalColor, fogFactor);
     }
 
