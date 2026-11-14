@@ -5548,17 +5548,20 @@ Mean luma and the share of clipped pixels (luma ≥ 250):
 
 ### 31.7 Cost
 
-GPU, measured by `DC3RetailPostGpuTest.PassCostAt720p`: 1280×720,
-200 runs, wall time per run. The machine has an RTX 3090 and was shared
-with other jobs, so these numbers are noisy. They come from three runs
-(median, range):
+GPU, measured by `DC3RetailPostGpuTest.PassCostAt720p`: 1280×720, wall time
+per run over 200 runs. The device is an RTX 3090 that other lanes' jobs were
+using (91% utilisation during the last runs), so the numbers are noisy.
+Seven runs give the median and range below; the ramp row has four runs.
 
-| passes | µs/frame |
+| passes | µs/frame, median (range) |
 |---|---|
-| composite only (colour matrix, no bloom) | 40 (34–89) |
-| + plain bloom (3 sets) | 98 (85–147) |
-| + streak bloom (2 sets) | 90 (77–103) |
-| streak + vignette + chroma + matrix | 84 (74–93) |
+| composite only (colour matrix, no bloom) | 61 (40–131) |
+| + plain bloom (3 sets) | 147 (85–258) |
+| + streak bloom (2 sets) | 103 (77–230) |
+| streak + vignette + chroma + matrix | 121 (74–255) |
+| scan-out ramp (copy + one full-screen pass) | 58 (54–99) |
+
+So bloom adds about 50–90 µs over the bare composite, and the ramp about 55 µs.
 
 - **Effects that are off cost nothing.** No bloom pass is recorded when
   `bloom` is false. The vignette, noise and chroma are uniform-gated branches
