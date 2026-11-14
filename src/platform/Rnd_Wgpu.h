@@ -15,6 +15,7 @@
 #include "gfx/TexBlendPass.h"
 #include "gfx/UniformStructs.h"
 #include "gfx/UniformRingBuffer.h"
+#include "gfx/BindGroupCache.h"
 #include "platform/rndshape/RndShape.h"
 #include "platform/PointTestHook.h"
 #include "platform/SpotBeamHook.h"
@@ -178,17 +179,25 @@ public:
         wgpu::TextureView refractNormal;   // binding 11 (rndshape::MatRefract)
     };
 
-    // Create material bind group (group 1)
-    wgpu::BindGroup CreateMaterialBindGroup(
-        uint32_t bufferOffset, uint32_t bufferSize,
-        const MaterialTexViews& texViews,
-        wgpu::Sampler& diffuseSampler, wgpu::Sampler& mapSampler);
+    // Bind groups for the mesh path (PLAN H-30). The uniform binding of each
+    // takes a dynamic offset (PipelineManager::SetDynamicUniformOffsets): pass
+    // the ring offset Write() returned to SetBindGroup. The groups come from
+    // mBindGroupCache, keyed by every resource they bind, so a draw that binds
+    // what an earlier draw bound reuses its group instead of creating one.
+    // Material (group 1): the material ring + the material's views/samplers.
+    wgpu::BindGroup MaterialBindGroup(const MaterialTexViews& texViews,
+                                      wgpu::Sampler& diffuseSampler, wgpu::Sampler& mapSampler);
+    // Object (group 2): the object ring.
+    wgpu::BindGroup ObjectBindGroup();
+    // Bone (group 3), skinned meshes: the bone ring.
+    wgpu::BindGroup BoneBindGroup();
 
-    // Create object bind group (group 2)
-    wgpu::BindGroup CreateObjectBindGroup(uint32_t bufferOffset, uint32_t bufferSize);
-
-    // Create bone bind group (group 3) — for skinned meshes
-    wgpu::BindGroup CreateBoneBindGroup(uint32_t bufferOffset, uint32_t bufferSize);
+    BindGroupCache& BindGroups() { return mBindGroupCache; }
+    // A texture view is being released (RndTex destroyed, render target
+    // recreated): drop the cached bind groups that bind it.
+    void ForgetTextureView(const wgpu::TextureView& view) {
+        if (view) mBindGroupCache.Forget(view.Get());
+    }
 
     // Ring buffers for per-draw uniforms
     UniformRingBuffer& MaterialRing() { return mMaterialRing; }
@@ -408,13 +417,18 @@ public:
     uint32_t mCurrentTargetWidth = 0;
     uint32_t mCurrentTargetHeight = 0;
 
-    // Uniform buffers
+    // Uniform buffers (staged: one WriteBuffer each per frame, PLAN H-31;
+    // FlushUniformRings before the frame Submit)
+    void FlushUniformRings();
+    void LogGpuCounters();
+    int mGpuCountersEvery = 0;  // MILO_GPU_COUNTERS
     UniformRingBuffer mSceneRing;
     UniformRingBuffer mMaterialRing;
     UniformRingBuffer mObjectRing;
     UniformRingBuffer mBoneRing;
 
     // Bind groups
+    BindGroupCache mBindGroupCache;  // mesh-path material/object/bone groups
     wgpu::BindGroup mSceneBindGroup;
     wgpu::TextureView mProjLightTexView;  // gobo texture for projected light (or white fallback)
 
