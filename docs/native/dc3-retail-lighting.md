@@ -376,6 +376,31 @@ Caching the bind groups with dynamic offsets is the obvious next step.
 DC3's own `NgLight::RenderShadows` also still draws the same casters into a
 target nothing samples (section 3).
 
+**Frame time, round 2 (streetside normal state).** Three builds from engine
+5dcd3a2:
+
+- `full`;
+- `noskin`, with the skin and hair branch disabled;
+- `noshadow`, where `WriteDC3ProjShadow` returns early and
+  `CollectDC3Casters` returns false.
+
+They ran interleaved, three rounds each, on OMG, sampling 10 s from 20 s into
+gameplay, on an RTX 3090. The box was loaded (31-41 on 32 cores) and the GPU
+was shared with other lanes. GPU time is a per-process `nvidia-smi pmon` SM%
+times the frame time, so it is an estimate.
+Data: dc3-decomp lane archive `round2/frametime_ab.txt`.
+
+| cost | GPU ms/frame, per round | CPU ms/frame |
+|---|---|---|
+| projected shadows (native coverage pass + receiver taps) | 0.32, 0.18, 0.29 | about 0.27 (perf: `ShadowPass::RenderCasters` 5.3% + `CollectProjShadowCasters` 1.5% of a 3.95 ms frame) |
+| skin and hair maths | −0.01, +0.09, −0.05, i.e. within noise | none expected (WGSL only) |
+| DC3's own `NgLight::RenderShadows` into a target nothing samples | | about 0.20 (`NgLight::CheckShadowMap` 5.0%) |
+
+The paired CPU deltas (−0.26 to −0.83 ms) are not usable. The box got faster over
+the run (the full build read 6.68, then 4.24, then 3.77 ms), so whichever
+build ran later looks cheaper. `noskin` changes only WGSL and still read
+0.26-0.54 ms cheaper.
+
 **Remaining gap.**
 
 - Skin is darker and greyer than retail's warm tan. Skin and hair use
