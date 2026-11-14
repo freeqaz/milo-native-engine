@@ -1,6 +1,8 @@
 // DC3 Native Port — Particle Billboard Rendering
 // Generates camera-facing quads for each active particle and batch-draws them.
 
+#include "platform/Part_Wgpu.h"
+#include "gfx/FrameCapture.h"
 #include "platform/Rnd_Wgpu.h"
 #include "platform/TexGpu.h"
 #include "rndobj/Part.h"
@@ -178,6 +180,33 @@ static int EnsureBuffers(int maxParticles) {
     return first;
 }
 
+Hmx::Color ParticleShaderColor(RndMat* mat, RndEnviron* env) {
+    // c0: the material colour, premultiplied for kPreMultAlpha (blend 7 in
+    // both shapes' Blend enums).
+    Hmx::Color k = mat->GetColor();
+    if ((int)mat->GetBlend() == 7) {
+        k.red *= k.alpha;
+        k.green *= k.alpha;
+        k.blue *= k.alpha;
+    }
+    // c1: the environ ambient, alpha included, when the material uses it.
+    if (rndshape::MatUseEnviron(mat) && env && rndshape::EnvHasAmbientFogOwner(env)) {
+        const Hmx::Color& a = env->AmbientColor();
+        k.red *= a.red;
+        k.green *= a.green;
+        k.blue *= a.blue;
+        k.alpha *= a.alpha;
+    }
+    // c5.y: intensify doubles the texel, all four channels.
+    if (rndshape::MatIntensify(mat)) {
+        k.red *= 2.0f;
+        k.green *= 2.0f;
+        k.blue *= 2.0f;
+        k.alpha *= 2.0f;
+    }
+    return k;
+}
+
 void DrawParticlesBillboard(RndParticleSys* sys) {
     if (!gWgpuRnd || !gWgpuRnd->IsInPass()) return;
 
@@ -196,7 +225,8 @@ void DrawParticlesBillboard(RndParticleSys* sys) {
     float rx = camXfm.m.x.x, ry = camXfm.m.x.y, rz = camXfm.m.x.z;
     float ux = camXfm.m.z.x, uy = camXfm.m.z.y, uz = camXfm.m.z.z;
 
-    // Material tint and haze (rndshape::kPartMaterialTint; RB3-Wii only).
+    // Material tint and haze (rndshape::kPartMaterialTint; RB3-Wii only), or
+    // the retail Xbox particle shader's colour scale (ParticleShaderColor).
     float mcr = 1.0f, mcg = 1.0f, mcb = 1.0f, mca = 1.0f;
     bool isHaze = false;
     if constexpr (rndshape::kPartMaterialTint) {
@@ -206,6 +236,9 @@ void DrawParticlesBillboard(RndParticleSys* sys) {
             isHaze = true;
             mca *= 0.35f;
         }
+    } else {
+        Hmx::Color k = ParticleShaderColor(mat, rndshape::CurrentEnv());
+        mcr = k.red; mcg = k.green; mcb = k.blue; mca = k.alpha;
     }
 
     // UV tiling
@@ -288,6 +321,23 @@ void DrawParticlesBillboard(RndParticleSys* sys) {
 
     int numParticles = (int)verts.size() / 4;
     if (numParticles == 0) return;
+
+    // Per-draw log (/api/capture/next, F12): particles are draws too, and the
+    // colour recorded is the scale applied to every particle's own colour.
+    if (FrameCapture::Get().IsCapturing()) {
+        auto& rec = FrameCapture::Get().AddDraw();
+        rec.meshName = sys->Name();
+        rec.materialName = mat->Name();
+        rec.cameraName = cam->Name();
+        rec.blend = (int)mat->GetBlend();
+        rec.zMode = (int)mat->GetZMode();
+        rec.color[0] = mcr; rec.color[1] = mcg; rec.color[2] = mcb; rec.color[3] = mca;
+        rec.alpha = mca;
+        rec.useTexture = mat->GetDiffuseTex() ? 1.0f : 0.0f;
+        rec.emissiveMultiplier = (float)numParticles;  // particle count
+        const Vector3& wp = sys->WorldXfm().v;
+        rec.worldPos[0] = wp.x; rec.worldPos[1] = wp.y; rec.worldPos[2] = wp.z;
+    }
 
     // Project with the camera that is current now (a particle system can be the
     // first draw after a camera change, e.g. inside a render-target pass).

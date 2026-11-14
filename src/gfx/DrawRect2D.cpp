@@ -63,6 +63,16 @@ struct Vertex2D {
     float color[4];
 };
 
+Hmx::Color DrawRectMaterialColor(RndMat* mat) {
+    Hmx::Color k = mat->GetColor();
+    if ((int)mat->GetBlend() == 7) { // kPreMultAlpha
+        k.red *= k.alpha;
+        k.green *= k.alpha;
+        k.blue *= k.alpha;
+    }
+    return k;
+}
+
 void DrawRect2D::Init(GpuDevice& gpu) {
     EnsurePipeline(gpu);
 }
