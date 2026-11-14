@@ -536,6 +536,17 @@ public:
 // Global accessor — set during Init
 extern WgpuRnd* gWgpuRnd;
 
+// The window opened but nothing can be drawn into it (dc3 PLAN H-33): the
+// surface is unusable on every window system GpuDevice tried, or it has never
+// handed out a frame. WgpuRnd stops the process with this status rather than
+// fall back to an invisible headless run or loop drawing nothing.
+constexpr int kNativeSurfaceExitCode = 97;
+// Called with a one-line reason and kNativeSurfaceExitCode, after the FATAL
+// message is printed; a consumer installs one to route the exit through its own
+// exit records. Must not return. Unset: stdio is flushed and exit() runs.
+using NativeRenderFatalFn = void (*)(const char* reason, int code);
+void SetNativeRenderFatalHandler(NativeRenderFatalFn fn);
+
 // Copy a render target's colour texture back to the CPU: w*h texels, 4 bytes
 // each, in the target's own channel order (ChooseRenderTargetFormat). False
 // when the texture has no GPU render target. Synchronous (Tex_Wgpu.cpp);

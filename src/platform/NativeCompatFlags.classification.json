@@ -2168,6 +2168,34 @@
     "default": "off",
     "read": "value"
   },
+  "MILO_FULLSCREEN": {
+    "class": "feature",
+    "owner": "render/window",
+    "faithfulStatus": "n/a: open the window fullscreen on the primary monitor at its desktop mode (no mode switch); F11 / Alt+Enter toggle at run time either way. For a player (dc3 scripts/play.sh --fullscreen, dc3 PLAN L-1/H-18) [GpuDevice.cpp]",
+    "default": "off",
+    "read": "truthy"
+  },
+  "MILO_GLFW_PLATFORM": {
+    "class": "feature",
+    "owner": "render/window",
+    "faithfulStatus": "n/a: Linux window system for GLFW: x11, wayland or any (default: GLFW's choice, Wayland when WAYLAND_DISPLAY is set). A window whose surface WebGPU cannot present to is re-opened through X11 either way (dc3 PLAN H-33) [GpuDevice.cpp]",
+    "default": "off",
+    "read": "value"
+  },
+  "MILO_SURFACE_FAULT": {
+    "class": "probe",
+    "owner": "render/window",
+    "faithfulStatus": "n/a: test hook for dc3 PLAN H-33: init (every window's surface probe fails), init-once (the first fails; the X11 fallback then runs once), acquire (GetCurrentTexture fails every frame). Exercises the unusable-surface handling on a box whose surface works [GpuDevice.cpp]",
+    "default": "off",
+    "read": "value"
+  },
+  "MILO_PRESENT_SCALE": {
+    "class": "feature",
+    "owner": "render/window",
+    "faithfulStatus": "n/a: windowed WgpuRnd draws at the Rnd virtual resolution and scales the frame into the window, aspect kept, black bars (dc3 PLAN H-18). 0 restores the swapchain-is-the-frame path (picture in the top-left of a larger window) [Rnd_Wgpu.cpp]",
+    "default": "on",
+    "read": "value"
+  },
   "VK_INSTANCE_LAYERS": {
     "class": "probe",
     "owner": "render/debug",
