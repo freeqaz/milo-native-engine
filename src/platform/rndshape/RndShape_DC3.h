@@ -497,6 +497,22 @@ constexpr bool kGxTextureLayout = false;
 // rb3-xenon's Tex.cpp SyncBitmap is not decompiled, so it keeps the full chain.
 constexpr int kBitmapMaxMipLevels = kDC3RetailModel ? 2 : 0;
 
+// ---- alpha cut -------------------------------------------------------------
+// Whether a material's alpha cut also turns on alpha-to-coverage in a
+// multisampled pass. DC3's alpha cut is the alpha test and nothing else:
+// NgMat::SetBasicState (dc3 src/system/rndobj/Mat_NG.cpp) sets
+//     SetAlphaTestEnable(mAlphaCut);
+//     if (mAlphaCut) SetAlphaFunc(5, mAlphaThreshold);
+// and nothing in the image calls D3DDevice_SetRenderState_AlphaToMaskEnable
+// (0x82BA2D60; its only references are the d3d9i state tables), so coverage
+// never follows alpha. The shader's discard is that test. With coverage on,
+// a texel of alpha a covers a of the samples, so a premultiplied glyph drawn
+// at alpha a resolved to a * a of its colour: song select's list rows (the
+// Eagle-Light(47) font: alpha_cut 1, threshold 0, PreMultAlpha, faded to
+// 0.5) drew at ~0.6 of the original, and every glyph lost its soft edge.
+// rb3-xenon (also this shape) keeps coverage: its NgMat is not decompiled.
+constexpr bool kAlphaCutUsesCoverage = !kDC3RetailModel;
+
 // ---- draw modes ------------------------------------------------------------
 // The Rnd::Mode WorldReflection::DrawShowing sets while it draws the mirrored
 // world (DC3 world/Reflection.cpp: SetDrawMode((Rnd::Mode)8)).

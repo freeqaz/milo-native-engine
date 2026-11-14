@@ -2244,5 +2244,12 @@
     "faithfulStatus": "n/a: headless GPU only. How many frames a headless loop may run ahead of the GPU (default 2): WgpuRnd::EndDrawing's headless path calls GpuDevice::EndHeadlessFrame, which processes Dawn's events and waits on an OnSubmittedWorkDone future while more than this many frames are queued (a window is paced by present instead). 0 = unbounded, the pre-H-75 behaviour, under which an uncapped headless loop let the driver grow its descriptor/command/staging pools to the deepest backlog (dc3 PLAN H-45/H-75). Same frames, same bytes; only when the CPU waits changes. Web: empty definition [GpuDevice.cpp, Rnd_Wgpu.cpp]",
     "default": "2",
     "read": "value"
+  },
+  "DC3_LOOK": {
+    "class": "feature",
+    "owner": "render/look",
+    "faithfulStatus": "live: the DC3 look profile (platform/LookProfile.h), read once. Unset or 'enhanced' = native polish on (the default); 'retail' = the original hardware's behaviour for parity measurement against Xenia/retail; anything else warns and uses enhanced. One switch that every enhancement hangs off (LookSettings), so no per-feature env var. DC3 retail model only (rndshape::kDC3RetailModel); rb3-xenon reports profile 'native' and never reads it, and the rb3 flavor does not link the TU [platform/LookProfile.cpp]",
+    "default": "on",
+    "read": "value"
   }
 }

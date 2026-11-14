@@ -338,6 +338,7 @@ set(MILO_ENGINE_CHAR_SOURCES
 # (e.g. Part_Wgpu calls RndParticleSys::NumTilesAcross()/NumTilesDown() which RB3
 # lacks; Rnd_Wgpu's WgpuRnd derives from NgRnd while RB3's Rnd is older/unrelated).
 set(MILO_ENGINE_GPU_PLATFORM_SOURCES
+    src/platform/LookProfile.cpp     # DC3_LOOK retail|enhanced (LookProfile.h)
     src/platform/MaterialSetup.cpp
     src/platform/MeshGpuCache.cpp
     src/platform/Mesh_Wgpu.cpp
