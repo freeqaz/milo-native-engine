@@ -98,6 +98,22 @@ Rnd* TheRnd = &gWgpuRndInstance;
 #endif
 WgpuRnd* gWgpuRnd = &gWgpuRndInstance;
 
+static NativeRenderFatalFn gNativeRenderFatalHandler = nullptr;
+void SetNativeRenderFatalHandler(NativeRenderFatalFn fn) { gNativeRenderFatalHandler = fn; }
+
+[[noreturn]] static void NativeRenderFatal(const char* reason) {
+    fflush(stdout);
+    fprintf(stderr,
+            "DC3 Native: FATAL - %s.\n"
+            "  Nothing can be drawn, so the game stops here (exit %d) rather than run\n"
+            "  without a picture. On Linux, MILO_GLFW_PLATFORM=x11 opens the window\n"
+            "  through X11/XWayland; MILO_HEADLESS=1 runs without a window.\n",
+            reason, kNativeSurfaceExitCode);
+    fflush(stderr);
+    if (gNativeRenderFatalHandler) gNativeRenderFatalHandler(reason, kNativeSurfaceExitCode);
+    exit(kNativeSurfaceExitCode);
+}
+
 // Exposed for input subsystem (Joypad_Native, Keyboard_Native)
 #ifndef __EMSCRIPTEN__
 GLFWwindow *gNativeWindow = nullptr;
@@ -311,8 +327,27 @@ void WgpuRnd::Init() {
         desc.width = getenv("MILO_WIDTH") ? atoi(getenv("MILO_WIDTH")) : 1280;
         desc.height = getenv("MILO_HEIGHT") ? atoi(getenv("MILO_HEIGHT")) : 720;
         desc.title = "DC3 Native — WebGPU";
+        // Windowed, the frame is the Rnd virtual resolution (what viewports and
+        // UI layout are computed in), scaled into whatever size the window has
+        // (dc3 PLAN H-18; gfx/PresentScale.h). MILO_WIDTH/HEIGHT size the
+        // window. Before, the frame was the window, and anything larger than
+        // the virtual resolution got the picture in its top-left corner.
+        // MILO_PRESENT_SCALE=0 restores that.
+        if (!desc.headless && mWidth > 0 && mHeight > 0) {
+            const char* ps = getenv("MILO_PRESENT_SCALE");
+            if (!(ps && ps[0] == '0' && ps[1] == '\0')) {
+                desc.frameWidth = mWidth;
+                desc.frameHeight = mHeight;
+            }
+        }
 
         if (!mGpu.Init(desc)) {
+            if (!desc.headless && mGpu.InitFailure() == GpuInitFailure::SurfaceUnusable) {
+                // A window opened and cannot be drawn into: say so and stop.
+                // Falling back to headless here ran the game invisibly.
+                NativeRenderFatal(("the window cannot be presented to: " +
+                                   mGpu.SurfaceFailureReason()).c_str());
+            }
             printf("DC3 Native: GPU init failed, falling back to headless\n");
             desc.headless = true;
             if (!mGpu.Init(desc)) {
@@ -1618,18 +1653,8 @@ void WgpuRnd::BeginDrawing() {
     mBindGroupCache.BeginFrame((uint64_t)mFrameID);
 
 #ifndef __EMSCRIPTEN__
-    // Poll window size each frame and reconfigure surface if changed.
-    // This catches resize events that the callback may miss (e.g. macOS
-    // live resize where the callback fires but Dawn needs reconfiguration
-    // before the next AcquireNextFrame).
-    if (!mGpu.IsHeadless() && mGpu.Window()) {
-        int winW, winH;
-        glfwGetWindowSize(mGpu.Window(), &winW, &winH);
-        if (winW > 0 && winH > 0 &&
-            (winW != mGpu.WindowWidth() || winH != mGpu.WindowHeight())) {
-            mGpu.ResizeSurface(winW, winH);
-        }
-    }
+    // The surface follows the window inside GpuDevice::AcquireNextFrame (its
+    // framebuffer size, so HiDPI; a fixed frame stays the Rnd virtual size).
 #else
     // Web: poll canvas buffer size and sync GPU surface.
     // The JS ResizeObserver may fire before WASM is ready, leaving the
@@ -1654,6 +1679,13 @@ void WgpuRnd::BeginDrawing() {
         mFrameView = mGpu.AcquireNextFrame();
     }
     if (!mFrameView) {
+#ifndef __EMSCRIPTEN__
+        // A window that has never given a frame (dc3 PLAN H-33): stop with a
+        // message. AcquireNextFrame waited a frame period, so until then the
+        // loop runs near the display rate, not flat out.
+        if (!mGpu.IsHeadless() && mGpu.SurfaceFailed())
+            NativeRenderFatal(mGpu.SurfaceFailureReason().c_str());
+#endif
 #ifdef DEBUG_LOGS
         static int sFailCount = 0;
         if (sFailCount < 10) {

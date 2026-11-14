@@ -38,10 +38,15 @@ static bool PopKeyEvent(KeyEvent &out) {
     return true;
 }
 
-static void GlfwKeyCallback(GLFWwindow *, int key, int /*scancode*/, int action, int mods) {
+// The callback installed before ours (GpuDevice's F11 / Alt+Enter fullscreen
+// toggle), chained so installing the keyboard does not take it away.
+static GLFWkeyfun sPrevKeyCallback = nullptr;
+
+static void GlfwKeyCallback(GLFWwindow *win, int key, int scancode, int action, int mods) {
     if (action == GLFW_PRESS || action == GLFW_RELEASE) {
         PushKeyEvent(key, action, mods);
     }
+    if (sPrevKeyCallback) sPrevKeyCallback(win, key, scancode, action, mods);
 }
 #endif // !__EMSCRIPTEN__
 
@@ -50,7 +55,8 @@ void KeyboardInit() {
     KeyboardInitCommon();
 #ifndef __EMSCRIPTEN__
     if (gNativeWindow) {
-        glfwSetKeyCallback(gNativeWindow, GlfwKeyCallback);
+        GLFWkeyfun prev = glfwSetKeyCallback(gNativeWindow, GlfwKeyCallback);
+        if (prev != GlfwKeyCallback) sPrevKeyCallback = prev;
     }
 #endif
 }
@@ -58,7 +64,8 @@ void KeyboardInit() {
 void KeyboardTerminate() {
 #ifndef __EMSCRIPTEN__
     if (gNativeWindow) {
-        glfwSetKeyCallback(gNativeWindow, nullptr);
+        glfwSetKeyCallback(gNativeWindow, sPrevKeyCallback);
+        sPrevKeyCallback = nullptr;
     }
 #endif
     KeyboardTerminateCommon();

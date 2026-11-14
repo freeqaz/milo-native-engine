@@ -257,11 +257,15 @@ static bool HostModifierHeld(JoypadKeyDownFn keyDown, void *ctx) {
 
 unsigned int JoypadKeyboardButtons(JoypadKeyDownFn keyDown, void *ctx) {
 #ifndef __EMSCRIPTEN__
-    if (HostModifierHeld(keyDown, ctx)) return 0;
+    // Every bound key is read, chord or not: with GLFW sticky keys a read is
+    // what consumes a tap, so a key tapped inside a host chord and left
+    // unread stays "pressed" and lands on the first poll after the modifier
+    // is let go (Alt+Enter toggled fullscreen and then pressed A, dc3 H-18).
     unsigned int buttons = 0;
     for (int i = 0; i < kNumKeyBindings; i++) {
         if (keyDown(kKeyBindings[i].key, ctx)) buttons |= (1u << kKeyBindings[i].button);
     }
+    if (HostModifierHeld(keyDown, ctx)) return 0;
     return buttons;
 #else
     (void)keyDown;
