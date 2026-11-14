@@ -2170,7 +2170,14 @@ void WgpuRnd::WriteSceneUniforms() {
         // The content's own lighting model (RB3-Wii: rndshape/RB3WiiSceneLighting.cpp;
         // DC3: rndshape/DC3SceneLighting.cpp, docs/native/dc3-retail-lighting.md).
         // DC3's projected_blend 0 light binds its gobo here; RB3-Wii has none.
+        // Upload on demand: textures reach the GPU when a material binds them
+        // (PresyncBitmap), and a gobo is bound by a light alone. Rollerrink's
+        // light_glow01.tex and discoBallReflection.tex are referenced by no
+        // material, so without this the view was null, slot 3 fell back to
+        // white, and every blend-0 light lit its whole cone at full colour
+        // instead of its pool (docs/native/dc3-retail-lighting.md 8.1).
         RndTex* gobo = rndshape::SceneProjTexture();
+        if (gobo) gobo->PresyncBitmap();
         mProjLightTexView = gobo ? GetGpuTexView(gobo) : nullptr;
     } else if (env && rndshape::EnvHasAmbientFogOwner(env)) {
         // The engine's heuristic light model. WHO STILL REACHES THIS ARM: rb3-xenon
