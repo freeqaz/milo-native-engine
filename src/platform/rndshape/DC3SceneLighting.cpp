@@ -68,11 +68,21 @@ namespace {
 // receiver's uv reads it: clip = (2 r0 - r2, r2 - 2 r1, 0, r2) . p gives
 // u = 0.5 x/w + 0.5 = r0.p / r2.p and v = 0.5 - 0.5 y/w = r1.p / r2.p. The
 // receivers sample it the next frame (standard_wgsl.inc dc3ProjShadow).
+//
+// Every projected light with shadow objects gets a map, as on retail (each
+// NgLight owns its target). Houseparty is the venue that needs more than one:
+// a2_spotlight.lit (default_environment.env, projected_blend 0, a gobo with
+// five shadow objects) and ShadowDirLight01.lit (Shadows.env, projected_blend
+// 1, the dancers' floor shadow) are both live in one frame (np-gfx-light
+// round 3 probe). With a single map the first one published took it and the
+// floor shadow drew none. The maps share ShadowPass's depth texture as a 2x2
+// atlas; a light's tile is its index in the frame that drew it.
 struct ProjShadowState {
-    RndLight *frameLight = nullptr;   // this frame's light; never kept across frames
-    float frameClip[16] = {};
-    const void *mapLight = nullptr;   // whose casters the map holds (identity only)
-    bool mapValid = false;
+    RndLight *frameLights[rndshape::kMaxProjShadowMaps] = {};   // this frame's; never kept across frames
+    float frameClips[rndshape::kMaxProjShadowMaps][16] = {};
+    int frameCount = 0;
+    const void *mapLights[rndshape::kMaxProjShadowMaps] = {};   // whose casters each tile holds (identity only)
+    int mapCount = 0;
 };
 ProjShadowState sProj;
 
@@ -155,11 +165,17 @@ void WriteDC3ProjShadow(SceneUniforms &s, E *env) {
     // binds the FlatNormal default (alpha 0: no coverage) otherwise
     // (NgLight::CheckShadowMap, Rnd::CreateDefaultTexture row 3).
     if (!LightHasShadowObjects(proj)) return;
-    // 2: the map is last frame's draw of this light's casters.
-    s.shadowEnabled = (sProj.mapValid && sProj.mapLight == proj) ? 2.0f : 0.0f;
-    if (!sProj.frameLight) {
-        sProj.frameLight = proj;
-        memcpy(sProj.frameClip, clip, sizeof(clip));
+    // 2 + tile: the tile holds last frame's draw of this light's casters.
+    s.shadowEnabled = 0.0f;
+    for (int i = 0; i < sProj.mapCount; i++) {
+        if (sProj.mapLights[i] == proj) s.shadowEnabled = 2.0f + (float)i;
+    }
+    bool queued = false;
+    for (int i = 0; i < sProj.frameCount; i++) queued = queued || sProj.frameLights[i] == proj;
+    if (!queued && sProj.frameCount < rndshape::kMaxProjShadowMaps) {
+        sProj.frameLights[sProj.frameCount] = proj;
+        memcpy(sProj.frameClips[sProj.frameCount], clip, sizeof(clip));
+        sProj.frameCount++;
     }
 }
 
@@ -336,24 +352,30 @@ RndTex *SceneProjTexture() {
     }
 }
 
-bool CollectProjShadowCasters(ProjShadowCasters &out) {
+int CollectProjShadowCasterSets(std::vector<ProjShadowCasters> &out) {
+    out.clear();
     if constexpr (kDC3RetailModel) {
-        RndLight *light = sProj.frameLight;
-        sProj.frameLight = nullptr;
-        if (!light) {
-            sProj.mapValid = false;
-            sProj.mapLight = nullptr;
-            return false;
+        sProj.mapCount = 0;
+        for (int i = 0; i < sProj.frameCount; i++) {
+            ProjShadowCasters set;
+            memcpy(set.clipFromWorld, sProj.frameClips[i], sizeof(set.clipFromWorld));
+            set.tile = i;
+            CollectDC3Casters(set, sProj.frameLights[i]);
+            out.push_back(std::move(set));
+            sProj.mapLights[i] = sProj.frameLights[i];
+            sProj.frameLights[i] = nullptr;
         }
-        memcpy(out.clipFromWorld, sProj.frameClip, sizeof(sProj.frameClip));
-        CollectDC3Casters(out, light);
-        sProj.mapValid = true;
-        sProj.mapLight = light;
-        return true;
-    } else {
-        (void)out;
-        return false;
+        sProj.mapCount = sProj.frameCount;
+        sProj.frameCount = 0;
     }
+    return (int)out.size();
+}
+
+bool CollectProjShadowCasters(ProjShadowCasters &out) {
+    std::vector<ProjShadowCasters> sets;
+    if (CollectProjShadowCasterSets(sets) == 0) return false;
+    out = std::move(sets.front());
+    return true;
 }
 
 } // namespace rndshape

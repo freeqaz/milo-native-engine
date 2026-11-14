@@ -644,6 +644,7 @@ void FillMeshApproxLighting(RndMesh *mesh, float box[6][4], float retail[4]);
 constexpr bool kGenericShadowPass = true;
 constexpr bool kSelectDefaultEnvEachFrame = false;
 inline bool CollectProjShadowCasters(ProjShadowCasters &) { return false; }
+inline int CollectProjShadowCasterSets(std::vector<ProjShadowCasters> &) { return 0; }
 inline RndTex *SceneProjTexture() { return nullptr; }
 
 // ---- per-draw state log ----------------------------------------------------

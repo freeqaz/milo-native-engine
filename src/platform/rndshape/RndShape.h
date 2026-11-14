@@ -66,9 +66,14 @@ struct RefractTerms {
 // light, docs/native/dc3-retail-lighting.md). clipFromWorld is column-major,
 // like ShadowPass's light matrix and SceneUniforms.lightViewProj. The mesh
 // pointers are borrowed for the call that drew them.
+// tile: which quarter of ShadowPass's caster atlas this light's map takes
+// (0..3, 2x2, row-major from the top left; receivers read it back from
+// SceneUniforms.shadowEnabled = 2 + tile). Retail gives every projected
+// shadow light its own 256x256 target; a 512x512 tile is twice that.
 struct ProjShadowCasters {
     float clipFromWorld[16] = {};
     std::vector<RndMesh *> meshes;
+    int tile = 0;
 };
 // One mesh draw as the per-draw state log records it (rndshape::DrawLogRecord;
 // RB3DrawLogDebug.h's RB3DrawRecord is the stored form). Every pointer is
