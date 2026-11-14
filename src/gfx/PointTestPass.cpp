@@ -169,6 +169,12 @@ bool PointTestPass::Record(wgpu::CommandEncoder& encoder, const wgpu::TextureVie
     da.view = depthView;
     da.depthLoadOp = wgpu::LoadOp::Load;
     da.depthStoreOp = wgpu::StoreOp::Store;
+    // Not cleared, but the browser's WebIDL conversion rejects a non-finite
+    // float before Dawn sees the pass, and the C++ struct defaults this to NaN
+    // (kDepthClearValueUndefined): on web the first point test threw from
+    // beginRenderPass and stopped the frame loop at game_screen (measured on
+    // DLC Milkshake, frame 5299, dclive). Same fix as BandMainPassResume.
+    da.depthClearValue = 1.0f;
     da.stencilLoadOp = wgpu::LoadOp::Load;
     da.stencilStoreOp = wgpu::StoreOp::Store;
     wgpu::RenderPassDescriptor rp{};
