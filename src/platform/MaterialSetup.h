@@ -33,9 +33,11 @@ MaterialParams BuildPassMaterialParams(BaseMaterial* pass);
 class RndMesh;
 bool TextMeshKeepsAtlasRGB(RndMesh* mesh, RndMat* mat, bool skinned);
 
-// True when an unnamed mesh is drawn as a text glyph page: no depth test and
-// no culling, whatever its material asks. RndText's font pages are unnamed and
-// never skinned; other code also builds unnamed meshes, and a skinned one
-// (DC3's HamRibbon hand trail, one bone per segment) keeps its material's
-// zMode and cull.
+// True when a mesh is drawn as a text glyph page: no depth test and no
+// culling, whatever its material asks. When the render hook says the game marks
+// its pages (GameRenderHook::MarksTextGlyphMeshes), only a mesh marked with
+// MarkTextGlyphMesh() is one, so spotlight beams, ribbons, lines and crowd
+// billboards -- unnamed too -- keep their material's zMode and cull. Without
+// that the page is inferred: unnamed and not skinned (DC3's HamRibbon hand
+// trail is unnamed but skinned).
 bool MeshDrawsAsGlyph(RndMesh* mesh, bool skinned);

@@ -4,6 +4,7 @@
 
 #include "platform/MaterialSetup.h"
 #include "platform/GameRenderHook.h"
+#include "platform/MeshGpuCache.h"
 #include "rndobj/Cam.h"
 #include "platform/Rnd_Wgpu.h"
 #include "platform/TexGpu.h"
@@ -161,7 +162,13 @@ bool TextMeshKeepsAtlasRGB(RndMesh* mesh, RndMat* mat, bool skinned) {
 }
 
 bool MeshDrawsAsGlyph(RndMesh* mesh, bool skinned) {
-    return mesh && !mesh->Name()[0] && !skinned;
+    if (!mesh) return false;
+    // A game that marks its glyph pages is asked positively: only a marked
+    // mesh is a glyph page.
+    GameRenderHook* hook = GetGameRenderHook();
+    if (hook && hook->MarksTextGlyphMeshes()) return IsMarkedTextGlyphMesh(mesh);
+    // Otherwise infer it: RndText's pages are unnamed and never skinned.
+    return !mesh->Name()[0] && !skinned;
 }
 
 MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh) {
