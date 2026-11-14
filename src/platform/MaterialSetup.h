@@ -40,6 +40,13 @@ bool MaterialShadesPrelit(bool matPrelit, bool isTextMesh, bool isOverlayPass,
 // Factor on the material alpha: 2 for an intensify material under the retail
 // UI terms (DC3's standard.ps: `mul r0, r0, c5.yyyy`, alpha included), else 1.
 float MaterialAlphaScale(bool intensify, bool retailMaterialTerms);
+// The material colour as the shader sees it. A premultiplied-alpha material
+// (blend 7, pipeline One / OneMinusSrcAlpha) has its rgb scaled by its alpha
+// before the constant is set -- NgMat::SetRegularShaderConst (Mat_NG.cpp:191,
+// 100% matched) and RB3 Wii's NgMat equivalent both call PreMultiplyAlpha --
+// so a fading premult label dims with its alpha instead of adding its full
+// colour until the alpha nears 0. Every other blend: the colour unchanged.
+void MaterialShaderColor(const Hmx::Color& matColor, BaseMaterial::Blend blend, float out[4]);
 // material.unlit under the retail UI terms: a lit material with use_environ 0
 // takes an ambient of 1 and no lights (NgMat::SetupAmbient; the shader options
 // set mRealLights/mApproxLights only for use_environ materials), so it shows
