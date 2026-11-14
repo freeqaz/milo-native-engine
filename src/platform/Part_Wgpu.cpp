@@ -255,6 +255,77 @@ ParticleQuadAxes ParticleBillboardAxes(const float pos[3], const float camRight[
     return q;
 }
 
+// The aligned path of the shipped particles vertex shader (dc3 xbox_shaders,
+// type "particles", microcode from instruction 44 to label L17; the same in
+// every permutation). Its inputs, from DxParticleSys::DrawShowing and
+// DrawParticles: the vertex carries size and 2 * vel (local space), c47 =
+// 0.5 * camera X and c48 = 0.5 * S * camera Z (S = screen aspect, both
+// expressed in local space through Invert(mRelativeXfm.m)), c49 = (aligned,
+// stretched, constantArea, 2 * stretch_scale). For the corner whose texture
+// coords are (u, v), with sigma = 2v - 1 across and tau = 2u - 1 along:
+//
+//   a = 2V.c47 = V.X_local     b = 2V.c48 = S * V.Z_local
+//   len = |(a, b)|              (A, B) = (a, b) / len, or (a, b) when len = 0
+//   no perspective (c47.w = 1):
+//     L = stretched ? size + 2 * stretch_scale * len : size
+//     W = constantArea ? (L > 0.01 ? size^2 / L : 0.01 * size) : size
+//     corner = P + (1 - tau) / 2 * L * (A X + B S Z) + sigma * W / 2 * (B X - A S Z)
+//   perspective (c47.w = 0):
+//     W as above with size + len for L
+//     corner = P + (1 - tau) * 2 * stretch_scale * V_world + sigma * W / 2 * (B X - A S Z)
+//
+// So the texture's top (tau = -1) leads along the velocity and its bottom sits
+// on the particle, and a perspective streak is a world-space segment whose
+// length does not include the particle size.
+ParticleQuadAxes ParticleAlignedAxes(const float pos[3], const float velLocal[3],
+                                     const float rel[9], const float camRight[3],
+                                     const float camUp[3], float size,
+                                     const ParticleAlignTerms& terms) {
+    ParticleQuadAxes q;
+    for (int i = 0; i < 3; i++) {
+        q.centre[i] = pos[i];
+        q.right[i] = 0.0f;
+        q.up[i] = 0.0f;
+    }
+    const float* m = rel;
+    // Cofactors of the relative matrix; X_local = X * Invert(m) (row vectors).
+    const float cof[3][3] = {
+        {m[4] * m[8] - m[5] * m[7], -(m[3] * m[8] - m[5] * m[6]), m[3] * m[7] - m[4] * m[6]},
+        {-(m[1] * m[8] - m[2] * m[7]), m[0] * m[8] - m[2] * m[6], -(m[0] * m[7] - m[1] * m[6])},
+        {m[1] * m[5] - m[2] * m[4], -(m[0] * m[5] - m[2] * m[3]), m[0] * m[4] - m[1] * m[3]},
+    };
+    const float det = m[0] * cof[0][0] + m[1] * cof[0][1] + m[2] * cof[0][2];
+    if (det == 0.0f) return q;
+    float xl[3], zl[3];
+    for (int j = 0; j < 3; j++) {
+        xl[j] = (camRight[0] * cof[j][0] + camRight[1] * cof[j][1] + camRight[2] * cof[j][2]) / det;
+        zl[j] = (camUp[0] * cof[j][0] + camUp[1] * cof[j][1] + camUp[2] * cof[j][2]) / det;
+    }
+    const float S = terms.screenAspect;
+    const float a = velLocal[0] * xl[0] + velLocal[1] * xl[1] + velLocal[2] * xl[2];
+    const float b = S * (velLocal[0] * zl[0] + velLocal[1] * zl[1] + velLocal[2] * zl[2]);
+    const float len = sqrtf(a * a + b * b);
+    const float A = len > 0.0f ? a / len : a;
+    const float B = len > 0.0f ? b / len : b;
+    const float scale2 = 2.0f * terms.stretchScale;  // c49.w
+    float along = terms.perspective ? size + len : size;
+    if (!terms.perspective && terms.stretched) along = size + scale2 * len;
+    float W = size;
+    if (terms.constantArea) W = along > 0.01f ? size * size / along : 0.01f * size;
+    for (int i = 0; i < 3; i++) {
+        const float across = B * camRight[i] - A * S * camUp[i];
+        q.right[i] = 0.5f * W * across;
+        if (terms.perspective) {
+            const float vw = velLocal[0] * m[i] + velLocal[1] * m[3 + i] + velLocal[2] * m[6 + i];
+            q.up[i] = scale2 * vw;
+        } else {
+            q.up[i] = 0.5f * along * (A * camRight[i] + B * S * camUp[i]);
+        }
+        q.centre[i] = pos[i] + q.up[i];
+    }
+    return q;
+}
+
 void DrawParticlesBillboard(RndParticleSys* sys) {
     if (!gWgpuRnd || !gWgpuRnd->IsInPass()) return;
 
@@ -292,6 +363,12 @@ void DrawParticlesBillboard(RndParticleSys* sys) {
     const rndshape::PartBillboardTerms billboard = rndshape::PartBillboard(sys);
     const float camR[3] = {rx, ry, rz};
     const float camU[3] = {ux, uy, uz};
+    ParticleAlignTerms alignTerms;
+    alignTerms.screenAspect = billboard.screenAspect;
+    alignTerms.stretched = billboard.stretched;
+    alignTerms.constantArea = billboard.constantArea;
+    alignTerms.perspective = billboard.perspective;
+    alignTerms.stretchScale = billboard.stretchScale;
 
     // UV tiling
     int tilesAcross = rndshape::PartTilesAcross(sys);
@@ -308,9 +385,23 @@ void DrawParticlesBillboard(RndParticleSys* sys) {
     for (RndParticle* p = head; p; p = p->next) {
         const Vector3 wp = rndshape::PartWorldPos(sys, p);
         const float pos[3] = {wp.x, wp.y, wp.z};
-        const ParticleQuadAxes q = ParticleBillboardAxes(
-            pos, camR, camU, p->size * 0.5f, p->angle, billboard.retailXbox,
-            billboard.screenAspect, billboard.retailXbox ? rndshape::PartSwingArm(p) : 0.0f);
+        ParticleQuadAxes q;
+        if (billboard.velocityVerts) {
+            const Vector3 v = rndshape::PartVelocity(p);
+            const float vel[3] = {v.x, v.y, v.z};
+            if (billboard.aligned) {
+                q = ParticleAlignedAxes(pos, vel, billboard.rel, camR, camU, p->size,
+                                        alignTerms);
+            } else {
+                // DrawParticles wrote 2 * vel where angle and swing arm go.
+                q = ParticleBillboardAxes(pos, camR, camU, p->size * 0.5f, 2.0f * vel[0], true,
+                                          billboard.screenAspect, 2.0f * vel[1]);
+            }
+        } else {
+            q = ParticleBillboardAxes(
+                pos, camR, camU, p->size * 0.5f, p->angle, billboard.retailXbox,
+                billboard.screenAspect, billboard.retailXbox ? rndshape::PartSwingArm(p) : 0.0f);
+        }
         const float size = p->size * 0.5f;  // the haze fade's scale
         const float cx = q.centre[0], cy = q.centre[1], cz = q.centre[2];
         const float srx = q.right[0], sry = q.right[1], srz = q.right[2];

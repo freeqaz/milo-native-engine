@@ -11,6 +11,7 @@
 #include "gfx/DisplayRamp.h"
 #include "gfx/DrawRect2D.h"
 #include "gfx/PointTestPass.h"
+#include "gfx/PointTestStandIns.h"
 #include "gfx/SpotBeamPass.h"
 #include "gfx/TexBlendPass.h"
 #include "gfx/UniformStructs.h"
@@ -259,6 +260,11 @@ public:
     void FinishPointTestReadback();
     int PendingPointTests() const { return (int)mPointTestQueue.size(); }
     int PointTestsInFlight() const { return mPointTestPass.InFlight(); }
+    // FinishPointTestReadback calls that blocked on a readback (never, under a
+    // shape whose rndshape::kPointTestWaitAfterSubmit is false), and the
+    // stand-in answers delivered for late ones (PointTestStandIns).
+    uint64_t PointTestEndWaits() const { return mPointTestEndWaits; }
+    uint64_t PointTestStandInsDelivered() const { return mPointTestStandInsDelivered; }
     // Counts an answer for the frame-times log (MILO_FRAME_TIMES).
     void NotePointTestAnswer(const PointTestPass::Answer& answer);
 
@@ -369,6 +375,13 @@ public:
     std::vector<PointTestPass::Query> mPointTestQueue;
     bool mPointTestsRan = false;
     uint64_t mPointTestSeqBeforeFrame = 0;  // LastSeq() at BeginDrawing
+    // Without the after-submit wait: each tested key's last answer, the keys a
+    // full PointTestPass could not record last frame, and scratch.
+    PointTestStandIns mPointTestStandIns;
+    std::vector<const void*> mPointTestUnrecordedKeys;
+    std::vector<const void*> mPointTestLateKeys;
+    uint64_t mPointTestEndWaits = 0;
+    uint64_t mPointTestStandInsDelivered = 0;
     struct PointTester : NativePointTester {
         WgpuRnd* rnd = nullptr;
         bool QueuePointTest(const NativePointTest& t) override { return rnd->QueuePointTest(t); }
@@ -534,6 +547,7 @@ public:
     int mPointTestsRecorded = 0;
     int mPointTestAnswers = 0;
     int mPointTestAgeMax = 0;
+    int mPointTestStandInsFrame = 0;  // stand-ins delivered this frame (pt_standin)
     struct PointTestBatchFrame {
         uint64_t seq = 0;
         int frame = 0;

@@ -117,7 +117,10 @@ struct MaterialUniforms {
     // 2 AlphaUnpackModulate, 3 Modulate). Zero for every other material.
     // Packed so the struct stays one 256-byte uniform-ring slot; the colours
     // scale an 8-bit output, so 8 bits each lose nothing visible. The shader
-    // math is retail's (standard_wgsl.inc colorModScale).
+    // math is retail's (standard_wgsl.inc colorModScale). w also carries
+    // flags above the mode byte: bit 8 the band selector, bit 9 screen-aligned
+    // texture coordinates (DC3, rndshape::MatScreenAligned), and in its high
+    // 16 bits the world refraction strength as an f16.
     uint32_t colorMod[4];       // vec4u
 };
 static_assert(sizeof(MaterialUniforms) == 256, "MaterialUniforms must match WGSL layout");

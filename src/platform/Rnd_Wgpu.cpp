@@ -2,6 +2,7 @@
 // Replaces Rnd_Stub.cpp with real WebGPU rendering via Dawn
 
 #include "platform/Rnd_Wgpu.h"
+#include "gfx/GpuTimers.h"
 #include "platform/MeshGpuCache.h"
 #include "platform/NativeSettings.h"
 #include "platform/TexGpu.h"
@@ -418,7 +419,7 @@ void WgpuRnd::InitGpuResources() {
         if (mFrameTimes)
             fprintf(mFrameTimes,
                     "frame,period_ms,cpu_ms,draw_ms,pt_wait_ms,pt_recorded,pt_answers,pt_age,"
-                    "pt_end_wait_ms,pt_after_submit\n");
+                    "pt_end_wait_ms,pt_after_submit,pt_standin\n");
     }
 
     // Compose RndTexBlender outputs (TexBlendHook.h).
@@ -702,6 +703,7 @@ void WgpuRnd::ClearDepthForOverlay() {
     rpDesc.colorAttachments = &colorAtt;
     rpDesc.depthStencilAttachment = &depthAtt;
 
+    MILO_GPU_TIME_PASS(rpDesc);
     mPass = mEncoder.BeginRenderPass(&rpDesc);
     rndshape::DrawLogPassOpen(0);
     mInPass = true;
@@ -747,6 +749,7 @@ void WgpuRnd::BeginOverlayPass() {
     rpDesc.colorAttachments = &colorAtt;
     rpDesc.depthStencilAttachment = nullptr; // no depth for 2D HUD
 
+    MILO_GPU_TIME_PASS(rpDesc);
     mPass = mEncoder.BeginRenderPass(&rpDesc);
     mFrameInOverlay = true;
     rndshape::DrawLogPassOpen(2);
@@ -1064,6 +1067,19 @@ void DeliverPointTestAnswer(const PointTestPass::Answer& a, void* user) {
     r.area = a.area;
     fn(r);
 }
+// A stand-in (PointTestStandIns): to the consumer only, so the frame-times log
+// counts real answers and their age.
+void DeliverPointTestStandIn(const PointTestPass::Answer& a, void*) {
+    NativePointTestResultFn fn = GetNativePointTestResultFn();
+    if (!fn) return;
+    NativePointTestResult r;
+    r.key = a.key;
+    r.pointDone = a.pointDone;
+    r.visible = a.visible;
+    r.areaDone = a.areaDone;
+    r.area = a.area;
+    fn(r);
+}
 }  // namespace
 
 bool WgpuRnd::QueuePointTest(const NativePointTest& t) {
@@ -1108,6 +1124,7 @@ bool WgpuRnd::QueuePointTest(const NativePointTest& t) {
 }
 
 void WgpuRnd::NotePointTestAnswer(const PointTestPass::Answer& a) {
+    if constexpr (!rndshape::kPointTestWaitAfterSubmit) mPointTestStandIns.Note(a);
     if (!mFrameTimes) return;
     mPointTestAnswers++;
     for (const PointTestBatchFrame& bf : mPointTestBatchFrames) {
@@ -1127,6 +1144,12 @@ void WgpuRnd::CancelPointTests(const void* key) {
             i++;
     }
     mPointTestPass.Cancel(key);
+    if constexpr (!rndshape::kPointTestWaitAfterSubmit) {
+        mPointTestStandIns.Forget(key);
+        mPointTestUnrecordedKeys.erase(
+            std::remove(mPointTestUnrecordedKeys.begin(), mPointTestUnrecordedKeys.end(), key),
+            mPointTestUnrecordedKeys.end());
+    }
 }
 
 void WgpuRnd::RunPointTests() {
@@ -1147,6 +1170,23 @@ void WgpuRnd::RunPointTests() {
     const double waitStart = mFrameTimes ? PerfNow() : 0.0;
     mPointTestPass.CollectThrough(mPointTestSeqBeforeFrame, false, DeliverPointTestAnswer, this,
                                   mGpu);
+    if constexpr (!rndshape::kPointTestWaitAfterSubmit) {
+        // No wait after the submit (FinishPointTestReadback): the tests whose
+        // answers are still in flight, or that a full pass could not record
+        // last frame, get their key's last answer now, and the real one at a
+        // later world end.
+        mPointTestLateKeys.clear();
+        mPointTestPass.KeysDueThrough(mPointTestSeqBeforeFrame, mPointTestLateKeys);
+        mPointTestLateKeys.insert(mPointTestLateKeys.end(), mPointTestUnrecordedKeys.begin(),
+                                  mPointTestUnrecordedKeys.end());
+        mPointTestUnrecordedKeys.clear();
+        if (!mPointTestLateKeys.empty()) {
+            const int n =
+                mPointTestStandIns.Deliver(mPointTestLateKeys, DeliverPointTestStandIn, this);
+            mPointTestStandInsDelivered += (uint64_t)n;
+            mPointTestStandInsFrame += n;
+        }
+    }
     if (mFrameTimes) mPointTestWaitMs += (PerfNow() - waitStart) * 1000.0;
 
     if (mPointTestQueue.empty()) return;
@@ -1164,6 +1204,9 @@ void WgpuRnd::RunPointTests() {
         const uint64_t seq = mPointTestPass.LastSeq();
         mPointTestBatchFrames[seq % 8] = {seq, (int)mFrameID};
         mPointTestsRecorded += (int)mPointTestQueue.size();
+    } else if constexpr (!rndshape::kPointTestWaitAfterSubmit) {
+        for (const PointTestPass::Query& q : mPointTestQueue)
+            if (q.key) mPointTestUnrecordedKeys.push_back(q.key);
     }
     mPointTestQueue.clear();
     if (resume) {
@@ -1182,7 +1225,11 @@ void WgpuRnd::RunPointTests() {
 // world end.
 void WgpuRnd::FinishPointTestReadback() {
 #ifndef __EMSCRIPTEN__
+    // DC3 does not wait (rndshape::kPointTestWaitAfterSubmit): a late answer
+    // is delivered at a later world end, with a stand-in until then.
+    if constexpr (!rndshape::kPointTestWaitAfterSubmit) return;
     if (!mPointTestPass.InFlight() || mPointTestSeqBeforeFrame == 0) return;
+    mPointTestEndWaits++;
     const double waitStart = mFrameTimes ? PerfNow() : 0.0;
     const int n = mPointTestPass.CollectThrough(mPointTestSeqBeforeFrame, true,
                                                 DeliverPointTestAnswer, this, mGpu);
@@ -1427,6 +1474,7 @@ void WgpuRnd::BeginFramePass(bool clear) {
     rpDesc.colorAttachments = &colorAtt;
     rpDesc.depthStencilAttachment = &depthAtt;
 
+    MILO_GPU_TIME_PASS(rpDesc);
     mPass = mEncoder.BeginRenderPass(&rpDesc);
     rndshape::DrawLogPassOpen(clear ? 0 : 1);
     mInPass = true;
@@ -1509,6 +1557,7 @@ void WgpuRnd::BeginTexturePass(RndTex* tex, const TexturePassLoad& load) {
         rpDesc.depthStencilAttachment = &depthAtt;
     }
 
+    MILO_GPU_TIME_PASS(rpDesc);
     mPass = mEncoder.BeginRenderPass(&rpDesc);
     rndshape::DrawLogPassOpen(depthView ? 0 : 2);
     mInPass = true;
@@ -1937,6 +1986,8 @@ void WgpuRnd::EndDrawing() {
         if (!mGpu.IsHeadless()) {
             mGpu.PresentFrame();
         }
+        // MILO_GPU_TIMERS: resolve this frame's pass timestamps (gfx/GpuTimers.h).
+        GpuTimers::Get().EndFrame(mGpu.Queue());
 
     }
 
@@ -1985,10 +2036,11 @@ void WgpuRnd::WriteFrameTimes() {
     if (!mFrameTimes) return;
     const double now = PerfNow(), cpu = ThreadCpuNow();
     if (mFrameTimesLastEnd > 0.0) {
-        fprintf(mFrameTimes, "%d,%.3f,%.3f,%.3f,%.3f,%d,%d,%d,%.3f,%d\n", (int)mFrameID,
+        fprintf(mFrameTimes, "%d,%.3f,%.3f,%.3f,%.3f,%d,%d,%d,%.3f,%d,%d\n", (int)mFrameID,
                 (now - mFrameTimesLastEnd) * 1000.0, (cpu - mFrameTimesLastCpu) * 1000.0,
                 (now - mFrameTimesBegin) * 1000.0, mPointTestWaitMs, mPointTestsRecorded,
-                mPointTestAnswers, mPointTestAgeMax, mPointTestEndWaitMs, mPointTestAfterSubmit);
+                mPointTestAnswers, mPointTestAgeMax, mPointTestEndWaitMs, mPointTestAfterSubmit,
+                mPointTestStandInsFrame);
         fflush(mFrameTimes);
     }
     mFrameTimesLastEnd = now;
@@ -1999,6 +2051,7 @@ void WgpuRnd::WriteFrameTimes() {
     mPointTestsRecorded = 0;
     mPointTestAnswers = 0;
     mPointTestAgeMax = 0;
+    mPointTestStandInsFrame = 0;
 }
 
 void WgpuRnd::CreateDepthTexture(int w, int h) {
@@ -2753,6 +2806,7 @@ void WgpuRnd::RenderImGuiOverlay() {
     rpDesc.colorAttachmentCount = 1;
     rpDesc.colorAttachments = &colorAtt;
 
+    MILO_GPU_TIME_PASS(rpDesc);
     wgpu::RenderPassEncoder imguiPass = mEncoder.BeginRenderPass(&rpDesc);
     ImGui_ImplWGPU_RenderDrawData(drawData, imguiPass.Get());
     imguiPass.End();

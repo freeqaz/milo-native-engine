@@ -1,5 +1,6 @@
 // SpotBeamPass — see SpotBeamPass.h for where each step comes from.
 #include "gfx/SpotBeamPass.h"
+#include "gfx/GpuTimers.h"
 #include "gfx/GpuDevice.h"
 
 #include <cmath>
@@ -714,6 +715,7 @@ bool SpotBeamPass::Run(wgpu::CommandEncoder& encoder, const Camera& cam, const D
         rp.label = "SpotBeams";
         rp.colorAttachmentCount = 1;
         rp.colorAttachments = &ca;
+        MILO_GPU_TIME_PASS(rp);
         wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&rp);
         pass.SetViewport(0.0f, 0.0f, (float)w, (float)h, 0.0f, 1.0f);
         for (size_t i = 0; i < count; i++) {
@@ -770,6 +772,7 @@ bool SpotBeamPass::Run(wgpu::CommandEncoder& encoder, const Camera& cam, const D
         rp.label = "SpotBeamBlur";
         rp.colorAttachmentCount = 1;
         rp.colorAttachments = &ca;
+        MILO_GPU_TIME_PASS(rp);
         wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&rp);
         pass.SetPipeline(mBlurPipe);
         pass.SetBindGroup(0, bg);

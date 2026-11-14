@@ -1,4 +1,5 @@
 #include "gfx/PostProcPass.h"
+#include "gfx/GpuTimers.h"
 #include "gfx/GpuDevice.h"
 #include "rndobj/PostProc.h"
 #include "rndobj/ColorXfm.h"
@@ -603,9 +604,11 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& i
     colorAtt.clearValue = {0, 0, 0, 1};
 
     wgpu::RenderPassDescriptor rpDesc{};
+    rpDesc.label = "PostProcComposite";
     rpDesc.colorAttachmentCount = 1;
     rpDesc.colorAttachments = &colorAtt;
 
+    MILO_GPU_TIME_PASS(rpDesc);
     auto pass = encoder.BeginRenderPass(&rpDesc);
     pass.SetPipeline(mPostProcPipeline);
     pass.SetBindGroup(0, bg);
