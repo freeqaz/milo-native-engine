@@ -40,9 +40,11 @@
 #include <webgpu/webgpu_cpp.h>
 
 #include <cstdint>
+#include <vector>
 
 #include "platform/SpotBeamHook.h"
 
+class BindGroupCache;
 class GpuDevice;
 
 class SpotBeamPass {
@@ -109,6 +111,18 @@ public:
     const wgpu::Texture& OutputTexture() const { return mTex[0]; }  // RGBA8Unorm, readable
     void Terminate();
 
+    // Bind groups come from `cache` when one is set (gfx/BindGroupCache.h):
+    // the uniform buffer is persistent and each slot's offset is fixed, so a
+    // beam's group is the same frame after frame. Without one they are created
+    // per draw, as before.
+    void SetBindGroupCache(BindGroupCache* cache) { mBindGroups = cache; }
+    // The render-pass labels (MILO_GPU_TIMERS). Defaults "SpotBeams" /
+    // "SpotBeamBlur"; the DC3 backend names its own.
+    void SetLabels(const char* beams, const char* blur) {
+        mBeamsLabel = beams;
+        mBlurLabel = blur;
+    }
+
 private:
     bool EnsurePipelines(GpuDevice& gpu);
     void EnsureTargets(int w, int h, GpuDevice& gpu);
@@ -124,8 +138,18 @@ private:
     wgpu::Texture mWhiteTex;
     wgpu::TextureView mWhiteView;
 
+    wgpu::BindGroup Group(GpuDevice& gpu, const wgpu::BindGroupDescriptor& d);
+
     wgpu::Texture mTex[2];
     wgpu::TextureView mView[2];
+    // The uniforms: slots 0 and 1 the two blur passes, then one per beam. Grows
+    // only when a frame has more beams than any before it.
+    wgpu::Buffer mUniforms;
+    uint64_t mUniformBytes = 0;
+    std::vector<uint8_t> mUniformData;
+    BindGroupCache* mBindGroups = nullptr;
+    const char* mBeamsLabel = "SpotBeams";
+    const char* mBlurLabel = "SpotBeamBlur";
     int mW = 0, mH = 0;
     bool mReady = false;
     bool mFailed = false;

@@ -1,8 +1,10 @@
 // SpotBeamPass — see SpotBeamPass.h for where each step comes from.
 #include "gfx/SpotBeamPass.h"
+#include "gfx/BindGroupCache.h"
 #include "gfx/GpuTimers.h"
 #include "gfx/GpuDevice.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -613,9 +615,14 @@ bool SpotBeamPass::EnsurePipelines(GpuDevice& gpu) {
     return true;
 }
 
+wgpu::BindGroup SpotBeamPass::Group(GpuDevice& gpu, const wgpu::BindGroupDescriptor& d) {
+    return mBindGroups ? mBindGroups->GetOrCreate(gpu.Device(), d) : gpu.Device().CreateBindGroup(&d);
+}
+
 void SpotBeamPass::EnsureTargets(int w, int h, GpuDevice& gpu) {
     if (mW == w && mH == h && mTex[0]) return;
     for (int i = 0; i < 2; i++) {
+        if (mBindGroups && mView[i]) mBindGroups->Forget(mView[i].Get());
         wgpu::TextureDescriptor td{};
         td.label = "SpotBeamTarget";
         td.size = {(uint32_t)w, (uint32_t)h, 1};
@@ -649,10 +656,12 @@ bool SpotBeamPass::Run(wgpu::CommandEncoder& encoder, const Camera& cam, const D
     EnsureTargets(w, h, gpu);
     wgpu::Device& dev = gpu.Device();
 
-    // One uniform slot per beam, then the two blur passes. Queue::WriteBuffer
-    // lands at submit, ahead of every pass, so nothing is shared.
+    // The two blur passes' uniform slots, then one per beam. Queue::WriteBuffer
+    // lands at submit, ahead of every pass, so nothing is shared within the
+    // frame; the pass runs at most once per frame.
     const size_t slots = count + 2;
-    std::vector<uint8_t> data(slots * kSlot, 0);
+    std::vector<uint8_t>& data = mUniformData;
+    data.assign(slots * kSlot, 0);
     for (size_t i = 0; i < count; i++) {
         const Draw& d = draws[i];
         BeamUniforms bu{};
@@ -685,7 +694,7 @@ bool SpotBeamPass::Run(wgpu::CommandEncoder& encoder, const Camera& cam, const D
         // tex12 (black) read as reverse-Z depth 0, decoded through c89.
         const float z12 = (1.0f - 0.0f) * k.c89[2] - k.c89[3];
         bu.misc[0] = k.c89[0] * k.c89[1] / (k.c89[1] - (k.c89[1] - k.c89[0]) * z12);
-        std::memcpy(&data[i * kSlot], &bu, sizeof(bu));
+        std::memcpy(&data[(2 + i) * kSlot], &bu, sizeof(bu));
     }
     // BlurRT(): sSeparateBlurPasses, sBlurAmount 1: along x, then along y.
     for (int pass = 0; pass < 2; pass++) {
@@ -694,13 +703,20 @@ bool SpotBeamPass::Run(wgpu::CommandEncoder& encoder, const Camera& cam, const D
         BlurUniforms b{};
         for (int t = 0; t < 5; t++) Set4(b.tap[t], off[t][0], off[t][1], kBlurWeights[t], 0.0f);
         Set4(b.invSize, 1.0f / (float)w, 1.0f / (float)h, 0.0f, 0.0f);
-        std::memcpy(&data[(count + pass) * kSlot], &b, sizeof(b));
+        std::memcpy(&data[pass * kSlot], &b, sizeof(b));
     }
-    wgpu::BufferDescriptor bd{};
-    bd.label = "SpotBeamUniforms";
-    bd.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
-    bd.size = data.size();
-    wgpu::Buffer ubuf = dev.CreateBuffer(&bd);
+    if (!mUniforms || mUniformBytes < data.size()) {
+        if (mBindGroups && mUniforms) mBindGroups->Forget(mUniforms.Get());
+        // Room for at least 16 beams, so a venue's first frames do not grow it
+        // one beam at a time.
+        mUniformBytes = std::max<uint64_t>(data.size(), 18 * kSlot);
+        wgpu::BufferDescriptor bd{};
+        bd.label = "SpotBeamUniforms";
+        bd.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
+        bd.size = mUniformBytes;
+        mUniforms = dev.CreateBuffer(&bd);
+    }
+    const wgpu::Buffer& ubuf = mUniforms;
     gpu.Queue().WriteBuffer(ubuf, 0, data.data(), data.size());
 
     // RenderScene: mSpotCam selects SR().unk8, and DxCam::Select clears a
@@ -712,7 +728,7 @@ bool SpotBeamPass::Run(wgpu::CommandEncoder& encoder, const Camera& cam, const D
         ca.storeOp = wgpu::StoreOp::Store;
         ca.clearValue = {0, 0, 0, 1};
         wgpu::RenderPassDescriptor rp{};
-        rp.label = "SpotBeams";
+        rp.label = mBeamsLabel;
         rp.colorAttachmentCount = 1;
         rp.colorAttachments = &ca;
         MILO_GPU_TIME_PASS(rp);
@@ -725,7 +741,7 @@ bool SpotBeamPass::Run(wgpu::CommandEncoder& encoder, const Camera& cam, const D
             wgpu::BindGroupEntry e[4] = {};
             e[0].binding = 0;
             e[0].buffer = ubuf;
-            e[0].offset = i * kSlot;
+            e[0].offset = (2 + i) * kSlot;
             e[0].size = sizeof(BeamUniforms);
             e[1].binding = 1;
             e[1].textureView = depthView;
@@ -739,7 +755,7 @@ bool SpotBeamPass::Run(wgpu::CommandEncoder& encoder, const Camera& cam, const D
             g.entryCount = 4;
             g.entries = e;
             pass.SetPipeline(mBeamPipe[d.k.shape][d.vertexStride == 64 ? 0 : 1]);
-            pass.SetBindGroup(0, dev.CreateBindGroup(&g));
+            pass.SetBindGroup(0, Group(gpu, g));
             pass.SetVertexBuffer(0, d.vertexBuffer, 0, d.vertexBytes);
             pass.SetIndexBuffer(d.indexBuffer, wgpu::IndexFormat::Uint16, 0, WGPU_WHOLE_SIZE);
             pass.DrawIndexed(d.indexCount, 1, 0, 0, 0);
@@ -751,7 +767,7 @@ bool SpotBeamPass::Run(wgpu::CommandEncoder& encoder, const Camera& cam, const D
         wgpu::BindGroupEntry e[3] = {};
         e[0].binding = 0;
         e[0].buffer = ubuf;
-        e[0].offset = (count + p) * kSlot;
+        e[0].offset = p * kSlot;
         e[0].size = sizeof(BlurUniforms);
         e[1].binding = 1;
         e[1].textureView = mView[p];
@@ -762,14 +778,14 @@ bool SpotBeamPass::Run(wgpu::CommandEncoder& encoder, const Camera& cam, const D
         g.layout = mBlurBGL;
         g.entryCount = 3;
         g.entries = e;
-        wgpu::BindGroup bg = dev.CreateBindGroup(&g);
+        wgpu::BindGroup bg = Group(gpu, g);
         wgpu::RenderPassColorAttachment ca{};
         ca.view = mView[1 - p];
         ca.loadOp = wgpu::LoadOp::Clear;
         ca.storeOp = wgpu::StoreOp::Store;
         ca.clearValue = {0, 0, 0, 1};
         wgpu::RenderPassDescriptor rp{};
-        rp.label = "SpotBeamBlur";
+        rp.label = mBlurLabel;
         rp.colorAttachmentCount = 1;
         rp.colorAttachments = &ca;
         MILO_GPU_TIME_PASS(rp);
@@ -793,9 +809,13 @@ void SpotBeamPass::Terminate() {
     mWhiteTex = nullptr;
     mWhiteView = nullptr;
     for (int i = 0; i < 2; i++) {
+        if (mBindGroups && mView[i]) mBindGroups->Forget(mView[i].Get());
         mTex[i] = nullptr;
         mView[i] = nullptr;
     }
+    if (mBindGroups && mUniforms) mBindGroups->Forget(mUniforms.Get());
+    mUniforms = nullptr;
+    mUniformBytes = 0;
     mW = mH = 0;
     mReady = false;
     mFailed = false;

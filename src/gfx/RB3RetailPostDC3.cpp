@@ -49,8 +49,9 @@ struct DC3CompositeUniforms {
                            // y: 1 = the glare composite (bit 37) instead of bit 4
     float hue[4];          // c222 (CheckHueConverge); z (blend_amount) 0 = off
     float velocity[4];     // x: c122 (DoVelocity); y: 1 = bit 42 on
+    float spot[4];         // bit 51: c91.x, c127.x, c127.y; w = 1 when beams are bound
 };
-static_assert(sizeof(DC3CompositeUniforms) == 208, "DC3CompositeUniforms layout");
+static_assert(sizeof(DC3CompositeUniforms) == 224, "DC3CompositeUniforms layout");
 
 // velocity_camera.ps: last frame's clip space from this frame's NDC, and the
 // target sizes (full depth w, h; velocity w, h).
@@ -78,6 +79,7 @@ struct DC3UB {
     motionMode: vec4f,
     hue: vec4f,
     velocity: vec4f,
+    spot: vec4f,
 };
 struct VelUB {
     m0: vec4f,
@@ -102,6 +104,9 @@ struct VelUB {
 // The velocity pass's own layout (mDC3VelBGL).
 @group(0) @binding(11) var velDepth: texture_depth_multisampled_2d;
 @group(0) @binding(12) var<uniform> vu: VelUB;
+// Bit 51: NgSpotlightDrawer's blurred beam target (tf12) and fog density (tf5).
+@group(0) @binding(13) var spotBeams: texture_2d<f32>;
+@group(0) @binding(14) var spotFog: texture_2d<f32>;
 
 struct VOut {
     @builtin(position) pos: vec4f,
@@ -244,6 +249,16 @@ fn grade_dc3(uv: vec2f, scene: vec3f) -> vec3f {
               + textureSampleLevel(bloom1, samp, uv, 0.0).rgb
               + textureSampleLevel(bloom2, samp, uv, 0.0).rgb;
         c = 1.0 - (1.0 - b * cu.bloomColor.rgb) * (1.0 - c);
+    }
+
+    // Bit 51 (postprocess_0008000000000000; the same place in the full
+    // 0008001001208014 chain): NgSpotlightDrawer's blurred beams, weighted by
+    // the fog density, ADDED after the bloom blend and before the noise, the
+    // matrix and the vignette, unclamped. Alpha (the bloom mask) is untouched.
+    if (cu.spot.w > 0.5) {
+        let beam = textureSampleLevel(spotBeams, samp, uv, 0.0).rgb;
+        let fog = textureSampleLevel(spotFog, samp, uv, 0.0).r;
+        c += beam * (fog * cu.spot.z + cu.spot.y) * cu.spot.x;
     }
 
     // Bits 2 / 47: the noise map, overlay-blended into the screen result S
@@ -487,11 +502,11 @@ void RB3RetailPost::EnsureDC3Pipelines(GpuDevice& gpu) {
         mDC3PassBGL = dev.CreateBindGroupLayout(&d);
     }
     {
-        wgpu::BindGroupLayoutEntry e[10] = {texEntry(0), sampEntry(1), uniEntry(6, sizeof(DC3CompositeUniforms)),
+        wgpu::BindGroupLayoutEntry e[12] = {texEntry(0), sampEntry(1), uniEntry(6, sizeof(DC3CompositeUniforms)),
                                             texEntry(3), texEntry(4), texEntry(5), texEntry(7), sampEntry(8),
-                                            texEntry(9), texEntry(10)};
+                                            texEntry(9), texEntry(10), texEntry(13), texEntry(14)};
         wgpu::BindGroupLayoutDescriptor d{};
-        d.entryCount = 10;
+        d.entryCount = 12;
         d.entries = e;
         mDC3CompositeBGL = dev.CreateBindGroupLayout(&d);
     }
@@ -803,13 +818,21 @@ void RB3RetailPost::RunDC3Composite(wgpu::CommandEncoder& encoder, const wgpu::T
         cu.velocity[0] = p.velocityScale;
         cu.velocity[1] = 1.0f;
     }
+    // Bit 51: this frame's spotlight beams (WgpuRnd::RunDC3SpotBeams).
+    const bool haveSpot = (bool)p.spotBeams && p.debugView == 0;
+    if (haveSpot) {
+        cu.spot[0] = p.spotScale;
+        cu.spot[1] = p.spotBase;
+        cu.spot[2] = p.spotSmoke;
+        cu.spot[3] = 1.0f;
+    }
     const uint32_t off = NextSlot();
     gpu.Queue().WriteBuffer(mUniforms, off, &cu, sizeof(cu));
 
     // The plain arm fills all three sets; the streak arm two (tf15 black).
     const bool haveBloom = (p.bloom || p.debugView == 2) && mView[0][0];
     const int setsUsed = p.glare ? 1 : p.streak ? 2 : 3;
-    wgpu::BindGroupEntry e[10] = {};
+    wgpu::BindGroupEntry e[12] = {};
     e[0].binding = 0;
     e[0].textureView = sceneView;
     e[1].binding = 1;
@@ -829,9 +852,13 @@ void RB3RetailPost::RunDC3Composite(wgpu::CommandEncoder& encoder, const wgpu::T
     e[8].textureView = prevRead;
     e[9].binding = 10;
     e[9].textureView = vel ? mVelView : mBlackView;
+    e[10].binding = 13;
+    e[10].textureView = haveSpot ? p.spotBeams : mBlackView;
+    e[11].binding = 14;
+    e[11].textureView = haveSpot && p.spotFog ? p.spotFog : mBlackView;
     wgpu::BindGroupDescriptor bgd{};
     bgd.layout = mDC3CompositeBGL;
-    bgd.entryCount = 10;
+    bgd.entryCount = 12;
     bgd.entries = e;
     // Motion blur ping-pongs the feedback target, so two groups alternate.
     wgpu::BindGroup bg = Group(gpu, bgd);
