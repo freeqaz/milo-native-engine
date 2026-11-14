@@ -73,7 +73,8 @@ private:
     void RunDC3Retail(wgpu::CommandEncoder& encoder, P* pp, int mode,
                       const wgpu::TextureView& sceneView, const wgpu::TextureView& intermediateView,
                       int w, int h, const wgpu::TextureView& depthView, uint32_t depthSamples,
-                      wgpu::TextureView& frameView, GpuDevice& gpu);
+                      wgpu::TextureView& frameView, const wgpu::TextureView& spotBeams,
+                      const wgpu::TextureView& spotFog, GpuDevice& gpu);
     const RndPostProc* mLoggedPostProc = nullptr;   // the last post-process logged
 
     BloomPass mBloom;

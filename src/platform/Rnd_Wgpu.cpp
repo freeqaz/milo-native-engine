@@ -433,8 +433,12 @@ void WgpuRnd::InitGpuResources() {
     // (Registering none sends the consumer down the old-gfx path instead,
     // whose BuildShaft cones carry the beam's own material; the title's have
     // none, so they drew as opaque default-material cones. Section 30.)
+    // DC3 (dc3-decomp's retail post, rndshape::kDC3RetailPost) draws them too,
+    // just before its composite (RunDC3SpotBeams), which adds them.
     mSpotBeamRenderer.rnd = this;
-    if constexpr (rndshape::kRetailPostChain) {
+    mSpotBeamPass.SetBindGroupCache(&mPostBindGroupCache);
+    if constexpr (rndshape::kDC3RetailPost) mSpotBeamPass.SetLabels("DC3SpotBeams", "DC3SpotBlur");
+    if constexpr (rndshape::kRetailPostChain || rndshape::kDC3RetailPost) {
         mSpotBeamRenderer.drop = getenv("MILO_NO_SPOT_BEAMS") != nullptr;
         SetNativeSpotBeamRenderer(&mSpotBeamRenderer);
     }
@@ -779,6 +783,7 @@ void WgpuRnd::FlushPostProcessingForOverlay() {
     // without re-running post-proc (which would overwrite previous HUD draws).
     if (mIntermediateView && FramePostProc() && !mPostProcFlushed) {
         FeedVelocity(mPostProcPass);
+        RunDC3SpotBeams();
         mPostProcPass.Run(mEncoder, mIntermediateView, mIntermediateTex,
                           mIntermediateWidth, mIntermediateHeight,
                           mDepthSampleView, kMSAASamples, FrameTarget(), mBlackTexView, mGpu);
@@ -798,6 +803,26 @@ void WgpuRnd::FlushPostProcessingForOverlay() {
 
 void FlushPostProcessingForOverlay() {
     gWgpuRndInstance.FlushPostProcessingForOverlay();
+}
+
+void WgpuRnd::RunDC3SpotBeams() {
+    if constexpr (rndshape::kDC3RetailPost) {
+        // NgSpotlightDrawer::RenderScene (run by its DoPost, inside
+        // Rnd::DoPostProcess, before this): the beams into the half-res target
+        // against the world's depth, then BlurRT. The DC3 composite adds them
+        // (postprocess.ps option bit 51). With DC3_RETAIL_POST=0 no composite
+        // reads them, so none are drawn.
+        if (!mSpotBeamDraws.empty() && rndshape::RetailPostMode() != 0 &&
+            mSpotBeamPass.Run(mEncoder, mSpotBeamCam, mSpotBeamDraws.data(), mSpotBeamDraws.size(),
+                              mDepthSampleView, kMSAASamples, mIntermediateWidth,
+                              mIntermediateHeight, mGpu)) {
+            mPostProcPass.SetSpotBeams(mSpotBeamPass.OutputView(), mSpotBeamFog,
+                                       mSpotBeamComposite);
+            mSpotBeamsDrawn = (int)mSpotBeamDraws.size();
+        }
+        mSpotBeamDraws.clear();
+        mSpotBeamFog = nullptr;
+    }
 }
 
 void WgpuRnd::FlushWorldPost() {
@@ -1915,6 +1940,7 @@ void WgpuRnd::EndDrawing() {
         // Skip if already flushed (e.g., FlushPostProcessingForOverlay was called)
         if (mIntermediateView && FramePostProc() && !mPostProcFlushed) {
             FeedVelocity(mPostProcPass);
+            RunDC3SpotBeams();
             mPostProcPass.Run(mEncoder, mIntermediateView, mIntermediateTex,
                               mIntermediateWidth, mIntermediateHeight,
                               mDepthSampleView, kMSAASamples, FrameTarget(), mBlackTexView, mGpu);
