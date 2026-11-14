@@ -22,6 +22,30 @@ struct MaterialParams {
 // Build material parameters for a primary material (full heuristics)
 MaterialParams BuildMaterialParams(RndMat* mat, bool isTextMesh);
 
+// The overlay-phase material rules a game opts into through GameRenderHook
+// (UiShadesInGammaSpace, UiUsesRetailMaterialTerms). frameInOverlay: the frame
+// has left its world (WgpuRnd::FrameInOverlay). Outside the overlay phase, or
+// with no hook, gammaShading is the shape's model and retailMaterialTerms false.
+struct UiDrawTerms {
+    bool gammaShading = false;        // material.gammaShading
+    bool retailMaterialTerms = false; // keep the mat's lighting; intensify scales alpha
+};
+UiDrawTerms UiDrawTermsFor(bool frameInOverlay);
+// material.prelit: the material's own flag, or forced for simple render,
+// multiply blend, and -- unless the retail UI terms apply -- text and
+// overlay-pass meshes.
+bool MaterialShadesPrelit(bool matPrelit, bool isTextMesh, bool isOverlayPass,
+                          bool isMultiplyBlend, bool simpleRender,
+                          bool retailMaterialTerms);
+// Factor on the material alpha: 2 for an intensify material under the retail
+// UI terms (DC3's standard.ps: `mul r0, r0, c5.yyyy`, alpha included), else 1.
+float MaterialAlphaScale(bool intensify, bool retailMaterialTerms);
+// material.unlit under the retail UI terms: a lit material with use_environ 0
+// takes an ambient of 1 and no lights (NgMat::SetupAmbient; the shader options
+// set mRealLights/mApproxLights only for use_environ materials), so it shows
+// its colour times its texture whatever environ is current.
+bool MaterialShadesUnlit(bool matPrelit, bool matUseEnviron, bool retailMaterialTerms);
+
 // Build material parameters for a multi-pass material (simplified, no heuristics)
 MaterialParams BuildPassMaterialParams(BaseMaterial* pass);
 
@@ -32,3 +56,20 @@ MaterialParams BuildPassMaterialParams(BaseMaterial* pass);
 // hook registered.
 class RndMesh;
 bool TextMeshKeepsAtlasRGB(RndMesh* mesh, RndMat* mat, bool skinned);
+
+// True when a mesh is drawn as a text glyph page: no depth test and no
+// culling, whatever its material asks. When the render hook says the game marks
+// its pages (GameRenderHook::MarksTextGlyphMeshes), only a mesh marked with
+// MarkTextGlyphMesh() is one, so spotlight beams, ribbons, lines and crowd
+// billboards -- unnamed too -- keep their material's zMode and cull. Without
+// that the page is inferred: unnamed and not skinned (DC3's HamRibbon hand
+// trail is unnamed but skinned).
+bool MeshDrawsAsGlyph(RndMesh* mesh, bool skinned);
+
+// True when a mesh takes the text colour path (BuildMaterialParams' isTextMesh:
+// forced prelit, atlas alpha into RGB unless TextMeshKeepsAtlasRGB). A game
+// that marks its glyph pages (MarksTextGlyphMeshes) gets it for marked meshes
+// only, so an unnamed ribbon, beam or billboard shades with its own material
+// (DC3's hamribbon.mat: lit, use_environ 0). Without the mark: every unnamed
+// mesh, skinned or not, as before.
+bool MeshShadesAsText(RndMesh* mesh);

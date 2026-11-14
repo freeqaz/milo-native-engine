@@ -278,12 +278,17 @@ inline void VertBoneWeights(const RndMesh::Vert &v, float out[4]) {
 inline int PartTilesAcross(RndParticleSys *s) { return s->NumTilesAcross(); }
 inline int PartTilesDown(RndParticleSys *s) { return s->NumTilesDown(); }
 inline int PartTileIndex(const RndParticle *p) { return p->mCurrentTileIndex; }
-// DC3 particle positions are already in world space, and DC3 draws particle
-// colour as authored.
+// DC3 particle positions are already in world space.
 inline Vector3 PartWorldPos(RndParticleSys *, RndParticle *p) {
     return Vector3(p->pos.x, p->pos.y, p->pos.z);
 }
+// No Wii-TEV tint model here: this shape scales particle colour the way its
+// retail Xbox particle shader does (Part_Wgpu.cpp, ParticleShaderColor).
 constexpr bool kPartMaterialTint = false;
+// The inputs ParticleShaderColor reads: use_environ gates the environ ambient
+// (NgMat::SetupAmbient), intensify doubles the texel (particles PS c5.y).
+inline bool MatUseEnviron(RndMat *m) { return m->UseEnviron(); }
+inline bool MatIntensify(RndMat *m) { return m->GetIntensify(); }
 
 // ---- cube texture ----------------------------------------------------------
 inline RndBitmap *CubeFaceBitmap(RndCubeTex *c, int face) {
@@ -343,8 +348,17 @@ template <class M> inline bool MatPinsAlphaWrite(const M *m) {
 constexpr bool kRenderTargetStoresLinear = false;
 
 // ---- 2D rects --------------------------------------------------------------
-// DC3's DrawRect colours a rect by the colour argument alone.
+// kRectModulatesMatColor is the RB3-Wii model (argument x material colour) and
+// stays off here. DC3's (and rb3-xenon's) Xbox DrawRect is
+// kRectXboxDrawRectShader: the colour overload of DxRnd::DrawRect selects
+// kDrawRectShader, which RndShaderDrawRect::Select runs as the `standard`
+// shader with c1 = white and c0 = the material colour (NgMat::SetupShader).
+// Its vertex shader writes `mul o2, r1, c0` (vertex colour x c0) for a prelit
+// material and `mul o2, c1, c0` (c0 alone) otherwise, and the pixel shader
+// multiplies that by the texel. See DrawRectMaterialColor (gfx/DrawRect2D.h).
 constexpr bool kRectModulatesMatColor = false;
+constexpr bool kRectXboxDrawRectShader = true;
+inline bool MatPrelit(RndMat *m) { return m->Prelit(); }
 
 // ---- post-processing -------------------------------------------------------
 // The grain strength the post-process shader adds per pixel, as authored. Only

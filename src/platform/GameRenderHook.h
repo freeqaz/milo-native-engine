@@ -207,6 +207,15 @@ public:
         return DrawMaterialPolicy();
     }
 
+    // True when the game marks every RndText glyph page it creates with
+    // MarkTextGlyphMesh() (platform/MeshGpuCache.h). The engine then draws only
+    // marked meshes as glyph pages (no depth test, no culling) and every other
+    // unnamed mesh -- spotlight beams, ribbons, lines, crowd billboards -- with
+    // its material's zMode and cull. Default false: the engine keeps inferring
+    // a glyph page from an empty name, which is what a consumer that does not
+    // mark its pages needs.
+    virtual bool MarksTextGlyphMeshes() { return false; }
+
     // Halo-source NAME exclusion policy (B6). The engine keeps the emissive-map
     // /multiplier data test; this answers only the name-based exclusion + the
     // `RB3_SMASHER_HALO` flag. Default: no forced exclusion.
@@ -325,6 +334,35 @@ public:
     // XBONE_TRACK: is this the trackjacket outfit mesh (the probe's fixed mesh
     // filter, independent of the bone-name selector supplied via the env var)?
     virtual bool IsTrackjacketMesh(const char* /*meshName*/) {
+        return false;
+    }
+
+    // Does the game's UI shade in gamma space? When true, every draw the frame
+    // makes after its world ends (the overlay phase FlushPostProcessingForOverlay
+    // opens: the UI, the gameplay HUD, and render targets those draw) takes the
+    // standard shader's gamma-space route (material.gammaShading): texel *
+    // colour as stored, saturated, with no linear->sRGB output encode. That is
+    // the Xbox 360 DxRnd's model (A8R8G8B8 frame and textures, no gamma sign,
+    // shaders multiply stored values), the one the RB3-Wii shape already uses
+    // everywhere (kGammaSpaceShading). The world before EndWorld is untouched.
+    // Default false: a consumer opts in, so rb3-xenon, which shares the dc3
+    // shape, keeps its output.
+    virtual bool UiShadesInGammaSpace() {
+        return false;
+    }
+
+    // Does the game's UI take the retail material terms the engine's generic
+    // UI path replaces? When true, a draw in the overlay phase (see
+    // UiShadesInGammaSpace):
+    //  - keeps the material's prelit flag instead of being forced prelit
+    //    (every overlay-pass mesh and every text mesh otherwise is), so a lit
+    //    material is shaded by the environ the game selected for it, as the
+    //    Xbox 360 DxRnd shades every mesh, UI included;
+    //  - takes intensify on alpha as well as colour: DC3's standard pixel
+    //    shaders scale the whole texel by c5.y (`mul r0, r0, c5.yyyy`, c5.y =
+    //    intensify + 1 from NgMat::SetRegularShaderConst), alpha included.
+    // Multiply-blend and simple-render overrides still apply. Default false.
+    virtual bool UiUsesRetailMaterialTerms() {
         return false;
     }
 

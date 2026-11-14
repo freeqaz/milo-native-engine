@@ -63,6 +63,16 @@ struct Vertex2D {
     float color[4];
 };
 
+Hmx::Color DrawRectMaterialColor(RndMat* mat) {
+    Hmx::Color k = mat->GetColor();
+    if ((int)mat->GetBlend() == 7) { // kPreMultAlpha
+        k.red *= k.alpha;
+        k.green *= k.alpha;
+        k.blue *= k.alpha;
+    }
+    return k;
+}
+
 void DrawRect2D::Init(GpuDevice& gpu) {
     EnsurePipeline(gpu);
 }
@@ -263,7 +273,13 @@ void DrawRect2D::Draw(wgpu::RenderPassEncoder& pass, const Hmx::Rect& rect, RndM
     pipeDesc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
     pipeDesc.multisample.count = rnd->CurrentSampleCount();
 
-    wgpu::RenderPipeline pipe = dev.CreateRenderPipeline(&pipeDesc);
+    // Cached: see gfx/RenderPipelineCache.h (a per-rect CreateRenderPipeline
+    // recompiled the shader every frame).
+    wgpu::RenderPipeline pipe = m2dPipelines.GetOrCreate(
+        dev,
+        RenderPipelineCache::MakeKey(bs, ct.format, ct.writeMask, rnd->CurrentPassHasDepth(),
+                                     pipeDesc.multisample.count, maskScale, hasTex ? 1u : 0u),
+        pipeDesc);
 
     wgpu::BindGroupEntry bgEntries[2] = {};
     bgEntries[0].binding = 0;
@@ -284,6 +300,7 @@ void DrawRect2D::Draw(wgpu::RenderPassEncoder& pass, const Hmx::Rect& rect, RndM
 }
 
 void DrawRect2D::Terminate() {
+    m2dPipelines.Clear();
     m2dShader = nullptr;
     m2dBindGroupLayout = nullptr;
     m2dPipelineLayout = nullptr;

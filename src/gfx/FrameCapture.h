@@ -27,10 +27,17 @@ struct DrawCallRecord {
     const char* meshName;
     const char* materialName;
     const char* cameraName;
+    const char* environName;  // RndEnviron current at the draw (lit materials shade under it)
 
     // Pipeline state
     int blend, zMode, cull, stencil;
     bool skinned, alphaCut, alphaWrite;
+    // What the pipeline was actually built with (zMode/cull above are the
+    // material's ask): a glyph page gives up depth and cull, an overlay pass
+    // (no depth attachment) forces cull off and ignores zMode.
+    bool hasPipeState;
+    int pipeZMode, pipeCull;
+    bool passHasDepth, glyph;
 
     // Material uniforms snapshot
     float color[4];
@@ -70,6 +77,7 @@ public:
 
     DrawCallRecord& AddDraw();
     DrawCallRecord& AddSkip(const char* meshName, const char* reason);
+    DrawCallRecord& LastRecord() { return mRecords.back(); }
 
     bool IsCapturing() const { return mCapturing; }
     void CaptureNextFrame() { mCaptureNext = true; }

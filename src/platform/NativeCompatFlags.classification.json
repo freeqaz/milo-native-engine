@@ -2146,5 +2146,33 @@
     "owner": "input",
     "faithfulStatus": "n/a: logs one line per pad button message JoypadPoll sends (dc3 key tests); Joypad_Native.cpp is compiled by dc3 only",
     "default": "off"
+  },
+  "MILO_GPU_LABELS": {
+    "class": "perf",
+    "owner": "render/perf",
+    "faithfulStatus": "n/a: Dawn use_user_defined_labels_in_backend toggle (Vulkan object names for RenderDoc/GFXReconstruct/validation). 1 = on, 0 = off; unset = on only when a Vulkan layer env (VK_INSTANCE_LAYERS, VK_LOADER_LAYERS_ENABLE, ENABLE_VULKAN_RENDERDOC_CAPTURE) is set. Debug names only, no draw change; off saves the per-object name build + vkSetDebugUtilsObjectNameEXT (5-8% of the DC3 main thread, lane np-cpu-perf) [GpuDevice.cpp]",
+    "default": "off",
+    "read": "value"
+  },
+  "VK_INSTANCE_LAYERS": {
+    "class": "probe",
+    "owner": "render/debug",
+    "faithfulStatus": "n/a: external variable owned by the Vulkan loader, only read: set (non-empty, not 0) means a capture/debug layer is loading, which turns MILO_GPU_LABELS' default on so the capture keeps object names [GpuDevice.cpp]",
+    "default": "off",
+    "read": "truthy"
+  },
+  "VK_LOADER_LAYERS_ENABLE": {
+    "class": "probe",
+    "owner": "render/debug",
+    "faithfulStatus": "n/a: external variable owned by the Vulkan loader, only read: set (non-empty, not 0) means a capture/debug layer is loading, which turns MILO_GPU_LABELS' default on so the capture keeps object names [GpuDevice.cpp]",
+    "default": "off",
+    "read": "truthy"
+  },
+  "ENABLE_VULKAN_RENDERDOC_CAPTURE": {
+    "class": "probe",
+    "owner": "render/debug",
+    "faithfulStatus": "n/a: external variable owned by RenderDoc's implicit layer, only read: set (non-empty, not 0) means a capture/debug layer is loading, which turns MILO_GPU_LABELS' default on so the capture keeps object names [GpuDevice.cpp]",
+    "default": "off",
+    "read": "truthy"
   }
 }
