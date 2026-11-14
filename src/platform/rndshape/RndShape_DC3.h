@@ -333,14 +333,42 @@ inline Vector3 PartWorldPos(Sys *s, RndParticle *p) {
 // A consumer whose RndParticleSys has no ScreenAspect() accessor keeps the old
 // billboard (rb3-xenon, whose own retail DxParticleSys sets the same
 // constants, until it adds the accessor).
+//
+// Velocity-aligned systems (velocity_align) take the shader's other path.
+// DxParticleSys::DrawParticles then writes 2 * vel into the slots that carry
+// angle and swing arm, keyed on mAlignWithVelocity alone; DrawShowing passes
+// c49 = (aligned, stretched, constantArea, 2 * stretch_scale), with
+// aligned = fancy && velocity_align, stretched = aligned && stretch_with_velocity,
+// constantArea = stretched && constant_area, and c47.w = 0 only when
+// fancy && aligned && stretched && perspective. ParticleAlignedAxes
+// (Part_Wgpu.cpp) carries the decode. One retail consequence is kept:
+// velocity_align on a basic (non-fancy) pool sends the velocity down the
+// billboard path, read as angle = 2 * vel.x and swing arm = 2 * vel.y. No
+// shipped DC3 system does that (round 3 census: every aligned system is fancy).
+// A consumer whose RndParticleSys has no AlignWithVelocity() accessor keeps the
+// billboard for every system, as before.
 struct PartBillboardTerms {
     bool retailXbox = false;
     float screenAspect = 1.0f;
+    bool velocityVerts = false;  // mAlignWithVelocity: the vertex carries 2 * vel
+    bool aligned = false;        // c49.x
+    bool stretched = false;      // c49.y
+    bool constantArea = false;   // c49.z
+    bool perspective = false;    // !c47.w
+    float stretchScale = 1.0f;   // c49.w / 2
+    // Rows of mRelativeXfm.m: the space p->pos and p->vel live in.
+    float rel[9] = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f};
 };
 template <typename Sys, typename = void>
 struct PartHasScreenAspect : std::false_type {};
 template <typename Sys>
 struct PartHasScreenAspect<Sys, std::void_t<decltype(std::declval<const Sys &>().ScreenAspect())>>
+    : std::true_type {};
+template <typename Sys, typename = void>
+struct PartHasVelocityAlign : std::false_type {};
+template <typename Sys>
+struct PartHasVelocityAlign<
+    Sys, std::void_t<decltype(std::declval<const Sys &>().AlignWithVelocity())>>
     : std::true_type {};
 template <typename Sys>
 inline PartBillboardTerms PartBillboard(Sys *s) {
@@ -348,12 +376,29 @@ inline PartBillboardTerms PartBillboard(Sys *s) {
     if constexpr (PartHasScreenAspect<Sys>::value) {
         t.retailXbox = true;
         t.screenAspect = s->ScreenAspect();
+        if constexpr (PartHasVelocityAlign<Sys>::value && PartHasRelativeXfm<Sys>::value) {
+            const bool fancy = s->IsFancy();
+            t.velocityVerts = s->AlignWithVelocity();
+            t.aligned = fancy && t.velocityVerts;
+            t.stretched = t.aligned && s->StretchWithVelocity();
+            t.constantArea = t.stretched && s->ConstantArea();
+            t.perspective = t.stretched && s->PerspectiveStretch();
+            t.stretchScale = s->StretchScale();
+            const auto &m = s->RelativeXfm().m;
+            const float rows[9] = {m.x.x, m.x.y, m.x.z, m.y.x, m.y.y,
+                                   m.y.z, m.z.x, m.z.y, m.z.z};
+            for (int i = 0; i < 9; i++) t.rel[i] = rows[i];
+        }
     } else {
         (void)s;
     }
     return t;
 }
 inline float PartSwingArm(const RndParticle *p) { return p->swingArm; }
+// The particle's velocity, in the same space as p->pos.
+inline Vector3 PartVelocity(const RndParticle *p) {
+    return Vector3(p->vel.x, p->vel.y, p->vel.z);
+}
 // No Wii-TEV tint model here: this shape scales particle colour the way its
 // retail Xbox particle shader does (Part_Wgpu.cpp, ParticleShaderColor).
 constexpr bool kPartMaterialTint = false;
