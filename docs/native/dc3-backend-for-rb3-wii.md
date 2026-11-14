@@ -6420,7 +6420,17 @@ ours. Video cannot show a mask, so this needs a Xenia capture.
 
 ### 33.10 Consumers
 
-CONSUMERS_PLACEHOLDER
+Engine `66ad085` (this branch's code head; any later commits are docs only):
+- **rb3** (`c2c16bbe2`, all targets): builds, and ctest passes **158/158**.
+- **rb3-xenon** (`8f07e9aa9`, `rb3-render`): builds, and the render gate
+  reports `ALL GATES PASSED`. All 11 frames are **pixel-identical** to the
+  same render on `np-gfx` `714c233` (max diff 0).
+
+**Measured on `167d438`, before the registry text was restored:** rb3 ctest
+was 157/158, failing `native_compat_census.check` (stale ledger), while base
+`714c233` was 158/158. That is why `66ad085` restores the text.
+
+Logs: `round3/consumers/`.
 
 ### 33.11 Open items and items for other lanes
 
