@@ -1038,7 +1038,7 @@ condition. Evidence: `round4/item1_stripes/xenia_toggle/`,
 | stripe region mean | (34..44, 11..13, 39..65) | (39..55, 11..25, 49..68) |
 | whole-frame mean | (34..37, 15..18, 44..58) | (35..45, 17..24, 51..62) |
 
-**Post on:**
+**Post on** (native engine e391f95, before the noise upload `ecd579f`):
 
 | | Xenia | native |
 |---|---|---|
@@ -1057,12 +1057,38 @@ alpha, which includes DCI's peak stripe panels. That is reported to the post
 lane, which owns DCI peak, through the coordinator, so it does not chase the
 same deficit through the bloom.
 
-What is left on streetside, minor and not tuned: native's raw stripes carry a
-little green (median G 4..29 against Xenia's 0..1). The material's green is 0,
-so this is lighting, most likely the box map's green (0.24) reaching the
-stripes more than on Xenia. INFERRED, not tested.
+**Per stage, on the merged build (engine 17ba5d4, with the post lane's noise
+upload `ecd579f`), MEASURED.** The coordinator asked for this after the post
+lane found DCI's peak deficit was the noise overlay that never ran: the
+streetside awesome post-proc authors noise too (`noise_intensity` 1,
+stationary). The same DTA state files were set on
+`streetside_performance_awesome.pp` on both sides, cycled once a second in the
+forced awesome state (Xenia frames labelled by the last applied state). Scene
+box luma and RGB, then the magenta stripe pixels (R>90, B>90, G<60):
 
-#### 9.7.2 Rink normal floor: the deficit is the post chain (MEASURED)
+| stage | Xenia scene (RGB) | native scene (RGB) | Xenia stripes | native stripes |
+|---|---|---|---|---|
+| full | 33.3 (92, 14, 55) | 34.0 (87, 16, 60) | 13.4% (197, 14, 201) | 12.2% (190, 9, 201) |
+| noise off | 25.5 (73, 10, 44) | 24.0 (65, 10, 45) | 11.4% (177, 11, 192) | 10.5% (177, 8, 186) |
+| bloom off | 22.8 (37, 15, 56) | 24.1 (38, 16, 61) | 8.0% (166, 15, 220) | 9.8% (172, 7, 223) |
+| bloom, noise off | 17.0 (32, 9, 48) | 17.4 (29, 11, 47) | 9.5% (144, 6, 206) | 8.2% (145, 9, 208) |
+| all off | 20.3 (34, 14, 48) | 21.5 (32, 16, 48) | 8.2% (135, 13, 203) | 8.1% (143, 8, 191) |
+
+n = 17..21 frames per stage per side. Every stage agrees within a few levels,
+and so does each stage's step: the bloom takes red from about 37 to 92 on
+Xenia and 38 to 87 on native, and the noise adds about 8 scene luma on both.
+**So the red is not lost at any stage on the merged build.** The brief's
+(206, 1, 72) against (34, 1, 34) was a pre-fix native frame (before
+`d854f7e`, and before `ecd579f`), single shot, different camera.
+
+Evidence: `round4/item1_stripes/stage_decomposition_m3/` (stats.txt, state
+files, `tools/stripe_stats.py`, native frames; Xenia frames stay private).
+
+An earlier single-run reading had native's raw stripes a little greener than
+Xenia's (median G 4..29 against 0..1). The per-stage run above does not
+reproduce it (all off: G 8 native, 13 Xenia), so it is not carried as a gap.
+
+#### 9.7.2 Rink normal floor: the deficit is the bloom stage (MEASURED)
 
 **The inputs are identical** (Xenia vs native probes, normal state):
 
@@ -1100,5 +1126,48 @@ Whole-frame means agree: Xenia post on (115..118, 85..89, 73), off
   under the lead where Xenia shows only a faint ring. The flame is gameplay
   state (scoring), not lighting. Both are outside the floor band measured.
 
-Handed to the post lane: **rollerrink normal, post chain adds +1 luma where
-Xenia's adds +35, with raw lighting matched.**
+**Which stage, on the merged build (engine 17ba5d4, MEASURED).** The post
+lane's per-stage method (`lanes/post/round4/tools`): the same DTA state files
+set on `rollerrink_performance_high.pp` on both sides, cycled once a second
+through the high state; Xenia frames labelled by the last applied state. Scene
+box and the lower third of the frame (the floor), luma, 640×360:
+
+| stage | Xenia scene / floor | native scene / floor |
+|---|---|---|
+| full chain | 97.7 / 151.0 (n 14) | 79.8 / 118.8 (n 17) |
+| bloom off | 72.9 / 119.1 | 67.7 / 114.9 |
+| vignette off | 99.5 / 157.5 | 81.9 / 122.1 |
+| colour matrix off | 99.2 / 149.3 | 81.9 / 118.1 |
+| all off | 77.0 / 122.2 | 71.8 / 118.3 |
+
+- With bloom off the two agree within 5 levels, and the vignette and the
+  colour matrix move both sides by the same few levels.
+- **The bloom is the stage that differs.** On Xenia it adds +24.8 to the scene
+  and +32 to the floor; on native +12.1 and +3.9. The same data reaches both:
+  colour (0.97, 0.84, 0.62), threshold 8, intensity 1.6, no streak.
+- The floor is mid-grey (~115-120 luma raw). Native's bloom keeps far less of
+  that level than Xenia's does, while on streetside (9.7.1), where the bloom
+  source is bright saturated stripes, the two agree. So the lead is how the
+  native bloom extracts mid-tones (the threshold or the extraction curve), not
+  its strength. INFERRED; not tested in the post code, which this lane does
+  not own.
+- The rink's normal state (`high`) has noise 0, so engine `ecd579f` (the
+  noise upload) does not touch this gap. Re-measured on the merged build:
+  native's paused toggle reads the same as before (lower third 110.1 post,
+  107.3 off).
+
+Evidence: `round4/item6_rink_floor/stage_decomposition_m3/` (stats.txt, the
+state files, native frames; the first Xenia attempt stalled before gameplay
+and was stopped, the second, `xrr2`, is the one measured).
+
+Handed to the post lane: **rollerrink high: the bloom adds +32 floor luma on
+Xenia and +4 on native; raw lighting, grade and vignette match.**
+
+#### 9.7.3 Flare-lit regions are not comparable against default Xenia
+
+The post lane measured (round 4) that the Xenia fork answers every occlusion
+query with `query_occlusion_fake_sample_count = 1000`, so `RndFlare` draws
+large flares at about 1/80 strength there; native matches Xenia with the count
+raised to 1e6, and the hardware footage. Any bulb, lamp or glow region in this
+section's Xenia frames is therefore not ground truth. That covers dclive's
+bulb wall (the brief's −47%, ranked weak), which this lane did not measure.
