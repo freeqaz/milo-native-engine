@@ -145,14 +145,102 @@ the floor measured luma 55, against retail frames at 105-136 (section 5).
   still runs into its own render target, which nothing samples, alongside
   the native coverage pass. That is wasted work, not a visible difference.
 
-## 4. Skin and hair (left for a follow-up lane)
+## 4. Skin, hair and the rim (round 2)
 
-Under retailLighting 2, skin and hair materials take `retailShade` like
-everything else, which is what CalcShaderOpts does for a plain standard draw.
-The dedicated variations were disassembled and saved:
-`standard_0000000040020011` (shader variation 1, skin) and
-`standard_0000000080020015` (variation 2, hair). Their fragment maths is not
-implemented here.
+`RndMat::shader_variation` picks a different `standard` permutation:
+`mCustomVariation` is always copied into the options (`CalcShaderOpts`,
+Shader.cpp 550-640). Round 1 ran skin and hair through the plain maths. The
+dancers' materials use five per-pixel permutations, and each of them was
+disassembled, written out as a readable model, and checked against an
+emulation of the shipped microcode:
+
+| permutation | used by (rasa05, the OMG lead) | model vs microcode, worst relative error over 2,500 random pixels |
+|---|---|---|
+| `0000032040035037` skin, rim, rim-under, normal + spec maps | `rasa05_skin`, `rasa05_head` | 7.5e-8 |
+| `0000030040031037` skin, normal + spec maps, no rim | (skin without a rim colour) | 7.5e-8 |
+| `0000030080031017` hair, spec map | `rasa05_hair`, eyebrows | 5.8e-8 |
+| `0000032000031037` no variation, rim, normal + spec maps | `rasa05_jacket`, `rasa05_pants` | 1.9e-8 |
+| `0000030000031017` no variation, spec map | | 2.0e-8 |
+
+MEASURED. The tools are in dc3-decomp `scripts/gpu/xenos_ucode/`:
+
+- `ucode_emu.py` executes xenia's ucode listing (vector and co-issued scalar
+  ALU ops, `_prev` chains, `tfetch`).
+- `char_models.py` holds the models and the check
+  (`python3 char_models.py` prints the table above).
+- `gen_char_shading_cases.py` writes the test table.
+
+The listings and literal tables are in the lane archive under
+`round2/ucode/` and `shaders/standard/`. **There is no cloth variation.** The
+enum is none, skin, hair and world projection, and clothes are `none`.
+
+Notation:
+
+- Constants: c0 is the material colour, c1 the ambient, c2 the specular
+  (rgb, power), c14.x = 1 − de_normal, c19 the second specular colour, c61
+  the rim (rgb, power), c80..c85 the box faces. Point light i has direction
+  L_i, colour c_i and falloff a_i (section 1).
+- p = max(spec-map a · c2.w, 0.5), and n(p) = (p + 2)/2π.
+- V points to the camera, unnormalised in the interpolator.
+- Nk is the normal-mapped normal with de_normal applied. Nf is the same normal
+  at full strength.
+
+**Skin** (`dc3SkinLight`):
+
+- Light is `(1 + rim · box(−V)) · box(Nk) + Σ a_i c_i · sat((Nk·L_i)·(0.55, 0.6, 0.65) + (0.45, 0.4, 0.35))`.
+  This is a per-channel wrap: red wraps furthest past the terminator, which
+  makes the warm shadow side.
+- rim = `((1 − sat(V·Nk))(0.5 Nk.z + 0.5))^c61.w`.
+- Colour is `texel · c0 · (light + c1) · (1 + c61.rgb · back)`. The
+  back-light sheen is `back = Σ a_i c_i sat(−L_i·V) (1 − sat(V·Nf)²)^c61.w`.
+- Specular is `spec-map · c2 · (Σ a_i c_i · 4(1 − sat(V·Nf)²)^0.7 · n(p) · sat(V·R_i)^p + rimf² · n(p) · boxPow(Re, p))`, where:
+  - R_i = reflect(−L_i, Nf) and Re = reflect(−V, Nf);
+  - rimf = (1 − sat(V·Nf))(0.5 Nf.z + 0.5);
+  - boxPow(R, p) = Σ sat(±R_axis)^p · face.
+
+  It uses the full-strength normal and a Fresnel-like `4(1 − cos²)^0.7`
+  weight.
+- With no rim colour (bit 37 clear) the rim and the sheen are absent.
+
+**Hair** (`dc3HairLight`):
+
+- The shipped permutation has no normal map. N is the normalised
+  interpolated normal and n is the raw one.
+- Light is `box(N) + Σ a_i c_i · sat((N·L_i)·(0.75, 0.8, 0.85) + (0.25, 0.2, 0.15))`.
+- Re = reflect(−V, N). The strand is taken as horizontal:
+  t = Re·(ẑ × n) = n.x Re.y − n.y Re.x.
+- With s = |1 − t²| and l1 = s^(4p), the anisotropic lobe is
+  `aniso = c2 · l1 + c19 · s^(2p) · (1 − l1)`.
+- Specular is `spec-map · (Σ a_i c_i sat(L_i·Re) n(p) aniso + (0.25 + (1 − sat(V·N))(0.5 N.z + 0.5)) n(p) boxPow(Re, p))`.
+  The box reflection is tinted by the map only, not by c2.
+- Colour is `texel · c0 · (light + c1) + specular`.
+
+**The plain rim** (round-1 defect, now fixed): the rim also takes the point
+lights from behind,
+`X = ((1 − sat(N·V))(0.5 N.z + 0.5))^p · box(−V) + Σ a_i c_i sat(−L_i·V) (1 − sat(N·V)²)^p (0.5 N.z + 0.5)`,
+and out = `d · (1 + 0.3 c61·X) + 0.7 c61·X + spec`. Round 1 had only the box
+half (relative error 0.89 against the microcode; 2e-8 with the point half).
+
+**Native.**
+
+- `retailShade` now fetches the textures and calls `retailPixelShade`, which
+  takes `dc3SkinLight` / `dc3HairLight` for variations 1 and 2 under
+  retailLighting 2 and the plain path otherwise.
+- The projected-light factor and the AO factors apply as on the plain path.
+  The box term is scaled by `proj.mult`, and `proj.add` is added.
+- Vertex-lit skin and hair keep the plain vertex form. Every shipped skin and
+  hair permutation is per pixel.
+- The rim's point half is DC3-only, gated on retailLighting 2.
+- `native/tests/test_retail_char_shading.cpp` runs the engine's own
+  `retailPixelShade` in a compute shader on 48 random pixels: 12 each of skin,
+  skin without rim, hair and plain + rim. It compares the result with the
+  emulated microcode's output. A second case checks that RB3's form
+  (retailLighting 1) keeps the plain path.
+
+**Not measurable from the cache.** The cache holds no skin+rim permutation
+without rim-under, and no hair+rim permutation. Both are therefore taken as
+the measured forms: `rimLightUnder` is not read, and hair ignores the rim.
+INFERRED.
 
 ## 5. Results
 
