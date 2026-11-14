@@ -2203,6 +2203,13 @@
     "default": "on",
     "read": "value"
   },
+  "MILO_WEB_BUNDLE_SLICE_MS": {
+    "class": "perf",
+    "owner": "web/assets",
+    "faithfulStatus": "n/a: web only. Milliseconds of main-thread time one slice of a screen-bundle unpack may take before yielding to the browser (default 6); 0 = unpack the whole bundle in one task, the pre-W-15 behaviour (158-403 ms tasks). Same files, same bytes; only when the main thread yields changes (lane np-web4, W-15) [WebAssets.cpp]",
+    "default": "6",
+    "read": "value"
+  },
   "VK_INSTANCE_LAYERS": {
     "class": "probe",
     "owner": "render/debug",

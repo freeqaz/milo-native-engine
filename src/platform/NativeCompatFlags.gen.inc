@@ -115,6 +115,7 @@
 { "MILO_SURFACE_FAULT", "off", FlagClass::Probe, FlagRead::Value, "render/window", "n/a: test hook for dc3 PLAN H-33: init (every window's surface probe fails), init-once (the first fails; the X11 fallback then runs once), acquire (GetCurrentTexture fails every frame). Exercises the unusable-surface handling on a box whose surface works [GpuDevice.cpp]", "MILO_SURFACE_FAULT" },
 { "MILO_VIDEO", "unknown", FlagClass::Unknown, FlagRead::Truthy, "unclassified", "n/a", "MILO_VIDEO" },
 { "MILO_VIDEO_FPS", "unknown", FlagClass::Unknown, FlagRead::Value, "unclassified", "n/a", "MILO_VIDEO_FPS" },
+{ "MILO_WEB_BUNDLE_SLICE_MS", "6", FlagClass::Perf, FlagRead::Value, "web/assets", "n/a: web only. Milliseconds of main-thread time one slice of a screen-bundle unpack may take before yielding to the browser (default 6); 0 = unpack the whole bundle in one task, the pre-W-15 behaviour (158-403 ms tasks). Same files, same bytes; only when the main thread yields changes (lane np-web4, W-15) [WebAssets.cpp]", "MILO_WEB_BUNDLE_SLICE_MS" },
 { "MILO_WIDTH", "unknown", FlagClass::Unknown, FlagRead::Value, "unclassified", "n/a", "MILO_WIDTH" },
 { "PART_DBG", "off", FlagClass::Unknown, FlagRead::Presence, "unclassified", "n/a", "PART_DBG" },
 { "PART_INIT_DBG", "off", FlagClass::Probe, FlagRead::Value, "render/particles", "n/a: dumps InitParticle's emit branch, raw direction and mesh state before speed scale for substring-matched particle systems, diagnosing runaway street-fog particles [Part.cpp:670]", "PART_INIT_DBG" },
