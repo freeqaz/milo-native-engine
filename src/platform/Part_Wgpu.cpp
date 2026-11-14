@@ -212,6 +212,49 @@ Hmx::Color ParticleShaderColor(RndMat* mat, RndEnviron* env) {
     return k;
 }
 
+ParticleQuadAxes ParticleBillboardAxes(const float pos[3], const float camRight[3],
+                                       const float camUp[3], float halfSize, float angle,
+                                       bool retailXbox, float screenAspect, float swingArm) {
+    ParticleQuadAxes q;
+    const float rx = camRight[0], ry = camRight[1], rz = camRight[2];
+    const float ux = camUp[0], uy = camUp[1], uz = camUp[2];
+    const float size = halfSize;
+    float cx = pos[0], cy = pos[1], cz = pos[2];
+    float srx = rx * size, sry = ry * size, srz = rz * size;
+    float sux = ux * size, suy = uy * size, suz = uz * size;
+    if (retailXbox) {
+        // The shipped particle vertex shader (rndshape::PartBillboard): up is
+        // scaled by the screen aspect, the angle turns the quad clockwise, and
+        // the swing arm moves it along its turned up axis.
+        const float cosA = cosf(angle), sinA = sinf(angle);
+        const float S = screenAspect;
+        const float rotRx = rx * cosA - ux * S * sinA, rotRy = ry * cosA - uy * S * sinA,
+                    rotRz = rz * cosA - uz * S * sinA;
+        const float rotUx = rx * sinA + ux * S * cosA, rotUy = ry * sinA + uy * S * cosA,
+                    rotUz = rz * sinA + uz * S * cosA;
+        srx = rotRx * size; sry = rotRy * size; srz = rotRz * size;
+        sux = rotUx * size; suy = rotUy * size; suz = rotUz * size;
+        cx += rotUx * swingArm; cy += rotUy * swingArm; cz += rotUz * swingArm;
+    } else if (angle != 0.0f) {
+        // The engine's original billboard (RB3-Wii, and DC3-shape consumers
+        // without RndParticleSys::ScreenAspect()).
+        float cosA = cosf(angle);
+        float sinA = sinf(angle);
+        float nrx = srx * cosA + sux * sinA;
+        float nry = sry * cosA + suy * sinA;
+        float nrz = srz * cosA + suz * sinA;
+        float nux = -srx * sinA + sux * cosA;
+        float nuy = -sry * sinA + suy * cosA;
+        float nuz = -srz * sinA + suz * cosA;
+        srx = nrx; sry = nry; srz = nrz;
+        sux = nux; suy = nuy; suz = nuz;
+    }
+    q.centre[0] = cx; q.centre[1] = cy; q.centre[2] = cz;
+    q.right[0] = srx; q.right[1] = sry; q.right[2] = srz;
+    q.up[0] = sux; q.up[1] = suy; q.up[2] = suz;
+    return q;
+}
+
 void DrawParticlesBillboard(RndParticleSys* sys) {
     if (!gWgpuRnd || !gWgpuRnd->IsInPass()) return;
 
@@ -246,6 +289,10 @@ void DrawParticlesBillboard(RndParticleSys* sys) {
         mcr = k.red; mcg = k.green; mcb = k.blue; mca = k.alpha;
     }
 
+    const rndshape::PartBillboardTerms billboard = rndshape::PartBillboard(sys);
+    const float camR[3] = {rx, ry, rz};
+    const float camU[3] = {ux, uy, uz};
+
     // UV tiling
     int tilesAcross = rndshape::PartTilesAcross(sys);
     int tilesDown = rndshape::PartTilesDown(sys);
@@ -259,27 +306,15 @@ void DrawParticlesBillboard(RndParticleSys* sys) {
     verts.reserve(256);
 
     for (RndParticle* p = head; p; p = p->next) {
-        float size = p->size * 0.5f;
         const Vector3 wp = rndshape::PartWorldPos(sys, p);
-        float cx = wp.x, cy = wp.y, cz = wp.z;
-
-        // Billboard offsets
-        float srx = rx * size, sry = ry * size, srz = rz * size;
-        float sux = ux * size, suy = uy * size, suz = uz * size;
-
-        // Optional rotation by particle angle
-        if (p->angle != 0.0f) {
-            float cosA = cosf(p->angle);
-            float sinA = sinf(p->angle);
-            float nrx = srx * cosA + sux * sinA;
-            float nry = sry * cosA + suy * sinA;
-            float nrz = srz * cosA + suz * sinA;
-            float nux = -srx * sinA + sux * cosA;
-            float nuy = -sry * sinA + suy * cosA;
-            float nuz = -srz * sinA + suz * cosA;
-            srx = nrx; sry = nry; srz = nrz;
-            sux = nux; suy = nuy; suz = nuz;
-        }
+        const float pos[3] = {wp.x, wp.y, wp.z};
+        const ParticleQuadAxes q = ParticleBillboardAxes(
+            pos, camR, camU, p->size * 0.5f, p->angle, billboard.retailXbox,
+            billboard.screenAspect, billboard.retailXbox ? rndshape::PartSwingArm(p) : 0.0f);
+        const float size = p->size * 0.5f;  // the haze fade's scale
+        const float cx = q.centre[0], cy = q.centre[1], cz = q.centre[2];
+        const float srx = q.right[0], sry = q.right[1], srz = q.right[2];
+        const float sux = q.up[0], suy = q.up[1], suz = q.up[2];
 
         // UV tile
         int tileIdx = rndshape::PartTileIndex(p);

@@ -81,6 +81,12 @@ public:
 
     static constexpr int kMaxBatches = 3;
 
+    // GPU objects (query sets and buffers) created so far, and the batches
+    // allocated: both stop moving once the largest frame's tests fit
+    // (MILO_GPU_COUNTERS reports them).
+    uint64_t ResourceCreates() const { return mResourceCreates; }
+    int Batches() const { return (int)mBatches.size(); }
+
 private:
     struct Batch;
     bool EnsurePipelines(wgpu::TextureFormat depthFormat, uint32_t sampleCount, GpuDevice& gpu);
@@ -92,4 +98,6 @@ private:
     wgpu::RenderPipeline mAreaPipe;
     wgpu::TextureFormat mDepthFormat = wgpu::TextureFormat::Undefined;
     uint32_t mSampleCount = 0;
+    uint64_t mResourceCreates = 0;
+    std::vector<float> mVerts;
 };
