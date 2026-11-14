@@ -49,7 +49,16 @@ public:
     void SetVConstant(VShaderConstant, const Hmx::Matrix4&) override {}
     void SetVConstant4x3(VShaderConstant, const Hmx::Matrix4&) override {}
     void SetVConstant(VShaderConstant, RndTex*) override {}
-    void SetVConstant(VShaderConstant, const Vector4&) override {}
+    // Vector4 vertex constants are kept: the DC3 shape's retail light model
+    // reads the box map NgEnviron::UpdateApproxLighting uploads (c80..c85)
+    // at draw time, the register the image's standard.vs reads
+    // (rndshape::FillMeshApproxLighting, RndShape_DC3.h). Storing them
+    // changes no render on its own.
+    void SetVConstant(VShaderConstant reg, const Vector4& v) override {
+        if ((unsigned)reg < kNumVConstants) mVConstants[reg] = v;
+    }
+    const Vector4& VConstant(int reg) const { return mVConstants[reg]; }
+    static constexpr unsigned kNumVConstants = 256;
     void SetVConstant(VShaderConstant, const float*, unsigned int) override {}
     void SetVConstant(VShaderConstant, int) override {}
     void SetVConstant(VShaderConstant, bool) override {}
@@ -63,6 +72,9 @@ public:
 
 protected:
     RndShaderProgram* NewShaderProgram() override { return nullptr; }
+
+private:
+    Vector4 mVConstants[kNumVConstants] = {};
 };
 #endif // MILO_RNDOBJ_SHAPE_HAS_NGRND
 
@@ -92,11 +104,10 @@ public:
     // Screen-space 2D drawing (NgRnd override)
     void DrawRect(const Hmx::Rect&, RndMat*, ShaderType, const Hmx::Color&,
                   const Hmx::Color*, const Hmx::Color*) override;
-    // Base Rnd override
+    // Base Rnd override: retail's kDrawRectShader colour model on Xbox shapes
+    // (DrawRectMaterialColor), then the screen-space path above.
     void DrawRect(const Hmx::Rect& r, const Hmx::Color& c, RndMat* m,
-                  const Hmx::Color* tr, const Hmx::Color* bl) override {
-        DrawRect(r, m, kStandardShader, c, tr, bl);
-    }
+                  const Hmx::Color* tr, const Hmx::Color* bl) override;
 
     // On web, returns an owned offscreen texture; on desktop, the swapchain surface.
     // All rendering (post-proc output, overlay passes) targets this view.
@@ -132,6 +143,10 @@ public:
     wgpu::TextureFormat CurrentTargetFormat() const { return mCurrentTargetFormat; }
     uint32_t CurrentSampleCount() const { return mCurrentSampleCount; }
     bool CurrentPassHasDepth() const { return mCurrentPassHasDepth; }
+    // The frame has left its world (FlushPostProcessingForOverlay ran): what
+    // draws now is UI/HUD, or a render target that UI draws. Reset by the
+    // frame's clearing BeginFramePass.
+    bool FrameInOverlay() const { return mFrameInOverlay; }
     uint32_t CurrentTargetWidth() const { return mCurrentTargetWidth; }
     uint32_t CurrentTargetHeight() const { return mCurrentTargetHeight; }
     int FrameID() const { return mFrameID; }

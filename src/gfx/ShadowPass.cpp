@@ -341,6 +341,44 @@ void ShadowPass::Render(wgpu::CommandEncoder& encoder, UniformRingBuffer& object
     mShadowAvailable = true;
 }
 
+void ShadowPass::RenderCasters(wgpu::CommandEncoder& encoder, GpuDevice& gpu,
+                               const float clipFromWorld[16], RndMesh* const* meshes,
+                               int numMeshes) {
+    EnsurePipelines(gpu);
+    if (!mShadowReady) return;
+
+    gpu.Queue().WriteBuffer(mShadowLightVPBuffer, 0, clipFromWorld, 64);
+    wgpu::BindGroupEntry sceneEntry{};
+    sceneEntry.binding = 0;
+    sceneEntry.buffer = mShadowLightVPBuffer;
+    sceneEntry.size = 64;
+    wgpu::BindGroupDescriptor sceneBgDesc{};
+    sceneBgDesc.layout = mShadowSceneBGL;
+    sceneBgDesc.entryCount = 1;
+    sceneBgDesc.entries = &sceneEntry;
+    mShadowSceneBindGroup = gpu.Device().CreateBindGroup(&sceneBgDesc);
+
+    wgpu::RenderPassDepthStencilAttachment depthAtt{};
+    depthAtt.view = mShadowDepthView;
+    depthAtt.depthLoadOp = wgpu::LoadOp::Clear;
+    depthAtt.depthStoreOp = wgpu::StoreOp::Store;
+    depthAtt.depthClearValue = 1.0f;
+
+    wgpu::RenderPassDescriptor rpDesc{};
+    rpDesc.label = "ProjShadowCasters";
+    rpDesc.depthStencilAttachment = &depthAtt;
+
+    mShadowPass = encoder.BeginRenderPass(&rpDesc);
+    mShadowPass.SetBindGroup(0, mShadowSceneBindGroup);
+    mInShadowPass = true;
+    for (int i = 0; i < numMeshes; i++) {
+        if (meshes[i]) DrawMeshShadow(meshes[i]);
+    }
+    mShadowPass.End();
+    mShadowPass = nullptr;
+    mInShadowPass = false;
+}
+
 void ShadowPass::Terminate() {
     mShadowDepthTex = nullptr;
     mShadowDepthView = nullptr;

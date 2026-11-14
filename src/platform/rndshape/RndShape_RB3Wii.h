@@ -162,6 +162,7 @@ public:
     bool Prelit() const { return mMat->mPreLit; }
     bool GetFog() const { return mMat->mFog; }
     bool GetIntensify() const { return mMat->mIntensify; }
+    bool GetUseEnviron() const { return mMat->mUseEnviron; }
     ShaderVariation GetShaderVariation() const { return mMat->mShaderVariation; }
     RndTex *GetEmissiveMap() const { return mMat->mEmissiveMap; }
     float GetEmissiveMultiplier() const { return mMat->mEmissiveMultiplier; }
@@ -459,6 +460,10 @@ inline Vector3 PartWorldPos(RndParticleSys *s, RndParticle *p) {
 // flavor's BandRnd::DrawParticles: tint by material colour, scale haze alpha
 // by 0.35, and fade haze out within two half-sizes of the camera.
 constexpr bool kPartMaterialTint = true;
+// Read only by the Xbox-shader colour model (ParticleShaderColor), which this
+// shape does not use; declared so that model compiles here.
+inline bool MatUseEnviron(RndMat *m) { return m->mUseEnviron; }
+inline bool MatIntensify(RndMat *m) { return m->mIntensify; }
 
 // ---- cube texture ----------------------------------------------------------
 inline RndBitmap *CubeFaceBitmap(RndCubeTex *c, int face) { return &c->mBitmap[face]; }
@@ -515,6 +520,10 @@ constexpr bool kRenderTargetStoresLinear = true;
 // in sMat->SetColor(), so without the material colour every recoloured
 // garment, hair and eye composes to its untinted grey detail map.
 constexpr bool kRectModulatesMatColor = true;
+// The Xbox `standard`-shader rect colour model (RndShape_DC3.h) is not this
+// shape's; declared so that path compiles here.
+constexpr bool kRectXboxDrawRectShader = false;
+inline bool MatPrelit(RndMat *m) { return m->mPreLit; }
 
 // ---- post-processing -------------------------------------------------------
 // RB3's mNoiseIntensity is a gain on a tiled noise TEXTURE (mNoiseMap scaled by
@@ -549,6 +558,8 @@ inline bool PostProcNoiseMap(const RndPostProc *, PostProcNoise &) { return fals
 // PostProcPass's flicker modulation, applied as NgPostProc::ModulateColorXfm
 // applies mColorModulation (to the 3x3 part only).
 constexpr bool kRetailPostChain = true;
+// DC3's retail chain (RndShape_DC3.h, np-gfx-post) is the DC3 shape's only.
+constexpr bool kDC3RetailPost = false;
 void FillRetailPost(const RndPostProc *pp, float flickerMul, ::RetailPostParams &out);
 // MILO_RB3_RETAIL_POST: unset or anything else = 1 (retail chain), "0" = 0
 // (PostProcPass's DC3 composite, as before the chain existed), "raw" = 2
@@ -628,6 +639,12 @@ bool WriteSceneLighting(SceneUniforms &s, RndCam *cam);
 // of approx lights queued (NgEnviron::UpdateApproxLighting); both 0 when the
 // retail light model does not apply.
 void FillMeshApproxLighting(RndMesh *mesh, float box[6][4], float retail[4]);
+// Shadows: RB3 keeps WgpuRnd's generic shadow pre-pass and has no projected
+// shadow light (see RndShape_DC3.h for the shape that does).
+constexpr bool kGenericShadowPass = true;
+constexpr bool kSelectDefaultEnvEachFrame = false;
+inline bool CollectProjShadowCasters(ProjShadowCasters &) { return false; }
+inline RndTex *SceneProjTexture() { return nullptr; }
 
 // ---- per-draw state log ----------------------------------------------------
 // The draw log and provenance sidecar RB3's harnesses read (RB3DrawLogDebug.h:

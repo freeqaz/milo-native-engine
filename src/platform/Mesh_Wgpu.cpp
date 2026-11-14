@@ -17,6 +17,7 @@
 #include "rndobj/Mat.h"
 #include "platform/rndshape/RndShape.h"
 #include "rndobj/Cam.h"
+#include "rndobj/Env.h"
 #include "rndobj/Rnd.h"
 #include "math/Mtx.h"
 #include <cstdio>
@@ -40,6 +41,8 @@ static void RecordDrawCall(
     rec.materialName = mat->Name();
     RndCam* cam = RndCam::Current();
     rec.cameraName = cam ? cam->Name() : nullptr;
+    RndEnviron* env = rndshape::CurrentEnv();
+    rec.environName = env ? env->Name() : nullptr;
     rec.blend = blend;
     rec.zMode = mat->GetZMode();
     rec.cull = mat->GetCull();
@@ -223,7 +226,18 @@ void DrawMeshImmediate(RndMesh* mesh) {
 
     // Text meshes (created by RndText::FontMap) have empty names (not registered in ObjectDir).
     // Debug labels are stored in GpuMeshData::debugLabel for GPU debugging.
-    bool isTextMesh = !mesh->Name()[0];
+    // Only a glyph page gives up its material's depth test and culling
+    // (MeshDrawsAsGlyph: a page the game marked, or -- for a game that does not
+    // mark them -- an unnamed unskinned mesh). Other code builds unnamed meshes
+    // too: spotlight beams, RndRibbon/RndLine, crowd billboards, and DC3's
+    // HamRibbon hand trail (skinned, hamribbon.mat asks zMode 2 / cull 1).
+    // Drawn as text they went through whatever stood in front of them.
+    const bool isGlyphMesh = MeshDrawsAsGlyph(mesh, skinned);
+    // The text colour path (forced prelit, atlas alpha as RGB) follows the same
+    // mark when the game sets one (MeshShadesAsText); otherwise every unnamed
+    // mesh, as before. A ribbon shaded as text happened to look right only
+    // because its vertices are white.
+    bool isTextMesh = MeshShadesAsText(mesh);
 
     // --- Pipeline selection ---
     PipelineKey key{};
@@ -237,8 +251,8 @@ void DrawMeshImmediate(RndMesh* mesh) {
     bool isOverlayPass = !gWgpuRnd->CurrentPassHasDepth();
 
     key.blend = (WgpuBlend)matBlend;
-    key.zMode = isTextMesh ? (WgpuZMode)0 : (WgpuZMode)mat->GetZMode(); // No depth for text
-    WgpuCull matCull = (isTextMesh || isOverlayPass) ? WgpuCull::None : (WgpuCull)mat->GetCull();
+    key.zMode = isGlyphMesh ? (WgpuZMode)0 : (WgpuZMode)mat->GetZMode(); // No depth for text
+    WgpuCull matCull = (isGlyphMesh || isOverlayPass) ? WgpuCull::None : (WgpuCull)mat->GetCull();
     // Reflection mode (rndshape::kDrawModeReflection) flips the camera, reversing winding order.
     // Flip cull mode so front faces aren't discarded.
     if (rndshape::TheRndRef().DrawMode() == rndshape::kDrawModeReflection && matCull != WgpuCull::None) {
@@ -259,7 +273,7 @@ void DrawMeshImmediate(RndMesh* mesh) {
     // AllowHDR material drawn into the main frame writes its luma to alpha.
     const float bloomMaskScale = (!isOverlayPass && !gWgpuRnd->ActiveTargetTex())
         ? rndshape::BloomMaskScale(mat) : 0.0f;
-    if (bloomMaskScale > 0.0f)
+    if (bloomMaskScale != 0.0f)  // DC3: negative (rndshape::BloomMaskScale)
         key.alphaWrite = true;
     key.alphaToCoverage = mat->GetAlphaCut();
     key.depthBias = meshData.depthBias;
@@ -344,6 +358,12 @@ void DrawMeshImmediate(RndMesh* mesh) {
     // --- Capture record ---
     if (capturing) {
         RecordDrawCall(mesh, mat, matParams, skinned, (int)matBlend, heuristics);
+        auto& rec = FrameCapture::Get().LastRecord();
+        rec.hasPipeState = true;
+        rec.pipeZMode = (int)key.zMode;
+        rec.pipeCull = (int)key.cull;
+        rec.passHasDepth = key.hasDepth;
+        rec.glyph = isGlyphMesh;
     }
 
     // --- Draw ---

@@ -287,9 +287,10 @@ void RB3RetailPost::EnsurePipelines(GpuDevice& gpu) {
         return dev.CreateRenderPipeline(&pd);
     };
     const wgpu::TextureFormat kBloomFmt = wgpu::TextureFormat::RGBA16Float;
-    mBloomDownPipe = make("fs_bloom_down", mPassPL, kBloomFmt);
-    mDown4Pipe = make("fs_down4", mPassPL, kBloomFmt);
-    mBlurPipe = make("fs_blur", mPassPL, kBloomFmt);
+    // RB3: half float. DC3 (np-gfx-post): 8-bit, see mBloomFormat.
+    mBloomDownPipe = make("fs_bloom_down", mPassPL, mBloomFormat);
+    mDown4Pipe = make("fs_down4", mPassPL, mBloomFormat);
+    mBlurPipe = make("fs_blur", mPassPL, mBloomFormat);
     mCompositePipe = make("fs_composite", mCompositePL, mFrameFormat);
 
     wgpu::BufferDescriptor bd{};
@@ -329,7 +330,7 @@ void RB3RetailPost::EnsureTextures(int sceneW, int sceneH, GpuDevice& gpu) {
             wgpu::TextureDescriptor td{};
             td.label = "RB3RetailBloom";
             td.size = {(uint32_t)w, (uint32_t)h, 1};
-            td.format = wgpu::TextureFormat::RGBA16Float;
+            td.format = mBloomFormat;
             td.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding;
             mTex[s][k] = gpu.Device().CreateTexture(&td);
             mView[s][k] = mTex[s][k].CreateView();
@@ -382,6 +383,13 @@ void RB3RetailPost::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& 
                         const RetailPostParams& p, GpuDevice& gpu) {
     if (!sceneView || !frameView || sceneW <= 0 || sceneH <= 0) return;
     EnsurePipelines(gpu);
+    // np-gfx-post: DC3's chain (RB3RetailPostDC3.cpp).
+    if (p.dc3) {
+        EnsureDC3Pipelines(gpu);
+        if (p.bloom) RunDC3Bloom(encoder, bloomSrcView ? bloomSrcView : sceneView, sceneW, sceneH, p, gpu);
+        RunDC3Composite(encoder, sceneView, sceneW, sceneH, frameView, p, gpu);
+        return;
+    }
 
     if (p.bloom) {
         EnsureTextures(sceneW, sceneH, gpu);
@@ -553,6 +561,17 @@ void RB3RetailPost::Terminate() {
     mBlackView = nullptr;
     mSampler = nullptr;
     mReady = false;
+    // np-gfx-post: the DC3 chain's objects.
+    mDC3Shader = nullptr;
+    mDC3PassBGL = nullptr;
+    mDC3CompositeBGL = nullptr;
+    mDC3PassPL = nullptr;
+    mDC3CompositePL = nullptr;
+    mDC3BloomTapsPipe = nullptr;
+    mDC3StreakPipe = nullptr;
+    mDC3CompositePipe = nullptr;
+    mNoiseSampler = nullptr;
+    mDC3Ready = false;
 }
 
 // Shipped WGSL accessor (gfx/ShippedWgsl.h): lets the validation test compile

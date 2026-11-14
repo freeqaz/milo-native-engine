@@ -311,6 +311,7 @@ set(MILO_ENGINE_GFX_RNDOBJ_SOURCES
     src/gfx/ShadowPass.cpp
     src/gfx/PostProcPass.cpp
     src/gfx/RB3RetailPost.cpp   # rndobj-free; run by PostProcPass only for the rb3wii shape
+    src/gfx/RB3RetailPostDC3.cpp # rndobj-free; DC3's chain on the same targets (rndshape::kDC3RetailPost)
     src/gfx/DisplayRamp.cpp     # rndobj-free; run by WgpuRnd::EndDrawing when rndshape::DisplayGamma() > 0
     src/gfx/PointTestPass.cpp   # rndobj-free; WgpuRnd's flare occlusion queries (platform/PointTestHook.h)
     src/gfx/SpotBeamPass.cpp    # rndobj-free; WgpuRnd's volumetric spotlight beams (platform/SpotBeamHook.h)
@@ -407,6 +408,11 @@ set(MILO_ENGINE_PLATFORM_SOURCES
 )
 if(MILO_ENGINE_GPU_BACKEND STREQUAL "dc3")
     list(APPEND MILO_ENGINE_PLATFORM_SOURCES ${MILO_ENGINE_GPU_PLATFORM_SOURCES})
+    if(MILO_ENGINE_RNDOBJ_SHAPE STREQUAL "dc3")
+        # DC3's retail post chain parameters, display ramp and mode switch
+        # (no-ops for rb3-xenon, whose RndPostProc lacks the dc3 accessors).
+        list(APPEND MILO_ENGINE_PLATFORM_SOURCES src/platform/rndshape/DC3PostChain.cpp)
+    endif()
     if(MILO_ENGINE_RNDOBJ_SHAPE STREQUAL "rb3wii")
         # RB3-Wii scene lighting behind the rndshape seam (the DC3 shape's
         # WriteSceneLighting is an inline no-op, so DC3/xenon never build it).
@@ -423,6 +429,11 @@ if(MILO_ENGINE_GPU_BACKEND STREQUAL "dc3")
         # RB3's per-draw state log and provenance sidecar (RB3DrawLogDebug.h);
         # the DC3 shape's draw-log hooks are inline no-ops.
         list(APPEND MILO_ENGINE_PLATFORM_SOURCES src/platform/rndshape/RB3WiiDrawLog.cpp)
+    else()
+        # DC3's own light model behind the rndshape seam (dc3-decomp only:
+        # rndshape::kDC3RetailModel is false for rb3-xenon, which compiles the
+        # same shape and gets the old answers from this TU).
+        list(APPEND MILO_ENGINE_PLATFORM_SOURCES src/platform/rndshape/DC3SceneLighting.cpp)
     endif()
 elseif(MILO_ENGINE_GPU_BACKEND STREQUAL "rb3")
     list(APPEND MILO_ENGINE_PLATFORM_SOURCES ${MILO_ENGINE_GPU_PLATFORM_SOURCES_RB3})

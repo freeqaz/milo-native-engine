@@ -85,6 +85,13 @@ static double ThreadCpuNow() {
 Rnd& TheRnd = gWgpuRndInstance;
 NgRnd& TheNgRnd = gWgpuRndInstance;
 RndShaderMgr& TheShaderMgr = gWgpuShaderMgr;
+namespace rndshape {
+const float* CapturedVConstant(int reg) {
+    static const float kZero[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    if (reg < 0 || (unsigned)reg >= WgpuShaderMgr::kNumVConstants) return kZero;
+    return &gWgpuShaderMgr.VConstant(reg).x;
+}
+} // namespace rndshape
 #else
 // RB3-Wii's rndobj/Rnd.h declares `extern Rnd* TheRnd`, and has no NG layer.
 Rnd* TheRnd = &gWgpuRndInstance;
@@ -1513,10 +1520,11 @@ void WgpuRnd::BeginDrawing() {
             sChecked = true;
             const char *env = getenv("MILO_CAPTURE_FRAME");
             if (env) sCaptureFrame = atoi(env);
+            // Armed once; the BeginFrame below (after mFrameID++) starts it.
+            // A BeginFrame here as well consumed every CaptureNextFrame (F12,
+            // /api/capture/next) and the second call then switched it off.
+            if (sCaptureFrame >= 0) FrameCapture::Get().SetCaptureFrame(sCaptureFrame);
         }
-        FrameCapture::Get().BeginFrame(mFrameID);
-        if (sCaptureFrame >= 0 && mFrameID == sCaptureFrame)
-            FrameCapture::Get().SetCaptureFrame(sCaptureFrame);
     }
 
     // Skip if GPU not initialized or device lost
@@ -1582,7 +1590,10 @@ void WgpuRnd::BeginDrawing() {
     // Only if no camera is already current (viewer sets its own orbit camera)
     if (mDefaultCam && !RndCam::Current())
         mDefaultCam->Select();
-    if (mDefaultEnv && !rndshape::CurrentEnv())
+    // rndshape::kSelectDefaultEnvEachFrame: the environ every frame, as
+    // Rnd::BeginDrawing does, so a draw that selects no environ of its own
+    // gets the default one, not whichever the last frame left current.
+    if (mDefaultEnv && (rndshape::kSelectDefaultEnvEachFrame || !rndshape::CurrentEnv()))
         mDefaultEnv->Select(nullptr);
 
     // Reset ring buffers for this frame
@@ -1692,8 +1703,11 @@ void WgpuRnd::BeginDrawing() {
     encDesc.label = "FrameEncoder";
     mEncoder = mGpu.Device().CreateCommandEncoder(&encDesc);
 
-    // Shadow pre-pass: render depth from light's perspective
-    mShadowPass.Render(mEncoder, mObjectRing, mBoneRing, mGpu);
+    // Shadow pre-pass: render depth from light's perspective. Not for a shape
+    // whose shadows come from its own lights (DC3's projected shadow light,
+    // drawn at EndDrawing; rndshape::kGenericShadowPass).
+    if (rndshape::kGenericShadowPass)
+        mShadowPass.Render(mEncoder, mObjectRing, mBoneRing, mGpu);
 
     // Pre-clear: render-to-texture passes (TexRenderer, TexMovie)
     // Must happen after encoder creation but before main frame pass.
@@ -1770,7 +1784,9 @@ void WgpuRnd::EndDrawing() {
 
         // The display gamma ramp (RB3: DxRnd::SetupGamma's D3DDevice_SetGammaRamp),
         // over the finished frame, UI included, when the frame is presented.
-        // DC3 has none.
+        // DC3 (dc3-decomp only, rndshape::kDC3RetailPost) applies it to every
+        // output, headless included, so its captures are post-ramp;
+        // rb3-xenon's DC3 shape returns 0 and the pass never runs.
         if (const float displayGamma = rndshape::DisplayGamma(!mGpu.IsHeadless());
             displayGamma > 0.0f) {
 #ifdef __EMSCRIPTEN__
@@ -1801,6 +1817,16 @@ void WgpuRnd::EndDrawing() {
             mEncoder.CopyTextureToTexture(&src, &dst, &size);
         }
 #endif
+
+        // The shape's projected shadow light (DC3: projected_blend 1): its
+        // casters as this frame left them, into the map the next frame's
+        // receivers sample (rndshape::CollectProjShadowCasters).
+        {
+            rndshape::ProjShadowCasters casters;
+            if (rndshape::CollectProjShadowCasters(casters))
+                mShadowPass.RenderCasters(mEncoder, mGpu, casters.clipFromWorld,
+                                          casters.meshes.data(), (int)casters.meshes.size());
+        }
 
         wgpu::CommandBuffer cmd = mEncoder.Finish();
         mGpu.Queue().Submit(1, &cmd);
@@ -2137,8 +2163,11 @@ void WgpuRnd::WriteSceneUniforms() {
     RndEnviron* env = rndshape::CurrentEnv();
     if (rndshape::kRenderTargetStoresLinear && mActiveTargetTex) scene.outputLinear = 1.0f;
     if (rndshape::WriteSceneLighting(scene, cam)) {
-        // The content's own lighting model (RB3-Wii: rndshape/RB3WiiSceneLighting.cpp).
-        mProjLightTexView = nullptr;
+        // The content's own lighting model (RB3-Wii: rndshape/RB3WiiSceneLighting.cpp;
+        // DC3: rndshape/DC3SceneLighting.cpp, docs/native/dc3-retail-lighting.md).
+        // DC3's projected_blend 0 light binds its gobo here; RB3-Wii has none.
+        RndTex* gobo = rndshape::SceneProjTexture();
+        mProjLightTexView = gobo ? GetGpuTexView(gobo) : nullptr;
     } else if (env && rndshape::EnvHasAmbientFogOwner(env)) {
         // Ambient color (with minimum floor for visibility)
         const Hmx::Color& amb = env->AmbientColor();
@@ -2418,8 +2447,9 @@ void WgpuRnd::WriteSceneUniforms() {
         scene.numLights = 3.0f;
     }
 
-    // Shadow mapping data
-    if (mShadowPass.Available()) {
+    // Shadow mapping data (the generic pre-pass; a shape with its own shadow
+    // light writes these in WriteSceneLighting)
+    if (rndshape::kGenericShadowPass && mShadowPass.Available()) {
         memcpy(scene.lightViewProj, mShadowPass.LightViewProj(), 64);
         scene.shadowEnabled = 1.0f;
         scene.shadowBias = 0.002f;
@@ -2630,4 +2660,29 @@ void WgpuRnd::DrawRect(const Hmx::Rect& rect, RndMat* mat, ShaderType,
     // Restore the scene bind group so subsequent mesh draws don't mismatch.
     if (mSceneBindGroup)
         mPass.SetBindGroup(0, mSceneBindGroup);
+}
+
+void WgpuRnd::DrawRect(const Hmx::Rect& r, const Hmx::Color& c, RndMat* m,
+                       const Hmx::Color* tr, const Hmx::Color* bl) {
+    if (rndshape::kRectXboxDrawRectShader && m) {
+        // DxRnd::DrawRect -> kDrawRectShader: c0 (material colour) times the
+        // vertex colour when prelit, c0 alone otherwise. RndFlare draws this
+        // way with a material whose colour carries the flare's fade.
+        const Hmx::Color k = DrawRectMaterialColor(m);
+        if (!rndshape::MatPrelit(m)) {
+            DrawRect(r, m, kStandardShader, k, nullptr, nullptr);
+            return;
+        }
+        auto mul = [&k](const Hmx::Color& a) {
+            return Hmx::Color(a.red * k.red, a.green * k.green, a.blue * k.blue,
+                              a.alpha * k.alpha);
+        };
+        const Hmx::Color c2 = mul(c);
+        Hmx::Color tr2, bl2;
+        if (tr) tr2 = mul(*tr);
+        if (bl) bl2 = mul(*bl);
+        DrawRect(r, m, kStandardShader, c2, tr ? &tr2 : nullptr, bl ? &bl2 : nullptr);
+        return;
+    }
+    DrawRect(r, m, kStandardShader, c, tr, bl);
 }
