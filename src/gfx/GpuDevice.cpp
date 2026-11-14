@@ -89,6 +89,8 @@ GpuDevice::~GpuDevice() {
 
 bool GpuDevice::Init(const GpuDeviceDesc& desc) {
     mHeadless = desc.headless;
+    if (const char* v = getenv("MILO_HEADLESS_FRAMES_IN_FLIGHT"); v && *v)
+        mHeadlessMaxInFlight = atoi(v) < 0 ? 0 : atoi(v);
     mWidth = desc.width;
     mHeight = desc.height;
     mSurfaceWidth = desc.width;
@@ -941,6 +943,21 @@ void GpuDevice::WarmUp() {
         UINT64_MAX);
     mInstance.ProcessEvents();
     (void)done;
+}
+
+void GpuDevice::EndHeadlessFrame() {
+    if (!mHeadless || !mDevice) return;
+    // Retire finished work: completed staging chunks, command buffers and
+    // deferred destroys are reclaimed on Dawn's tick, which ProcessEvents
+    // drives (PresentFrame calls it on the windowed path).
+    mInstance.ProcessEvents();
+    if (mHeadlessMaxInFlight <= 0) return;
+    mHeadlessInFlight.push_back(mQueue.OnSubmittedWorkDone(
+        wgpu::CallbackMode::WaitAnyOnly, [](wgpu::QueueWorkDoneStatus, wgpu::StringView) {}));
+    while ((int)mHeadlessInFlight.size() > mHeadlessMaxInFlight) {
+        mInstance.WaitAny(mHeadlessInFlight.front(), UINT64_MAX);
+        mHeadlessInFlight.pop_front();
+    }
 }
 
 bool GpuDevice::ShouldClose() const {
