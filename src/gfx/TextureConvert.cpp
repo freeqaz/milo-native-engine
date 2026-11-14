@@ -476,7 +476,7 @@ static wgpu::Texture CreateGxCube(GpuDevice& gpu, const RndBitmap* const* faces,
 // GPU texture creation
 // ============================================================================
 
-wgpu::Texture CreateFromBitmap(GpuDevice& gpu, const RndBitmap& bmp, int numMips) {
+wgpu::Texture CreateFromBitmap(GpuDevice& gpu, const RndBitmap& bmp, int numMips, int maxLevels) {
     int w = bmp.Width();
     int h = bmp.Height();
     if (w == 0 || h == 0 || !bmp.Pixels()) return nullptr;
@@ -501,6 +501,7 @@ wgpu::Texture CreateFromBitmap(GpuDevice& gpu, const RndBitmap& bmp, int numMips
             mip = mip->nextMip();
         }
     }
+    if (maxLevels > 0 && mipCount > maxLevels) mipCount = maxLevels;
 
     // Create GPU texture
     wgpu::TextureDescriptor texDesc{};
