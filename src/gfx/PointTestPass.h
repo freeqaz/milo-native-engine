@@ -71,6 +71,10 @@ public:
     // (see LastSeq()) only: later batches are left in flight even when their
     // readback has finished. Under __EMSCRIPTEN__ it never blocks.
     int CollectThrough(uint64_t through, bool wait, AnswerFn fn, void* user, GpuDevice& gpu);
+    // Appends the keys of the batches with sequence number at most `through`
+    // that are recorded or still being read back: the tests whose answers are
+    // due but have not been delivered.
+    void KeysDueThrough(uint64_t through, std::vector<const void*>& out) const;
     // No answer for `key` is delivered after this returns.
     void Cancel(const void* key);
     // Batches recorded or being read back.
