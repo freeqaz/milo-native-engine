@@ -1394,3 +1394,18 @@ and at the 42.4 the Xenia lane measured before round 4, so nothing points
 at round 4's intensify change. Not chased further.
 Evidence: `round5/dci_floor_r/` (`dci_shots.png` shows the reference beside
 the forced near01 shots).
+
+### 10.7 Verification, round 5
+
+Heads: engine `np-gfx-light` f1ef982 plus this doc commit (np-gfx 51fe8b2
+merged), dc3 `np-gfx-light` 6ff058d59 (np-gfx 8c7e3242c merged; the engine
+pin stays np-gfx's 845adf8).
+
+- dc3 `scripts/native_test.sh` at 6ff058d59: registered 1054, executed 984,
+  passed 984, failed 0, skipped 70, budget 70, rc 0. The three
+  `ScreenAlignedTexGen*` tests ran (not skipped).
+- rb3-xenon `rb3-render`, engine 989cd30 (this branch before the fix)
+  against 2e26676: 11 of 11 frames byte-identical, all gates passed on both.
+- rb3 (tree 1dee2c1f7) built against the fix: 157 of 158 pass; the one
+  failure is the same stale `native_compat_census.check` ledger as round 4.
+- No new render pass, bind group, buffer or getenv.
