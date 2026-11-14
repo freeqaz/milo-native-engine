@@ -7,6 +7,7 @@
 #ifdef __EMSCRIPTEN__
 
 #include "gfx/GpuDevice.h"
+#include "gfx/GpuTimers.h"
 
 #include <emscripten/emscripten.h>
 #include <emscripten/em_asm.h>
@@ -105,6 +106,9 @@ bool GpuDevice::Init(const GpuDeviceDesc& desc) {
 
                     mDevice = std::move(device);
                     mQueue = mDevice.GetQueue();
+                    // MILO_GPU_TIMERS: not wired in the browser build (one log line).
+                    GpuTimers::Get().NoteUnavailable(
+                        "not implemented in the web build (no timestamp-query requested)");
 
                     // Create canvas surface
                     wgpu::EmscriptenSurfaceSourceCanvasHTMLSelector canvasDesc{};

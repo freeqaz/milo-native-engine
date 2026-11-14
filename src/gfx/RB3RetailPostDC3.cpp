@@ -21,6 +21,7 @@
 //                    vignette (c123). Bit numbers from RndShaderPostProc::
 //                    CalcShaderOpts (dc3-decomp rndobj/Shader.cpp).
 #include "gfx/RB3RetailPost.h"
+#include "gfx/GpuTimers.h"
 #include "gfx/GpuDevice.h"
 
 #include <algorithm>
@@ -598,6 +599,7 @@ void RB3RetailPost::PassDC3(wgpu::CommandEncoder& encoder, const wgpu::RenderPip
     rp.label = "DC3RetailBloom";
     rp.colorAttachmentCount = 1;
     rp.colorAttachments = &ca;
+    MILO_GPU_TIME_PASS(rp);
     auto pass = encoder.BeginRenderPass(&rp);
     pass.SetPipeline(pipe);
     pass.SetBindGroup(0, bg, 1, &off);
@@ -847,6 +849,7 @@ void RB3RetailPost::RunDC3Composite(wgpu::CommandEncoder& encoder, const wgpu::T
     rp.label = "DC3RetailPostComposite";
     rp.colorAttachmentCount = mb ? 2 : 1;
     rp.colorAttachments = cas;
+    MILO_GPU_TIME_PASS(rp);
     auto pass = encoder.BeginRenderPass(&rp);
     pass.SetPipeline(mb ? mDC3CompositeMBPipe : mDC3CompositePipe);
     pass.SetBindGroup(0, bg, 1, &off);
@@ -904,6 +907,7 @@ bool RB3RetailPost::RunDC3Velocity(wgpu::CommandEncoder& encoder, int sceneW, in
     rp.label = "DC3Velocity";
     rp.colorAttachmentCount = 1;
     rp.colorAttachments = &ca;
+    MILO_GPU_TIME_PASS(rp);
     auto pass = encoder.BeginRenderPass(&rp);
     pass.SetPipeline(mDC3VelPipe);
     pass.SetBindGroup(0, bg, 1, &off);

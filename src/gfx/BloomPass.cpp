@@ -1,4 +1,5 @@
 #include "gfx/BloomPass.h"
+#include "gfx/GpuTimers.h"
 #include "gfx/GpuDevice.h"
 
 #include <algorithm>
@@ -256,9 +257,11 @@ void BloomPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& inte
         colorAtt.clearValue = {0, 0, 0, 1};
 
         wgpu::RenderPassDescriptor rpDesc{};
+        rpDesc.label = "BloomBlur";
         rpDesc.colorAttachmentCount = 1;
         rpDesc.colorAttachments = &colorAtt;
 
+        MILO_GPU_TIME_PASS(rpDesc);
         auto pass = encoder.BeginRenderPass(&rpDesc);
         pass.SetPipeline(pipeline);
         pass.SetBindGroup(0, bg, 1, &uniOffset);
@@ -298,9 +301,11 @@ void BloomPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& inte
         colorAtt.storeOp = wgpu::StoreOp::Store;
 
         wgpu::RenderPassDescriptor rpDesc{};
+        rpDesc.label = "BloomUpsample";
         rpDesc.colorAttachmentCount = 1;
         rpDesc.colorAttachments = &colorAtt;
 
+        MILO_GPU_TIME_PASS(rpDesc);
         auto pass = encoder.BeginRenderPass(&rpDesc);
         pass.SetPipeline(mBloomUpsamplePipeline);
         pass.SetBindGroup(0, bg, 1, &uniOffset);
@@ -350,9 +355,11 @@ void BloomPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& inte
             colorAtt.clearValue = {0, 0, 0, 1};
 
             wgpu::RenderPassDescriptor rpDesc{};
+            rpDesc.label = "BloomDownsample";
             rpDesc.colorAttachmentCount = 1;
             rpDesc.colorAttachments = &colorAtt;
 
+            MILO_GPU_TIME_PASS(rpDesc);
             auto pass = encoder.BeginRenderPass(&rpDesc);
             pass.SetPipeline(mBloomDownsamplePipeline);
             pass.SetBindGroup(0, bg, 1, &uniOffset);

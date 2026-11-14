@@ -2,6 +2,7 @@
 // Replaces Rnd_Stub.cpp with real WebGPU rendering via Dawn
 
 #include "platform/Rnd_Wgpu.h"
+#include "gfx/GpuTimers.h"
 #include "platform/MeshGpuCache.h"
 #include "platform/NativeSettings.h"
 #include "platform/TexGpu.h"
@@ -702,6 +703,7 @@ void WgpuRnd::ClearDepthForOverlay() {
     rpDesc.colorAttachments = &colorAtt;
     rpDesc.depthStencilAttachment = &depthAtt;
 
+    MILO_GPU_TIME_PASS(rpDesc);
     mPass = mEncoder.BeginRenderPass(&rpDesc);
     rndshape::DrawLogPassOpen(0);
     mInPass = true;
@@ -747,6 +749,7 @@ void WgpuRnd::BeginOverlayPass() {
     rpDesc.colorAttachments = &colorAtt;
     rpDesc.depthStencilAttachment = nullptr; // no depth for 2D HUD
 
+    MILO_GPU_TIME_PASS(rpDesc);
     mPass = mEncoder.BeginRenderPass(&rpDesc);
     mFrameInOverlay = true;
     rndshape::DrawLogPassOpen(2);
@@ -1427,6 +1430,7 @@ void WgpuRnd::BeginFramePass(bool clear) {
     rpDesc.colorAttachments = &colorAtt;
     rpDesc.depthStencilAttachment = &depthAtt;
 
+    MILO_GPU_TIME_PASS(rpDesc);
     mPass = mEncoder.BeginRenderPass(&rpDesc);
     rndshape::DrawLogPassOpen(clear ? 0 : 1);
     mInPass = true;
@@ -1509,6 +1513,7 @@ void WgpuRnd::BeginTexturePass(RndTex* tex, const TexturePassLoad& load) {
         rpDesc.depthStencilAttachment = &depthAtt;
     }
 
+    MILO_GPU_TIME_PASS(rpDesc);
     mPass = mEncoder.BeginRenderPass(&rpDesc);
     rndshape::DrawLogPassOpen(depthView ? 0 : 2);
     mInPass = true;
@@ -1937,6 +1942,8 @@ void WgpuRnd::EndDrawing() {
         if (!mGpu.IsHeadless()) {
             mGpu.PresentFrame();
         }
+        // MILO_GPU_TIMERS: resolve this frame's pass timestamps (gfx/GpuTimers.h).
+        GpuTimers::Get().EndFrame(mGpu.Queue());
 
     }
 
@@ -2753,6 +2760,7 @@ void WgpuRnd::RenderImGuiOverlay() {
     rpDesc.colorAttachmentCount = 1;
     rpDesc.colorAttachments = &colorAtt;
 
+    MILO_GPU_TIME_PASS(rpDesc);
     wgpu::RenderPassEncoder imguiPass = mEncoder.BeginRenderPass(&rpDesc);
     ImGui_ImplWGPU_RenderDrawData(drawData, imguiPass.Get());
     imguiPass.End();
