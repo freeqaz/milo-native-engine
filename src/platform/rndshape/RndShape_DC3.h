@@ -214,6 +214,24 @@ inline bool MatRefract(T *m, RefractTerms &r) {
     r.normalTex = mat->GetRefractNormalMap();
     return true;
 }
+// Screen-aligned texture coordinates (np-gfx-light round 5): ShaderOptions bit
+// 13, which RndShaderStandard::CalcShaderOpts sets from
+// BaseMaterial::GetScreenAligned(). The shipped permutation with it
+// (standard_0000000000002010.vs, xenia-gpu-shader-compiler ucode) drops the
+// vertex UV and puts the vertex's own screen position through the texgen rows
+// instead:
+//   r0.xy = oPos.xy * rcp(oPos.w) * 0.5 + 0.5;  r0.z = 1 - r0.y
+//   o0.x = dp2add(r0.zx, c20.yx, c20.w);  o0.y = dp2add(r0.zx, c21.yx, c21.w)
+// where the plain 0x10 permutation feeds the vertex UV to the same two
+// dp2adds. Streetside's peak sky (sky_peak_1..3.mat) and refraction_shape.mat
+// carry the flag; with vertex UVs the sky cylinder showed its starfield where
+// retail shows the searchlight fan, and the mirror floor reflected stars where
+// retail reflects the texture's navy bottom. rb3-xenon keeps vertex UVs.
+template <class T>
+inline bool MatScreenAligned(const T &m) {
+    if constexpr (kDC3RetailModelFor<T>) return m && m->GetScreenAligned();
+    else { (void)m; return false; }
+}
 
 // ---- environment -----------------------------------------------------------
 inline RndEnviron *CurrentEnv() { return RndEnviron::Current(); }

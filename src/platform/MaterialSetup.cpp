@@ -153,6 +153,16 @@ static void FillRefract(const MatT& mat, MaterialUniforms& uni,
     views.refractNormal = ResolveMap(r.normalTex, gWgpuRnd->FlatNormalTexView());
 }
 
+// Screen-aligned texture coordinates (rndshape::MatScreenAligned): bit 9 of
+// colorMod.w (the low byte is the colour-mod mode, bit 8 the band selector,
+// the high half the refraction strength), which the vertex shader reads as
+// materialScreenAligned and answers by feeding the vertex's screen position,
+// not its UV, to the texgen rows. Set after FillColorMod, which assigns w.
+template <class MatT>
+static void FillScreenAligned(const MatT& mat, MaterialUniforms& uni) {
+    if (rndshape::MatScreenAligned(mat)) uni.colorMod[3] |= 1u << 9;
+}
+
 bool TextMeshKeepsAtlasRGB(RndMesh* mesh, RndMat* mat, bool skinned) {
     GameRenderHook* hook = GetGameRenderHook();
     if (!hook) return false;
@@ -401,6 +411,7 @@ MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh, const UiDraw
     FillRetailTerms(mat, matUni, texViews);
     FillColorMod(mat, matUni);
     FillRefract(mat, matUni, texViews);
+    FillScreenAligned(mat, matUni);
 
     // --- Environment cube map ---
     RndCubeTex* environMap = mat->GetEnvironMap();
@@ -516,6 +527,7 @@ MaterialParams BuildPassMaterialParams(BaseMaterial* rawNextPass, const UiDrawTe
     FillRetailTerms(nextPass, npMatUni, npTexViews);
     FillColorMod(nextPass, npMatUni);
     FillRefract(nextPass, npMatUni, npTexViews);
+    FillScreenAligned(nextPass, npMatUni);
 
     // Multi-pass materials don't set their own sampler -- caller reuses primary material's sampler
     result.heuristics = 0;

@@ -273,6 +273,26 @@ fn colorModAlphaIsBandSelector() -> bool {
     return ((material.colorMod.w >> 8u) & 1u) != 0u;
 }
 
+// Bit 9 of colorMod.w: DC3 screen-aligned texture coordinates (ShaderOptions
+// bit 13, rndshape::MatScreenAligned). Never set by the RB3-Wii shape or for
+// rb3-xenon.
+fn materialScreenAligned() -> bool {
+    return ((material.colorMod.w >> 9u) & 1u) != 0u;
+}
+
+// The UV a vertex feeds to the texgen rows. Normally its own; for a
+// screen-aligned material, its screen position, as the shipped
+// standard_0000000000002010.vs computes it per vertex: ndc = oPos.xy / oPos.w,
+// u = ndc.x * 0.5 + 0.5, v = 1 - (ndc.y * 0.5 + 0.5) (top of the screen v = 0,
+// the frame's own row order), then interpolated like any other texcoord.
+fn texGenSourceUV(vertexUV: vec2f, clipPos: vec4f) -> vec2f {
+    if (!materialScreenAligned()) {
+        return vertexUV;
+    }
+    let ndc = clipPos.xy / clipPos.w;
+    return vec2f(ndc.x * 0.5 + 0.5, 1.0 - (ndc.y * 0.5 + 0.5));
+}
+
 // RndMat::GetRefractStrength for a material whose refraction is on
 // (GetRefractEnabled: enabled, strength > 0 and a refract normal map), else 0.
 fn refractStrength() -> f32 {
@@ -979,7 +999,8 @@ fn vs_main(vertex: VertexInput) -> VertexOutput {
     vertexOutput.worldPos = worldPos;
     vertexOutput.worldNormal = worldNormal;
     vertexOutput.color = vertex.color;
-    vertexOutput.uv = computeTexGenUV(vertex.uv, worldPos, worldNormal, viewDir);
+    vertexOutput.uv = computeTexGenUV(texGenSourceUV(vertex.uv, vertexOutput.clipPos),
+                                      worldPos, worldNormal, viewDir);
     vertexOutput.worldTangent = worldTangent;
     vertexOutput.worldBitangent = cross(worldNormal, worldTangent) * vertex.tangent.w;
     vertexOutput.isSkinned = 0.0;
@@ -1022,7 +1043,8 @@ fn vs_skinned(vertex: SkinnedVertexInput) -> VertexOutput {
     vertexOutput.worldPos = worldPos;
     vertexOutput.worldNormal = worldNormal;
     vertexOutput.color = vertex.color;
-    vertexOutput.uv = computeTexGenUV(vertex.uv, worldPos, worldNormal, viewDir);
+    vertexOutput.uv = computeTexGenUV(texGenSourceUV(vertex.uv, vertexOutput.clipPos),
+                                      worldPos, worldNormal, viewDir);
     vertexOutput.worldTangent = worldTangent;
     vertexOutput.worldBitangent = cross(worldNormal, worldTangent) * vertex.tangent.w;
     vertexOutput.isSkinned = 1.0;
