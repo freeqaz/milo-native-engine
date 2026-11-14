@@ -6538,6 +6538,73 @@ exactly as native did before §31.5. This is INFERRED, not tested in Xenia's
 source. So treat Xenia as a lower bound for peak brightness, as INDEX.md
 says, but a sound reference for the gameplay bloom term.
 
+### 34.2a DCI normal: the "+43% pendant lamp" is Xenia's flare, not native's (item 2, MEASURED)
+
+The brief: in the DCI normal (`high`) state, on the near01 camshot, one
+pendant lamp reads 75.0 on Xenia and 110.1 on native. The rest of the
+scene's bloom is inside Xenia's distribution.
+
+**The draw.** Each of DCI's pendant lamps has a `CouchFlare*.flare` (in
+`table_flares.grp`) with `OverheadLightFlare.mat`: additive, no alpha write,
+bloom_multiplier 1, so it adds to the bloom mask like any additive draw.
+`RndFlare::DrawShowing` sets that material's colour every frame:
+
+    environ ambient x clamp(range t x step ratio x occlusion count / rect pixel area)
+
+Live probe of the same material, same song times (`round4/xenia/x5_lamp_probe_vs_native.tsv`, `x2_probe_vs_native.tsv`):
+
+| | OverheadLightFlare.mat colour |
+|---|---|
+| native, 35 s | `0xA1A1A1` (the env's ambient x 1) |
+| Xenia, default, 25 / 28 / 35 / 50 s | `0x030303` / `0x020202` / `0` / `0` |
+| Xenia, `--query_occlusion_fake_sample_count=1000000`, 25 and 35 s | `0xA3A3A3` |
+
+**Cause.** The Xenia fork does not count samples. It answers every
+occlusion query with a fixed `query_occlusion_fake_sample_count` (1000).
+These flares' rects are around 80k pixels, so they draw at about 1/80
+strength there. Retail's `DxRnd::DoPointTests` counts the visible pixels of
+the rect. Unoccluded, that is the rect's area, which is what native's
+`HX_NATIVE` `Rnd::TestPoint` reports (dc3 `a449ca1b9`).
+
+**Measured.** Lamp box `[415,45,465,75]` at 640x360. Only frames whose
+camera correlates > 0.45 with Xenia's near01 reference are used
+(`lamp_pairs.py`, `xlamp.py`; `round4/measure/item2_summary.json`).
+
+| | bloom on | bloom off |
+|---|---|---|
+| Xenia, default (x6) | 73.1–75.7 | 43.0–51.6 |
+| native, CouchFlares hidden (`flare1`) | 76.9–84.5 | 38.4–41.0 |
+| native, as shipped (`high2`, `flare1`) | 107.1–124.1 | 69.4–87.5 |
+| **Xenia, fake count 1e6 (x7)** | **100.8–120.3** (median 103.7) | – |
+
+Three things show the gap is Xenia's:
+- Hiding the flares brings native down to Xenia's default reading.
+- Making Xenia's flares count as unoccluded brings Xenia up to native's
+  reading.
+- The hardware footage of the same camshot (`retail/dci/01`) shows the glow
+  under the shade. Xenia's default render does not.
+
+Sheet: `round4/sheets/item2_lamp_flare.png`. Native is unchanged.
+
+**Guard.** dc3 `FlarePointTestTest.UnoccludedAreaTestedFlareDrawsAtFullStrength`.
+Nothing tested this native answer before. The test checks that an
+unoccluded, area-tested flare draws at full strength (colour 1.0).
+Sabotage:
+- the pre-`a449ca1b9` constant `1.0` gives 6.1e-05;
+- a Xenia-like fixed 1000 gives 0.061.
+
+Both fail.
+
+**Caveats.**
+- Native has no real occlusion for DC3 flares. dc3's `Rnd::TestPoint`
+  treats every in-view flare as unoccluded and does not route through the
+  engine's `PointTestPass`, which rb3 uses. A flare behind a dancer
+  therefore still glows on native. That gap is real, but it is not this
+  lamp.
+- **When using Xenia, do not compare any flare-lit region** (DCI's
+  `office_flare*`, `DCI_Elevator_StageLight01`, houseparty's chandelier)
+  without raising the fake count.
+
 ### 34.3 The post chain's bind groups (dc3 PLAN H-66, DONE)
 
 The chain created a bind group for every pass of every frame. Every one now
@@ -6580,3 +6647,15 @@ and `gpucount_before`):
 | `SteadyFrameCreatesNoBindGroup` | DC3 peak / glare / plain / RB3 chain plus `BloomPass` and `DisplayRamp`: frame 3 onward creates nothing | the uniform slot as a static offset again: 7 creations a frame |
 | `ResizeDropsTheOldTargetsGroups` | after a resize the cache holds no more groups than a fresh chain | `Forget` a no-op: 14 groups vs 10 |
 | `DC3RetailPostSource.EveryPostChainBindGroupGoesThroughTheCache` | every `CreateBindGroup` in the post sources is the cache-less fallback; the runtime tests only see what goes through the cache | one `Group()` in `RB3RetailPostDC3.cpp` replaced by a direct create: fails |
+
+### 34.4 Consumers
+
+The engine code is identical at `ecd579f` and at this section's commit,
+which changes only docs. Both consumers ran on their current mains, rb3
+`1a85d87f1` and rb3-xenon `a7261b155`, both pinned to `e16bce7`, with
+`MILO_ENGINE_PATH` pointed at the branch:
+- rb3 `all`: built, and ctest passed 158 of 158 (7 skipped, as on main).
+- rb3-xenon `rb3-render`: base `9b68e64` and branch rendered 11 frames with
+  0 differing pixels.
+- `native_compat_census.py check` reports OK. No getenv was added since
+  `87031f3`.
