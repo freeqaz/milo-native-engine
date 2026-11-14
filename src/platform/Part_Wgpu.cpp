@@ -10,6 +10,7 @@
 #include "rndobj/Mat.h"
 #include "platform/rndshape/RndShape.h"
 
+#include <cmath>
 #include <cstring>
 #include <vector>
 
@@ -367,7 +368,9 @@ void DrawParticlesBillboard(RndParticleSys* sys) {
     float maskScale = 0.0f;
     if (rndshape::RetailBloomMaskActive() && gWgpuRnd->CurrentPassHasDepth() &&
         !gWgpuRnd->ActiveTargetTex()) {
-        maskScale = rndshape::BloomMaskScale(rndshape::Mat(mat));
+        // DC3's scale is negative (pre-clamp luma in the mesh shader); a
+        // particle's colour is unlit, so its magnitude is applied as is.
+        maskScale = std::fabs(rndshape::BloomMaskScale(rndshape::Mat(mat)));
         if (maskScale <= 0.0f)
             ct.writeMask = wgpu::ColorWriteMask::Red | wgpu::ColorWriteMask::Green |
                            wgpu::ColorWriteMask::Blue;

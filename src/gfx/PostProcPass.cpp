@@ -5,6 +5,7 @@
 #include "platform/rndshape/RndShape.h"
 #include "gfx/RB3RetailPost.h"
 #include "platform/TexGpu.h"
+#include <cstdio>
 
 #include <cstring>
 #include <cstdlib>
@@ -319,6 +320,46 @@ float PostProcPass::StepFlicker(RndPostProc* pp, float dt) {
     return 1.0f;
 }
 
+// np-gfx-post: DC3's retail chain. Modes: rndshape::RetailPostMode (DC3 shape).
+template <class P>
+void PostProcPass::RunDC3Retail(wgpu::CommandEncoder& encoder, P* pp, int mode,
+                                const wgpu::TextureView& sceneView,
+                                const wgpu::TextureView& intermediateView, int w, int h,
+                                wgpu::TextureView& frameView, GpuDevice& gpu) {
+    // Dependent on P, so the RB3-Wii shape's instantiation compiles nothing.
+    if constexpr (rndshape::kDC3RetailPost && sizeof(P) > 0) {
+        StepTime();
+        RetailPostParams rp;
+        if (mode != 2) {
+            rndshape::FillRetailPost(pp, 1.0f, rp);
+            bool midtone = false;
+            wgpu::TextureView map;
+            if (NoiseConstants(pp, rp.noiseSeeds, rp.noiseParams, map, midtone)) {
+                rp.noiseMap = map;
+                rp.noiseMidtone = midtone ? 1.0f : 0.0f;
+            }
+        } else {
+            rp.dc3 = true;   // the scene through the identity matrix
+        }
+        if (mode == 3 || mode == 4) rp.debugView = mode - 2;
+        if (mode == 5) rp.bloom = false;
+        // Which post-process grades the frame, once per change: the venue's
+        // comes through RndPostProc::Select, which logs nothing.
+        if (pp != mLoggedPostProc) {
+            mLoggedPostProc = pp;
+            const char* dir = pp->Dir() ? pp->Dir()->Name() : "";
+            fprintf(stderr, "DC3 post: %s (%s) bloom I=%.2f thr=%.2f streak=%d glare=%d c6=(%.2f %.2f %.2f) "
+                     "xfm=%d vignette=%.2f chroma=%.2f noise=%d\n",
+                     pp->Name(), dir, pp->BloomIntensity(), pp->GetBloomThreshold(),
+                     (int)pp->GetBloomStreak(), (int)pp->GetBloomGlare(), rp.bloomColor[0],
+                     rp.bloomColor[1], rp.bloomColor[2], (int)pp->ColorXfmEnabled(),
+                     pp->GetVignetteIntensity(), pp->GetChromaticAberrationOffset(),
+                     (int)(bool)rp.noiseMap);
+        }
+        mRetail.Run(encoder, sceneView, intermediateView, w, h, frameView, rp, gpu);
+    }
+}
+
 void PostProcPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& intermediateView,
                        const wgpu::Texture& intermediateTex, int intermediateW, int intermediateH,
                        const wgpu::TextureView& depthView, uint32_t depthSamples,
@@ -362,6 +403,15 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& i
             }
             mRetail.Run(encoder, sceneView, intermediateView, intermediateW, intermediateH, frameView, rp,
                         gpu);
+            return;
+        }
+    }
+
+    // np-gfx-post: DC3's retail chain (DC3_RETAIL_POST=0 keeps the composite below).
+    if constexpr (rndshape::kDC3RetailPost) {
+        if (const int mode = rndshape::RetailPostMode()) {
+            RunDC3Retail(encoder, pp, mode, sceneView, intermediateView, intermediateW, intermediateH,
+                         frameView, gpu);
             return;
         }
     }
@@ -415,35 +465,13 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& i
     wgpu::TextureView noiseView = blackTexView;
     rndshape::PostProcNoise noise;
     if (rndshape::PostProcNoiseMap(pp, noise)) {
-        // NgPostProc::CheckNoise: no noise unless the intensity is non-zero AND
-        // there is a map. The map path replaces the procedural grain outright.
+        // The map path replaces the procedural grain outright.
         uni.noiseIntensity = 0.0f;
-        wgpu::TextureView mapView =
-            (noise.intensity != 0.0f && noise.map) ? GetGpuTexView(noise.map) : wgpu::TextureView();
-        if (mapView) {
+        wgpu::TextureView mapView;
+        bool midtone = false;
+        if (NoiseConstants(pp, uni.noiseSeeds, uni.noiseParams, mapView, midtone)) {
             noiseView = mapView;
-            uni.noiseMode = noise.midtone ? 2.0f : 1.0f;
-            // Stationary noise keeps the seed pair NgPostProc::Select rolled
-            // (mRandomSeed, re-rolled here when the selected post-process
-            // changes) and samples both layers at the base scale; otherwise
-            // four fresh seeds every frame and the top layer at mNoiseTopScale.
-            if (pp != mNoiseSeedOwner) {
-                mNoiseSeedOwner = pp;
-                mStationarySeed[0] = (float)rand() / (float)RAND_MAX;
-                mStationarySeed[1] = (float)rand() / (float)RAND_MAX;
-            }
-            if (noise.stationary) {
-                uni.noiseSeeds[0] = mStationarySeed[0];
-                uni.noiseSeeds[1] = mStationarySeed[1];
-                uni.noiseSeeds[2] = mStationarySeed[0];
-                uni.noiseSeeds[3] = mStationarySeed[1];
-            } else {
-                for (float& seed : uni.noiseSeeds) seed = (float)rand() / (float)RAND_MAX;
-            }
-            uni.noiseParams[0] = noise.baseScale[0];
-            uni.noiseParams[1] = noise.baseScale[1];
-            uni.noiseParams[2] = noise.stationary ? 1.0f : noise.topScale;
-            uni.noiseParams[3] = noise.intensity;
+            uni.noiseMode = midtone ? 2.0f : 1.0f;
         }
     } else {
         uni.noiseIntensity = rndshape::PostProcGrain(pp);
@@ -495,6 +523,39 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& i
     pass.End();
 }
 
+bool PostProcPass::NoiseConstants(RndPostProc* pp, float seeds[4], float params[4],
+                                  wgpu::TextureView& map, bool& midtone) {
+    rndshape::PostProcNoise noise;
+    if (!rndshape::PostProcNoiseMap(pp, noise)) return false;
+    // NgPostProc::CheckNoise: no noise unless the intensity is non-zero AND
+    // there is a map.
+    map = (noise.intensity != 0.0f && noise.map) ? GetGpuTexView(noise.map) : wgpu::TextureView();
+    if (!map) return false;
+    midtone = noise.midtone;
+    // Stationary noise keeps the seed pair NgPostProc::Select rolled
+    // (mRandomSeed, re-rolled here when the selected post-process changes)
+    // and samples both layers at the base scale; otherwise four fresh seeds
+    // every frame and the top layer at mNoiseTopScale.
+    if (pp != mNoiseSeedOwner) {
+        mNoiseSeedOwner = pp;
+        mStationarySeed[0] = (float)rand() / (float)RAND_MAX;
+        mStationarySeed[1] = (float)rand() / (float)RAND_MAX;
+    }
+    if (noise.stationary) {
+        seeds[0] = mStationarySeed[0];
+        seeds[1] = mStationarySeed[1];
+        seeds[2] = mStationarySeed[0];
+        seeds[3] = mStationarySeed[1];
+    } else {
+        for (int i = 0; i < 4; i++) seeds[i] = (float)rand() / (float)RAND_MAX;
+    }
+    params[0] = noise.baseScale[0];
+    params[1] = noise.baseScale[1];
+    params[2] = noise.stationary ? 1.0f : noise.topScale;
+    params[3] = noise.intensity;
+    return true;
+}
+
 void PostProcPass::Terminate() {
     mBloom.Terminate();
     mRetail.Terminate();
@@ -508,6 +569,7 @@ void PostProcPass::Terminate() {
     mDefaultSampler = nullptr;
     mNoiseSampler = nullptr;
     mNoiseSeedOwner = nullptr;
+    mLoggedPostProc = nullptr;
     mPostProcReady = false;
 }
 

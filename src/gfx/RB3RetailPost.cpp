@@ -382,6 +382,13 @@ void RB3RetailPost::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& 
                         const RetailPostParams& p, GpuDevice& gpu) {
     if (!sceneView || !frameView || sceneW <= 0 || sceneH <= 0) return;
     EnsurePipelines(gpu);
+    // np-gfx-post: DC3's chain (RB3RetailPostDC3.cpp).
+    if (p.dc3) {
+        EnsureDC3Pipelines(gpu);
+        if (p.bloom) RunDC3Bloom(encoder, bloomSrcView ? bloomSrcView : sceneView, sceneW, sceneH, p, gpu);
+        RunDC3Composite(encoder, sceneView, sceneW, sceneH, frameView, p, gpu);
+        return;
+    }
 
     if (p.bloom) {
         EnsureTextures(sceneW, sceneH, gpu);
@@ -553,6 +560,17 @@ void RB3RetailPost::Terminate() {
     mBlackView = nullptr;
     mSampler = nullptr;
     mReady = false;
+    // np-gfx-post: the DC3 chain's objects.
+    mDC3Shader = nullptr;
+    mDC3PassBGL = nullptr;
+    mDC3CompositeBGL = nullptr;
+    mDC3PassPL = nullptr;
+    mDC3CompositePL = nullptr;
+    mDC3BloomTapsPipe = nullptr;
+    mDC3StreakPipe = nullptr;
+    mDC3CompositePipe = nullptr;
+    mNoiseSampler = nullptr;
+    mDC3Ready = false;
 }
 
 // Shipped WGSL accessor (gfx/ShippedWgsl.h): lets the validation test compile

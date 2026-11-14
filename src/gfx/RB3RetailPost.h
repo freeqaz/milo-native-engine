@@ -65,6 +65,38 @@ struct RetailPostParams {
     float spotScale = 0.0f;       // c91.x: SpotDrawParams::mIntensity * 32
     float spotBase = 0.0f;        // c127.x: mBaseIntensity / 100
     float spotSmoke = 0.0f;       // c127.y: mSmokeIntensity / 100 * (1 - c127.x)
+
+    // ---- np-gfx-post: DC3 (rndshape::kDC3RetailPost) ----------------------
+    // dc3-decomp's NgPostProc::DoBloom and DC3's postprocess.ps, which differ
+    // from RB3's in order and in three effects. Left at these defaults, RB3's
+    // chain is unchanged (separate shader module and pipelines).
+    //   composite  scene (or chroma: red at (u - ox, v), green at
+    //              (u + ox/2, v + 0.866 oy), blue at (u + ox/2, v - 0.866 oy);
+    //              sharpen: 4 scene - those three taps), screen-blended with
+    //              the bloom sets, then the texture noise (overlay into the
+    //              UNCLAMPED screen result), then dp4 against the colour
+    //              matrix, then the vignette:
+    //                w = sat((|uv - 0.5|^2 + I) * 3.724 - 4.655)^2
+    //                out = sat(c + w * (vignetteColor - c))
+    //              No posterize (no shipped DC3 post-process sets it).
+    //   streak     DoBloom's streak arm (mBloomStreak && !mBloomGlare): set0
+    //              = bloom.ps into w/4, three 7-tap streak passes along the
+    //              rotated horizontal; set1 = bloom.ps straight from the scene
+    //              into w/16 (4 bilinear taps at +-2 scene texels, so it
+    //              samples a quarter of each 16x16 block, as retail), three
+    //              passes along the rotated vertical; set2 black.
+    //              SetBloomBlurWeightsStreak (dc3-decomp rndobj/Utl.cpp).
+    bool dc3 = false;
+    bool streak = false;
+    float streakAttenuation = 0.0f;   // mBloomStreakAttenuation
+    float streakAngle = 0.0f;         // mBloomStreakAngle, degrees
+    float screenAspect = 0.5625f;     // TheRnd.Height() / Width() (yRatio)
+    // NgPostProc::CheckNoise: mNoiseMap on sampler 13 (null: no noise), c112
+    // seeds, c113 = (baseScale.xy, topScale or 1 when stationary, intensity).
+    wgpu::TextureView noiseMap;
+    float noiseSeeds[4] = {0, 0, 0, 0};
+    float noiseParams[4] = {0, 0, 0, 0};
+    // ---- end np-gfx-post ----
 };
 
 class RB3RetailPost {
@@ -87,6 +119,16 @@ public:
 private:
     static constexpr int kSets = 3;
     void EnsurePipelines(GpuDevice& gpu);
+    // np-gfx-post: the DC3 chain (RetailPostParams::dc3).
+    void EnsureDC3Pipelines(GpuDevice& gpu);
+    void RunDC3Bloom(wgpu::CommandEncoder& encoder, const wgpu::TextureView& bloomSrc,
+                     int sceneW, int sceneH, const RetailPostParams& p, GpuDevice& gpu);
+    void RunDC3Composite(wgpu::CommandEncoder& encoder, const wgpu::TextureView& sceneView,
+                         int sceneW, int sceneH, const wgpu::TextureView& frameView,
+                         const RetailPostParams& p, GpuDevice& gpu);
+    void PassDC3(wgpu::CommandEncoder& encoder, const wgpu::RenderPipeline& pipe,
+                 const wgpu::TextureView& dst, const wgpu::TextureView& src,
+                 const float* uni, size_t uniBytes, GpuDevice& gpu);
     void EnsureTextures(int sceneW, int sceneH, GpuDevice& gpu);
     void Pass(wgpu::CommandEncoder& encoder, const wgpu::RenderPipeline& pipe,
               const wgpu::TextureView& dst, const wgpu::TextureView& src,
@@ -118,4 +160,16 @@ private:
     wgpu::TextureView mBlackView;
     wgpu::TextureFormat mFrameFormat = wgpu::TextureFormat::Undefined;
     bool mReady = false;
+
+    // np-gfx-post: DC3 module (kDC3Shader), its own layouts and pipelines.
+    wgpu::ShaderModule mDC3Shader;
+    wgpu::BindGroupLayout mDC3PassBGL;        // src tex, sampler, taps uniform
+    wgpu::BindGroupLayout mDC3CompositeBGL;   // scene, sampler, uniform, set0..2, noise, noise sampler
+    wgpu::PipelineLayout mDC3PassPL, mDC3CompositePL;
+    wgpu::RenderPipeline mDC3BloomTapsPipe;   // bloom.ps, 4 bilinear taps (the w/16 streak set)
+    wgpu::RenderPipeline mDC3StreakPipe;      // 7-tap streak blur
+    wgpu::RenderPipeline mDC3CompositePipe;
+    wgpu::Sampler mNoiseSampler;              // linear, wrap (CheckNoise: filter 1, clamp 0)
+    wgpu::TextureFormat mDC3FrameFormat = wgpu::TextureFormat::Undefined;
+    bool mDC3Ready = false;
 };

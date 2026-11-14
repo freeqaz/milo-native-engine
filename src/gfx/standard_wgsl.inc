@@ -937,6 +937,27 @@ fn linearToSrgb(color: vec3f) -> vec3f {
     return select(lo, hi, color > vec3f(0.0031308));
 }
 
+// ---- np-gfx-post: DC3 pseudo-HDR bloom mask source ----
+// Retail DC3 standard.ps / particles.ps with option bit 22 (mPseudoHDR, set for
+// NgMat::AllowHDR materials drawn into the main frame) write
+//   alpha = sat(dot(rgb, c7) * c5.z),  c7 = (0.3, 0.59, 0.11) * SetBloomColor's
+//   scale, c5.z = NgMat::mBloomMultiplier
+// where rgb is the colour BEFORE the 8-bit target clamps it, in the units it is
+// stored in (retail shades in gamma space: COLOUR_SPACE.md). So a lit value
+// above 1 blooms. Natively that is the colour before the highlight clamp /
+// compression, put into the units the shader writes: encoded when the shader
+// encodes (linear shading), as is when it shades in gamma space. The material
+// carries -(c7 scale * c5.z) in bloomMaskScale (rndshape::BloomMaskScale, DC3
+// shape); RB3's positive scale keeps its own clamped-colour mask above.
+fn dc3BloomMaskSource(preTone: vec3f, encode: bool) -> vec3f {
+    let c = max(preTone, vec3f(0.0));
+    if (encode) {
+        return linearToSrgb(c);
+    }
+    return c;
+}
+// ---- end np-gfx-post ----
+
 // === Vertex Shader (static meshes) ===
 @vertex
 fn vs_main(vertex: VertexInput) -> VertexOutput {
@@ -1321,6 +1342,10 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
                            dot(scene.colorXfm[2], c4));
     }
 
+    // np-gfx-post: the colour before the target clamps or compresses it, for
+    // the DC3 bloom mask (dc3BloomMaskSource below).
+    let bloomMaskPreTone = finalColor;
+
     if (gammaShading) {
         // Retail: the 8-bit target saturates the product; no shoulder.
         finalColor = clamp(finalColor, vec3f(0.0), vec3f(1.0));
@@ -1356,6 +1381,13 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
         let mask = dot(finalColor, vec3f(0.3, 0.59, 0.11)) * material.bloomMaskScale;
         return vec4f(finalColor, clamp(mask, 0.0, 1.0));
     }
+    // ---- np-gfx-post: DC3 pseudo-HDR bloom mask (negative bloomMaskScale) ----
+    if (material.bloomMaskScale < 0.0) {
+        let src = dc3BloomMaskSource(bloomMaskPreTone, !gammaShading && scene.outputLinear < 0.5);
+        let mask = dot(src, vec3f(0.3, 0.59, 0.11)) * -material.bloomMaskScale;
+        return vec4f(finalColor, clamp(mask, 0.0, 1.0));
+    }
+    // ---- end np-gfx-post ----
 
     return vec4f(finalColor, baseColor.a);
 }
