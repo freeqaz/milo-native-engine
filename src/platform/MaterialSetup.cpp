@@ -207,6 +207,14 @@ bool MaterialShadesPrelit(bool matPrelit, bool isTextMesh, bool isOverlayPass,
     return isTextMesh || isOverlayPass;
 }
 
+void MaterialShaderColor(const Hmx::Color& matColor, BaseMaterial::Blend blend, float out[4]) {
+    const float rgbScale = blend == BaseMaterial::kPreMultAlpha ? matColor.alpha : 1.0f;
+    out[0] = matColor.red * rgbScale;
+    out[1] = matColor.green * rgbScale;
+    out[2] = matColor.blue * rgbScale;
+    out[3] = matColor.alpha;
+}
+
 float MaterialAlphaScale(bool intensify, bool retailMaterialTerms) {
     return intensify && retailMaterialTerms ? 2.0f : 1.0f;
 }
@@ -220,6 +228,10 @@ static UiDrawTerms CurrentUiDrawTerms() {
 }
 
 MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh) {
+    return BuildMaterialParams(rawMat, isTextMesh, CurrentUiDrawTerms());
+}
+
+MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh, const UiDrawTerms& uiTerms) {
     // DC3 BaseMaterial getters, whatever the rndobj shape (platform/rndshape/).
     auto mat = rndshape::Mat(rawMat);
     MaterialParams result{};
@@ -227,13 +239,8 @@ MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh) {
     uint32_t heuristics = 0;
 
     // --- Color + alpha ---
-    const Hmx::Color& matColor = mat->GetColor();
-    matUni.color[0] = matColor.red;
-    matUni.color[1] = matColor.green;
-    matUni.color[2] = matColor.blue;
-    matUni.color[3] = matColor.alpha;
-
     BaseMaterial::Blend matBlend = mat->GetBlend();
+    MaterialShaderColor(mat->GetColor(), matBlend, matUni.color);
 
     if (mat->GetAlphaCut()) {
         matUni.alphaThreshold = mat->GetAlphaThreshold() / 255.0f;
@@ -271,7 +278,6 @@ MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh) {
     // Retail scales the texel's alpha by intensify too (UiDrawTermsFor); the
     // shader scales rgb only, and alpha is a product, so the factor goes on
     // the material alpha.
-    const UiDrawTerms uiTerms = CurrentUiDrawTerms();
     matUni.color[3] *= MaterialAlphaScale(mat->GetIntensify(), uiTerms.retailMaterialTerms);
 
     // --- Shader variation (skin, hair, etc.) ---
@@ -433,14 +439,16 @@ MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh) {
 }
 
 MaterialParams BuildPassMaterialParams(BaseMaterial* rawNextPass) {
+    return BuildPassMaterialParams(rawNextPass, CurrentUiDrawTerms());
+}
+
+MaterialParams BuildPassMaterialParams(BaseMaterial* rawNextPass, const UiDrawTerms& npUiTerms) {
     auto nextPass = rndshape::Mat(rawNextPass);
     MaterialParams result{};
     MaterialUniforms& npMatUni = result.uniforms;
 
     // --- Color ---
-    const Hmx::Color& npc = nextPass->GetColor();
-    npMatUni.color[0] = npc.red; npMatUni.color[1] = npc.green;
-    npMatUni.color[2] = npc.blue; npMatUni.color[3] = npc.alpha;
+    MaterialShaderColor(nextPass->GetColor(), nextPass->GetBlend(), npMatUni.color);
     npMatUni.alphaThreshold = nextPass->GetAlphaCut() ? nextPass->GetAlphaThreshold() / 255.0f : 0.0f;
 
     // --- Specular ---
@@ -454,7 +462,6 @@ MaterialParams BuildPassMaterialParams(BaseMaterial* rawNextPass) {
     // --- Other properties ---
     npMatUni.emissiveMultiplier = nextPass->GetEmissiveMap() ? nextPass->GetEmissiveMultiplier() : 0.0f;
     npMatUni.intensify = nextPass->GetIntensify() ? 2.0f : 1.0f;
-    const UiDrawTerms npUiTerms = CurrentUiDrawTerms();
     npMatUni.color[3] *= MaterialAlphaScale(nextPass->GetIntensify(), npUiTerms.retailMaterialTerms);
     npMatUni.deNormal = nextPass->GetDeNormal();
     npMatUni.hasNormalMap = nextPass->NormalMap() ? 1.0f : 0.0f;
