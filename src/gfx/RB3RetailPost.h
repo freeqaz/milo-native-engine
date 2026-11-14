@@ -96,6 +96,33 @@ struct RetailPostParams {
     wgpu::TextureView noiseMap;
     float noiseSeeds[4] = {0, 0, 0, 0};
     float noiseParams[4] = {0, 0, 0, 0};
+    // NgPostProc::CheckMotionBlur (postprocess.ps bit 24): when
+    // RndPostProc::DoMotionBlur() holds, c105 = (weight.rgb * blend,
+    // weight.a) and the composite mixes in tf14, DxRnd's mPostProcessBuffer
+    // (the previous frame's post-process output, resolved by
+    // FinishPostProcess -> SavePostBuffer before the UI draws over it):
+    //   r   = sat(c105.w * (prev.a - scene.a) / prev.a)      (0 when prev.a = 0)
+    //   k   = max(r, c105.rgb)
+    //   out = sat(c + (prev.rgb - c) * k)    c = the unclamped graded colour
+    //   a   = sat(scene.a + r * (prev.a - scene.a))   (fed back as next prev.a)
+    // Last in the shader, after the vignette. Off: no texture, no extra target,
+    // the composite unchanged. On, the composite writes a second target that
+    // the next frame reads (RB3RetailPost keeps two, ping-ponged).
+    bool motionBlur = false;
+    float motionBlurParams[4] = {0, 0, 0, 0};   // c105
+    // NgPostProc::DoBloom's glare arm (mBloomGlare && !TheHiResScreen.
+    // IsActive()): set0 = bloom.ps, the plain blur across and down, then
+    // bloom_glare.ps (ten taps towards the screen centre, harmonic mean); the
+    // composite (bit 37 instead of bit 4) ADDS 0.5 * c6 * set0 to the scene.
+    bool glare = false;
+    // NgPostProc::CheckHueConverge, postprocess.ps bit 62 (blend_amount > 0),
+    // last of all (after motion blur): the colour to HSV (EasyRGB), its hue
+    // replaced by frac(T + 2 dist(H, T) (1 - focus)), dist the circular hue
+    // distance and T = c222.x, V raised to brightness_power, back to RGB and
+    // mixed in by blend_amount. hueParams = c222 = (hue_target / 360 + 0.5,
+    // hue_focus, blend_amount, brightness_power).
+    bool hueConverge = false;
+    float hueParams[4] = {0, 0, 0, 1};
     // ---- end np-gfx-post ----
 };
 
@@ -174,8 +201,18 @@ private:
     wgpu::PipelineLayout mDC3PassPL, mDC3CompositePL;
     wgpu::RenderPipeline mDC3BloomTapsPipe;   // bloom.ps, 4 bilinear taps (the w/16 streak set)
     wgpu::RenderPipeline mDC3StreakPipe;      // 7-tap streak blur
+    wgpu::RenderPipeline mDC3GlarePipe;       // bloom_glare.ps
     wgpu::RenderPipeline mDC3CompositePipe;
-    wgpu::Sampler mNoiseSampler;              // linear, wrap (CheckNoise: filter 1, clamp 0)
+    wgpu::RenderPipeline mDC3CompositeMBPipe; // + the motion-blur feedback target
+    // NgPostProc::CheckMotionBlur's tf14 (DxRnd::mPostProcessBuffer, A8R8G8B8):
+    // the composite reads one and writes the other. Allocated on the first
+    // motion-blur frame only. mPrevRun is the mRunIndex that last wrote
+    // mPrev[mPrevCur]; the feedback is valid only on the very next Run.
+    wgpu::Texture mPrevTex[2];
+    wgpu::TextureView mPrevView[2];
+    int mPrevW = 0, mPrevH = 0, mPrevCur = 0;
+    uint64_t mRunIndex = 0, mPrevRun = ~0ull;
+    wgpu::Sampler mNoiseSampler;             // linear, wrap (CheckNoise: filter 1, clamp 0)
     wgpu::TextureFormat mDC3FrameFormat = wgpu::TextureFormat::Undefined;
     bool mDC3Ready = false;
 };

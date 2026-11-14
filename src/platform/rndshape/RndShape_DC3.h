@@ -281,9 +281,37 @@ inline void VertBoneWeights(const RndMesh::Vert &v, float out[4]) {
 inline int PartTilesAcross(RndParticleSys *s) { return s->NumTilesAcross(); }
 inline int PartTilesDown(RndParticleSys *s) { return s->NumTilesDown(); }
 inline int PartTileIndex(const RndParticle *p) { return p->mCurrentTileIndex; }
-// DC3 particle positions are already in world space.
-inline Vector3 PartWorldPos(RndParticleSys *, RndParticle *p) {
-    return Vector3(p->pos.x, p->pos.y, p->pos.z);
+// Particle positions live in the system's relative space, not world space:
+// retail DxParticleSys::DrawShowing (dc3 src/system/rnddx9/Part.cpp, and
+// rb3-xenon's identical one) draws them under
+// TheShaderMgr.SetTransform(mRelativeXfm), with the billboard basis taken as
+// Invert(mRelativeXfm.m) * camera so that, once transformed, the quad still
+// faces the camera -- i.e. world corner = mRelativeXfm * pos + camera axes.
+// mRelativeXfm is identity only while the motion parent has never moved: with
+// a relative_motion in (0,1) UpdateRelativeXfm accumulates relative_motion *
+// the parent's displacement, so a system placed after SetRelativeMotion ran
+// (streetside's manholeSteam: relative_motion 0.8) stores its particles 80% of
+// the way back toward the origin. Drawing p->pos raw put that steam column in
+// the middle of the stage instead of on its manhole.
+//
+// A consumer whose RndParticleSys has no RelativeXfm() accessor keeps the old
+// raw-position behaviour (rb3-xenon until it adds the accessor its retail
+// code already implies).
+template <typename Sys, typename = void>
+struct PartHasRelativeXfm : std::false_type {};
+template <typename Sys>
+struct PartHasRelativeXfm<Sys, std::void_t<decltype(std::declval<const Sys &>().RelativeXfm())>>
+    : std::true_type {};
+template <typename Sys>
+inline Vector3 PartWorldPos(Sys *s, RndParticle *p) {
+    if constexpr (PartHasRelativeXfm<Sys>::value) {
+        Vector3 rel(p->pos.x, p->pos.y, p->pos.z), w;
+        Multiply(rel, s->RelativeXfm(), w);
+        return w;
+    } else {
+        (void)s;
+        return Vector3(p->pos.x, p->pos.y, p->pos.z);
+    }
 }
 // No Wii-TEV tint model here: this shape scales particle colour the way its
 // retail Xbox particle shader does (Part_Wgpu.cpp, ParticleShaderColor).
@@ -450,6 +478,13 @@ inline bool RetailBloomMaskActive() {
         return m == 1 || m == 3 || m == 4;
     }
 }
+// The post-process Rnd::DoPostProcess runs and Rnd::BeginDrawing takes the
+// bloom colour from: the blacklight override (set_postproc_blacklight_override,
+// the voice-control letterbox's PostProc_Blacklight.pp), else the override
+// (set_postproc_override), else RndPostProc::Current(). dc3-decomp's Rnd
+// carries the HX_NATIVE accessor; rb3-xenon (no blacklight field, and an
+// override typed PostProcessor*) gets Current() (DC3PostChain.cpp).
+RndPostProc *ActivePostProc();
 // Fills the chain's parameters from the current RndPostProc (DC3PostChain.cpp).
 void FillRetailPost(const RndPostProc *pp, float flickerMul, ::RetailPostParams &out);
 // SetBloomColor's c7 scale: 1/threshold above 1, else 1 (DC3PostChain.cpp).
@@ -509,16 +544,27 @@ constexpr bool kMultiplyBlendIsLit = kDC3RetailModel;
 // (Multiply, white, bloom_multiplier 0) zeroes the icon's mask under the
 // draw's alpha equation (dst.a * 0), so the mode-select icon does not burn
 // (dc3-backend-for-rb3-wii.md 31.6).
+//
+// The mask also needs the environ not to fade out: RndShaderStandard,
+// RndShaderParticles, RndShaderMultimesh and RndShaderSyncTrack::CalcShaderOpts
+// (dc3-decomp rndobj/Shader.cpp) set mPseudoHDR only when !fadeOut, with
+// fadeOut = env->FadeOut() && env->FadeEnd() != env->FadeStart() for the
+// current environ. RndShaderDrawRect::CalcShaderOpts has no such test, so a
+// rect passes envFadeOutCancels = false.
 template <class M>
-inline float BloomMaskScale(const M &m) {
+inline float BloomMaskScale(const M &m, bool envFadeOutCancels = true) {
     using Raw = std::remove_cv_t<std::remove_pointer_t<std::decay_t<M>>>;
     if constexpr (!kDC3RetailPost || !MatHasBloomMultiplier<Raw>::value) {
         (void)m;
         return 0.0f;
     } else {
         if (!m || !RetailBloomMaskActive()) return 0.0f;
-        const RndPostProc *pp = RndPostProc::Current();
+        const RndPostProc *pp = ActivePostProc();
         if (!pp) return 0.0f;
+        if (envFadeOutCancels) {
+            const RndEnviron *env = RndEnviron::Current();
+            if (env && env->FadeOut() && env->FadeEnd() != env->FadeStart()) return 0.0f;
+        }
         // NgMat::AllowHDR (dc3-decomp rndobj/Mat_NG.cpp).
         const auto b = m->GetBlend();
         if (b == Raw::kBlendSrcAlpha || b == Raw::kBlendSrcAlphaAdd || b == Raw::kPreMultAlpha ||

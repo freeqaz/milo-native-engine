@@ -61,7 +61,8 @@ static float BloomLumaScale(const RndPostProc *pp) {
     return (1.0f - thr >= 0.0f) ? 1.0f : 1.0f / thr;
 }
 
-float BloomMaskScale(const MatView &m) {
+float BloomMaskScale(const MatView &m, bool envFadeOutCancels) {
+    (void)envFadeOutCancels;
     if (!RetailBloomMaskActive()) return 0.0f;
     const RndPostProc *pp = RndPostProc::Current();
     if (!pp) return 0.0f;

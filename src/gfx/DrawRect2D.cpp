@@ -230,7 +230,8 @@ void DrawRect2D::Draw(wgpu::RenderPassEncoder& pass, const Hmx::Rect& rect, RndM
         !rnd->ActiveTargetTex()) {
         // DC3's scale is negative (luma of the pre-clamp colour, which a rect
         // does not have: its colour is the clamped one, so the magnitude is used).
-        if (mat) maskScale = std::fabs(rndshape::BloomMaskScale(rndshape::Mat(mat)));
+        // RndShaderDrawRect::CalcShaderOpts ignores the environ's fade-out.
+        if (mat) maskScale = std::fabs(rndshape::BloomMaskScale(rndshape::Mat(mat), false));
         if (maskScale <= 0.0f && !(mat && rndshape::Mat(mat)->GetAlphaWrite()))
             ct.writeMask = wgpu::ColorWriteMask::Red | wgpu::ColorWriteMask::Green |
                            wgpu::ColorWriteMask::Blue;
