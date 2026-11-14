@@ -1355,3 +1355,42 @@ material that scrolls its texture in x through tex_xfm (an anim on
 - Native `set use_environ` / `set prelit` on a material had no visible
   effect in a live session while tex_xfm and tex_gen sets did; INFERRED that
   those two are not re-read into the material uniforms after load. Not chased.
+
+### 10.5 The Xenia MAX-alpha caveat (post lane §35), checked against this round
+
+Xenia applies MIN/MAX alpha blending without the blend factors, so a
+Multiply draw that writes the bloom mask over-blooms the floor under it on
+Xenia. Neither item here depends on it:
+
+- Every comparison in 10.1 and 10.2 that decides a cause is raw (post off on
+  both sides, `{rnd toggle_all_postprocs}`), where bloom does not run.
+- No Multiply material that writes alpha covers either floor. dclive's
+  Multiply materials are `DLV_PeakTransSetFloor01.mat` and
+  `DLV_PeakTransStage01.mat` (peak only, and `alpha_write` 0); streetside's
+  are `Building2_shadows.mat` and `building1_shadows.mat` (`alpha_write` 0).
+  (`milo-mat-export`; `round5/dclive_mats/`, `matx-9s4K/`.)
+- dclive's post-on pool and shadow pixels agree within 1.4 luma anyway.
+
+### 10.6 DCI normal `floor_r` (handed over by the post lane): one-frame noise
+
+The post lane read `floor_r` 40.1 (and 41.4 on another build) against Xenia
+42.3..44.9 (mean 43.4, n=14), each from one native frame at camera
+correlation 0.46-0.48. MEASURED with the post lane's own scorer
+(`p55_series.py ... 0.45 normal`, full chain, `DC3_DISPLAY_GAMMA=off`, this
+branch with the screen-aligned fix, which DCI does not use):
+
+- The Xenia reference camera is native's `P1_area1_far03.shot`
+  (`cur_shot` at the matching frames), not a `near01` shot: forcing
+  `P1_area1_near01.shot` or `area1_near01.shot` gives correlation 0.17 at
+  best.
+- On that camera `floor_r` swings 24.8..51.6 across frames with framing and
+  dancer reflections; the region is mirror floor.
+- Native frames at correlation >= 0.45, from three sessions (director's own
+  cuts `n21`, `n22`; `P1_area1_far03` forced, `n23`): 41.3, 41.8, 42.0, 42.0,
+  42.5, 42.9, 43.5, 43.8, mean 42.5 (n=8), against Xenia's mean 43.4.
+
+So native sits about one level under Xenia's mean, overlapping its range,
+and at the 42.4 the Xenia lane measured before round 4, so nothing points
+at round 4's intensify change. Not chased further.
+Evidence: `round5/dci_floor_r/` (`dci_shots.png` shows the reference beside
+the forced near01 shots).
