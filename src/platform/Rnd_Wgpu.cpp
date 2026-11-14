@@ -2622,7 +2622,7 @@ void WgpuRnd::LogGpuCounters() {
     fprintf(stderr,
             "[GPUCOUNT] frame=%d bindGroupsLive=%zu bgCreated=%llu bgHits=%llu bgEvicted=%llu "
             "bgUncached=%llu ringBuffers=4 ringBytes=%u ringGrows=%u/%u/%u/%u "
-            "ringQueueWrites=%llu ringQueueBytes=%llu pipelines=%d\n",
+            "ringQueueWrites=%llu ringQueueBytes=%llu pipelines=%d gpuMeshes=%zu gpuTextures=%zu\n",
             (int)mFrameID, mBindGroupCache.Size(),
             (unsigned long long)mBindGroupCache.Creates(),
             (unsigned long long)mBindGroupCache.Hits(),
@@ -2630,7 +2630,7 @@ void WgpuRnd::LogGpuCounters() {
             (unsigned long long)mBindGroupCache.Uncached(), capacity, mSceneRing.Grows(),
             mMaterialRing.Grows(), mObjectRing.Grows(), mBoneRing.Grows(),
             (unsigned long long)writes, (unsigned long long)bytes,
-            mPipelines.CachedPipelineCount());
+            mPipelines.CachedPipelineCount(), GpuMeshCount(), GpuTexCount());
 }
 
 #ifdef HX_IMGUI

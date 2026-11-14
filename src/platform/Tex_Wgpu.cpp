@@ -368,6 +368,8 @@ void ClearGpuTexCaches() {
     sCubeTexGpuData.clear();
 }
 
+size_t GpuTexCount() { return sTexGpuData.size() + sCubeTexGpuData.size(); }
+
 wgpu::TextureView GetGpuCubeTexView(RndCubeTex* cubeTex) {
     if (!cubeTex || !gWgpuRnd) return wgpu::TextureView();
 
