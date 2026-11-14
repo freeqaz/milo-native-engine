@@ -13,6 +13,7 @@
 
 #include "rndobj/PostProc.h"
 #include "rndobj/ColorXfm.h"
+#include "rndobj/HiResScreen.h"
 #include "obj/Data.h"
 #include "os/System.h"
 #include "os/Debug.h"
@@ -101,9 +102,10 @@ void FillDC3(const P *pp, float flickerMul, RetailPostParams &out) {
         out.bloomColor[1] = bc.green * k;
         out.bloomColor[2] = bc.blue * k;
         out.bloomLumaScale = BloomLumaScale(pp);
-        // The streak arm runs when mBloomStreak and not mBloomGlare (glare
-        // takes the plain arm on the hi-res screen, its own otherwise; the
-        // glare composite is not ported -- three UI post-processes use it).
+        // The streak arm runs when mBloomStreak and not mBloomGlare; glare
+        // takes its own arm (doGlare = mBloomGlare && !TheHiResScreen.
+        // IsActive()), the plain one on the hi-res screen.
+        out.glare = pp->GetBloomGlare() && !TheHiResScreen.IsActive();
         out.streak = pp->GetBloomStreak() && !pp->GetBloomGlare();
         out.streakAttenuation = pp->GetBloomStreakAttenuation();
         out.streakAngle = pp->GetBloomStreakAngle();

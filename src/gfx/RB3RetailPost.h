@@ -110,6 +110,11 @@ struct RetailPostParams {
     // the next frame reads (RB3RetailPost keeps two, ping-ponged).
     bool motionBlur = false;
     float motionBlurParams[4] = {0, 0, 0, 0};   // c105
+    // NgPostProc::DoBloom's glare arm (mBloomGlare && !TheHiResScreen.
+    // IsActive()): set0 = bloom.ps, the plain blur across and down, then
+    // bloom_glare.ps (ten taps towards the screen centre, harmonic mean); the
+    // composite (bit 37 instead of bit 4) ADDS 0.5 * c6 * set0 to the scene.
+    bool glare = false;
     // ---- end np-gfx-post ----
 };
 
@@ -188,6 +193,7 @@ private:
     wgpu::PipelineLayout mDC3PassPL, mDC3CompositePL;
     wgpu::RenderPipeline mDC3BloomTapsPipe;   // bloom.ps, 4 bilinear taps (the w/16 streak set)
     wgpu::RenderPipeline mDC3StreakPipe;      // 7-tap streak blur
+    wgpu::RenderPipeline mDC3GlarePipe;       // bloom_glare.ps
     wgpu::RenderPipeline mDC3CompositePipe;
     wgpu::RenderPipeline mDC3CompositeMBPipe; // + the motion-blur feedback target
     // NgPostProc::CheckMotionBlur's tf14 (DxRnd::mPostProcessBuffer, A8R8G8B8):

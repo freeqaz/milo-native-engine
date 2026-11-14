@@ -569,6 +569,7 @@ void RB3RetailPost::Terminate() {
     mDC3CompositePL = nullptr;
     mDC3BloomTapsPipe = nullptr;
     mDC3StreakPipe = nullptr;
+    mDC3GlarePipe = nullptr;
     mDC3CompositePipe = nullptr;
     mDC3CompositeMBPipe = nullptr;
     for (int i = 0; i < 2; i++) {

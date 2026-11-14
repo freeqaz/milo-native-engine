@@ -44,7 +44,8 @@ struct DC3CompositeUniforms {
     float noiseParams[4];  // c113
     float noiseMode[4];    // x: 0 off, 1 overlay, 2 midtone
     float motion[4];       // c105 (CheckMotionBlur)
-    float motionMode[4];   // x: 0 off, 1 prev valid, 2 first frame (no prev yet)
+    float motionMode[4];   // x: 0 off, 1 prev valid, 2 first frame (no prev yet);
+                           // y: 1 = the glare composite (bit 37) instead of bit 4
 };
 static_assert(sizeof(DC3CompositeUniforms) == 176, "DC3CompositeUniforms layout");
 
@@ -103,6 +104,28 @@ struct VOut {
     return vec4f(acc * 0.25, 1.0);
 }
 
+// bloom_glare.ps (kBloomGlareShader, DoBloom's glare arm), decoded: ten taps
+// from uv towards and through the screen centre (step 0.2 (0.5 - uv), so the
+// last tap is at 1 - uv - step), each weighted by w = (1 - 4 min(|p - 0.5|^2,
+// 0.25))^2 at its own position, combined as a harmonic mean:
+//   out = 2 - 2 * 10 / sum(1 / (1 - w t))       (the 8-bit target saturates)
+// The loop count is INFERRED from the literal 10 the sum is scaled by
+// (c254.z); the loop constant itself is not in the dumped literals.
+@fragment fn fs_glare(in: VOut) -> @location(0) vec4f {
+    let stepUv = (1.0 - 2.0 * in.uv) * 0.1;
+    var p = in.uv;
+    var acc = vec3f(0.0);
+    for (var i = 0; i < 10; i++) {
+        let t = textureSampleLevel(srcTex, samp, p, 0.0).rgb;
+        let d = p - 0.5;
+        var w = 1.0 - 4.0 * min(dot(d, d), 0.25);
+        w = w * w;
+        acc += 1.0 / max(vec3f(1.0) - w * t, vec3f(1e-6));
+        p += stepUv;
+    }
+    return vec4f(2.0 - 20.0 / acc, 1.0);
+}
+
 // blur.ps with SetBloomBlurWeightsStreak's seven taps.
 @fragment fn fs_streak(in: VOut) -> @location(0) vec4f {
     var acc = vec4f(0.0);
@@ -132,9 +155,13 @@ fn grade_dc3(uv: vec2f) -> vec3f {
         scene = textureSampleLevel(srcTex, samp, uv, 0.0).rgb;
     }
 
+    // Bit 37 (DoBloom's glare arm, unk28): the glare set ADDED at half the
+    // bloom colour, c = scene + 0.5 * c6 * tf7 (postprocess_0000002001200000).
     // Bit 4: screen blend with the three bloom sets (unclamped).
     var c = scene;
-    if (cu.bloomColor.w > 0.5) {
+    if (cu.motionMode.y > 0.5) {
+        c = scene + 0.5 * cu.bloomColor.rgb * textureSampleLevel(bloom0, samp, uv, 0.0).rgb;
+    } else if (cu.bloomColor.w > 0.5) {
         let b = textureSampleLevel(bloom0, samp, uv, 0.0).rgb
               + textureSampleLevel(bloom1, samp, uv, 0.0).rgb
               + textureSampleLevel(bloom2, samp, uv, 0.0).rgb;
@@ -331,6 +358,7 @@ void RB3RetailPost::EnsureDC3Pipelines(GpuDevice& gpu) {
     };
     mDC3BloomTapsPipe = make("fs_bloom_taps", mDC3PassPL, mBloomFormat);
     mDC3StreakPipe = make("fs_streak", mDC3PassPL, mBloomFormat);
+    mDC3GlarePipe = make("fs_glare", mDC3PassPL, mBloomFormat);
     mDC3CompositePipe = make("fs_composite_dc3", mDC3CompositePL, mDC3FrameFormat);
     {
         // The motion-blur composite: the frame, and the feedback target the
@@ -430,6 +458,29 @@ static TapUniforms StreakTaps(bool horizontal, float w, float h, float attenuati
 void RB3RetailPost::RunDC3Bloom(wgpu::CommandEncoder& encoder, const wgpu::TextureView& bloomSrc,
                                 int sceneW, int sceneH, const RetailPostParams& p, GpuDevice& gpu) {
     EnsureTextures(sceneW, sceneH, gpu);
+    if (p.glare) {
+        // DoBloom's glare arm (mBloomGlare, not the hi-res screen): bloom.ps
+        // into set0, the plain 15-tap blur across and down, then one
+        // bloom_glare.ps pass; set0 alone feeds the composite (tf7), whose
+        // bit 37 adds it. Retail ping-pongs on one texture (tex[1] == tex[0]);
+        // ordered here to end in [0][0].
+        struct { float srcTexel[2], dir[2], lumaScale, pad[3]; } u{};
+        u.srcTexel[0] = 1.0f / sceneW;
+        u.srcTexel[1] = 1.0f / sceneH;
+        u.lumaScale = 1.0f;
+        Pass(encoder, mBloomDownPipe, mView[0][1], bloomSrc, &u.srcTexel[0], sizeof(u), gpu);
+        decltype(u) b{};
+        b.srcTexel[0] = 1.0f / mW[0];
+        b.srcTexel[1] = 1.0f / mH[0];
+        b.dir[0] = 1.0f;
+        Pass(encoder, mBlurPipe, mView[0][0], mView[0][1], &b.srcTexel[0], sizeof(b), gpu);
+        b.dir[0] = 0.0f;
+        b.dir[1] = 1.0f;
+        Pass(encoder, mBlurPipe, mView[0][1], mView[0][0], &b.srcTexel[0], sizeof(b), gpu);
+        TapUniforms t{};
+        PassDC3(encoder, mDC3GlarePipe, mView[0][0], mView[0][1], &t.tap[0][0], sizeof(t), gpu);
+        return;
+    }
     if (!p.streak) {
         // The plain arm is RB3's: bloom.ps into set0, then 15-tap blurs and
         // downsample_4x into set1 and set2 (identical in DC3's DoBloom).
@@ -553,12 +604,14 @@ void RB3RetailPost::RunDC3Composite(wgpu::CommandEncoder& encoder, const wgpu::T
         prevWrite = mPrevView[mPrevCur];
         mPrevRun = run;
     }
+    // Bit 37 (the glare composite) replaces bit 4's screen blend.
+    cu.motionMode[1] = (p.glare && p.bloom && p.debugView == 0) ? 1.0f : 0.0f;
     uint64_t off = (uint64_t)(mSlot++ % kSlots) * kSlotStride;
     gpu.Queue().WriteBuffer(mUniforms, off, &cu, sizeof(cu));
 
     // The plain arm fills all three sets; the streak arm two (tf15 black).
     const bool haveBloom = (p.bloom || p.debugView == 2) && mView[0][0];
-    const int setsUsed = p.streak ? 2 : 3;
+    const int setsUsed = p.glare ? 1 : p.streak ? 2 : 3;
     wgpu::BindGroupEntry e[9] = {};
     e[0].binding = 0;
     e[0].textureView = sceneView;
