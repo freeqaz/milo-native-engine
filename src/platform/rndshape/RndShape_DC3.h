@@ -223,8 +223,9 @@ inline bool MatRefract(T *m, RefractTerms &r) {
 //   r0.xy = oPos.xy * rcp(oPos.w) * 0.5 + 0.5;  r0.z = 1 - r0.y
 //   o0.x = dp2add(r0.zx, c20.yx, c20.w);  o0.y = dp2add(r0.zx, c21.yx, c21.w)
 // where the plain 0x10 permutation feeds the vertex UV to the same two
-// dp2adds. Streetside's peak sky (sky_peak_1..3.mat) and refraction_shape.mat
-// carry the flag; with vertex UVs the sky cylinder showed its starfield where
+// dp2adds. Streetside's peak sky carries the flag (sky_peak_1.mat and
+// sky_peak_2.mat read back screen_aligned 1 on native; peak_street.mat 0);
+// with vertex UVs the sky cylinder showed its starfield where
 // retail shows the searchlight fan, and the mirror floor reflected stars where
 // retail reflects the texture's navy bottom. rb3-xenon keeps vertex UVs.
 template <class T>
