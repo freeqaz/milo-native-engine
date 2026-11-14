@@ -6122,8 +6122,8 @@ choice and `toggle_all_postprocs` (items 2–3). Item 4 is declined (33.6).
 
 | repo | branch | commits |
 |---|---|---|
-| milo-native-engine | `np-gfx-post` | `75db605` merge of `np-gfx` (`1e4ff4d`), `3d00499` velocity blur + items 2–3, `37f10db` `veldiff` view + registry text, `12fa70b` merge of `np-gfx` (`ced80e4`), plus this section |
-| dc3-decomp | `np-gfx-post` | `5d42e6d38` merge of `np-gfx` (`b14eb4e6f`), `9d582c1c3` `DoVelocity`/`DrawNative` bookkeeping, `c71c1837a` bits 42+24 test, `ad034c5eb` cost test, `bf112f510` frame-path wiring (33.2), `a464bc9a7` override-only frame test, `eb95ef836` merge of `np-gfx` (`16ed68339`), plus docs |
+| milo-native-engine | `np-gfx-post` | `75db605` merge of `np-gfx` (`1e4ff4d`), `3d00499` velocity blur + items 2–3, `37f10db` `veldiff` view + registry text, `12fa70b` merge of `np-gfx` (`ced80e4`), `c369fe5` this section's draft, `167d438` merge of `np-gfx` (`714c233`, light round 3), plus this section |
+| dc3-decomp | `np-gfx-post` | `5d42e6d38` merge of `np-gfx` (`b14eb4e6f`), `9d582c1c3` `DoVelocity`/`DrawNative` bookkeeping, `c71c1837a` bits 42+24 test, `ad034c5eb` cost test, `bf112f510` frame-path wiring (33.2), `a464bc9a7` override-only frame test, `eb95ef836` merge of `np-gfx` (`16ed68339`), `e6ad2aaee` merge of `np-gfx` (`2f1a08056`, light round 3), `fd4598f23` `milo-pp-dump` lists PropAnim tracks that key a PostProc, `633ee71d9` docs |
 
 Evidence: dc3-decomp `archive/np-gfx-2026-11-14/lanes/post/round3/`. No new
 `getenv`: `DC3_RETAIL_POST` gained the values `velocity` and `veldiff`
@@ -6331,3 +6331,105 @@ led to `MotionBlurReadsTheVelocityBlurredAlpha`).
 | `TogglePostProcsShowsTheSceneUngraded` (GPU) | `toggle_all_postprocs` ignored (S10) |
 | `OverrideAloneGradesTheFrame` (GPU) | frame target on `RndPostProc::Current()` (S17) |
 | `VelocityCostAt720p` | none; a probe |
+
+### 33.8 The normal state: does bloom over-add? (MEASURED)
+
+The light lane measured, with the chain on against the chain off, rink floor
+luma 138 → 205 and DCI frame luma 36 → 72, and asked whether bloom
+over-adds in the ordinary lit state. "Chain off" removes the colour matrix
+and the scan-out ramp (`pow(v, 0.85)`) as well as the bloom, so it is not
+bloom's share.
+
+**Method.** omg, "still" performer, on the merged tree (`167d438` /
+`e6ad2aaee`, light round 3 included). 80 frames ~0.5 s apart per run, in three
+views: the chain, `grade` (the chain without the bloom) and `mask`. Rec.709
+luma on a 640×360 resize, the same as section 32's peak figures
+(`round3/normal/stats.txt`, `tools/normstats.py`; sheets
+`round3/normal/{dci,rollerrink,dclive}_normal_sheet.png`).
+
+**Which post-proc is live.** In all three venues the normal state is
+`<venue>_performance_high.pp` copied into `world.pp`, with
+`environments_master.anim` at frame 50 (`round3/normal/pp_dclive_still/`;
+rollerrink by its `motion_blur_velocity` 0, which only `high` has).
+
+| venue | chain (median [p10–p90]) | grade only | bloom's share | retail normal-state stills |
+|---|---|---|---|---|
+| rollerrink | 86.4 [83.8–89.5] | 72.5 | +14 | 70–93 (01, 02, 04, 05, 08, 09, 11, 12) |
+| dclive | 127.1 [112.7–151.8] | 92.5 | +35 | 102–152 (warm 01/05/14, blue 03/08/10, pink 09/12/13) |
+| dci | 65.1 [59.5–77.1] | 49.1 | +16 | 37–65 (GleasonRyan 01–08: 37–52; Zero Conflictz 1080p 09–14: 42–65) |
+
+Rink floor box: chain 123, grade 120, retail 101–134.
+
+**Reading.**
+- In rollerrink and dclive the chain sits inside retail's range and the
+  grade alone sits below it. dclive is the clearest case: its retail stills
+  are hazy and grade-only is visibly too clean.
+- dci's chain is at the top of retail's range and grade-only is at its
+  median. That fits retail too (the two capture channels differ by about
+  10–20), but it is the one venue where a smaller bloom would fit equally
+  well. A Xenia capture is the only thing that can settle it.
+- **Mask writers.** The `mask` view shows no light catcher and no gobo floor
+  in the mask (rink floor box 5.9 of 255).
+  - rollerrink: the bulbs, the signs and the disco ball.
+  - dci: the white ceiling arcs and trim strips.
+  - dclive: the truss, the backdrop panels and the stage lights.
+
+**No change made:** the evidence does not show bloom over-adding in the
+normal state.
+
+### 33.9 DCI peak blue (MEASURED)
+
+The light lane's lead was that `environments_master.anim` animates
+`dci_performance_high.pp`. **It does not.**
+- `milo-pp-dump` (extended in `fd4598f23` to list every PropAnim track
+  whose target is a PostProc) finds, in `dci.milo`, only the `CAMP_*`
+  campaign master anims and `projection_destroy.anim` keying a PostProc.
+  `environments_master.anim` and its `env_*` children key none
+  (`round3/peakblue/dci_milo_dump.jsonl`).
+- The performance post-procs are static. `HamDirector::Poll` copies the
+  selected one into `world.pp` each frame (`Copy`, or `Interp` across a
+  `postproc_interp`).
+
+**Live** (`round3/peakblue/dci_choreo/probe.txt`, 20 samples 3 s apart, choreo
+performer):
+- `environments_master.anim` frame 50 ↔ `world.pp` = `dci_performance_high`
+  (bloom colour (200, 209, 250), I 1.6).
+- frame 100 (peak) ↔ `world.pp` = `dci_performance_awesome`
+  (bloom colour (87, 127, 251), I 1.1, saturation 10, contrast 5).
+- Both are exact copies of the authored values, so native reads the values
+  retail would.
+
+**Order.** Retail's microcode applies the bloom screen blend, then the dp4
+colour matrix (c92–94, built by `RndColorXfm` from hue, saturation,
+lightness, contrast and brightness), then vignette and motion blur.
+`grade_dc3` follows that order (§31).
+
+**Where the blue comes from.** Section 32's peak measurements give:
+- frame-mean blue without bloom 46–61, with bloom 98–116;
+- retail 120–124 (GleasonRyan 05/06) and 160 (Zero Conflictz 12).
+
+So the blue is the awesome post-proc's blue bloom colour on the masked
+stripe panels. The remaining gap is about 5–20 levels against one channel
+and about 45 against the other, so it is inside the capture spread.
+
+**Open:** whether retail's stripe-panel mask covers more of the panel than
+ours. Video cannot show a mask, so this needs a Xenia capture.
+
+### 33.10 Consumers
+
+CONSUMERS_PLACEHOLDER
+
+### 33.11 Open items and items for other lanes
+
+1. **DOF vs velocity order** on retail (INFERRED here: velocity reads DOF's
+   output). Only matters on the intro sweep.
+2. **The dci normal-state bloom** (33.8) and **the peak stripe-panel mask**
+   (33.9): one Xenia capture of dci (normal and peak) would settle both.
+3. **Item 4** (the motion blur's first frame) stays declined (33.6).
+4. **rb3's `NATIVE_COMPAT_LEDGER.md`** needs a regen for the
+   `DC3_RETAIL_POST` text (it already lagged; `native_compat_census.check`
+   is its only failing ctest).
+5. **For the light lane:** the peak character lights and the peak post-proc
+   are both selected by the performance state. The post-proc is a copy
+   chosen by `HamDirector`, not a keyed track of the master anim, so
+   chasing anim frames will not find the missing blue.
