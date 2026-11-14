@@ -174,6 +174,20 @@ static bool DrawShadesInGammaSpace() {
     return hook && hook->UiShadesInGammaSpace();
 }
 
+// Does this overlay-phase draw take the retail material terms
+// (GameRenderHook::UiUsesRetailMaterialTerms; dc3)? The engine otherwise
+// forces UI and text to prelit, which dropped every UI environ: DC3's score
+// digits are a lit font (Eagle-Book(numbers*).mat, prelit 0, use_environ 1)
+// coloured by score.env's violet ambient and magenta score.lit, and drew as
+// their white atlas instead. The same font is intensify 1 under a 0.5
+// font_alpha: retail doubles the texel's alpha with its colour, so the digits
+// are opaque where the engine drew them half transparent.
+static bool DrawUsesRetailUiTerms() {
+    if (!gWgpuRnd || !gWgpuRnd->FrameInOverlay()) return false;
+    GameRenderHook* hook = GetGameRenderHook();
+    return hook && hook->UiUsesRetailMaterialTerms();
+}
+
 MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh) {
     // DC3 BaseMaterial getters, whatever the rndobj shape (platform/rndshape/).
     auto mat = rndshape::Mat(rawMat);
@@ -223,6 +237,10 @@ MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh) {
 
     // --- Intensify ---
     matUni.intensify = mat->GetIntensify() ? 2.0f : 1.0f;
+    // Retail scales the texel's alpha by intensify too (see
+    // DrawUsesRetailUiTerms); the shader scales rgb only, and alpha is a
+    // product, so the factor goes on the material alpha.
+    if (mat->GetIntensify() && DrawUsesRetailUiTerms()) matUni.color[3] *= 2.0f;
 
     // --- Shader variation (skin, hair, etc.) ---
     // Verified: DC3 materials have correct shader_variation in binary data.
@@ -297,10 +315,11 @@ MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh) {
     matUni.unlit = unlit ? 1.0f : 0.0f;
     matUni.gammaShading = DrawShadesInGammaSpace() ? 1.0f : 0.0f;
     bool isMultiplyBlend = (matBlend == BaseMaterial::kBlendMultiply) && !unlit;
-    bool forcePrelit = IsSimpleRender() || isOverlayPass || isMultiplyBlend;
+    const bool uiLit = DrawUsesRetailUiTerms();
+    bool forcePrelit = IsSimpleRender() || (isOverlayPass && !uiLit) || isMultiplyBlend;
     if (isMultiplyBlend) heuristics |= kHeuristicMultiplyPrelit;
     if (isTextMesh) heuristics |= kHeuristicTextMeshDetect;
-    matUni.prelit = (mat->Prelit() || isTextMesh || forcePrelit) ? 1.0f : 0.0f;
+    matUni.prelit = (mat->Prelit() || (isTextMesh && !uiLit) || forcePrelit) ? 1.0f : 0.0f;
     // 2 = prelit whose vertex colour is its ambient (rndshape::MatPrelitAmbient);
     // read only under the RB3 retail light model, any other path sees prelit.
     if (mat->Prelit() && !isTextMesh && !forcePrelit && rndshape::MatPrelitAmbient(mat))
@@ -400,6 +419,7 @@ MaterialParams BuildPassMaterialParams(BaseMaterial* rawNextPass) {
     // --- Other properties ---
     npMatUni.emissiveMultiplier = nextPass->GetEmissiveMap() ? nextPass->GetEmissiveMultiplier() : 0.0f;
     npMatUni.intensify = nextPass->GetIntensify() ? 2.0f : 1.0f;
+    if (nextPass->GetIntensify() && DrawUsesRetailUiTerms()) npMatUni.color[3] *= 2.0f;
     npMatUni.deNormal = nextPass->GetDeNormal();
     npMatUni.hasNormalMap = nextPass->NormalMap() ? 1.0f : 0.0f;
     // Force prelit for multiply-blend passes (same rationale as primary material)

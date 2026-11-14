@@ -342,6 +342,21 @@ public:
         return false;
     }
 
+    // Does the game's UI take the retail material terms the engine's generic
+    // UI path replaces? When true, a draw in the overlay phase (see
+    // UiShadesInGammaSpace):
+    //  - keeps the material's prelit flag instead of being forced prelit
+    //    (every overlay-pass mesh and every text mesh otherwise is), so a lit
+    //    material is shaded by the environ the game selected for it, as the
+    //    Xbox 360 DxRnd shades every mesh, UI included;
+    //  - takes intensify on alpha as well as colour: DC3's standard pixel
+    //    shaders scale the whole texel by c5.y (`mul r0, r0, c5.yyyy`, c5.y =
+    //    intensify + 1 from NgMat::SetRegularShaderConst), alpha included.
+    // Multiply-blend and simple-render overrides still apply. Default false.
+    virtual bool UiUsesRetailMaterialTerms() {
+        return false;
+    }
+
 protected:
     GameRenderHook() = default;
 };
