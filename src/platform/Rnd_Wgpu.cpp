@@ -1513,10 +1513,11 @@ void WgpuRnd::BeginDrawing() {
             sChecked = true;
             const char *env = getenv("MILO_CAPTURE_FRAME");
             if (env) sCaptureFrame = atoi(env);
+            // Armed once; the BeginFrame below (after mFrameID++) starts it.
+            // A BeginFrame here as well consumed every CaptureNextFrame (F12,
+            // /api/capture/next) and the second call then switched it off.
+            if (sCaptureFrame >= 0) FrameCapture::Get().SetCaptureFrame(sCaptureFrame);
         }
-        FrameCapture::Get().BeginFrame(mFrameID);
-        if (sCaptureFrame >= 0 && mFrameID == sCaptureFrame)
-            FrameCapture::Get().SetCaptureFrame(sCaptureFrame);
     }
 
     // Skip if GPU not initialized or device lost
@@ -2630,4 +2631,29 @@ void WgpuRnd::DrawRect(const Hmx::Rect& rect, RndMat* mat, ShaderType,
     // Restore the scene bind group so subsequent mesh draws don't mismatch.
     if (mSceneBindGroup)
         mPass.SetBindGroup(0, mSceneBindGroup);
+}
+
+void WgpuRnd::DrawRect(const Hmx::Rect& r, const Hmx::Color& c, RndMat* m,
+                       const Hmx::Color* tr, const Hmx::Color* bl) {
+    if (rndshape::kRectXboxDrawRectShader && m) {
+        // DxRnd::DrawRect -> kDrawRectShader: c0 (material colour) times the
+        // vertex colour when prelit, c0 alone otherwise. RndFlare draws this
+        // way with a material whose colour carries the flare's fade.
+        const Hmx::Color k = DrawRectMaterialColor(m);
+        if (!rndshape::MatPrelit(m)) {
+            DrawRect(r, m, kStandardShader, k, nullptr, nullptr);
+            return;
+        }
+        auto mul = [&k](const Hmx::Color& a) {
+            return Hmx::Color(a.red * k.red, a.green * k.green, a.blue * k.blue,
+                              a.alpha * k.alpha);
+        };
+        const Hmx::Color c2 = mul(c);
+        Hmx::Color tr2, bl2;
+        if (tr) tr2 = mul(*tr);
+        if (bl) bl2 = mul(*bl);
+        DrawRect(r, m, kStandardShader, c2, tr ? &tr2 : nullptr, bl ? &bl2 : nullptr);
+        return;
+    }
+    DrawRect(r, m, kStandardShader, c, tr, bl);
 }

@@ -160,6 +160,10 @@ bool TextMeshKeepsAtlasRGB(RndMesh* mesh, RndMat* mat, bool skinned) {
     return hook->QueryDrawMaterialPolicy(mesh, mat, skinned, nullptr, camName).isColorIcon;
 }
 
+bool MeshDrawsAsGlyph(RndMesh* mesh, bool skinned) {
+    return mesh && !mesh->Name()[0] && !skinned;
+}
+
 MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh) {
     // DC3 BaseMaterial getters, whatever the rndobj shape (platform/rndshape/).
     auto mat = rndshape::Mat(rawMat);

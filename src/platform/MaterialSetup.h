@@ -32,3 +32,10 @@ MaterialParams BuildPassMaterialParams(BaseMaterial* pass);
 // hook registered.
 class RndMesh;
 bool TextMeshKeepsAtlasRGB(RndMesh* mesh, RndMat* mat, bool skinned);
+
+// True when an unnamed mesh is drawn as a text glyph page: no depth test and
+// no culling, whatever its material asks. RndText's font pages are unnamed and
+// never skinned; other code also builds unnamed meshes, and a skinned one
+// (DC3's HamRibbon hand trail, one bone per segment) keeps its material's
+// zMode and cull.
+bool MeshDrawsAsGlyph(RndMesh* mesh, bool skinned);

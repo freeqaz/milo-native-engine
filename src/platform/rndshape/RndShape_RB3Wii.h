@@ -459,6 +459,10 @@ inline Vector3 PartWorldPos(RndParticleSys *s, RndParticle *p) {
 // flavor's BandRnd::DrawParticles: tint by material colour, scale haze alpha
 // by 0.35, and fade haze out within two half-sizes of the camera.
 constexpr bool kPartMaterialTint = true;
+// Read only by the Xbox-shader colour model (ParticleShaderColor), which this
+// shape does not use; declared so that model compiles here.
+inline bool MatUseEnviron(RndMat *m) { return m->mUseEnviron; }
+inline bool MatIntensify(RndMat *m) { return m->mIntensify; }
 
 // ---- cube texture ----------------------------------------------------------
 inline RndBitmap *CubeFaceBitmap(RndCubeTex *c, int face) { return &c->mBitmap[face]; }
@@ -515,6 +519,10 @@ constexpr bool kRenderTargetStoresLinear = true;
 // in sMat->SetColor(), so without the material colour every recoloured
 // garment, hair and eye composes to its untinted grey detail map.
 constexpr bool kRectModulatesMatColor = true;
+// The Xbox `standard`-shader rect colour model (RndShape_DC3.h) is not this
+// shape's; declared so that path compiles here.
+constexpr bool kRectXboxDrawRectShader = false;
+inline bool MatPrelit(RndMat *m) { return m->mPreLit; }
 
 // ---- post-processing -------------------------------------------------------
 // RB3's mNoiseIntensity is a gain on a tiled noise TEXTURE (mNoiseMap scaled by

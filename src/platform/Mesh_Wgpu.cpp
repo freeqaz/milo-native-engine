@@ -224,6 +224,16 @@ void DrawMeshImmediate(RndMesh* mesh) {
     // Text meshes (created by RndText::FontMap) have empty names (not registered in ObjectDir).
     // Debug labels are stored in GpuMeshData::debugLabel for GPU debugging.
     bool isTextMesh = !mesh->Name()[0];
+    // Only a glyph mesh gives up its material's depth test and culling
+    // (MeshDrawsAsGlyph). Text pages are never skinned, but other code also
+    // builds unnamed meshes: DC3's HamRibbon (the hand trails) is a skinned
+    // tube, one bone per segment, whose material asks for zMode 2 and cull 1
+    // (hamribbon.mat). Drawn as text it went through the dancer and drew its
+    // back faces too, doubling the additive band. Its colour path (forced
+    // prelit) is left alone: the material is use_environ 0 and not prelit, so
+    // retail's `standard` shader gives c0 x c1 with c1 = white
+    // (NgMat::SetupAmbient), which is what a white-vertex prelit draw gives.
+    const bool isGlyphMesh = MeshDrawsAsGlyph(mesh, skinned);
 
     // --- Pipeline selection ---
     PipelineKey key{};
@@ -237,8 +247,8 @@ void DrawMeshImmediate(RndMesh* mesh) {
     bool isOverlayPass = !gWgpuRnd->CurrentPassHasDepth();
 
     key.blend = (WgpuBlend)matBlend;
-    key.zMode = isTextMesh ? (WgpuZMode)0 : (WgpuZMode)mat->GetZMode(); // No depth for text
-    WgpuCull matCull = (isTextMesh || isOverlayPass) ? WgpuCull::None : (WgpuCull)mat->GetCull();
+    key.zMode = isGlyphMesh ? (WgpuZMode)0 : (WgpuZMode)mat->GetZMode(); // No depth for text
+    WgpuCull matCull = (isGlyphMesh || isOverlayPass) ? WgpuCull::None : (WgpuCull)mat->GetCull();
     // Reflection mode (rndshape::kDrawModeReflection) flips the camera, reversing winding order.
     // Flip cull mode so front faces aren't discarded.
     if (rndshape::TheRndRef().DrawMode() == rndshape::kDrawModeReflection && matCull != WgpuCull::None) {
