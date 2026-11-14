@@ -376,6 +376,21 @@ Caching the bind groups with dynamic offsets is the obvious next step.
 DC3's own `NgLight::RenderShadows` also still draws the same casters into a
 target nothing samples (section 3).
 
+**Round 2 captures.** Before is the 5664e9d merge build and after is
+5dcd3a2. Both are six venues and both states, with every cell gameplay =
+yes. The sheets are in the lane archive under
+`round2/sheets/<venue>_before_after.png`, the close-ups under `round2/skin/`,
+and the streetside floor crop is `round2/shadows/streetside_normal_feet_after_r2.png`.
+
+- By eye, skin now reads warmer and lighter on the shadow side, from the
+  per-channel wrap. The jackets' rim now includes the point light from
+  behind (section 4).
+- The streetside crop shows the lead's leg shadow and the boombox's shadow
+  on the cardboard.
+- The camera shot differs between the two runs, so floor luma is not
+  comparable frame to frame. The shading itself is checked by the microcode
+  test, not by these pictures.
+
 **Frame time, round 2 (streetside normal state).** Three builds from engine
 5dcd3a2:
 
@@ -403,10 +418,16 @@ build ran later looks cheaper. `noskin` changes only WGSL and still read
 
 **Remaining gap.**
 
-- Skin is darker and greyer than retail's warm tan. Skin and hair use
-  dedicated shader variations (section 4) that this lane did not implement.
+- Skin and hair now run the shipped variations (section 4). What is left of
+  the skin gap is the light reaching it: the character environ's point and
+  box map, and the missing scan-out ramp (np-gfx-post).
 - Overall saturation is still below retail.
-- Venues other than these two were checked by eye only.
+- Peak at DCI reads about 0.6x retail's luma on the same song (section 4a).
+  Of that, the ramp accounts for about a quarter; the rest is not settled.
+- Venues other than streetside, rink, DCI and Studio 675 were checked by eye
+  only.
+- Not done: removing DC3's own unsampled `NgLight::RenderShadows` pass
+  (about 0.2 ms CPU), and caching the caster pass's bind groups.
 
 ## 6. Consumer verification
 
