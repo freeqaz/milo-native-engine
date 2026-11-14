@@ -14,6 +14,7 @@
 // stay in Rnd_Wgpu_RB3.cpp (out of W1.4 scope).
 
 #include "platform/Rnd_Wgpu_RB3.h"
+#include "gfx/GpuTimers.h"
 #include "platform/RB3PostProc.h"
 #include "platform/RB3MaterialBinder.h"  // W1.3: UploadRndTexIfNeeded (noise-map upload)
 
@@ -121,6 +122,7 @@ void BandRnd::FlushPostProcMidFrame() {
     rp.colorAttachmentCount = 1; rp.colorAttachments = &colorAtt;
     rp.depthStencilAttachment = &depthAtt;
 
+    MILO_GPU_TIME_PASS(rp);
     mPass = mEncoder.BeginRenderPass(&rp);
     mInPass = true;
     // W17 R3-UIDUMP: note this pass + its EFFECTIVE depth LoadOp (0 Clear, 1 Load)
@@ -522,6 +524,7 @@ void BandRnd::RunPostProcComposite(wgpu::TextureView dst, bool venueGrade) {
     rp.colorAttachmentCount = 1; rp.colorAttachments = &colorAtt;
     rp.depthStencilAttachment = nullptr;
 
+    MILO_GPU_TIME_PASS(rp);
     wgpu::RenderPassEncoder pass = mEncoder.BeginRenderPass(&rp);
     pass.SetPipeline(mQuadPostPipeline);
     pass.SetBindGroup(0, bg, 0, nullptr);

@@ -11,6 +11,7 @@
 // with them.
 
 #include "platform/Rnd_Wgpu_RB3.h"
+#include "gfx/GpuTimers.h"
 #include "platform/GameRenderHook.h"   // W1.7 B6: relocated halo-source NAME exclusions
 
 #include "rndobj/Mat.h"
@@ -257,6 +258,7 @@ void BandRnd::CompositeHaloBloom() {
         rp.colorAttachmentCount = 1; rp.colorAttachments = &colorAtt;
         rp.depthStencilAttachment = &depthAtt;
 
+        MILO_GPU_TIME_PASS(rp);
         wgpu::RenderPassEncoder pass = mEncoder.BeginRenderPass(&rp);
         for (const HaloDraw& d : mHaloDraws) {
             pass.SetPipeline(d.pipe);
@@ -301,6 +303,7 @@ void BandRnd::CompositeHaloBloom() {
         rp.colorAttachmentCount = 1; rp.colorAttachments = &colorAtt;
         rp.depthStencilAttachment = nullptr;
 
+        MILO_GPU_TIME_PASS(rp);
         wgpu::RenderPassEncoder pass = mEncoder.BeginRenderPass(&rp);
         if (haloView) {
             wgpu::BindGroupEntry bge[4] = {};

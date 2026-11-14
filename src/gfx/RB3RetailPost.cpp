@@ -1,5 +1,6 @@
 // RB3RetailPost — see RB3RetailPost.h for where each step comes from.
 #include "gfx/RB3RetailPost.h"
+#include "gfx/GpuTimers.h"
 #include "gfx/GpuDevice.h"
 
 #include <algorithm>
@@ -373,6 +374,7 @@ void RB3RetailPost::Pass(wgpu::CommandEncoder& encoder, const wgpu::RenderPipeli
     rp.label = "RB3RetailBloom";
     rp.colorAttachmentCount = 1;
     rp.colorAttachments = &ca;
+    MILO_GPU_TIME_PASS(rp);
     auto pass = encoder.BeginRenderPass(&rp);
     pass.SetPipeline(pipe);
     pass.SetBindGroup(0, bg, 1, &off);
@@ -481,6 +483,7 @@ void RB3RetailPost::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& 
     rp.label = "RB3RetailPostComposite";
     rp.colorAttachmentCount = 1;
     rp.colorAttachments = &ca;
+    MILO_GPU_TIME_PASS(rp);
     auto pass = encoder.BeginRenderPass(&rp);
     pass.SetPipeline(mCompositePipe);
     pass.SetBindGroup(0, bg, 1, &off);

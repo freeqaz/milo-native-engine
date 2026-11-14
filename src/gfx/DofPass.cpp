@@ -1,4 +1,5 @@
 #include "gfx/DofPass.h"
+#include "gfx/GpuTimers.h"
 #include "gfx/GpuDevice.h"
 #include "platform/rndshape/RndShape.h"
 #include "rndobj/Cam.h"
@@ -290,6 +291,7 @@ void DofPass::Pass(wgpu::CommandEncoder& encoder, const wgpu::RenderPipeline& pi
     rp.label = label;
     rp.colorAttachmentCount = 1;
     rp.colorAttachments = &ca;
+    MILO_GPU_TIME_PASS(rp);
     auto pass = encoder.BeginRenderPass(&rp);
     pass.SetPipeline(pipe);
     pass.SetBindGroup(0, bg);
