@@ -134,6 +134,19 @@ without shadow objects get no map, so s = 0 as in retail.
 On the rink, the gobo was the missing half of the floor's light. Without it
 the floor measured luma 55, against retail frames at 105-136 (section 5).
 
+**Round 2: what casts in the streetside normal state.** MEASURED by a probe
+on `CollectProjShadowCasters` (lane archive `round2/shadows/streetside_casters.txt`):
+`a2_spotlight.lit`'s shadow list is `backup0`, `backup1`, `player0`,
+`player1` and `score_star_display`, the last being the boombox group. That
+expands to 87-106 meshes. **The light cones are not in the list**, so retail
+draws no shadow for them either. A false-colour render of the receivers'
+coverage (`round2/shadows/proj_footprint_falsecolour.png`) shows the lead
+dancer's, the right dancer's and the boombox's footprints on the cardboard
+and the road. The integration tree's frame has them as well
+(`round2/shadows/shadow_int_vs_dbg.png`). On the dark road they are faint,
+because the factor scales only the box term (`1 − 0.75 s`), never the
+ambient, as in retail.
+
 **Not done.**
 
 - The receiver's vertex-lit form scales the whole interpolated light. That is
@@ -241,6 +254,74 @@ half (relative error 0.89 against the microcode; 2e-8 with the point half).
 without rim-under, and no hair+rim permutation. Both are therefore taken as
 the measured forms: `rimLightUnder` is not read, and hair ignores the rim.
 INFERRED.
+
+## 4a. Peak state and Studio 675 (round 2)
+
+**What lights the dancers in peak.** MEASURED by a probe on the environs a
+draw selects (lane archive `round2/environs/streetside_environ_changes.txt`):
+
+- The dancers draw with their own character environs, `player0.env`,
+  `player1.env`, `backup0.env` and `backup1.env`. Each has ambient 0.012, and
+  one real point light, `<who>_area1_01.lit` (range 400, full strength to the
+  edge). The players also carry `battle_p<n>_spot.lit`, whose colour is 0 in
+  this song.
+- The point light's colour is animated by the light preset: (1.15, 0.93,
+  0.66) in the normal state, falling to (0.87, 0.73, 0.64) in peak.
+- `boombox.env` uses `player0_area1_01.lit`. `crowd.env` has `crowd1` and
+  `crowd2`. `MASTER.env` has ambient (0.082, 0.024, 0) and `default_stage01`
+  in white.
+- There is no other character light. The rim comes from the material: c61 on
+  rasa05's jacket, pants, skin and head is (1, 0.502, 0.753, 50), and hair
+  has none. It is lit by the box map and, since round 2, by the point light
+  from behind (section 4).
+
+**The stripes.** They are present in every native peak capture, uncapped and
+with the frame rate pinned to 20 fps (`round2/stripes/`). The stripe meshes
+(`peak_line*.mesh`) draw with an animated material alpha. FrameCapture over
+1000 frames reads `peak_line1` from 0.57 down to 0.00, and the ten lines fade
+in a ramp. No lighting rule touches them. INFERRED: a frame without stripes
+was taken low in that cycle.
+
+**Too dark.** The same song in the same venue (OMG at DCI, retail `dci/05`
+and `dci/06`) is a different section with a blue preset, where native's
+capture is magenta. Luma on a 640x360 resize:
+
+| frame | whole frame | p90 | lower-left floor | centre (dancer) |
+|---|---|---|---|---|
+| retail dci/05 | 44.2 | 120.1 | 35.6 | 63.9 |
+| retail dci/06 | 45.8 | 131.1 | 30.1 | 48.5 |
+| native peak_dci | 25.8 | 83.4 | 14.9 | 30.5 |
+| native with `pow(x, 0.85)` | 31.1 | 90.1 | 19.0 | 37.3 |
+
+The display ramp, which belongs to np-gfx-post, explains about a quarter of
+the gap. The rest is INFERRED to be the preset (retail's blue state lights
+the floor) and the missing glow. **Not settled.**
+
+**Studio 675 (dclive): an authored state, not a colour-order error.**
+Whole-frame mean hue, MEASURED (`round2/dclive/measurements.txt`):
+
+| frame | hue | saturation |
+|---|---|---|
+| native normal | 23.0 | 0.32 |
+| retail warm state (01, 05, 06, 07, 14) | 25.8-28.7 | 0.26-0.36 |
+| retail pink state (09, 12, 13) | 358.9-6.6 | 0.30-0.37 |
+| retail blue state (02, 03, 08, 10) | 212-233 | |
+
+Native sits in the warm state, about 4° redder than retail. A red/blue swap
+would move it to about 200°. No packed channel order is involved anyway:
+light colours are float `Hmx::Color`, and lit DC3 draws do not read vertex
+colour, which is ARGB in any case (`dc3-backend-for-rb3-wii.md` section
+13.1).
+
+The hard red outline on the lead dancer is the game's wrong-limb feedback,
+not lighting. Retail `dci/04` (an arm) and `dci/07` (the whole body, at the
+end pose) show the same outline. The capture route does not dance, so every
+limb is wrong.
+
+What is still different: native's floor is whiter and brighter, the back of
+the stage is darker, and the boombox reads silver where retail's warm frames
+show it gold. Retail's pink frame 09 shows it silver too, so the boombox
+colour is INFERRED to follow the light or the song.
 
 ## 5. Results
 
