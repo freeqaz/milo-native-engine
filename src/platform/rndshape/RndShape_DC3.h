@@ -453,12 +453,24 @@ inline bool RetailBloomMaskActive() {
 void FillRetailPost(const RndPostProc *pp, float flickerMul, ::RetailPostParams &out);
 // SetBloomColor's c7 scale: 1/threshold above 1, else 1 (DC3PostChain.cpp).
 float BloomLumaScale(const RndPostProc *pp);
-// Destination alpha blends with MAX, as retail: DxRnd::SetDefaultRenderStates
-// (100% matched in dc3-decomp, Rnd_Xbox.cpp) sets BlendOpAlpha 3 once and
-// nothing changes it; see dc3-backend-for-rb3-wii.md section 30. Measured on
-// dc3-native frames 50-600 and the glitterati/dclive venues: RGB identical,
-// frame alpha moves on 0.25% of dclive's pixels (PostProcPass reads RGB only).
-constexpr bool kAlphaBlendMax = true;
+// ---- np-gfx-post: destination alpha (dc3-backend-for-rb3-wii.md 31.5) ----
+// Whether a blended draw's destination alpha takes MAX(src.a, dst.a)
+// (PipelineManager::SetAlphaBlendMax) or follows the draw's own blend
+// equation, the factors NgMat::SetBasicState passes for alpha too.
+// DxRnd::SetDefaultRenderStates (100% matched) sets BlendOpAlpha 3, which
+// section 30 read as MAX. Section 30.7 flipped the DC3 shape to MAX without a
+// retail comparison, because nothing on DC3 read the frame alpha then. The
+// retail post chain reads it as the bloom mask, and retail hardware footage
+// of the menus refutes MAX for DC3: under MAX, the song-select "debloom"
+// quads (Multiply, white, AllowHDR) raise the mask to 1 under the cards and the
+// full-screen Multiply tint raises it to ~0.9 over the background, so the
+// cards burn white and the background hazes (bloom term 0.4 at a background
+// pixel that retail shows at 0.04). With alpha following the equation
+// (Multiply: dst.a * src.a) the cards are grey and readable and the background
+// stays dark, as on retail. dc3-decomp (kDC3RetailPost) only; rb3-xenon keeps
+// MAX unchanged.
+constexpr bool kAlphaBlendMax = !kDC3RetailPost;
+// ---- end np-gfx-post ----
 // DC3 shades in gamma space, as the image does: no bitmap format DxRnd uses
 // carries a gamma sign (rnddx9/Rnd.cpp D3DFormatForBitmap: DXT1/3/5, DXN,
 // A8R8G8B8, A1R5G5B5, X8R8G8B8), the frame is a D3DFMT_A8R8G8B8 EDRAM surface
