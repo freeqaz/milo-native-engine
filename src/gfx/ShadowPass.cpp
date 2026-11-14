@@ -1,4 +1,5 @@
 #include "gfx/ShadowPass.h"
+#include "gfx/GpuTimers.h"
 #include "gfx/GpuDevice.h"
 #include "gfx/UniformRingBuffer.h"
 #include "gfx/VertexFormats.h"
@@ -322,6 +323,7 @@ void ShadowPass::Render(wgpu::CommandEncoder& encoder, UniformRingBuffer& object
     rpDesc.label = "ShadowPass";
     rpDesc.depthStencilAttachment = &depthAtt;
 
+    MILO_GPU_TIME_PASS(rpDesc);
     mShadowPass = encoder.BeginRenderPass(&rpDesc);
     mShadowPass.SetBindGroup(0, mShadowSceneBindGroup);
     mInShadowPass = true;
@@ -583,6 +585,7 @@ void ShadowPass::RenderCasters(wgpu::CommandEncoder& encoder, GpuDevice& gpu,
     rpDesc.depthStencilAttachment = &depthAtt;
 
     const float tileSize = kShadowMapSize / 2.0f;
+    MILO_GPU_TIME_PASS(rpDesc);
     wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&rpDesc);
     for (const TileDraws& td : tiles) {
         pass.SetViewport((td.tile % 2) * tileSize, (td.tile / 2) * tileSize, tileSize, tileSize,

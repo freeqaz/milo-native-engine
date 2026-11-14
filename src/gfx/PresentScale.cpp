@@ -1,5 +1,6 @@
 // PresentScale -- see PresentScale.h.
 #include "gfx/PresentScale.h"
+#include "gfx/GpuTimers.h"
 
 namespace {
 
@@ -145,6 +146,7 @@ PresentRect PresentScale::Encode(wgpu::Device& device, wgpu::CommandEncoder& enc
     rp.label = "PresentScalePass";
     rp.colorAttachmentCount = 1;
     rp.colorAttachments = &att;
+    MILO_GPU_TIME_PASS(rp);
     wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&rp);
     if (frame && rect.w > 0 && rect.h > 0) {
         pass.SetViewport((float)rect.x, (float)rect.y, (float)rect.w, (float)rect.h, 0.0f, 1.0f);
