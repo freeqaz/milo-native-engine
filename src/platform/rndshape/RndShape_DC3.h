@@ -234,6 +234,48 @@ inline bool MatScreenAligned(const T &m) {
     else { (void)m; return false; }
 }
 
+// The texture-transform rows the DC3 image hands the standard vertex shader
+// for kTexGenXfm and kTexGenXfmOrigin (docs/native/dc3-retail-lighting.md
+// section 11). NgMat::SetupShader builds mTexGenMatrix with MakeTex3
+// (dc3-decomp src/system/rndobj/Mat_NG.cpp): rows x = (m.x.x, -m.x.y),
+// y = (-m.y.x, m.y.y), and for the centred mode a translation that is applied
+// before the matrix with tx negated, w = M * (-tx - 0.5, ty - 0.5) + 0.5; the
+// about-origin mode uses w = (tx, ty). SetVConstant(kVS_TexTransform) uploads
+// it transposed and the shader (standard_0000000000000010.vs, and the
+// screen-aligned 0x2010) evaluates u' = dp2add(uv.yx, c20.yx, c20.w), i.e.
+//   u' = m.x.x*u - m.y.x*v + w.x,   v' = -m.x.y*u + m.y.y*v + w.y.
+// Written here in the engine shader's encoding: the kTexGenXfm branch reads
+// dot(uv - 0.5, row.xy) + row.z + 0.5, the kTexGenXfmOrigin branch
+// dot(uv, row.xy) + row.z. Returns false (and leaves the rows alone) for any
+// other mode and for rb3-xenon, which keep the generic rows.
+template <class T>
+inline bool MatRetailTexXfmRows(const T &m, float row0[4], float row1[4]) {
+    if constexpr (kDC3RetailModelFor<T>) {
+        if (!m) return false;
+        const TexGen tg = m->GetTexGen();
+        if (tg != kTexGenXfm && tg != kTexGenXfmOrigin) return false;
+        const Transform &x = m->TexXfm();
+        const float ux = x.m.x.x, uy = -x.m.y.x;   // u' = ux*u + uy*v + uw
+        const float vx = -x.m.x.y, vy = x.m.y.y;   // v' = vx*u + vy*v + vw
+        if (tg == kTexGenXfm) {
+            const float ntx = -x.v.x - 0.5f, ty = x.v.y - 0.5f;
+            const float uw = ux * ntx + ty * uy + 0.5f;
+            const float vw = vx * ntx + ty * vy + 0.5f;
+            row0[0] = ux; row0[1] = uy; row0[2] = uw + 0.5f * (ux + uy) - 0.5f;
+            row1[0] = vx; row1[1] = vy; row1[2] = vw + 0.5f * (vx + vy) - 0.5f;
+        } else {
+            row0[0] = ux; row0[1] = uy; row0[2] = x.v.x;
+            row1[0] = vx; row1[1] = vy; row1[2] = x.v.y;
+        }
+        row0[3] = 0.0f;
+        row1[3] = 0.0f;
+        return true;
+    } else {
+        (void)m; (void)row0; (void)row1;
+        return false;
+    }
+}
+
 // ---- environment -----------------------------------------------------------
 inline RndEnviron *CurrentEnv() { return RndEnviron::Current(); }
 inline bool EnvHasAmbientFogOwner(RndEnviron *e) { return e->AmbientFogOwner() != nullptr; }
