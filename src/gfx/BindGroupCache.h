@@ -195,7 +195,13 @@ public:
     uint64_t Uncached() const { return mUncached; }
 
     static constexpr size_t kMaxEntries = 8192;
-    static constexpr uint64_t kMaxAgeFrames = 120;
+    // Longer than the slowest texture cycle a material runs, or every group in
+    // the cycle is evicted and rebuilt each time round: DC3's boombox speaker
+    // (speaker_concentrics.mat, 24 textures) cycles in ~224 frames at 60 fps,
+    // and at 120 that one material was 43.5% of all creations in a song
+    // (258 -> 3,986 created, ~84 live). 1200 is 20 s at 60 fps and still 5 s
+    // at a 240 fps cap; kMaxEntries and Forget() remain the hard bounds.
+    static constexpr uint64_t kMaxAgeFrames = 1200;
     static constexpr uint64_t kSweepInterval = 60;
 
 private:
