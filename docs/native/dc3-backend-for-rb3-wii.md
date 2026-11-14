@@ -5294,3 +5294,336 @@ Limits: these are not compared against a retail capture. The pixel A/B shows
 the flip is invisible on these frames, not that it improves them. Where DC3
 reads a render target's alpha, the result now follows retail's MAX.
 
+
+**Superseded for dc3-decomp by 31.5 (2026-11-14).** Once the retail post chain
+read the frame alpha as the bloom mask, MAX was compared with retail hardware
+footage of the menus and refuted. The DC3 shape now sets
+`kAlphaBlendMax = !kDC3RetailPost`, so dc3-decomp follows each draw's own blend
+equation for alpha while rb3-xenon keeps MAX.
+
+## 31. DC3 retail post chain (lane np-gfx-post, 2026-11-14)
+
+DC3 graded through `PostProcPass`'s generic composite, a hand-written
+approximation shared with rb3-xenon. This lane ports DC3's retail Xbox 360 post
+chain (`NgPostProc::DoPost`) behind the rndshape seam, applies the retail
+scan-out ramp, and corrects the destination-alpha rule that 30.7 had set for
+DC3.
+
+| repo | branch | commits |
+|---|---|---|
+| milo-native-engine | `np-gfx-post` | `b3b1d66` chain, `0295f5a` 8-bit sets and census, `a0a524d` merge of integration `np-gfx` (`dc7d64e`), `ae855ab` destination alpha, `ffdd74a` multiplier-0 mask, plus this section |
+| dc3-decomp | `np-gfx-post` | `4a34ada59` accessors, `a480d6ae6` tests, `418eadb64` merge of `np-gfx` (`297834ac9`), `c49bca46a` pass-cost probe, `6feb006ac` alpha guard, `e3db79644` multiplier-0 guard and ramp timing, plus docs |
+
+Everything below is judged on the merged integration engine, which shades in
+gamma space (np-gfx-light).
+
+### 31.1 Method
+
+- **Microcode.** The shipped `xbox_shaders` were dumped with
+  `tools/rb3-dc3-parity/xobx.py` and disassembled with
+  `xenia-gpu-shader-compiler`: all 183 `postprocess.ps` permutations, plus
+  `bloom.ps`, `blur.ps`, `downsample_4x.ps` and a sample of `standard.ps` /
+  `particles.ps`.
+- **Constants.** These come from dc3-decomp's matched `rndobj/PostProc_NG.cpp`, `Utl.cpp`,
+  `Mat_NG.cpp`, `Shader.cpp` and `rnddx9/Rnd_Xbox.cpp`. Under `name_check`
+  (`run_objdiff`, `build=false`), the following are 100:
+  - `SetBloomBlurWeightsStreak`, `BloomIntensity`, `SetupGamma`,
+    `AllocateTextures`;
+  - `CheckChromaticAberration`, `CheckNoise`, `CheckVignette`;
+  - `ModulateColorXfm`, `SetBloomColor`, `SetColorWriteMask`,
+    `NgMat::AllowHDR`.
+
+  `DoBloom` reads 99.58; its residual is a copy-schedule difference and does
+  not touch the constants.
+- **Data.** An inventory of every `.pp` in the shipped ark (776 post-procs,
+  read live through `/api/dta/eval`) says which effects can appear at all.
+- **Comparison.** Retail references: the hardware-capture hero frames in
+  dc3-decomp `archive/np-gfx-2026-11-14/retail/`; for the menus, a frame of
+  retail hardware video plus Xenia. Native: `look_capture.sh` over six
+  venues (normal and peak), and a menu script (main, mode select, song select)
+  with the inspection views `DC3_RETAIL_POST=raw|mask|bloom`.
+
+### 31.2 Inventory: what DC3 actually uses
+
+Out of 776 post-procs, counted by effect (`lanes/post/inventory/effects.txt`
+in dc3-decomp's archive):
+
+| effect | post-procs | ported here |
+|---|---|---|
+| bloom (intensity > 0) | 749 | yes: plain arm, streak arm |
+| bloom streak (not glare) | 94 | yes |
+| bloom glare | 3 (`PostProc.pp`, `PostProc_Win.pp`) | no (the plain arm runs) |
+| colour transform (hue/sat/contrast/brightness/levels) | 127 | yes, the retail dp4 matrix |
+| noise | 72 (no midtone) | yes (G-14's texture overlay) |
+| vignette | 56 (12 with I > 0.75) | yes |
+| motion blur | 41 (including the menus' `PostProc_local.pp`) | no |
+| chromatic aberration | 5 | yes |
+| hue converge | 4 (`PostProc_Blacklight.pp`) | no |
+| hall of time | 2 | no |
+| flicker, trails, gradient map, refract, posterize, kaleidoscope | 0 | not needed |
+
+The menu post-proc is `PostProc_local.pp`: bloom intensity 1.75, threshold 1.0,
+`c6` = (1.55, 1.55, 1.55), plus motion blur. Every menu panel has
+`postprocs_before_draw` 0, so retail posts the whole menu, UI included, at
+`EndDrawing`. Native does the same (measured with `/api/dta/eval` on
+`meta`, `background_panel`, `song_select_panel`, `song_info_panel`).
+
+### 31.3 The chain
+
+All MEASURED from microcode and matched code unless marked otherwise.
+
+1. **Mask (standard.ps bit 22, pseudo-HDR).**
+   - **Which materials.** Materials that `NgMat::AllowHDR` admits: not
+     SrcAlpha, SrcAlphaAdd or PreMultAlpha, not alpha-cut, not alpha-write.
+     The shader only runs this way when drawing into the main frame and the
+     environment is not fading out (`CalcShaderOpts`).
+   - **What it writes.** `a = sat(dot(rgb, c7) · c5.z)`, where `rgb` is the
+     colour before the 8-bit target clamps it:
+     - `c7` = (0.3, 0.59, 0.11), divided by the threshold when the threshold is
+       above 1;
+     - `c5.z` = `mBloomMultiplier`.
+   - **Other materials.** `SetColorWriteMask` leaves alpha alone, and the
+     frame clears it to 0.
+   - **Native.** `rndshape::BloomMaskScale` returns `-(scale · multiplier)`.
+     The negative sign tells `standard_wgsl.inc` to take the unclamped luma.
+     Rects and particles use the magnitude.
+2. **Plain arm** (`!mBloomStreak || mBloomGlare`):
+   - `bloom.ps` takes 4 bilinear taps of `rgb·a` into set 0 (w/4);
+   - then a 15-tap blur H and V;
+   - `downsample_4x` and blur H/V into set 1 (w/16);
+   - again into set 2 (w/64).
+3. **Streak arm.** Two sets, with `SetBloomBlurWeightsStreak`'s 7 taps:
+   - weight 1/3 at the centre, `a^i/3` at ±i;
+   - `a = attenuation^(4^pass)`;
+   - rotated by the post-proc's streak angle.
+4. **Bloom set format.** The sets are 8-bit A8R8G8B8, as on retail
+   (`AllocateTextures`, `TheRnd.Bpp()` 32), so each pass saturates at 1
+   (`0295f5a`). The first capture used 16F sets: highlights then carried
+   values above 1 into the blur, and dclive's normal state washed out.
+5. **Composite** (`postprocess.ps`):
+   - screen blend `1 − (1 − b·c6)(1 − scene)`, where `b` is the sum of the
+     sets and `c6 = bloomColor · BloomLocFactor · BloomIntensity()`;
+   - the noise texture overlay (G-14);
+   - the 3×4 colour matrix: `RndColorXfm`, with its 3×3 scaled by the
+     game's own `mColorModulation`;
+   - the vignette lerp; chroma offset and sharpen.
+
+   There are **no clamps**. The generic path's `min(intensity, 1)` and
+   `max(threshold, 0.7)` (`PostProcPass.cpp`) are not on this chain. They
+   stay only for `DC3_RETAIL_POST=0` and for rb3-xenon's generic composite,
+   so that rb3-xenon is unchanged.
+6. **Scan-out ramp.** `DxRnd::SetupGamma` builds `pow(i/256, g)`. Here `g` is
+   0.85, from the system config `(rnd (gamma 0.85))` (DC3's `rnd.dta`
+   `#merge`s `default.dta`). Natively, `DisplayRamp` applies it once in
+   `WgpuRnd::EndDrawing`, after the UI, to every output, headless included,
+   so captures are post-ramp: what a TV shows. `DC3_DISPLAY_GAMMA=off` gives
+   the pre-ramp front buffer; a number overrides the gamma.
+
+The mode switch `DC3_RETAIL_POST` (unset = the chain;
+`0|raw|mask|bloom|grade`) and `DC3_DISPLAY_GAMMA` are both registered in
+`NativeCompatFlags.classification.json`. `native_compat_census.py check`
+passes. rb3's `NATIVE_COMPAT_LEDGER.md` needs regenerating when this lands.
+
+**Gating.** The chain compiles only where `rndshape::kDC3RetailPost` holds:
+SFINAE on `RndPostProc::BloomLocFactor()` / `GetColorModulation()` and
+`RndMat::GetBloomMultiplier()`, HX_NATIVE accessors that only dc3-decomp
+declares. rb3-xenon (same shape header) gets mode 0, no ramp and MAX alpha. RB3
+keeps its own chain and 16F sets.
+
+### 31.4 Menus
+
+Sheet: `lanes/post/menus/menus_final_sheet.png`. Rows are main menu, mode
+select and song select. Columns are before, retail chain with MAX, with the
+equation, and final.
+
+Before this lane, native menus had effectively no bloom. `PostProc_local`'s
+I = 1.75 / thr = 1.0 went through the generic path's clamps, which cut them to
+1.0 and 0.7, and its luma threshold. With the retail chain, the menus over-bloomed
+at first (cards burning white, background haze). The bloom view showed
+the source: the mask under the song-select cards and over the background.
+
+### 31.5 Destination alpha: MAX refuted for DC3
+
+- **What 30.1/30.7 rely on.** `SetDefaultRenderStates` sets `BlendOpAlpha` 3
+  (Xenos MAX). 30.7 flipped DC3 to MAX after an A/B that found RGB identical,
+  because then nothing on DC3 read frame alpha.
+- **What is under the cards.** The song-select cards sit on `debloom.mat`
+  quads, measured live:
+  - blend 6 (Multiply), colour white, alpha 1;
+  - bloom multiplier 1, not alpha-write, not alpha-cut.
+
+  `AllowHDR` admits them, so they write mask `≈ luma(white) = 1`. Under MAX
+  that 1 survives. Under the draw's own equation (Multiply's colour factors,
+  as `NgMat::SetBasicState` passes them for alpha too) the mask under the
+  quad stays what the card wrote. A full-screen Multiply tint does the same
+  over the background.
+
+Region means of the final frame (0–1). "raw" is the ungraded scene. Xenia
+and retail video are the references.
+
+| region | raw | MAX | equation | Xenia | retail video |
+|---|---|---|---|---|---|
+| song select, left card | 0.28 | 1.0 | 0.36 | 0.455 | readable grey card |
+| song select, mid card top | 0.30 | 0.92–1.0 | 0.36–0.51 | 0.35–0.47 | |
+| song select, background (left) | 0.088 | 0.51 | 0.131 | 0.10 | 0.04 |
+
+| | MAX | equation |
+|---|---|---|
+| mask at the left card | 0.996 | 0.041 |
+| mask at the background | 0.894 | 0.156 |
+
+- **Main menu and song select.** With the draw's equation, both match the
+  retail video: grey, readable cards; dark background; bloom on the light
+  lines. Sheets are in `lanes/post/menus/` (`ss_max_vs_nomax.png`,
+  `main_max_vs_nomax.png`).
+- **Mode select.** Under the equation alone, the card is fine but the mode
+  icon still burns; the second fix below handles that.
+- **Change (`ae855ab`).** `RndShape_DC3.h`:
+  `constexpr bool kAlphaBlendMax = !kDC3RetailPost;`
+- **Mechanism: UNKNOWN.** Why the retail hardware behaves as if alpha follows
+  the equation, despite `BlendOpAlpha` 3, is not established. A Xenia GPU
+  trace of the song-select frame would settle it. The decision rests on the
+  retail footage alone.
+- **Ruled out.** `MaterialSetup`'s Multiply-forces-prelit was tested as a
+  cause: the frames were pixel-identical, and the change was reverted.
+
+**The menus' own content argues for the equation too.** DC3's UI uses alpha
+as a bloom stencil, and that only works if a blended draw's alpha follows its
+equation. Measured live (`/api/dta/eval`, iterating `Mat` in each dir):
+- **`choose_mode_panel`.** It has `frame_debloom.mat`: Multiply, white,
+  **alpha_write 1**, with a `frame_debloom.tex`. With the equation the frame
+  alpha becomes `dst.a · tex.a`. Under MAX the quad could never lower the
+  mask, so a "debloom" draw would do nothing.
+- **`game_mode_icon` (RndDir).** `icon.mat` is SrcAlpha with alpha_write 1,
+  so the icon writes alpha ≈ 1. Then `debloom.mat` is drawn over it:
+  Multiply, white, **bloom_multiplier 0**, AllowHDR. Retail's shader writes
+  `luma · c7 · 0 = 0`, and Multiply's equation leaves `dst.a · 0 = 0`. The
+  icon is drawn sharp and only its surroundings bloom.
+
+**Second fix (`ffdd74a`): multiplier 0 writes mask 0.**
+- **Before.** `BloomMaskScale` returned `-(scale · 0) = -0`. The mesh shader,
+  rects and particles read that as "no mask", so alpha was left alone, and
+  the mode-select icon burned to a white-cyan blob under either alpha rule.
+- **Now.** It returns `-FLT_MIN`: the mask write stays on and the mask rounds
+  to 0.
+- **Result.** The icon keeps its figure (`lanes/post/menus/menus_final_sheet.png`,
+  column 4).
+- **Song select.** The DC-logo frame of the song-select centre card stops
+  glowing solid cyan and keeps its crisp line, as in the retail video frame.
+
+### 31.6 Venues
+
+Six venues were captured with `look_capture.sh` (song omg; normal and peak).
+Gameplay was reached in all 12 legs of every run. Sheets in dc3-decomp's
+`archive/np-gfx-2026-11-14/lanes/post/venues/`:
+- `venue_ab_<venue>.png`: before / MAX / final / retail hero frame;
+- `contact_{before,alphamax,equation_only,final}.png`.
+
+Mean luma and the share of clipped pixels (luma ≥ 250):
+
+| venue, state | before | MAX | equation only | final |
+|---|---|---|---|---|
+| dclive normal | 111 / 0.6% | 165 / 9.8% | 147 / 5.7% | 163 / 8.9% |
+| rollerrink normal | 79 / 3.0% | 135 / 15.0% | 126 / 13.7% | 125 / 13.4% |
+| dci normal | 39 / 0.2% | 72 / 1.1% | 63 / 0.3% | 70 / 1.3% |
+| dclive peak | 29 / 0.0% | 62 / 0.0% | 43 / 0.0% | 57 / 0.0% |
+
+- **Run-to-run variation.** The equation-only and final runs differ only in
+  the multiplier-0 mask, which no venue draw visibly uses. Even so, they
+  differ by up to 16 in mean luma, because each capture lands on a different
+  frame. Differences of that size between columns are not meaningful.
+- **Equation vs MAX.** Venues barely change, and the lamp-bank, neon and
+  ribbon halos stay.
+- **Halos against retail.** Halos are present where the retail hero frames
+  show them:
+  - dclive's lamp banks and logo;
+  - the neon stripes in the houseparty, dclive and streetside peak states;
+  - the ribbon glow;
+  - throneroom's gold-wing peak.
+- **The rise in mean brightness from "before".** It is mostly the scan-out
+  ramp plus the merged gamma-space lighting (np-gfx-light), not bloom.
+- **Not the same moment.** The native frames and the retail frames are not
+  the same moment (different dancers and camera), so the comparison is of
+  character, not pixels.
+
+### 31.7 Cost
+
+GPU, measured by `DC3RetailPostGpuTest.PassCostAt720p`: 1280×720, wall time
+per run over 200 runs. The device is an RTX 3090 that other lanes' jobs were
+using (91% utilisation during the last runs), so the numbers are noisy.
+Seven runs give the median and range below; the ramp row has four runs.
+
+| passes | µs/frame, median (range) |
+|---|---|
+| composite only (colour matrix, no bloom) | 61 (40–131) |
+| + plain bloom (3 sets) | 147 (85–258) |
+| + streak bloom (2 sets) | 103 (77–230) |
+| streak + vignette + chroma + matrix | 121 (74–255) |
+| scan-out ramp (copy + one full-screen pass) | 58 (54–99) |
+
+So bloom adds about 50–90 µs over the bare composite, and the ramp about 55 µs.
+
+- **Effects that are off cost nothing.** No bloom pass is recorded when
+  `bloom` is false. The vignette, noise and chroma are uniform-gated branches
+  in the one composite pass.
+- **Mask.** One dot product in the scene shader; no pass.
+- **Bloom resolution.** Bloom already runs at reduced resolution, as on retail
+  (w/4, w/16, w/64).
+- **Not measured here.** No Radeon 890M or phone was available (this box
+  has only NVIDIA Vulkan ICDs). The chain moves about 15 MB of texture traffic
+  per 720p frame (scene read for bloom and for the composite, frame write,
+  ramp read and write). From that, INFERRED: ~0.15–0.3 ms on an iGPU and
+  ~0.3–0.6 ms on a phone.
+
+CPU frame averages (MILO_PERF, look runs, 3 parallel jobs, noisy) do not
+separate before from after beyond that noise:
+
+| venue | after (ms) | before (ms) |
+|---|---|---|
+| dci | 3.49 | 2.88 |
+| dclive | 4.96 | 5.48 |
+| houseparty | 3.61 | 3.49 |
+| rollerrink | 4.01 | 3.82 |
+| streetside | 3.65 | 3.21 |
+| throneroom | 3.74 | 3.47 |
+
+### 31.8 Guards (dc3-decomp `native/tests/test_dc3_retail_post.cpp`)
+
+| test | sabotage tried | result |
+|---|---|---|
+| `BlendedAlphaFollowsTheDrawsEquation` | `kAlphaBlendMax = true` | 5 failures |
+| `BloomMaskScaleIsAllowHDRLumaOverThreshold`, multiplier-0 case | `BloomMaskScale` returning the raw `-(scale · 0)` | fails (`-0 vs 0`) |
+| `BloomMaskScaleIsAllowHDRLumaOverThreshold` | `BloomMaskScale` ignoring `NgMat::AllowHDR` | fails |
+| `DisplayRampIsDefaultDtaGamma` | `DisplayGamma` returning 0 | fails |
+| `StreakBloomIsScreenBlendOfMaskedScene` (GPU) | `bloom.ps` taps dropping the mask (`rgb` for `rgb·a`); the composite adding the bloom instead of screen-blending; streak weights normalised to sum 1; half-float bloom sets | each fails |
+| `PassCostAt720p` | none; it is a probe, not a guard | |
+
+### 31.8a Consumers (rb3, rb3-xenon)
+
+Each check used pinned engine worktrees: base `dc7d64e`, and both `ae855ab` and
+`db49bd1` (which contains `ffdd74a`). Each consumer had its own worktree.
+
+| consumer | check | result |
+|---|---|---|
+| rb3-xenon `005274e1c` (DC3 shape, dc3 backend) | `rb3-render <xbox-zip>` default cells, base vs branch | **11 of 11 PNGs byte-identical** at both commits; `RESULT: ALL GATES PASSED` in every leg |
+| rb3 `678e04137` (RB3Wii shape, dc3 backend, Debug) | `ctest` | 158 registered / 150 passed / **1 failed** / 7 skipped (the usual 7). The failure is `native_compat_census.check`: rb3's `NATIVE_COMPAT_LEDGER.md` lags the two new flags (446 → 448: `DC3_RETAIL_POST`, `DC3_DISPLAY_GAMMA`). Regenerated in the scratch worktree, both census tests pass, and the regenerated `.gen.inc` equals the committed one. **Regenerate rb3's ledger when this lands** |
+| rb3 | `rb3-native` with `RB3_FIXED_CLOCK=1` and `setarch -R`, frames 100/600/900 | base vs base differs by 4.99–5.26 mean abs per channel; base vs branch by 4.80–5.56. That is within run-to-run noise, and the mean colour agrees within 0.3/255 |
+
+### 31.9 Open items, ranked by visibility
+
+1. **Motion blur.** It is in 41 post-procs, including the menus'
+   `PostProc_local.pp`.
+2. **Glare composite.** Used by 3 UI post-procs, which take the plain arm
+   meanwhile.
+3. **Hue converge** (`PostProc_Blacklight.pp`) and **hall of time**
+   (`PostProc.pp`).
+4. **Fade-out.** `BloomMaskScale` does not check the environment's fade-out
+   (retail's `!fadeOut`).
+5. **Plain-arm sets 1 and 2.** Each is downsampled from the previous set
+   after its blur. Whether retail's `downsample_4x` reads the blurred set or
+   the pre-blur intermediate is not checked against `DoBloom`'s texture
+   bindings.
+6. **Half-texel offsets.** D3D9's half-texel convention is centred here, not
+   reproduced.
+7. **The alpha-op mechanism** (31.5) is unverified; a Xenia GPU trace would
+   settle it.

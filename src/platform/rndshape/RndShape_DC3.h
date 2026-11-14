@@ -6,6 +6,7 @@
 // platform/rndshape/RndShape.h, never directly.
 #pragma once
 
+#include <limits>
 #include <type_traits>
 #include <utility>
 
@@ -35,6 +36,8 @@
 // declares them for DxRnd, rb3-xenon's under HX_NATIVE (RND_DC3_VIRTUAL). The
 // RB3-Wii shape has neither the hooks nor ObjPtrVec, so it stays undefined there.
 #define MILO_RNDOBJ_SHAPE_HAS_CLIP_PLANES 1
+
+struct RetailPostParams;   // gfx/RB3RetailPost.h (the DC3 retail post chain)
 
 // WgpuRnd derives from the shape's renderer base.
 using WgpuRndBase = NgRnd;
@@ -407,19 +410,68 @@ template <class P> inline bool PostProcNoiseMap(const P *pp, PostProcNoise &out)
         return false;
     }
 }
-// DC3 and rb3-xenon grade through gfx/PostProcPass's own composite; the RB3
-// retail chain (gfx/RB3RetailPost) never runs for them.
+// ---- np-gfx-post: DC3 retail post chain --------------------------------------
+// DC3 grades through its retail Xbox 360 post chain (NgPostProc::DoPost, ported
+// from dc3-decomp rndobj/PostProc_NG.cpp and the shipped postprocess.ps / bloom.ps
+// / blur.ps microcode; see gfx/RB3RetailPost.h, "DC3"): the per-material
+// pseudo-HDR luma mask in the frame's alpha, three quarter-size bloom sets (or
+// the two streak sets) screen-blended at bloomColor * bloom_loc *
+// BloomIntensity(), the texture noise, the RndColorXfm matrix, then the
+// vignette. rb3-xenon shares this shape but not the chain: the chain keys on
+// RndPostProc::BloomLocFactor() and RndMat::GetBloomMultiplier(), HX_NATIVE
+// accessors only dc3-decomp declares, so rb3-xenon keeps PostProcPass's own
+// composite unchanged. RetailPostParams is gfx/RB3RetailPost.h's.
+template <class P, class = void> struct PostProcHasBloomLocFactor : std::false_type {};
+template <class P>
+struct PostProcHasBloomLocFactor<P, std::void_t<decltype(P::BloomLocFactor()),
+                                                decltype(std::declval<const P &>().GetColorModulation())>>
+    : std::true_type {};
+template <class M, class = void> struct MatHasBloomMultiplier : std::false_type {};
+template <class M>
+struct MatHasBloomMultiplier<M, std::void_t<decltype(std::declval<const M &>().GetBloomMultiplier())>>
+    : std::true_type {};
+constexpr bool kDC3RetailPost =
+    PostProcHasBloomLocFactor<RndPostProc>::value && MatHasBloomMultiplier<RndMat>::value;
+// The RB3 chain's EndWorld flush (WgpuRnd::FlushWorldPost) stays RB3's: DC3
+// already grades at EndWorld through NgRnd::DoPostProcess.
 constexpr bool kRetailPostChain = false;
-template <class Params>
-inline void FillRetailPost(const RndPostProc *, float, Params &) {}
-inline int RetailPostMode() { return 0; }
-inline bool RetailBloomMaskActive() { return false; }
-// Destination alpha blends with MAX, as retail: DxRnd::SetDefaultRenderStates
-// (100% matched in dc3-decomp, Rnd_Xbox.cpp) sets BlendOpAlpha 3 once and
-// nothing changes it; see dc3-backend-for-rb3-wii.md section 30. Measured on
-// dc3-native frames 50-600 and the glitterati/dclive venues: RGB identical,
-// frame alpha moves on 0.25% of dclive's pixels (PostProcPass reads RGB only).
-constexpr bool kAlphaBlendMax = true;
+// DC3_RETAIL_POST (rndshape/DC3PostChain.cpp): unset or anything else = 1 (the
+// retail chain), "0" = 0 (PostProcPass's previous composite), "raw" = 2 (the
+// scene ungraded), "mask" = 3 / "bloom" = 4 (the chain showing the bloom mask /
+// the bloom term; for inspection), "grade" = 5 (the chain without bloom).
+// Always 0 without kDC3RetailPost (rb3-xenon).
+int RetailPostMode();
+// The frame's alpha carries the bloom mask this frame.
+inline bool RetailBloomMaskActive() {
+    if constexpr (!kDC3RetailPost) {
+        return false;
+    } else {
+        const int m = RetailPostMode();
+        return m == 1 || m == 3 || m == 4;
+    }
+}
+// Fills the chain's parameters from the current RndPostProc (DC3PostChain.cpp).
+void FillRetailPost(const RndPostProc *pp, float flickerMul, ::RetailPostParams &out);
+// SetBloomColor's c7 scale: 1/threshold above 1, else 1 (DC3PostChain.cpp).
+float BloomLumaScale(const RndPostProc *pp);
+// ---- np-gfx-post: destination alpha (dc3-backend-for-rb3-wii.md 31.5) ----
+// Whether a blended draw's destination alpha takes MAX(src.a, dst.a)
+// (PipelineManager::SetAlphaBlendMax) or follows the draw's own blend
+// equation, the factors NgMat::SetBasicState passes for alpha too.
+// DxRnd::SetDefaultRenderStates (100% matched) sets BlendOpAlpha 3, which
+// section 30 read as MAX. Section 30.7 flipped the DC3 shape to MAX without a
+// retail comparison, because nothing on DC3 read the frame alpha then. The
+// retail post chain reads it as the bloom mask, and retail hardware footage
+// of the menus refutes MAX for DC3: under MAX, the song-select "debloom"
+// quads (Multiply, white, AllowHDR) raise the mask to 1 under the cards and the
+// full-screen Multiply tint raises it to ~0.9 over the background, so the
+// cards burn white and the background hazes (bloom term 0.4 at a background
+// pixel that retail shows at 0.04). With alpha following the equation
+// (Multiply: dst.a * src.a) the cards are grey and readable and the background
+// stays dark, as on retail. dc3-decomp (kDC3RetailPost) only; rb3-xenon keeps
+// MAX unchanged.
+constexpr bool kAlphaBlendMax = !kDC3RetailPost;
+// ---- end np-gfx-post ----
 // DC3 shades in gamma space, as the image does: no bitmap format DxRnd uses
 // carries a gamma sign (rnddx9/Rnd.cpp D3DFormatForBitmap: DXT1/3/5, DXN,
 // A8R8G8B8, A1R5G5B5, X8R8G8B8), the frame is a D3DFMT_A8R8G8B8 EDRAM surface
@@ -428,12 +480,50 @@ constexpr bool kAlphaBlendMax = true;
 // target saturates the product (material.gammaShading). rb3-xenon keeps the
 // linear model with the sRGB output encode.
 constexpr bool kGammaSpaceShading = kDC3RetailModel;
+// The pseudo-HDR bloom mask (ShaderOptions bit 22): retail DC3's standard.ps /
+// particles.ps / multimesh write alpha = sat(dot(rgb, c7) * c5.z) for a
+// material whose NgMat::AllowHDR() holds, drawn into the main frame
+// (RndShader*::CalcShaderOpts: !fadeOut && !Offscreen() && AllowHDR()), with
+// c7 = (0.3, 0.59, 0.11) * BloomLumaScale and c5.z = mBloomMultiplier
+// (NgMat::SetRegularShaderConst); RndShader::SetColorWriteMask leaves alpha
+// alone for every other material, and the frame clears it to 0. Returned
+// NEGATIVE, -(c7 scale * c5.z): the standard shader then takes the luma of the
+// colour before the target clamps it (retail's rgb is unclamped), where RB3's
+// positive scale keeps its clamped-colour mask. Rects and particles use the
+// magnitude. 0 = no mask (not AllowHDR, or the chain is off). A material with
+// mBloomMultiplier 0 still writes the mask, which is 0 (retail's c5.z = 0):
+// it returns -FLT_MIN, a scale that keeps the mask write on and rounds the mask
+// to 0. That is how DC3's "debloom" quads work: game_mode_icon's debloom.mat
+// (Multiply, white, bloom_multiplier 0) zeroes the icon's mask under the
+// draw's alpha equation (dst.a * 0), so the mode-select icon does not burn
+// (dc3-backend-for-rb3-wii.md 31.6).
 template <class M>
-inline float BloomMaskScale(const M &) { return 0.0f; }
-// No display gamma ramp here. Retail's is DxRnd::SetupGamma's (rnd (gamma
-// 0.85)) at scan-out (docs/native/dc3-retail-lighting.md section 2), and
-// applying it at output belongs to the np-gfx-post lane.
-inline float DisplayGamma(bool) { return 0.0f; }
+inline float BloomMaskScale(const M &m) {
+    using Raw = std::remove_cv_t<std::remove_pointer_t<std::decay_t<M>>>;
+    if constexpr (!kDC3RetailPost || !MatHasBloomMultiplier<Raw>::value) {
+        (void)m;
+        return 0.0f;
+    } else {
+        if (!m || !RetailBloomMaskActive()) return 0.0f;
+        const RndPostProc *pp = RndPostProc::Current();
+        if (!pp) return 0.0f;
+        // NgMat::AllowHDR (dc3-decomp rndobj/Mat_NG.cpp).
+        const auto b = m->GetBlend();
+        if (b == Raw::kBlendSrcAlpha || b == Raw::kBlendSrcAlphaAdd || b == Raw::kPreMultAlpha ||
+            m->GetAlphaCut() || m->GetAlphaWrite())
+            return 0.0f;
+        const float scale = -(BloomLumaScale(pp) * m->GetBloomMultiplier());
+        return scale < 0.0f ? scale : -std::numeric_limits<float>::min();
+    }
+}
+// The display gamma ramp DxRnd::SetupGamma loads (ramp[i] = pow(i/256, g),
+// g from the system config's (rnd (gamma g)): DC3's default.dta sets 0.85).
+// DC3 applies it to EVERY output, headless included, so screenshots and
+// look_capture frames are post-ramp, i.e. what the TV shows
+// (DC3_DISPLAY_GAMMA=off for the pre-ramp front buffer, or a value to
+// override). rb3-xenon: 0, no ramp. See DC3PostChain.cpp.
+float DisplayGamma(bool presenting);
+// ---- end np-gfx-post ----
 
 // ---- scene lighting --------------------------------------------------------
 // DC3 (retail model): the image's NgEnviron::Select register set, see

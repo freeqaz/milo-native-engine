@@ -65,9 +65,13 @@ skips the legacy rim and reflection adds there. The fog takes the
 exponential form under `fogEnabled 2`. With `gammaShading` the output is
 clamped to [0, 1]: no `compressHighlights` shoulder, no `softClipLighting`,
 and no linear-to-sRGB encode, all of which retail lacks. The scan-out ramp
-(0.85) is **not** applied here. That belongs to the np-gfx-post lane, so
-`DisplayGamma` stays 0 in the DC3 shape. Retail hardware captures are
-post-ramp; compare them with `pow(x, 0.85)` applied to a native frame.
+(0.85) is not part of the shading. Since np-gfx-post (`b3b1d66`;
+dc3-backend-for-rb3-wii.md section 31), `rndshape::DisplayGamma` returns the
+system config's 0.85 for dc3-decomp, and `WgpuRnd::EndDrawing` applies it once
+after the UI on every output, headless included. Native captures are therefore
+post-ramp, like retail hardware captures; `DC3_DISPLAY_GAMMA=off` gives the
+pre-ramp frame. rb3-xenon still gets 0, so no ramp. Captures quoted in this
+document before that change are pre-ramp.
 
 ## 3. Dancer floor shadows (projected_blend 1)
 
