@@ -153,6 +153,16 @@ public:
     void SetAlphaBlendMax(bool on) { mAlphaBlendMax = on; }
     bool AlphaBlendMax() const { return mAlphaBlendMax; }
 
+    // The uniform buffer of the material (group 1, binding 0), object (group
+    // 2) and bone (group 3) layouts takes a dynamic offset (PLAN H-30), so one
+    // bind group serves every draw that binds the same resources and the
+    // per-draw uniform block is reached by the offset given to SetBindGroup.
+    // Every SetBindGroup on those groups must then pass exactly one dynamic
+    // offset. Off by default (RB3's BandRnd and rb3's tools build their bind
+    // groups with the offset in the entry). Set before Init.
+    void SetDynamicUniformOffsets(bool on) { mDynamicUniformOffsets = on; }
+    bool DynamicUniformOffsets() const { return mDynamicUniformOffsets; }
+
 private:
     wgpu::RenderPipeline CreatePipeline(const PipelineKey& key);
     wgpu::ShaderModule GetOrCreateShader(uint32_t shaderType);
@@ -171,5 +181,6 @@ private:
     int mPreWarmCursor = 0;
     bool mPreWarmStarted = false;
     bool mAlphaBlendMax = false;   // SetAlphaBlendMax
+    bool mDynamicUniformOffsets = false;  // SetDynamicUniformOffsets
     void BuildPreWarmKeys(wgpu::TextureFormat mainFmt, wgpu::TextureFormat rtFmt);
 };

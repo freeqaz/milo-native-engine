@@ -337,7 +337,9 @@ void WgpuRnd::InitGpuResources() {
     if (mGpuResourcesReady) return; // idempotent — already initialized
     mGpuResourcesReady = true;
 
-    // Initialize pipeline manager
+    // Initialize pipeline manager. The mesh path binds its material, object
+    // and bone uniforms with dynamic offsets into cached bind groups (H-30).
+    mPipelines.SetDynamicUniformOffsets(true);
     mPipelines.Init(&mGpu);
     mPipelines.SetAlphaBlendMax(rndshape::kAlphaBlendMax);
     // Create per-draw ring buffers (64KB each — enough for ~250 draws/frame at 256-byte alignment)
@@ -347,6 +349,15 @@ void WgpuRnd::InitGpuResources() {
     mObjectRing.Init(mGpu.Device(), 64 * 1024, "ObjectUniforms");
     // Bone ring needs more space: 2560 bytes per skinned draw (rounded to 2816 at 256 alignment)
     mBoneRing.Init(mGpu.Device(), 256 * 1024, "BoneUniforms");
+    // Staged: a frame's uniform blocks reach the GPU in one WriteBuffer per
+    // ring, issued by FlushUniformRings before the frame Submit (H-31).
+    mSceneRing.SetStaged(true);
+    mMaterialRing.SetStaged(true);
+    mObjectRing.SetStaged(true);
+    mBoneRing.SetStaged(true);
+    if (const char* c = getenv("MILO_GPU_COUNTERS")) {
+        mGpuCountersEvery = atoi(c) > 0 ? atoi(c) : 600;
+    }
 
     // Create depth texture (use GPU framebuffer dimensions, not Rnd virtual resolution)
     CreateDepthTexture(mGpu.WindowWidth(), mGpu.WindowHeight());
@@ -481,6 +492,9 @@ void WgpuRnd::Terminate() {
     mProjLightTexView = nullptr;
     mMsaaTex = nullptr;
     mMsaaView = nullptr;
+
+    // Cached bind groups hold the rings' buffers and the textures' views.
+    mBindGroupCache.Clear();
 
     // Ring buffers
     mMaterialRing.Release();
@@ -1601,6 +1615,7 @@ void WgpuRnd::BeginDrawing() {
     mMaterialRing.Reset();
     mObjectRing.Reset();
     mBoneRing.Reset();
+    mBindGroupCache.BeginFrame((uint64_t)mFrameID);
 
 #ifndef __EMSCRIPTEN__
     // Poll window size each frame and reconfigure surface if changed.
@@ -1829,8 +1844,12 @@ void WgpuRnd::EndDrawing() {
         }
 
         wgpu::CommandBuffer cmd = mEncoder.Finish();
+        // The frame's uniform blocks, staged by every ring Write since
+        // BeginDrawing, must be on the queue before the commands that read them.
+        FlushUniformRings();
         mGpu.Queue().Submit(1, &cmd);
         mPointTestPass.Submitted();
+        if (mGpuCountersEvery > 0 && mFrameID % mGpuCountersEvery == 0) LogGpuCounters();
 
         MaybeCaptureFrame();
         MaybeEncodeVideoFrame();
@@ -2490,17 +2509,17 @@ void WgpuRnd::WriteSceneUniforms() {
     mSceneBindGroup = mGpu.Device().CreateBindGroup(&bgDesc);
 }
 
-wgpu::BindGroup WgpuRnd::CreateMaterialBindGroup(
-    uint32_t bufferOffset, uint32_t bufferSize,
+wgpu::BindGroup WgpuRnd::MaterialBindGroup(
     const MaterialTexViews& texViews,
     wgpu::Sampler& diffuseSampler, wgpu::Sampler& mapSampler)
 {
     wgpu::BindGroupEntry entries[14] = {};
 
+    // The draw's MaterialUniforms block: dynamic offset (SetBindGroup).
     entries[0].binding = 0;
     entries[0].buffer = mMaterialRing.Buffer();
-    entries[0].offset = bufferOffset;
-    entries[0].size = bufferSize;
+    entries[0].offset = 0;
+    entries[0].size = sizeof(MaterialUniforms);
 
     entries[1].binding = 1;
     entries[1].textureView = texViews.diffuse;
@@ -2549,37 +2568,69 @@ wgpu::BindGroup WgpuRnd::CreateMaterialBindGroup(
     desc.entryCount = 14;
     desc.entries = entries;
 
-    return mGpu.Device().CreateBindGroup(&desc);
+    return mBindGroupCache.GetOrCreate(mGpu.Device(), desc);
 }
 
-wgpu::BindGroup WgpuRnd::CreateObjectBindGroup(uint32_t bufferOffset, uint32_t bufferSize) {
+wgpu::BindGroup WgpuRnd::ObjectBindGroup() {
     wgpu::BindGroupEntry entry{};
     entry.binding = 0;
     entry.buffer = mObjectRing.Buffer();
-    entry.offset = bufferOffset;
-    entry.size = bufferSize;
+    entry.offset = 0;
+    entry.size = sizeof(ObjectUniforms);
 
     wgpu::BindGroupDescriptor desc{};
     desc.layout = mPipelines.ObjectLayout();
     desc.entryCount = 1;
     desc.entries = &entry;
 
-    return mGpu.Device().CreateBindGroup(&desc);
+    return mBindGroupCache.GetOrCreate(mGpu.Device(), desc);
 }
 
-wgpu::BindGroup WgpuRnd::CreateBoneBindGroup(uint32_t bufferOffset, uint32_t bufferSize) {
+wgpu::BindGroup WgpuRnd::BoneBindGroup() {
     wgpu::BindGroupEntry entry{};
     entry.binding = 0;
     entry.buffer = mBoneRing.Buffer();
-    entry.offset = bufferOffset;
-    entry.size = bufferSize;
+    entry.offset = 0;
+    entry.size = sizeof(BoneUniforms);
 
     wgpu::BindGroupDescriptor desc{};
     desc.layout = mPipelines.BoneLayout();
     desc.entryCount = 1;
     desc.entries = &entry;
 
-    return mGpu.Device().CreateBindGroup(&desc);
+    return mBindGroupCache.GetOrCreate(mGpu.Device(), desc);
+}
+
+void WgpuRnd::FlushUniformRings() {
+    mSceneRing.Flush(mGpu.Queue());
+    mMaterialRing.Flush(mGpu.Queue());
+    mObjectRing.Flush(mGpu.Queue());
+    mBoneRing.Flush(mGpu.Queue());
+}
+
+// MILO_GPU_COUNTERS=N: one line every N frames (default 600) with the live
+// cached bind groups and the uniform rings, so growth across songs shows.
+void WgpuRnd::LogGpuCounters() {
+    const UniformRingBuffer* rings[4] = {&mSceneRing, &mMaterialRing, &mObjectRing, &mBoneRing};
+    uint64_t writes = 0, bytes = 0;
+    uint32_t capacity = 0;
+    for (const UniformRingBuffer* r : rings) {
+        writes += r->QueueWrites();
+        bytes += r->QueueBytes();
+        capacity += r->Capacity();
+    }
+    fprintf(stderr,
+            "[GPUCOUNT] frame=%d bindGroupsLive=%zu bgCreated=%llu bgHits=%llu bgEvicted=%llu "
+            "bgUncached=%llu ringBuffers=4 ringBytes=%u ringGrows=%u/%u/%u/%u "
+            "ringQueueWrites=%llu ringQueueBytes=%llu pipelines=%d\n",
+            (int)mFrameID, mBindGroupCache.Size(),
+            (unsigned long long)mBindGroupCache.Creates(),
+            (unsigned long long)mBindGroupCache.Hits(),
+            (unsigned long long)mBindGroupCache.Evictions(),
+            (unsigned long long)mBindGroupCache.Uncached(), capacity, mSceneRing.Grows(),
+            mMaterialRing.Grows(), mObjectRing.Grows(), mBoneRing.Grows(),
+            (unsigned long long)writes, (unsigned long long)bytes,
+            mPipelines.CachedPipelineCount());
 }
 
 #ifdef HX_IMGUI
