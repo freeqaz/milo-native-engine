@@ -48,6 +48,10 @@ struct RetailMatTerms {
     float rimPower = 0.5f;      // c63.w, at least 0.5
     float deNormal = 0.0f;      // c14.x = 1 - deNormal
     bool rimLightUnder = false; // bit 14
+    // bit 54: per-pixel and GetCull() == kCullBackwards. The vertex shader
+    // negates the world normal (and so the bitangent it crosses from it):
+    // dc3-retail-lighting.md section 11.
+    bool flipNormal = false;
     RndTex *normalTex = nullptr;
     RndTex *specularTex = nullptr;
     RndTex *rimTex = nullptr;

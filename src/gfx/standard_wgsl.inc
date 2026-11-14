@@ -280,6 +280,18 @@ fn materialScreenAligned() -> bool {
     return ((material.colorMod.w >> 9u) & 1u) != 0u;
 }
 
+// Bit 10 of colorMod.w: DC3's flip_normal (ShaderOptions bit 54; a per-pixel
+// lit material culled backwards). The vertex shaders negate the world normal
+// before crossing the bitangent from it, as the shipped microcode does, so
+// the lit side of a backwards-culled surface is the side that is drawn.
+fn materialFlipNormal() -> bool {
+    return ((material.colorMod.w >> 10u) & 1u) != 0u;
+}
+// The world normal both vertex shaders hand on (and cross the bitangent from).
+fn vsOrientNormal(worldNormal: vec3f) -> vec3f {
+    return select(worldNormal, -worldNormal, materialFlipNormal());
+}
+
 // The UV a vertex feeds to the texgen rows. Normally its own; for a
 // screen-aligned material, its screen position, as the shipped
 // standard_0000000000002010.vs computes it per vertex: ndc = oPos.xy / oPos.w,
@@ -991,7 +1003,8 @@ fn vs_main(vertex: VertexInput) -> VertexOutput {
     var vertexOutput: VertexOutput;
 
     let worldPos = (object.world * vec4f(vertex.position, 1.0)).xyz;
-    let worldNormal = normalize((object.worldInvTranspose * vec4f(vertex.normal, 0.0)).xyz);
+    let worldNormal =
+        vsOrientNormal(normalize((object.worldInvTranspose * vec4f(vertex.normal, 0.0)).xyz));
     let viewDir = normalize(scene.cameraPos - worldPos);
     let worldTangent = normalize((object.world * vec4f(vertex.tangent.xyz, 0.0)).xyz);
 
@@ -1035,7 +1048,8 @@ fn vs_skinned(vertex: SkinnedVertexInput) -> VertexOutput {
     }
 
     let worldPos = (object.world * vec4f(blendedPosition.xyz, 1.0)).xyz;
-    let worldNormal = normalize((object.worldInvTranspose * vec4f(blendedNormal.xyz, 0.0)).xyz);
+    let worldNormal =
+        vsOrientNormal(normalize((object.worldInvTranspose * vec4f(blendedNormal.xyz, 0.0)).xyz));
     let viewDir = normalize(scene.cameraPos - worldPos);
     let worldTangent = normalize((object.world * vec4f(blendedTangent.xyz, 0.0)).xyz);
 

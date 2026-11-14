@@ -251,6 +251,10 @@ inline bool ColorModAlphaIsBandSelector(const MatView &, int) { return false; }
 // MatScreenAligned); RB3 keeps the vertex UVs.
 inline bool MatScreenAligned(const MatView &) { return false; }
 
+// The DC3 image's texture-transform rows (RndShape_DC3.h MatRetailTexXfmRows);
+// RB3 keeps the generic rows FillTexGen writes.
+inline bool MatRetailTexXfmRows(const MatView &, float *, float *) { return false; }
+
 // World refraction (RndShape.h RefractTerms) as the Xbox RndMat answers it:
 // GetRefractEnabled is mRefractEnabled && mRefractStrength > 0 && a normal
 // map, and GetRefractNormalMap is mRefractNormalMap, else the material's
