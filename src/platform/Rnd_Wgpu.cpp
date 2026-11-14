@@ -2718,7 +2718,8 @@ void WgpuRnd::LogGpuCounters() {
             "[GPUCOUNT] frame=%d bindGroupsLive=%zu bgCreated=%llu bgHits=%llu bgEvicted=%llu "
             "bgUncached=%llu ringBuffers=4 ringBytes=%u ringGrows=%u/%u/%u/%u "
             "ringQueueWrites=%llu ringQueueBytes=%llu pipelines=%d gpuMeshes=%zu gpuTextures=%zu "
-            "postBgLive=%zu postBgCreated=%llu postBgHits=%llu postBgEvicted=%llu postBgUncached=%llu\n",
+            "postBgLive=%zu postBgCreated=%llu postBgHits=%llu postBgEvicted=%llu postBgUncached=%llu "
+            "ptBatches=%d ptCreated=%llu ptInFlight=%d\n",
             (int)mFrameID, mBindGroupCache.Size(),
             (unsigned long long)mBindGroupCache.Creates(),
             (unsigned long long)mBindGroupCache.Hits(),
@@ -2730,7 +2731,8 @@ void WgpuRnd::LogGpuCounters() {
             mPostBindGroupCache.Size(), (unsigned long long)mPostBindGroupCache.Creates(),
             (unsigned long long)mPostBindGroupCache.Hits(),
             (unsigned long long)mPostBindGroupCache.Evictions(),
-            (unsigned long long)mPostBindGroupCache.Uncached());
+            (unsigned long long)mPostBindGroupCache.Uncached(), mPointTestPass.Batches(),
+            (unsigned long long)mPointTestPass.ResourceCreates(), mPointTestPass.InFlight());
 }
 
 #ifdef HX_IMGUI

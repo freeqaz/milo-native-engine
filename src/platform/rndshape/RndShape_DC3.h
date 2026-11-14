@@ -313,6 +313,47 @@ inline Vector3 PartWorldPos(Sys *s, RndParticle *p) {
         return Vector3(p->pos.x, p->pos.y, p->pos.z);
     }
 }
+// The billboard of the shipped particles vertex shader (dc3 xbox_shaders,
+// type "particles", every permutation; its non-velocity-aligned path, read
+// from the microcode). DxParticleSys::DrawShowing passes c47 = 0.5 * camera X
+// and c48 = 0.5 * mScreenAspect * camera Z (both in the system's relative
+// space), and each vertex carries size (t0), angle (t1) and swingArm (t2).
+// For corner signs p (right) and q (up) the shader places
+//
+//   pos + size/2 * (p * (cos a R - sin a S U) + q * (sin a R + cos a S U))
+//       + swingArm * (sin a R + cos a S U)
+//
+// with R/U the camera right/up axes and S the screen aspect. So:
+//   - screen_aspect scales the quad's height (streetside alleySteam: 0.7);
+//   - the swing arm moves the sprite along its own rotated up axis, so a
+//     spinning particle with a start/end_offset circles its position
+//     (throneroom's smoke systems: spin with start_offset 10);
+//   - a growing angle turns the quad clockwise on screen (the engine's old
+//     billboard turned it anticlockwise).
+// A consumer whose RndParticleSys has no ScreenAspect() accessor keeps the old
+// billboard (rb3-xenon, whose own retail DxParticleSys sets the same
+// constants, until it adds the accessor).
+struct PartBillboardTerms {
+    bool retailXbox = false;
+    float screenAspect = 1.0f;
+};
+template <typename Sys, typename = void>
+struct PartHasScreenAspect : std::false_type {};
+template <typename Sys>
+struct PartHasScreenAspect<Sys, std::void_t<decltype(std::declval<const Sys &>().ScreenAspect())>>
+    : std::true_type {};
+template <typename Sys>
+inline PartBillboardTerms PartBillboard(Sys *s) {
+    PartBillboardTerms t;
+    if constexpr (PartHasScreenAspect<Sys>::value) {
+        t.retailXbox = true;
+        t.screenAspect = s->ScreenAspect();
+    } else {
+        (void)s;
+    }
+    return t;
+}
+inline float PartSwingArm(const RndParticle *p) { return p->swingArm; }
 // No Wii-TEV tint model here: this shape scales particle colour the way its
 // retail Xbox particle shader does (Part_Wgpu.cpp, ParticleShaderColor).
 constexpr bool kPartMaterialTint = false;
