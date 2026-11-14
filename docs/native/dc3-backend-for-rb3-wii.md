@@ -5352,14 +5352,14 @@ in dc3-decomp's archive):
 |---|---|---|
 | bloom (intensity > 0) | 749 | yes: plain arm, streak arm |
 | bloom streak (not glare) | 94 | yes |
-| bloom glare | 3 (`PostProc.pp`, `PostProc_Win.pp`) | no (the plain arm runs) |
+| bloom glare | 3 (`PostProc.pp`, `PostProc_Win.pp`) | yes, round 2 (32.3) |
 | colour transform (hue/sat/contrast/brightness/levels) | 127 | yes, the retail dp4 matrix |
 | noise | 72 (no midtone) | yes (G-14's texture overlay) |
 | vignette | 56 (12 with I > 0.75) | yes |
-| motion blur | 41 (including the menus' `PostProc_local.pp`) | no |
+| motion blur | 41 (including the menus' `PostProc_local.pp`) | yes, round 2 (32.1) |
 | chromatic aberration | 5 | yes |
-| hue converge | 4 (`PostProc_Blacklight.pp`) | no |
-| hall of time | 2 | no |
+| hue converge | 4 (`PostProc_Blacklight.pp`) | yes, round 2 (32.4) |
+| hall of time | 2 | no: no shipped shader permutation (32.5) |
 | flicker, trails, gradient map, refract, posterize, kaleidoscope | 0 | not needed |
 
 The menu post-proc is `PostProc_local.pp`: bloom intensity 1.75, threshold 1.0,
@@ -5611,6 +5611,9 @@ Each check used pinned engine worktrees: base `dc7d64e`, and both `ae855ab` and
 
 ### 31.9 Open items, ranked by visibility
 
+Items 1-5 were settled or ported in round 2; see section 32.
+
+
 1. **Motion blur.** It is in 41 post-procs, including the menus'
    `PostProc_local.pp`.
 2. **Glare composite.** Used by 3 UI post-procs, which take the plain arm
@@ -5627,3 +5630,487 @@ Each check used pinned engine worktrees: base `dc7d64e`, and both `ae855ab` and
    reproduced.
 7. **The alpha-op mechanism** (31.5) is unverified; a Xenia GPU trace would
    settle it.
+
+
+## 32. DC3 post chain, round 2: motion blur, glare, hue converge (lane np-gfx-post, 2026-11-14)
+
+Round 2 of section 31, on the integration engine `9dbab47` (main + light r1-2 +
+blend r1-2 + hud r1-2 + post r1).
+
+| repo | branch | commits |
+|---|---|---|
+| milo-native-engine | `np-gfx-post` | `a54d07f` merge of `np-gfx` (`9dbab47`), `d81616b` motion blur, `9a11375` fade-out, `d205511` glare, `4f8f533` hue converge and the post-proc overrides, `7bec752` the RB3Wii declaration `4f8f533` needed (32.10), plus this section |
+| dc3-decomp | `np-gfx-post` | `a2e308356` merge of `np-gfx` (`aa913d39c`), `f8d883d12` motion-blur accessors and tests, `24c607044` fade-out test, `f8fe9808b` glare tests, `5fbf049ce` hue-converge and override accessors and tests, `1916857bf` `milo-pp-dump` environ fade-out listing, `1bbcc5ac9` docs |
+
+Evidence: dc3-decomp `archive/np-gfx-2026-11-14/lanes/post/round2/`. No `getenv`
+was added in this round (`git diff a54d07f..4f8f533 | grep '^+.*getenv'` is
+empty), so the census and rb3's ledger are unchanged from round 1.
+
+### 32.1 Motion blur (`postprocess.ps` bit 24)
+
+**Original (MEASURED).**
+- **Microcode.** From `postprocess_0000000001000010`, `…01200000` and
+  `…1001200010`. The feedback is the last step of the shader, after the bloom
+  screen, the colour matrix and the vignette:
+
+  ```
+  r   = sat(c105.w · (prev.a − scene.a) / prev.a)
+  k   = max(r, c105.rgb)
+  out = sat(c + (prev − c) · k)
+  a   = sat(scene.a + r · (prev.a − scene.a))
+  ```
+- **`prev` (tf14).** It is `DxRnd::mPostProcessBuffer` (`Rnd_Xbox.cpp`):
+  `FinishPostProcess` draws the post shader into the back buffer, and
+  `SavePostBuffer` resolves it into that A8R8G8B8 texture every frame, before
+  the UI. So `prev` is the previous frame's post output without the UI.
+- **Non-MB permutations** write `oC0.a = sat(scene.a)`.
+- **`c105`.** Set by `NgPostProc::CheckMotionBlur` to
+  (`weight.rgb · blend`, `weight.a`).
+- **When it runs.** `DoMotionBlur()` is `blend > 0 && weight.Pack() > 0`
+  (8-bit rgb, alpha not counted) `&& !TheHiResScreen.IsActive()`.
+- **Exposure.** All 41 shipped motion-blur post-procs have exposure
+  (`weight.a`) 0, so in shipped data it is a plain constant-ratio feedback.
+  `k = c105.rgb`: 0.6 for the menus.
+
+**Which post-procs (MEASURED, the 777-row inventory).**
+
+| post-proc | blend |
+|---|---|
+| UI `PostProc_local.pp` / `PostProc.pp` (main menu, mode select, song select, every shell screen that uses them) | 0.6 |
+| `point_chase_hud` | 0.34 |
+| `projection.pp` | 0.6 |
+| `camera.milo` / `tancutscene` `minigolf_*`, `skyscraper_*` | 0.4 |
+| `subway_*` | 0.4 / 0.196 |
+
+- **No shipped venue's own post-proc uses motion blur.** The minigolf,
+  skyscraper and subway sets are cut venues: they are in the `MILO_VENUES`
+  list behind `#ifndef _SHIP` and have no `world/` directory.
+- **Why they can still load.** Their post-procs live in the shared
+  `camera.milo`, which every venue loads, so a camera shot could select one.
+  None was seen selected in the omg/dci/dclive runs.
+
+**Native (before).** Not drawn.
+
+**Change (`d81616b`).**
+- `fs_composite_dc3_mb` is the same composite with a second colour target.
+  Target 0 is the frame. Target 1 is `next = (out, a)` in RGBA8, the native
+  stand-in for `mPostProcessBuffer`.
+- `RB3RetailPost` keeps two `mPrevTex` textures and ping-pongs between them.
+- A run counter marks the previous output valid only if the previous run was
+  the immediately preceding one. On a frame after a gap, `prev` is black and
+  the shader passes the frame through. This applies to the first motion-blur
+  frame and to any frame after a frame without post.
+- **Divergence (INFERRED, one frame).** Retail's buffer always holds the last
+  post output, so its first motion-blur frame blends against whatever the
+  previous post-proc drew. Native passes that one frame through.
+- **When motion blur is off.** No second target, no texture and the same
+  pipeline as before (32.8).
+
+**Menu transition** (main → mode select; `trans_after/`, `trans_before/`,
+`trans_after_sheet.png`, `trans_before_sheet.png`, `t05_t06_xenia.png`):
+- **Native after.** Frame `t06` shows a ghost of the previous icon under the
+  incoming "Jump right in" panel. On the way back (`b03`), the panel ghosts
+  over the main-menu icon.
+- **Native before.** The transition was a hard cut.
+- **Xenia `07_mode_select_options.png`.** It shows the same kind of
+  multi-state ghosting, but much heavier and whiter.
+  - The whiteness is not motion blur: a 0.6 feedback cannot brighten.
+  - The heavier trail fits Xenia stepping more frames per menu move. That is
+    INFERRED, not measured.
+- **Log.** `PostProc_local.pp (main) … motion_blur=1(0.600 0.600 0.600 0.000)`.
+
+**Venue** (`venue_mb_dclive/`, `venue_mb_dclive_sheet.png`,
+`venue_mb_dancer_crops.png`):
+- **Setup.** No shipped venue uses motion blur, so dclive gameplay was run
+  with `subway_performance_awesome.pp` (blend 0.4) forced through
+  `{rnd set_postproc_override …}`. Shots: `own_*` (its own post-proc),
+  `mb_*` (forced) and `nomb_*` (forced, with the blend set to 0).
+- **Result.** In `mb_*` the dancers trail and read translucent while moving.
+  The HUD stays crisp, because it is drawn after post.
+- **Gameplay column:** yes.
+
+### 32.2 Fade-out and the downsample source (settled)
+
+**Fade-out (MEASURED, `Shader.cpp`).**
+- Standard, Particles, Multimesh and SyncTrack set pseudo-HDR (the mask
+  write) only when `!fadeOut`, where
+  `fadeOut = env->FadeOut() && env->FadeEnd() != env->FadeStart()`.
+- `DrawRect` has no fade-out test.
+- **Change (`9a11375`).** `BloomMaskScale(m, envFadeOutCancels = true)`
+  returns 0 under that condition; `DrawRect2D` passes `false`.
+- **The RB3Wii signature** gained the defaulted argument and ignores it.
+- **Shipped data (MEASURED).** No shipped environ fades out.
+  - The dc3 tool `milo-pp-dump` (now also printing every `RndEnviron`,
+    loaded through the decomp's `RndEnviron::Load`) read **1486 environs in
+    699 milos**, including **811 in the venues** (bid, dci, dclive, houseparty,
+    rollerrink, streetside, throneroom, glitterati, tancinematics, shared,
+    default). `fade_out` is 0 in every one.
+  - The fade fields do load: (0, 1000) ×1234, (0, 200) ×200, (500, 1000) ×52.
+  - Coverage: 796 of 823 candidate milos dumped. The rest crashed the
+    offline loader (`world.milo`, `about_info`, `voice_commander`,
+    `director`, …): a known tool limit, the same as for the post-proc
+    inventory.
+  - Records: `round2/fade_out/environs_all.jsonl`.
+  - **Consequence.** The fade-out rule is retail-exact but inert in shipped
+    content, unless something animates `fade_out` at run time. The live
+    probe found none: dci's only environ reachable through
+    `/api/objects?recurse` was `[default env]`, fade_out 0.
+
+**Downsample source (MEASURED).**
+- `NgPostProc::AllocateTextures` sets `mBloomTexture[1] = mBloomTexture[0]`
+  (one texture: an EDRAM resolve makes an in-place blur valid).
+- `DoBloom` blurs set *k−1* horizontally and vertically, then runs
+  `downsample_4x` from it into set *k*. So retail downsamples the **blurred**
+  set.
+- The native plain arm already does this. No change.
+
+### 32.3 Glare (`bloom_glare.ps`, `postprocess.ps` bit 37)
+
+**Original (MEASURED, except where marked).**
+- **When.** `DoBloom`'s glare arm runs when `mBloomGlare && !hires`:
+  1. `bloom.ps` takes the masked scene into set 0;
+  2. a 15-tap blur, horizontal then vertical;
+  3. one `bloom_glare.ps` pass into tf7.
+
+  tf11 and tf15 are black.
+- **`bloom_glare.ps`.** Literals `c254 = (−0.5, 0.25, 10, 2)` and
+  `c255 = (0, 4, 1, 0.1)`. It takes 10 samples from `uv` towards the mirrored
+  point, `step = 0.1 · (1 − 2uv)`:
+
+  ```
+  w   = (1 − 4 · min(|p − 0.5|², 0.25))²
+  acc += 1 / (1 − w · t)
+  out = 2 − 20 / acc          (the 8-bit target saturates)
+  ```
+
+  This is a radial glare along the line through the screen centre.
+- **Loop count.** INFERRED as 10, from `c254.z`; the loop counter is not in
+  the listing.
+- **Composite (bit 37, `postprocess_0000002001200000`, `c255 = (0.5, 1, 0, 0)`).**
+  `c = scene + 0.5 · c6 · tf7` is **additive**, not the screen blend. The
+  colour matrix and the motion-blur feedback follow as usual.
+- **Cross-check.** A Xenos interpreter run of that permutation (32.4)
+  reproduces it.
+
+**Change (`d205511`).**
+- `p.glare = bloom_glare && !hires`.
+- `RunDC3Bloom`'s glare arm is: down → blur H → blur V → `fs_glare`.
+- The composite takes the additive branch when `motionMode.y` = 1, and the
+  composite reads one set.
+
+**Where it is used.** The 3 glare post-procs are:
+- `autosaving_icon.milo` `PostProc.pp` (I 0.6, threshold 4);
+- `point_chase_hud.milo` `PostProc.pp` (I 0.8, threshold 2, MB 0.34);
+- `party_mode_hub.milo` `PostProc_Win.pp` (I 1, threshold 1, MB 0.6).
+
+**None of them has a data-visible selection path** (MEASURED on the
+extracted milos and DTA):
+- No panel's `postprocess` field names them. `party_mode_hub`'s panel
+  `postprocess` is `PostProc_local.pp`.
+- There is no `select` call in those milos.
+- `PostProc_Win` is the target of one PropAnim only, which animates
+  `chromatic_aberration_offset`.
+
+Natively, the autosave warning screen at boot runs `tutorial_nav`'s
+`PostProc_local` (log, `autosave/after/`). Xenia's
+`08-fixed-autosave-clean.png` shows no glare either. **INFERRED: glare is
+never active in shipped flows.**
+
+The visual check is therefore forced: the main menu with `PostProc_local`'s
+`bloom_glare` set to 1 (`glare_main_sheet.png`). Mean RGB:
+
+| shot | mean RGB |
+|---|---|
+| own (plain arm) | 35/25/66 |
+| glare | 18/17/31 |
+| glare, motion blur off | 18/17.5/31.7 |
+| no bloom, motion blur off | 15.8/15.9/27 |
+
+The glare adds 2–4 levels over no bloom, a faint radial sheen on the light
+lines.
+
+### 32.4 Hue converge (`postprocess.ps` bit 62) and the post-proc overrides
+
+**Original (MEASURED).**
+- **`NgPostProc::CheckHueConverge`.**
+  - `c222 = (hue_target/360 + 0.5, hue_focus, blend_amount, brightness_power)`.
+  - On when `blend_amount > 0`. `DoHueConverge()` is a `merged_Returns1`
+    stub, so the gate is always true.
+- **Microcode** (`postprocess_4000000001200010`, 8 shipped bit-62
+  permutations, all with bits 21 and 24). It runs **last**, after the
+  motion-blur mix, on its unclamped result. So the next frame's `prev`
+  carries it.
+  1. EasyRGB HSV: `V = max`, `S = Δ/max`.
+  2. Hue:
+     - if R is the max, `ΔB − ΔG`;
+     - else if G is the max, `1/3 + ΔR − ΔB`;
+     - else `2/3 + ΔG − ΔR`;
+     - then wrapped into [0, 1].
+  3. `dist` = the circular |H − T|.
+  4. `H' = T + 2 · dist · (1 − focus)`, wrapped once.
+  5. `V' = V^power` when `power ≠ 1`.
+  6. HSV → RGB sectors 0..5:
+     `(v,t,p) (q,v,p) (p,v,t) (p,q,v) (t,p,v) (v,p,q)`.
+  7. `out = sat(c + (rgb' − c) · blend)`.
+- **Validation.** A Xenos ALU interpreter (scratch `hue/xenos.py`; vector
+  and scalar semantics from Xenia's `spirv_shader_translator_alu.cc`) runs
+  the listing against the Python model above:
+  - `…4000000001200010`, 4000 random inputs (scene, previous frame, `c105`,
+    `c222`): worst error 5.5e−6, which is the `%g` rounding of the listing's
+    literals (3.4e−15 with the exact literals);
+  - `…4000002001200000` (glare + hue): 7.1e−6.
+  - Controls (the model deliberately wrong): `dist` not doubled → 0.92;
+    sectors 1/2 swapped → 0.88.
+  - Outputs: `hue_converge/decode/check_outputs.txt`.
+
+**Where it is used.** `PostProc_Blacklight.pp`:
+- hue target 0.4, focus 0.8, blend 0.7, power 1.3;
+- bloom I 1.75, threshold 1;
+- MB 0.6, weight white;
+- no glare or streak.
+
+It lives in `letterbox/blacklight.milo` (`BlacklightPanel` `blacklight`,
+loaded at boot by `ui.dta`'s `{blacklight load TRUE}`; its panel
+`postprocess` is that post-proc). `activate_letterbox1.flow` runs
+`activate_shader`, which calls
+`{rnd set_postproc_blacklight_override [postprocess]}`. It is used in two
+places:
+- the voice-control letterbox ("say Xbox");
+- pause with `blacklight_on_enter` (`game_modes.dta:392`,
+  `practice_options.dta:254`).
+
+**Second defect found: the overrides were ignored.**
+- **Retail.** `Rnd::DoPostProcess` and `BeginDrawing` (`SetBloomColor`)
+  grade with:
+  - `mPostProcBlackLightOverride`;
+  - else `mPostProcOverride`;
+  - else the registered post-processors.
+- **Native.** It used `RndPostProc::Current()` only.
+- **Who sets the overrides.** `OverlayPanel` saves and restores one.
+  `hud_objects.dta`'s `shell_in_game` panels run
+  `{rnd set_postproc_override [postprocess]}` on enter. `meta.dta`'s
+  `MOVIE_PANEL_STUFF` clears it, and `cheats.dta` sets it.
+- **Change (`4f8f533`).**
+  - `rndshape::ActivePostProc()` picks the post-proc in retail's order,
+    SFINAE-gated on dc3's `GetPostProcBlacklightOverride()`.
+  - `PostProcPass` and the bloom mask's `BloomMaskScale` both use it.
+
+**Demonstration** (main menu, `{blacklight activate_shader}`;
+`blacklight/after/`, `blacklight_main_sheet.png`):
+- Magentas and greens turn cyan-blue. Mean RGB goes from 35/24/65 (own)
+  to 22/35/53 (blacklight), and back to 35/25/66 after `deactivate_shader`.
+- The log reads
+  `PostProc_Blacklight.pp … hue_converge=1(0.501 0.800 0.700 1.300)`.
+- No retail capture of the blacklight state exists in the archive.
+
+### 32.5 Hall of time (not portable)
+
+- **No shipped permutation sets bits 22 or 23**, so retail cannot draw it.
+- `HallOfTime()` is `rate ≠ 0`, true for 2 post-procs: character
+  `PostProc.pp`s such as `emilia01`, rate 4.
+- `CheckHallOfTime` runs only when `!mMotionBlurEnabled`, which is false
+  after the first `DoPost`.
+- Not ported.
+
+### 32.6 Velocity blur (`postprocess.ps` bit 42): missing, not ported
+
+- **Independent of motion blur.** `DoVelocity` does not depend on
+  `DoMotionBlur`.
+- **Widely enabled.** `mMotionBlurVelocity` defaults to 1, and 652 of the
+  777 post-procs have it.
+- **How retail draws it.** `RndVelocityBuffer::Draw` renders camera
+  reprojection velocity from the pre-pass depth and the previous view-proj,
+  plus the objects `MotionBlur.cpp` queues. Bit 42 is an 11-tap blur along
+  the velocity (tf10) where `velocity.z ≥ c252.x`.
+- **Permutations.** 60 shipped permutations have the bit.
+- **Natively.** Stubbed (`HX_NATIVE`).
+- **Effect.** INFERRED to blur gameplay camera moves broadly, so this is the
+  top missing item (32.11).
+
+### 32.7 Peak-state brightness, after the chain and the ramp
+
+The light lane (dc3-decomp `lanes/light/round2/peak/measurements.txt`) measured
+the native DCI peak frame (song omg) at about 0.58× the frame mean of the
+nearest retail frames, `retail/dci/05` and `06`, before the chain and the ramp.
+This is the same measurement on this branch.
+- **Branch state.** This branch is integration `9dbab47` plus round 2.
+  World post-procs have motion blur, glare and hue converge off, and no
+  override is set in gameplay (read live), so for these frames the branch is
+  integration.
+- **Ramp.** On: `pow(i/256, 0.85)`, every capture post-ramp, like a TV.
+
+**Frames.** `look_capture.sh` peak state (`DC3_POSE_PERFORM=choreo`), at song
+seconds 35, 45 and 55. At 35 s and 55 s the move cards on screen are the
+retail frames' own: 06 shows "O's Up, O's Down" and 05 shows "Platforms". So
+those are the nearest comparable moments; the camera shots still differ.
+
+**Method.**
+- Rec.709 luma of a 640×360 bilinear resize. That is the light lane's luma:
+  its retail mean and p90 reproduce to within 0.6.
+- Regions: floor is x 0–0.7, y 0.6–1.0; centre is x 0.35–0.65, y 0.25–0.75.
+  The light lane's boxes differ slightly, so compare floor and centre within
+  this table only.
+- Script: `round2/tools/peakstats2.py`.
+
+| frame | mean | p90 | floor | centre | mean RGB |
+|---|---|---|---|---|---|
+| retail 05 | 44.3 | 119.5 | 36.9 | 66.2 | 54/33/124 |
+| retail 06 | 45.9 | 130.5 | 33.1 | 55.2 | 48/38/121 |
+| native chain + ramp, 35 s | 41.5 | 99.4 | 33.2 | 44.1 | 48/34/103 |
+| native chain + ramp, 45 s | 42.9 | 98.1 | 32.2 | 65.5 | 58/31/116 |
+| native chain + ramp, 55 s | 36.7 | 87.6 | 23.0 | 52.5 | 48/27/98 |
+| native grade only (`DC3_RETAIL_POST=grade`, no bloom) + ramp, 35/45/55 s | 28.4 / 32.3 / 31.3 | 86–115 | 16–20 | 36–45 | B 46–61 |
+| light lane, before (round-1 build, no chain, no ramp) | 25.8 | 83.4 | | | |
+
+**How much closed.** Native is now **0.80–0.97× retail's mean (0.90 on
+average)**, up from 0.57. Of the 19.3-level gap, 14.6 closed.
+- **Ramp, about 6 levels**, measured on the *same* frame by reading each
+  capture back through the inverse of the ramp table
+  (`round2/tools/ramp.py`): 42.9 → 36.3, 41.5 → 35.1 and 36.7 → 31.2 without
+  it, about +18%. That agrees with the light lane's "native + pow(.85)"
+  estimate, 31.1, and with the grade-only runs' 30.7.
+- **Bloom, about 10 levels.** The full chain averages 40.4 against 30.7 for
+  grade only. These are run averages over different camera shots: `look_capture`
+  frames are not repeatable shot for shot, and the venue's `world.pp` is
+  rewritten every frame, so its intensity cannot be zeroed for a same-shot
+  A/B.
+- **Bloom is also the blue.** The chain brings the frame's blue channel from
+  46–61 to 98–116, against retail's 121–124.
+  - `world.pp` read live in the peak state (`round2/peak/peakab_dci.out`):
+    bloom intensity 1.1, threshold 8, streak on, **bloom colour
+    (0.34, 0.50, 0.98)**, contrast 5, saturation 10.
+  - Normal-state frames read intensity 1.6, no streak, colour
+    (0.78, 0.82, 0.98), and no colour transform.
+  - The light lane's "retail blue preset vs native magenta" was largely this
+    missing blue bloom (`round2/peak/peak_dci_sheet.png`).
+
+**What remains.**
+- **The gap.** About 5 levels of mean (1.4–8.4 by frame) and 20–30 levels of
+  p90, plus a little blue (98–116 against 121–124).
+- **Not post (INFERRED).** The post terms are the data's own values, read
+  live, through a microcode-exact chain:
+  - bloom strength (I, threshold, the streak weights);
+  - `bloom_color`;
+  - the colour transform with `mColorModulation`.
+
+  What differs is the extent of the bright content. Retail's stripe panels and
+  backdrop are larger and bluer in frame, and native's stripes are more
+  magenta-white. Shot framing differs as well. That is scene and lighting
+  content, outside post.
+- **One post-side item could still lower highlights: the velocity blur**
+  (32.6). It is not drawn, but it only smears; it does not brighten.
+
+### 32.8 Cost
+
+**Method.**
+- `DC3RetailPostGpuTest.PassCostAt720p`: 1280×720, wall time per run over 200
+  runs. Ten repetitions; median, with the range in brackets.
+- RTX 3090, shared with other lanes' builds and captures
+  (`round2/passcost2.log`).
+- The first "composite only" figure includes warm-up. The repeat ("again")
+  is the real baseline.
+
+| passes | µs/frame, median (min–max) |
+|---|---|
+| composite only, repeat | 65 (46–219) |
+| + motion blur (`PostProc_local`: 0.6, no bloom) | 121 (95–196) |
+| + plain bloom | 220 (136–579) |
+| + streak bloom | 210 (120–388) |
+| streak bloom + motion blur | 219 (149–397) |
+| glare + motion blur (`PostProc_Win`) | 152 (103–175) |
+| scan-out ramp | 86 (66–210) |
+
+**Motion blur costs about 30–55 µs at 720p.** That is one extra RGBA8 colour
+target written and one texture read, in the same composite pass.
+
+**When it is off, motion blur adds no pass, target or texture:**
+- `colorAttachmentCount` is 1 and the plain composite pipeline is used;
+- `mPrevTex` (two scene-sized RGBA8 textures, 7.4 MB at 720p) is only allocated the first time a post-proc blurs. The menus always blur, so in practice they are allocated at boot and kept;
+- binding 9 is the shared black view.
+
+Glare and hue converge are the same: glare's one extra pass is recorded only
+when `p.glare` holds, and hue converge is a uniform-gated branch in the
+composite.
+
+**Cheaper variants.**
+- Motion blur is a single tap, so there are no taps to reduce.
+- Running it at lower resolution would change the result. The feedback
+  re-blends a full-resolution frame, and a half-resolution history would blur
+  every edge, not only moving ones.
+- **The engine has no existing quality switch** to hang a variant on: there is
+  no quality or low-power setting, only `MILO_PERF` (instrumentation) and
+  GpuDevice's high-performance adapter request. So none was added, and no
+  `getenv`.
+
+### 32.9 Guards (dc3-decomp `native/tests/test_dc3_retail_post.cpp`)
+
+13 `DC3RetailPost*` tests, 9 of them new or extended this round. Every
+sabotage below made at least one of them fail. Logs are in
+`round2/sabotage/`.
+
+| test | sabotages caught |
+|---|---|
+| `MotionBlurIsRetailFeedback` (GPU), `MotionBlurParamsFollowDoMotionBlur` | `k = c105.rgb` only; the mix reversed; feedback never valid; a stale previous frame reused after an off frame; the `Pack()` gate ignored (5/5, `sab_mb.log`) |
+| `BloomMaskOffWhileTheEnvironFadesOut` | fade-out ignored; the rect path cancelled too; `FadeOut()` alone (3/3, `sab_fade.log`) |
+| `GlareIsAdditiveRadialHarmonicMean` (GPU), `GlareArmFollowsBloomGlare` | screen instead of add; no 0.5; nine taps; weight not squared; half the step; plain harmonic mean; glare pass skipped; `FillDC3` never selecting glare (8/8, `sab_glare.log`) |
+| `HueConvergeIsRetailBit62` (GPU), `HueConvergeParamsFollowBlendAmount`, `ActivePostProcFollowsRndOverrides` | `dist` not doubled; focus ignored; no wrap; sectors 1/2 swapped; power ignored; hue before the motion-blur mix; target without +0.5; `ActivePostProc` ignoring the overrides; override ranked before blacklight (9/9, `sab_hue.log`) |
+| `PassCostAt720p` | none; it is a probe, not a guard |
+
+`HueConvergeIsRetailBit62` compares the GPU against a CPU model. The model is
+the one the Xenos interpreter validated (32.4).
+
+### 32.10 Consumers (rb3, rb3-xenon)
+
+Both consumers were built against the engine before this round (`9dbab47`) and
+after it, in scratch checkouts with their own build directories. Logs are in
+`lanes/post/round2/consumers/` (archive/np-gfx-2026-11-14).
+
+- **rb3-xenon `005274e1c`** (DC3 shape): `9dbab47` and `4f8f533` both build. The
+  render gate prints `RESULT: ALL GATES PASSED (0 gate failure(s))` on both, and
+  its 11 PNGs have identical sha256 on both legs. `7bec752` only touches
+  `RndShape_RB3Wii.h`, which `RndShape.h` includes only under
+  `MILO_RNDOBJ_SHAPE_RB3WII`, so the DC3 shape compiles the same code there.
+- **rb3 `678e04137`** (RB3Wii shape): **`4f8f533` did not compile.** The error
+  was `PostProcPass.cpp:382: no member named 'ActivePostProc' in namespace
+  'rndshape'`. Outside a template, an `if constexpr (kDC3RetailPost)` branch
+  still has to name something declared, even when it is discarded. `7bec752`
+  declares `rndshape::ActivePostProc()` in `RndShape_RB3Wii.h`. Nothing odr-uses
+  it, so it needs no definition. The guard is rb3's own build: it fails at
+  `4f8f533` (1 failing edge) and passes at `7bec752` (1911/1911 edges).
+  - ctest at `7bec752`: 158 registered, 150 passed, 1 failed, 7 skipped.
+  - That matches the `9dbab47` base exactly (150 / 1 / 7), and the same test
+    fails: `native_compat_census.check`, `NATIVE_COMPAT_LEDGER.md is stale`.
+  - Nothing unregistered is reported. The ledger still lags round 1, which
+    added `DC3_RETAIL_POST` and `DC3_DISPLAY_GAMMA` (446 to 448 flags).
+  - This round adds no `getenv`: `git diff a54d07f..7bec752 | grep '^+.*getenv'`
+    is empty. Regenerating rb3's ledger once clears that test for both rounds.
+
+### 32.11 Open items, ranked by visibility
+
+1. **Velocity blur** (bit 42; 32.6). This is the one post effect that shipped
+   gameplay enables and native does not draw: 652 of 777 post-procs, 60
+   permutations. It needs `RndVelocityBuffer` (the pre-pass depth, the
+   previous view-proj, and the motion-blur draw list) plus the composite's
+   11-tap pass.
+2. **`WgpuRnd` still decides whether to post on `RndPostProc::Current()`**
+   (`Rnd_Wgpu.cpp:591`, `:1267`). Suppose an override (the blacklight, or
+   `set_postproc_override`) is set while no post-proc is registered. Retail
+   still posts; native renders straight to the frame. Not seen: every screen
+   measured has a registered post-proc.
+3. **`{rnd toggle_all_postprocs}`** (`mDisablePostProc`, a debug cheat) is
+   not honoured by the DC3 chain. Retail's `DoPostProcess` skips all post
+   when it is set.
+4. **Motion blur's first frame** passes through. Retail blends it with
+   whatever the buffer last held (32.1). One frame per motion-blur start.
+5. **The alpha-op mechanism** (31.5) is still unknown. It was not attempted,
+   because a Xenia GPU trace of the song-select frame is not cheap.
+6. **Half-texel offsets** (D3D9) are not reproduced.
+7. **Glare's loop count** (10) is INFERRED. No shipped flow selects a glare
+   post-proc (32.3).
+
+For other lanes:
+- **Lighting (np-gfx-light).** The rest of the DCI peak gap, 32.7: the bright
+  stripe panels and backdrop are smaller and more magenta-white than retail's
+  blue. Frames: `round2/peak/peak_dci_sheet.png` and
+  `round2/peak/frames/full{35,55}_peak_dci.png` against
+  `retail/dci/05`, `06`.
