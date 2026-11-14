@@ -226,17 +226,18 @@ void DrawMeshImmediate(RndMesh* mesh) {
 
     // Text meshes (created by RndText::FontMap) have empty names (not registered in ObjectDir).
     // Debug labels are stored in GpuMeshData::debugLabel for GPU debugging.
-    bool isTextMesh = !mesh->Name()[0];
-    // Only a glyph mesh gives up its material's depth test and culling
-    // (MeshDrawsAsGlyph). Text pages are never skinned, but other code also
-    // builds unnamed meshes: DC3's HamRibbon (the hand trails) is a skinned
-    // tube, one bone per segment, whose material asks for zMode 2 and cull 1
-    // (hamribbon.mat). Drawn as text it went through the dancer and drew its
-    // back faces too, doubling the additive band. Its colour path (forced
-    // prelit) is left alone: the material is use_environ 0 and not prelit, so
-    // retail's `standard` shader gives c0 x c1 with c1 = white
-    // (NgMat::SetupAmbient), which is what a white-vertex prelit draw gives.
+    // Only a glyph page gives up its material's depth test and culling
+    // (MeshDrawsAsGlyph: a page the game marked, or -- for a game that does not
+    // mark them -- an unnamed unskinned mesh). Other code builds unnamed meshes
+    // too: spotlight beams, RndRibbon/RndLine, crowd billboards, and DC3's
+    // HamRibbon hand trail (skinned, hamribbon.mat asks zMode 2 / cull 1).
+    // Drawn as text they went through whatever stood in front of them.
     const bool isGlyphMesh = MeshDrawsAsGlyph(mesh, skinned);
+    // The text colour path (forced prelit, atlas alpha as RGB) follows the same
+    // mark when the game sets one (MeshShadesAsText); otherwise every unnamed
+    // mesh, as before. A ribbon shaded as text happened to look right only
+    // because its vertices are white.
+    bool isTextMesh = MeshShadesAsText(mesh);
 
     // --- Pipeline selection ---
     PipelineKey key{};
@@ -357,6 +358,12 @@ void DrawMeshImmediate(RndMesh* mesh) {
     // --- Capture record ---
     if (capturing) {
         RecordDrawCall(mesh, mat, matParams, skinned, (int)matBlend, heuristics);
+        auto& rec = FrameCapture::Get().LastRecord();
+        rec.hasPipeState = true;
+        rec.pipeZMode = (int)key.zMode;
+        rec.pipeCull = (int)key.cull;
+        rec.passHasDepth = key.hasDepth;
+        rec.glyph = isGlyphMesh;
     }
 
     // --- Draw ---

@@ -207,6 +207,15 @@ public:
         return DrawMaterialPolicy();
     }
 
+    // True when the game marks every RndText glyph page it creates with
+    // MarkTextGlyphMesh() (platform/MeshGpuCache.h). The engine then draws only
+    // marked meshes as glyph pages (no depth test, no culling) and every other
+    // unnamed mesh -- spotlight beams, ribbons, lines, crowd billboards -- with
+    // its material's zMode and cull. Default false: the engine keeps inferring
+    // a glyph page from an empty name, which is what a consumer that does not
+    // mark its pages needs.
+    virtual bool MarksTextGlyphMeshes() { return false; }
+
     // Halo-source NAME exclusion policy (B6). The engine keeps the emissive-map
     // /multiplier data test; this answers only the name-based exclusion + the
     // `RB3_SMASHER_HALO` flag. Default: no forced exclusion.

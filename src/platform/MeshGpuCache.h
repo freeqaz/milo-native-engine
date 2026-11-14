@@ -49,6 +49,15 @@ void ClearMeshGpuCache();
 // Set a debug label for GPU buffer names + frame capture.
 void SetMeshDebugLabel(RndMesh* mesh, const char* label);
 
+// Mark a mesh as an RndText glyph page (called by the game's text code where it
+// creates the page mesh). Read through IsMarkedTextGlyphMesh(); honoured only
+// when the render hook's MarksTextGlyphMeshes() says the game marks its pages
+// (MeshDrawsAsGlyph, platform/MaterialSetup.h). Kept apart from the GPU buffer
+// entries so ClearMeshGpuCache() does not drop it; CleanupGpuMesh() (the mesh
+// is being destroyed) does.
+void MarkTextGlyphMesh(RndMesh* mesh);
+bool IsMarkedTextGlyphMesh(RndMesh* mesh);
+
 // Set depth bias for a mesh (used by viewer to push combined meshes behind splits).
 void SetMeshDepthBias(RndMesh* mesh, int32_t bias);
 

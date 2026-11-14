@@ -9,6 +9,7 @@
 #include "platform/rndshape/RndShape.h"
 
 #include <unordered_map>
+#include <unordered_set>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -22,6 +23,7 @@ extern "C" {
 // ============================================================================
 
 static std::unordered_map<RndMesh*, GpuMeshData> sMeshGpuData;
+static std::unordered_set<RndMesh*> sTextGlyphMeshes;
 
 // ============================================================================
 // Frame statistics
@@ -53,6 +55,15 @@ int GetMeshDrawCallsThisFrame() {
 
 void CleanupGpuMesh(RndMesh* mesh) {
     sMeshGpuData.erase(mesh);
+    sTextGlyphMeshes.erase(mesh);
+}
+
+void MarkTextGlyphMesh(RndMesh* mesh) {
+    if (mesh) sTextGlyphMeshes.insert(mesh);
+}
+
+bool IsMarkedTextGlyphMesh(RndMesh* mesh) {
+    return mesh && sTextGlyphMeshes.count(mesh) != 0;
 }
 
 void InvalidateGpuMesh(RndMesh* mesh) {
