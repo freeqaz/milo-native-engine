@@ -38,6 +38,14 @@ public:
         for (int i = 0; i < 3; i++) mSpotK[i] = k[i];
     }
 
+    // np-gfx-post round 3, DC3 (rndshape::kDC3RetailPost): this frame's
+    // RndVelocityBuffer::Draw result (NgPostProc::DoVelocity), consumed by the
+    // next Run. `viewProj` is the world camera's (CamSceneMatrices: row-major,
+    // row vectors), recorded on every call as the next call's previous frame,
+    // as Draw records mViewProjXfm in its cache slot whether or not it is ready.
+    void SetVelocity(bool ready, float scale, const float viewProj[16]);
+    const RB3RetailPost& Retail() const { return mRetail; }
+
     BloomPass& Bloom() { return mBloom; }
     DofPass& Dof() { return mDof; }
 
@@ -54,7 +62,8 @@ private:
     template <class P>
     void RunDC3Retail(wgpu::CommandEncoder& encoder, P* pp, int mode,
                       const wgpu::TextureView& sceneView, const wgpu::TextureView& intermediateView,
-                      int w, int h, wgpu::TextureView& frameView, GpuDevice& gpu);
+                      int w, int h, const wgpu::TextureView& depthView, uint32_t depthSamples,
+                      wgpu::TextureView& frameView, GpuDevice& gpu);
     const RndPostProc* mLoggedPostProc = nullptr;   // the last post-process logged
 
     BloomPass mBloom;
@@ -62,6 +71,12 @@ private:
     RB3RetailPost mRetail;   // RB3 (kRetailPostChain) and DC3 (kDC3RetailPost) retail chains
     wgpu::TextureView mSpotBeams, mSpotFog;  // SetSpotBeams, this frame only
     float mSpotK[3] = {};
+    // SetVelocity: this frame's (pending until Run) and the previous call's VP.
+    bool mVelPending = false, mVelReady = false, mHavePrevVP = false;
+    float mVelScale = 0.0f;
+    float mVelReproj[16] = {};
+    double mPrevVP[16] = {};
+    int mVelReadyRun = 0, mVelCutLogs = 0;
 
     wgpu::ShaderModule mPostProcShader;
     wgpu::BindGroupLayout mPostProcBGL;

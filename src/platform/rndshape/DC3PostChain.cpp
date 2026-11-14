@@ -15,6 +15,9 @@
 #include "rndobj/ColorXfm.h"
 #include "rndobj/HiResScreen.h"
 #include "rndobj/Rnd.h"
+#if __has_include("rndobj/VelocityBuffer.h")
+#include "rndobj/VelocityBuffer.h"
+#endif
 #include "obj/Data.h"
 #include "os/System.h"
 #include "os/Debug.h"
@@ -46,16 +49,72 @@ template <class R> RndPostProc *ActiveOf(R &rnd) {
 
 RndPostProc *ActivePostProc() { return ActiveOf(TheRnd); }
 
+namespace {
+template <class R, class = void> struct RndHasDisablePP : std::false_type {};
+template <class R>
+struct RndHasDisablePP<R, std::void_t<decltype(std::declval<const R &>().DisablePP())>>
+    : std::true_type {};
+template <class R> bool DisabledOf(const R &rnd) {
+    if constexpr (RndHasDisablePP<R>::value) {
+        return rnd.DisablePP();
+    } else {
+        (void)rnd;
+        return false;
+    }
+}
+
+#if __has_include("rndobj/VelocityBuffer.h")
+template <class V, class = void> struct HasTakeNativeFrame : std::false_type {};
+template <class V>
+struct HasTakeNativeFrame<
+    V, std::void_t<decltype(std::declval<V &>().TakeNativeFrame(std::declval<bool &>(),
+                                                                std::declval<float &>(),
+                                                                std::declval<RndCam *&>()))>>
+    : std::true_type {};
+// The singleton is named only where the accessor exists, so a consumer whose
+// VelocityBuffer.cpp is not linked (rb3-xenon) never references it.
+template <class V> bool TakeOf(bool &ready, float &scale, RndCam *&cam) {
+    if constexpr (HasTakeNativeFrame<V>::value) {
+        return V::Singleton().TakeNativeFrame(ready, scale, cam);
+    } else {
+        (void)ready;
+        (void)scale;
+        (void)cam;
+        return false;
+    }
+}
+#endif
+}  // namespace
+
+bool PostProcDisabled() { return DisabledOf(TheRnd); }
+
+bool TakeVelocityFrame(bool &ready, float &scale, RndCam *&cam) {
+#if __has_include("rndobj/VelocityBuffer.h")
+    return TakeOf<RndVelocityBuffer>(ready, scale, cam);
+#else
+    (void)ready;
+    (void)scale;
+    (void)cam;
+    return false;
+#endif
+}
+
 int RetailPostMode() {
     if constexpr (!kDC3RetailPost) {
         return 0;
     } else {
         static int s = -1;
         if (s < 0) {
+            // Values beyond the registry text (NativeCompatFlags.classification.json,
+            // kept unchanged so rb3's generated ledger stays current):
+            // 'velocity' shows the velocity target (tf10) as stored; 'veldiff' shows
+            // |bit 42's blur - scene| x 8 in the same frame. Unset also runs the camera
+            // velocity blur wherever the post-proc's motion_blur_velocity is on.
             const char *e = getenv("DC3_RETAIL_POST");
             s = !e ? 1 : (e[0] == '0') ? 0 : (strcmp(e, "raw") == 0) ? 2
                 : (strcmp(e, "mask") == 0) ? 3 : (strcmp(e, "bloom") == 0) ? 4
-                : (strcmp(e, "grade") == 0) ? 5 : 1;
+                : (strcmp(e, "grade") == 0) ? 5 : (strcmp(e, "velocity") == 0) ? 6
+                : (strcmp(e, "veldiff") == 0) ? 7 : 1;
             MILO_LOG("DC3 post: retail chain mode %d (DC3_RETAIL_POST=%s)\n", s, e ? e : "unset");
         }
         return s;
@@ -164,7 +223,6 @@ void FillDC3(const P *pp, float flickerMul, RetailPostParams &out) {
         out.noiseMidtone = pp->GetNoiseMidtone() ? 1.0f : 0.0f;
         // CheckMotionBlur: DoMotionBlur() = blend > 0 && weight.Pack() > 0 &&
         // !TheHiResScreen.IsActive(); c105 = (weight.rgb * blend, weight.a).
-        // (DoVelocity's camera velocity buffer, bit 42, is not ported.)
         out.motionBlur = pp->DoMotionBlur();
         if (out.motionBlur) {
             const Hmx::Color &mw = pp->GetMotionBlurWeight();

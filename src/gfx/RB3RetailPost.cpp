@@ -387,6 +387,7 @@ void RB3RetailPost::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& 
     if (p.dc3) {
         EnsureDC3Pipelines(gpu);
         if (p.bloom) RunDC3Bloom(encoder, bloomSrcView ? bloomSrcView : sceneView, sceneW, sceneH, p, gpu);
+        RunDC3Velocity(encoder, sceneW, sceneH, p, gpu);
         RunDC3Composite(encoder, sceneView, sceneW, sceneH, frameView, p, gpu);
         return;
     }
