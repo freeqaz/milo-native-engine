@@ -38,8 +38,6 @@
 
 #include "platform/rndshape/RndShape.h"
 #include "gfx/UniformStructs.h"
-#include "obj/Data.h"
-#include "os/System.h"
 
 #include "obj/Dir.h"
 #include "rndobj/Group.h"
@@ -355,25 +353,6 @@ bool CollectProjShadowCasters(ProjShadowCasters &out) {
     } else {
         (void)out;
         return false;
-    }
-}
-
-float DisplayGamma(bool presenting) {
-    if constexpr (kDC3RetailModel) {
-        if (!presenting) return 0.0f;
-        // DxRnd::SetupGamma: SystemConfig("rnd")->FindData("gamma", g, false).
-        // Not cached until the system config exists.
-        static float sGamma = -1.0f;
-        if (sGamma >= 0.0f) return sGamma;
-        DataArray *root = SystemConfig();
-        if (!root) return 0.0f;
-        DataArray *rnd = root->FindArray("rnd", false);
-        float g = 0.0f;
-        sGamma = (rnd && rnd->FindData("gamma", g, false) && g > 0.0f) ? g : 0.0f;
-        return sGamma;
-    } else {
-        (void)presenting;
-        return 0.0f;
     }
 }
 

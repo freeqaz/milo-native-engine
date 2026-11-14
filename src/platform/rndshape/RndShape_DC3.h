@@ -416,14 +416,10 @@ constexpr bool kAlphaBlendMax = true;
 constexpr bool kGammaSpaceShading = kDC3RetailModel;
 template <class M>
 inline float BloomMaskScale(const M &) { return 0.0f; }
-// The display gamma ramp DxRnd::SetupGamma (dc3-decomp rnddx9/Rnd_Xbox.cpp,
-// 100% matched) loads from the system config's (rnd (gamma g)) -- 0.85 in
-// system/run/config/default.dta, the only (gamma ...) in DC3's config -- and
-// the display applies to the front buffer: entry i = (u16)(pow(i / 256, g) *
-// 1024) << 6 (gfx/DisplayRamp). Presented frames only; a headless frame is
-// the front buffer, which is what a retail screenshot holds. rb3-xenon: none.
-// Defined in DC3SceneLighting.cpp.
-float DisplayGamma(bool presenting);
+// No display gamma ramp here. Retail's is DxRnd::SetupGamma's (rnd (gamma
+// 0.85)) at scan-out (docs/native/dc3-retail-lighting.md section 2), and
+// applying it at output belongs to the np-gfx-post lane.
+inline float DisplayGamma(bool) { return 0.0f; }
 
 // ---- scene lighting --------------------------------------------------------
 // DC3 (retail model): the image's NgEnviron::Select register set, see
