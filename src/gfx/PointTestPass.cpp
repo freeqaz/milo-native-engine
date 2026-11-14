@@ -294,6 +294,15 @@ int PointTestPass::CollectThrough(uint64_t through, bool wait, AnswerFn fn, void
     return delivered;
 }
 
+void PointTestPass::KeysDueThrough(uint64_t through, std::vector<const void*>& out) const {
+    for (const auto& it : mBatches) {
+        if (it->seq > through) continue;
+        if (it->state != Batch::kRecorded && it->state != Batch::kMapping) continue;
+        for (const Query& q : it->queries)
+            if (q.key) out.push_back(q.key);
+    }
+}
+
 void PointTestPass::Cancel(const void* key) {
     if (!key) return;
     for (auto& it : mBatches)

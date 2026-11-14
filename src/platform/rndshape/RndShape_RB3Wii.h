@@ -508,6 +508,11 @@ constexpr int kDrawModeReflection = 7;
 // first, hid the whole skyline.
 constexpr bool kCamSelectSetsViewport = false;
 
+// ---- flare point tests -----------------------------------------------------
+// WgpuRnd waits after the submit for point-test answers not ready at world end
+// (see the DC3 shape): RB3 keeps the one-frame answer latency on desktop.
+constexpr bool kPointTestWaitAfterSubmit = true;
+
 // ---- render-to-texture -----------------------------------------------------
 // RB3's RndTexRenderer::DrawToTexture brackets the draw into its output texture
 // with WiiMat::SetOverrideAlphaWrite(true) / (false) (rndobj/TexRenderer.cpp,

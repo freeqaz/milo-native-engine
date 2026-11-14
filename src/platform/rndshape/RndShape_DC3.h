@@ -428,6 +428,17 @@ constexpr int kDrawModeReflection = 8;
 // TheNgRnd.SetViewport (rndobj/Cam.cpp), so WgpuRnd receives it on every select.
 constexpr bool kCamSelectSetsViewport = true;
 
+// ---- flare point tests -----------------------------------------------------
+// Whether WgpuRnd, after submitting a frame, blocks for the point-test answers
+// of earlier frames that were not ready at world end (FinishPointTestReadback),
+// so that every flare answer arrives one frame after its test, as retail
+// DxRnd::DoPointTests' do. dc3-decomp (kDC3RetailModel) does not wait: on an
+// integrated or phone GPU the wait is CPU time spent idle, and DC3 takes the
+// occasional answer a frame late instead, with the flare's last answer standing
+// in for it (gfx/PointTestStandIns.h) so its fade does not snap. rb3-xenon
+// keeps the wait it had.
+constexpr bool kPointTestWaitAfterSubmit = !kDC3RetailModel;
+
 // ---- render-to-texture -----------------------------------------------------
 // DC3 writes destination alpha for every material drawn into a render target.
 // The image's colour-write mask is chosen per material select by
