@@ -6670,3 +6670,243 @@ which changes only docs. Both consumers ran on their current mains, rb3
   0 differing pixels.
 - `native_compat_census.py check` reports OK. No getenv was added since
   `87031f3`.
+
+## 35. DC3 post chain, round 5: the rollerrink floor bloom is Xenia's destination alpha (lane np-gfx-post, 2026-11-14)
+
+The brief, from the light lane's stage decomposition: on rollerrink NORMAL
+(`rollerrink_performance_high`: bloom colour (0.97, 0.84, 0.62), threshold
+8, intensity 1.6) the floor is about 20% darker on native than on Xenia
+(Xenia lane: floor 165.6 vs 131.5, left floor −26%, scene 97.1 vs 77.6).
+Lighting matches with bloom off (≈119 vs 115). The bloom adds +32 floor luma
+on Xenia and +4 on native.
+
+**Verdict: native is right. The +32 is Xenia's MIN/MAX alpha blend, applied
+without the blend factors, acting on the rink's Multiply light-catcher
+overlays. No code change.**
+
+Evidence: dc3-decomp `archive/np-gfx-2026-11-14/lanes/post/round5/`
+(`measure/`, `native/`, `xenia/`, `sheets/`, `tools/`). Xenia frames are
+pre-ramp, so native ran with `DC3_DISPLAY_GAMMA=off`. "Floor" in 35.2 is the
+lower third of the frame, as in the light lane's decomposition.
+
+### 35.1 What writes the floor's bloom mask
+
+The rink's floor meshes were probed live on both sides at the same song
+time (`xenia/x1b_probe_vs_native.txt`: 76 entries, IDENTICAL). The probe
+reads blend, bloom_multiplier, alpha_write, alpha_cut, intensify, colour,
+alpha and showing.
+- Floor: `rinkWoodFloor.mat` (`Rink*.mesh`), `StageCarpet.mat`: blend 1
+  (Src), bloom_multiplier 1.
+- On top of it: `Rink_overlay.mesh` and `Rink1..5_overlay.mesh`
+  (`Rink_lightCatcher.mat`), plus `StageCarpet_lightCatcher.mesh`
+  (`StageCarpet_lightCatcher.mat`). All are **blend 6 (Multiply)**, white,
+  bloom_multiplier 1, no alpha_write, no alpha_cut. They are therefore not
+  excluded by AllowHDR, so they write the mask, like the menus' `debloom.mat`
+  quads (§31.5).
+
+The mask a Multiply draw leaves depends on the alpha blend:
+- **Retail.** `SetDefaultRenderStates` sets `BlendOpAlpha` 3 (MAX), and
+  `NgMat::SetBasicState` passes the colour factors for alpha too (§30, §31.5).
+- **Native** (`kAlphaBlendMax = !kDC3RetailPost`, `RndShape_DC3.h`). Alpha
+  follows the draw's own equation, so a Multiply leaves
+  `dst.a × src.a`: the catcher multiplies the floor's small mask down.
+  Native measures the floor's mask at 3.2/255 (`native/rink_base_mask`).
+- **Xenia.** It applies MIN and MAX "which don't involve the factors"
+  (`spirv_shader_translator_rb.cc:3324`, the FSI path; the Vulkan path's
+  `VK_BLEND_OP_MAX` likewise ignores factors). So the catcher leaves
+  `max(src.a, dst.a)`, which is the catcher's own luma-derived mask over the
+  whole floor. A native build with that rule (`kAlphaBlendMax = true`,
+  binary `dc3-native-r5max`) reads the floor mask at **34.3/255**.
+
+### 35.2 Stage decomposition (MEASURED)
+
+Rollerrink, omg, `high`, still performer. Each state is set on the
+`.pp` every ~1.2 s (native) / 1 s (Xenia) and screenshotted 3 frames later
+(`tools/nstates.sh`, `tools/x1.sh`; `measure/rink_ab.txt`,
+`measure/catch_ab.txt`, `measure/r5p-x1b-catch_stats.txt`). Floor = lower
+third, mean luma.
+
+| build | full chain | bloom off | bloom term |
+|---|---|---|---|
+| Xenia (x1b) | 150.0 | 117.6 | **+32.4** |
+| native, draw equation (shipped) | 118.2 | 114.9 | +3.3 |
+| native, factorless MAX (experiment) | 146.2 | 114.3 | **+31.9** |
+
+The same with the seven catcher meshes hidden (`set_showing FALSE`):
+
+| build | full chain | bloom off | bloom term | scene, full |
+|---|---|---|---|---|
+| Xenia (x1b) | 135.8 | 121.0 | **+14.8** | 90.7 |
+| native, draw equation | 132.8 | 117.2 | **+15.6** | 86.6 |
+| native, factorless MAX | 134.2 | 118.7 | +15.5 | 87.5 |
+
+Reading the rows:
+- With the catchers hidden, the two bloom chains agree on a large
+  mid-tone source (+14.8 vs +15.6).
+- That settles the other leads in the brief without touching them:
+  - the `thr > 1 ? 1/thr` branch at threshold 8;
+  - the weights and extents of the three downsample sets;
+  - the screen-blend composite of mid-tones;
+  - intensity 1.6, which is not clamped anywhere on either side.
+- The whole difference is how the catchers' Multiply alpha resolves. Giving
+  native Xenia's rule reproduces Xenia's bloom term to 0.5 luma.
+- The vignette and the colour matrix move both sides by the same few levels.
+  With vignette off as well, the MAX build reads 151.6 (Xenia 157.5).
+
+Sheet: `sheets/rink_catcher_alpha_sheet.png`. It is a 3×3 grid of Xenia,
+native equation and native MAX, each with the catchers shown, hidden, and
+with bloom off, plus retail frame 01.
+
+### 35.3 The Xenia lane's regions (MEASURED)
+
+These are the Xenia lane's `R_normal_pre` regions (`spec_rd`). Only
+same-camshot frames are used: edge correlation > 0.45 with the lane's
+reference (`tools/rd_series.py`; `measure/R_normal_pre_series.txt`). Xenia
+n=15.
+
+| region | Xenia min..max (mean) | native equation | native factorless MAX | native equation, catchers hidden |
+|---|---|---|---|---|
+| floor | 156.5..166.6 (162.2) | 128.8 (−20.6%) | 160.9 (−0.8%) | 149.8 |
+| floor_l | 119.8..122.4 (121.4) | 91.5 (−24.7%) | 119.7 (−1.4%) | 103.8 |
+| scene | 94.7..100.1 (97.6) | 79.4 (−18.7%) | 93.3 (−4.4%) | 87.5 |
+
+Native frames: 9 (equation), 8 (MAX), 4 (hidden). Native equation still
+reproduces the lane's own numbers (lane native: floor 131.5, floor_l 89.9,
+scene 77.6).
+
+**The flare caveat does not apply here.** The floor band is not flare-lit:
+with bloom off the two sides agree within about 3 levels. The MAX build also
+reaches Xenia's figure without changing any flare.
+
+### 35.4 Which one is retail (MEASURED against hardware footage, INFERRED for the mechanism)
+
+**Menus.** §31.5 already refuted MAX against retail hardware video: under
+factorless MAX the menus' Multiply "debloom" quads raise the mask to 1, and
+the card burns white. Xenia's song-select card does burn like that (§34.2).
+
+**Rink.** Retail rink footage, six floor frames
+(`measure/floor_contrast_retail.txt`, `tools/floor_contrast.py`, post-ramp,
+lower third). Contrast = (p90 − p10) / (p90 + p10).
+
+| source | floor mean | p10 | contrast (range) |
+|---|---|---|---|
+| retail 01/02/05/08/09/12 | 115.6 (95–136) | 32.3 (16–51) | **0.731** (0.622–0.842) |
+| native equation, full | 128.7 | 47.6 | 0.632 (0.595–0.696) |
+| native factorless MAX, full | 152.4 | 82.8 | 0.463 (0.400–0.771) |
+| Xenia, full | 160.1 | 88.3 | **0.441** (0.408–0.480) |
+| Xenia, bloom off | 128.5 | 44.8 | 0.651 (0.599–0.736) |
+| Xenia, catchers hidden | 146.4 | 66.4 | 0.541 |
+| native equation, catchers hidden | 143.6 | 65.8 | 0.539 |
+
+- Every Xenia full-chain frame is washed out beyond retail's whole contrast
+  range, and lifted in the shadows (p10 88 vs 16–51).
+- Native's shipped frames overlap retail's range.
+- Caveat: the footage is a YouTube capture of unknown levels. Its floor mean
+  reads lower than every render, so only the contrast is used as evidence.
+
+**Open (INFERRED).** Retail's MAX with factors applied would equal the draw
+equation for Multiply draws and for opaque draws. It would differ only for
+additive AllowHDR draws. Settling which one retail does needs a Xenia GPU
+trace or a hardware capture. It does not affect the rink, which has no
+additive floor draws, or any number in this section.
+
+### 35.5 Re-checks on the merged base (np-gfx engine `bd1da89`, dc3 `dfe16cb0f`)
+
+Binary `dc3-native-r5b`. It carries light round 4 (`kIntensifyScalesAlpha`)
+and the flare lane (`PointTestPass` occlusion). This lane has no code of its
+own on top.
+
+**dclive normal** (`measure/dl45_pairs.txt`, correlation 0.56, Xenia n=2).
+Each row is native vs Xenia mean:
+
+| region | native | Xenia mean | lane's native |
+|---|---|---|---|
+| floor | 206.7 | 207.5 | 208.8 |
+| floor_l | 163.9 | 164.3 | 165.0 |
+| scene | 121.9 | 132.1 | 124.6 |
+| logo | 204.7 | 219.4 | 204.0 (unchanged) |
+
+The bulbs read 30.5 vs 89.3, but they are flare-lit, so this is a flare
+caveat region. The scene and logo gaps are the same as the Xenia lane's own
+native numbers, so the merge did not move them. The factorless-MAX capture
+of dclive (`dl45max`) landed on another camshot (correlation 0.14), so it
+is not used.
+
+**DCI normal** (`high`, near01, the Xenia lane's regions; `tools/normrun.sh`,
+`measure/n_series.txt`). A 40-state run has only one frame on the near01
+camshot (correlation 0.48 and 0.46); Xenia n=14.
+
+| region | Xenia min..max (mean) | r5b | factorless MAX | earlier native (Xenia lane; lamp: §34.2a) |
+|---|---|---|---|---|
+| scene | 45.5..61.3 (51.0) | 51.7 | 50.0 | |
+| floor_l | 11.3..18.6 (12.5) | 12.1 | 11.9 | 12.1 |
+| floor_r | 42.3..44.9 (43.4) | **40.1** | 41.4 | 42.4 |
+| wall | 49.0..73.0 (55.5) | 57.0 | 51.2 | |
+| lamp | 73.3..82.8 (76.8) | 102.8 | 107.0 | 107–124 |
+| ceiling | 129.4..135.1 (131.9) | 131.9 | 129.7 | |
+
+- The DCI floors do not depend on the alpha rule. The MAX build moves them
+  by less than 1.5 levels.
+- floor_r reads 2.2 levels under Xenia's minimum. That is one frame, and
+  the MAX build reads low there too (41.4, and 40.4 in the single-frame
+  `n45max` capture on the light-round-4 base). So it is not this lane's
+  rule. It may have come in with the light-round-4 base, since the Xenia
+  lane's native read 42.4.
+- The lamp is the §34.2a flare case. Xenia's default fake count draws the
+  `CouchFlare`s at about 1/80 strength.
+
+**DCI peak** (movement01, the round-4 same-camshot regions, `tools/p55_series.py`;
+`measure/p55_series.txt`). The Xenia range is n=20. r5b has 5 same-camshot
+frames; round 4's final binary (r4fix) has 3.
+
+| region | Xenia min..max (mean) | r5b min..max (mean) | r4fix mean |
+|---|---|---|---|
+| scene | 38.2..61.1 (45.3) | 38.9..44.4 (42.4) | 41.1 |
+| floor_l | 10.3..33.7 (19.3) | 11.4..19.7 (15.6) | 14.4 |
+| floor_glow | 7.4..13.5 (10.3) | 6.7..12.6 (9.6) | 9.9 |
+| stripe | 56.6..123.6 (72.7) | 60.0..83.2 (69.4) | 64.3 |
+| stripe_cyan | 68.7..163.6 (88.3) | 67.1..139.7 (95.0) | 84.4 |
+| crowd | 28.0..52.9 (43.0) | 27.6..**60.3** (42.1) | 41.6 |
+| pod | 46.0..90.0 (57.8) | 46.2..57.8 (53.3) | 52.6 |
+| torso | 45.1..120.9 (68.8) | 48.1..111.6 (75.8) | 64.9 |
+
+- As predicted, the stripes moved up with `kIntensifyScalesAlpha`: means
+  64.3 → 69.4 and 84.4 → 95.0.
+- **One overshoot: crowd at frame s41 (65.3 s), 60.3 vs Xenia's max 52.9.**
+  Split by pixel (`measure/p55_crowd_occupancy.txt`,
+  `sheets/p55_crowd_box_r5b_vs_xenia.png`):
+  - the share of dark crowd-silhouette pixels is inside Xenia's range
+    (52.3% vs 47.3–73.8%);
+  - the lit background between the silhouettes reads 112.9 against
+    Xenia's 78.8–106.7, which is +6 levels.
+  - That background is the beat-pulsed stripe band and its haze. In the
+    same frame stripe_cyan reads 139.7, which is inside Xenia's range.
+    So it is the intensify stripes at a beat peak, not the bloom.
+- Two single-frame lows, 0.1–1.6 levels outside the range: floor_glow s40
+  at 6.7 and stripe_cyan s24 at 67.1.
+
+### 35.6 Guard, consumers, cost
+
+- **Guard.** dc3 `DC3RetailPostTest.BlendedAlphaFollowsTheDrawsEquation`
+  (round 3, `native/tests/test_dc3_retail_post.cpp:141`) already pins the
+  shipped rule.
+  - It checks that `AlphaBlendMax()` is false.
+  - It checks that Multiply's and Add's alpha op and factors follow the
+    colour.
+  - Sabotage: `kAlphaBlendMax = true`, which is exactly Xenia's rule and the
+    r5max build, fails it at lines 144, 146, 147, 148 and 150
+    (`measure/sabotage_alpha_max_guard.log`).
+  - Nothing new was needed, since no code changed. The test is what stops
+    someone "fixing" the rink by matching Xenia.
+- **Render passes.** None added, split or renamed.
+- **Frame time.** No code changed, so frame time is unchanged.
+- **Consumers.** The engine at this section's commit is the np-gfx merge
+  `3c55115`, which has the same tree as np-gfx `bd1da89`, plus docs.
+  rb3's and rb3-xenon's current mains were configured with
+  `MILO_ENGINE_PATH` at `3c55115`:
+  - rb3 `all`: built, and ctest passed 158 of 158 (7 skipped, as on main).
+  - rb3-xenon `rb3-render`: 11 frames, 0 differing pixels against round 4's
+    final `ecd579f`. This also shows the light and flare merges did not
+    reach rb3-xenon.
+  - `native_compat_census.py check` reports OK: 454 flags, regen clean, no
+    getenv added.
