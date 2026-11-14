@@ -28,6 +28,29 @@ const kAlphaFringeFadeStart = 0.1;
 // darken, which the image never draws (its NgMat Multiply is src Zero / dst
 // SrcColor and its Darken One/One Min, neither reads alpha).
 override kSkipFringeFade: bool = false;
+// Enhanced cutout coverage (DC3_LOOK=enhanced, platform/LookProfile.h): set
+// per pipeline by PipelineManager for an alpha-cut material whose cut is a
+// hard step (MaterialCutCoverage == Sharpened) in a multisampled pass, whose
+// fragment entry is then fs_cutout. The alpha test becomes a coverage mask
+// computed from the TEXTURE alpha against the cut threshold, sharpened to the
+// pixel footprint (cutoutCoverage below), so a cutout's edge is anti-aliased
+// without thinning it. kCutoutSamples is the pass's sample count.
+override kCutoutCoverage: bool = false;
+override kCutoutSamples: u32 = 4u;
+// The coverage fs_cutout turns into its sample mask (shadeStandard sets it).
+var<private> gCutCoverage: f32 = 1.0;
+
+// Coverage of a cutout texel: the edge sits at the cut threshold and ramps
+// over one pixel footprint (w = fwidth of the texel alpha), so a filtered or
+// minified edge stays as wide as the alpha test drew it and only its last
+// pixel blends. A fully transparent texel never covers anything, so a cut at
+// threshold 0 (pass where alpha > 0) does not grow a half-covered border.
+fn cutoutCoverage(a: f32, threshold: f32, w: f32) -> f32 {
+    if (a <= 0.0) {
+        return 0.0;
+    }
+    return saturate((a - threshold) / max(w, 1e-4) + 0.5);
+}
 // Soft-clip ("GX saturate") of the per-channel LIGHTING SUM (ambient + Σ light
 // diffuse) before it modulates the base/texture colour. On Wii the rasterised
 // channel colour is clamped to [0,1] *before* the TEV texture multiply, so
@@ -1409,8 +1432,7 @@ fn retailShade(surfaceInput: VertexOutput, base: vec3f, ambientLight: vec3f, raw
 }
 
 // === Fragment Shader ===
-@fragment
-fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
+fn shadeStandard(surfaceInput: VertexOutput) -> vec4f {
     let materialAlpha = material.color.a;
     // Vertex colour is the per-vertex baked lighting / AO. In the original
     // engine it is "Use vertex color and alpha for base or ambient" — i.e. it
@@ -1484,6 +1506,12 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
         }
     }
     var baseColor = vec4f(matRgb * vertexTint, materialAlpha * vertexAlpha);
+    // Enhanced cutout coverage (kCutoutCoverage): the alpha that is not the
+    // texel's (material fade x vertex alpha), and the texel alpha with its
+    // pixel footprint. Untextured: a texel alpha of 1.
+    let cutFadeA = baseColor.a;
+    var cutTexA = 1.0;
+    var cutTexW = 0.0;
 
     // The texel alpha colour modulation reads (1 untextured: no band tint).
     var colorModTexA = 1.0;
@@ -1496,6 +1524,9 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
             baseColor = vec4f(baseColor.rgb * diffuseSample.rgb,
                               baseColor.a * colorModAlpha(diffuseSample.a));
         }
+        cutTexA = select(colorModAlpha(diffuseSample.a), diffuseSample.a,
+                         isEnabled(material.useAlphaAsRGB));
+        cutTexW = fwidth(cutTexA);
     }
 
     // DC3 retail environment map (scene.retailLighting 2, standard.ps option
@@ -1538,7 +1569,17 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
     // Intensify is the original material toggle that doubles texture brightness.
     baseColor = vec4f(baseColor.rgb * material.intensify, baseColor.a);
 
-    if (baseColor.a < material.alphaThreshold) {
+    if (kCutoutCoverage) {
+        // A fade that alone fails the cut hides the draw, as the alpha test
+        // would; otherwise the fade does not erode the cutout's shape.
+        if (cutFadeA < material.alphaThreshold) {
+            discard;
+        }
+        gCutCoverage = cutoutCoverage(cutTexA, material.alphaThreshold, cutTexW);
+        if (gCutCoverage <= 0.0) {
+            discard;
+        }
+    } else if (baseColor.a < material.alphaThreshold) {
         discard;
     }
 
@@ -1742,5 +1783,35 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
     // ---- end np-gfx-post ----
 
     return vec4f(finalColor, baseColor.a);
+}
+
+@fragment
+fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
+    return shadeStandard(surfaceInput);
+}
+
+struct CutoutOutput {
+    @location(0) color: vec4f,
+    @builtin(sample_mask) mask: u32,
+}
+
+// Enhanced cutout coverage (kCutoutCoverage pipelines only): the coverage
+// becomes round(cov * samples) of the pass's samples, rotated per pixel so
+// neighbouring edge pixels do not all cover the same sample positions.
+@fragment
+fn fs_cutout(surfaceInput: VertexOutput) -> CutoutOutput {
+    var out: CutoutOutput;
+    out.color = shadeStandard(surfaceInput);
+    let n = max(kCutoutSamples, 1u);
+    let full = select((1u << n) - 1u, 0xffffffffu, n >= 32u);
+    let k = u32(round(gCutCoverage * f32(n)));
+    var mask = select((1u << k) - 1u, full, k >= n);
+    let px = vec2u(surfaceInput.clipPos.xy);
+    let r = (px.x + 2u * px.y) % n;
+    if (r != 0u && k < n) {
+        mask = ((mask << r) | (mask >> (n - r))) & full;
+    }
+    out.mask = mask;
+    return out;
 }
 )WGSL"

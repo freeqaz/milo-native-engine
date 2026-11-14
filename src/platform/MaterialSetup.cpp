@@ -3,6 +3,7 @@
 // for both primary materials and multi-pass materials.
 
 #include "platform/MaterialSetup.h"
+#include "platform/LookProfile.h"
 #include "platform/GameRenderHook.h"
 #include "platform/MeshGpuCache.h"
 #include "rndobj/Cam.h"
@@ -240,13 +241,38 @@ void MaterialShaderColor(const Hmx::Color& matColor, BaseMaterial::Blend blend, 
     out[3] = matColor.alpha;
 }
 
-// Alpha-to-coverage for a material's pipeline: only its alpha cut asks for it,
-// and only a shape whose alpha cut is more than the alpha test
-// (rndshape::kAlphaCutUsesCoverage). The pipeline enables it only when the
-// pass is multisampled.
-bool MaterialAlphaToCoverage(BaseMaterial* mat) {
-    if (!rndshape::kAlphaCutUsesCoverage || !mat) return false;
-    return rndshape::Mat(mat)->GetAlphaCut();
+bool BlendWeightsByAlpha(int blend) {
+    return blend == BaseMaterial::kBlendSrcAlpha || blend == BaseMaterial::kBlendSrcAlphaAdd ||
+           blend == BaseMaterial::kPreMultAlpha;
+}
+
+CutCoverage CutCoverageRule(bool alphaCut, int blend, int threshold, milo::LookProfile look,
+                            bool shapeAlphaToCoverage) {
+    if (!alphaCut) return CutCoverage::None;
+    if (shapeAlphaToCoverage) return CutCoverage::AlphaToCoverage;
+    if (look != milo::LookProfile::Enhanced || blend == BaseMaterial::kBlendDest)
+        return CutCoverage::None;
+    // A cut at 0 under a blend that weights by alpha has no hard edge: the
+    // texel's alpha already fades it out (every glyph, the PreMultAlpha
+    // fonts). Anywhere else the cut is a step -- from nothing to opaque (Src:
+    // hair, crowd clothing) or to the threshold's opacity (SrcAlpha at 90:
+    // palms) -- and the step is what gets anti-aliased.
+    if (threshold <= 0 && BlendWeightsByAlpha(blend)) return CutCoverage::None;
+    return CutCoverage::Sharpened;
+}
+
+CutCoverage MaterialCutCoverage(BaseMaterial* mat) {
+    if (!mat) return CutCoverage::None;
+    auto m = rndshape::Mat(mat);
+    return CutCoverageRule(m->GetAlphaCut(), (int)m->GetBlend(), m->GetAlphaThreshold(),
+                           milo::Look().profile, rndshape::kAlphaCutUsesCoverage);
+}
+
+float MaterialAlphaThreshold(bool alphaCut, int threshold) {
+    if (!alphaCut) return 0.0f;
+    // Retail's strict test (rndshape::kAlphaTestGreater): the shader discards
+    // below the threshold, so nudge it past the reference value itself.
+    return threshold / 255.0f + (rndshape::kAlphaTestGreater ? 1e-5f : 0.0f);
 }
 
 float MaterialAlphaScale(bool intensify, bool retailMaterialTerms) {
@@ -274,11 +300,7 @@ MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh, const UiDraw
     BaseMaterial::Blend matBlend = mat->GetBlend();
     MaterialShaderColor(mat->GetColor(), matBlend, matUni.color);
 
-    if (mat->GetAlphaCut()) {
-        matUni.alphaThreshold = mat->GetAlphaThreshold() / 255.0f;
-    } else {
-        matUni.alphaThreshold = 0.0f;
-    }
+    matUni.alphaThreshold = MaterialAlphaThreshold(mat->GetAlphaCut(), mat->GetAlphaThreshold());
 
     // --- Specular ---
     const Hmx::Color& spec = mat->GetSpecularRGB();
@@ -492,7 +514,7 @@ MaterialParams BuildPassMaterialParams(BaseMaterial* rawNextPass, const UiDrawTe
 
     // --- Color ---
     MaterialShaderColor(nextPass->GetColor(), nextPass->GetBlend(), npMatUni.color);
-    npMatUni.alphaThreshold = nextPass->GetAlphaCut() ? nextPass->GetAlphaThreshold() / 255.0f : 0.0f;
+    npMatUni.alphaThreshold = MaterialAlphaThreshold(nextPass->GetAlphaCut(), nextPass->GetAlphaThreshold());
 
     // --- Specular ---
     const Hmx::Color& nps = nextPass->GetSpecularRGB();

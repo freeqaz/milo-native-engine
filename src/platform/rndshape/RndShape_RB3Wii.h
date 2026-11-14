@@ -508,6 +508,7 @@ constexpr int kBitmapMaxMipLevels = 0;
 // An alpha-cut material also gets alpha-to-coverage in a multisampled pass
 // (native behaviour kept; see RndShape_DC3.h for DC3's alpha-test-only rule).
 constexpr bool kAlphaCutUsesCoverage = true;
+constexpr bool kAlphaTestGreater = false;  // native ">= threshold" kept
 
 // ---- draw modes ------------------------------------------------------------
 // RB3's WorldReflection::DrawShowing sets mode 7 for the mirrored pass
