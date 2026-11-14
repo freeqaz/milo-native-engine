@@ -1207,3 +1207,205 @@ uniform value, with no new draw, pass or bind group. A first A/B against the
 pre-merge base binary showed +0.2..0.45 ms of GPU estimate; that binary
 predates the np-gfx 34cb235 merge (velocity blur), so it compared two code
 bases, not this change.
+
+## 10. Round 5: dclive's dancer shadows, and streetside's peak sky
+
+Ground truth for this round is Xenia running the debug XEX, compared against
+native with `DC3_DISPLAY_GAMMA=off`; the HUD anchor (rows 104:180, columns
+1150:1230) reads luma 21.9 on both in every pair below. Xenia's peak state is
+forced with `{handle (game_panel force_venue_state awesome)}` at song time 12
+s, both sides pause at 30 s, `force_shot area1_far02.shot` and
+`disable_picking TRUE`, and every toggle is a DTA eval followed by a capture
+(native) or a MARK interval (Xenia, frames averaged per label). Evidence:
+`archive/np-gfx-2026-11-14/lanes/light/round5/` in dc3 (gitignored).
+
+### 10.1 Studio 675 (dclive) dancer floor shadows: not a native defect
+
+MEASURED. Protocol `dl_common.txt` (native `n3/`, Xenia `x1/`): raw and
+post, the gobo hidden (`a2_spotlight.lit set_showing FALSE`), the stage
+floor hidden (`DLV_StageFloor01/02.mesh`), and the shadow casters cleared
+(`a2_spotlight.lit clear (shadow_objects)`). Luma:
+
+| measure | Xenia | native |
+|---|---|---|
+| gobo pool, raw | 163.6 | 166.1 |
+| gobo term (R1 − R_noGobo) | 43.4 | 41.3 |
+| shadow depth (R_noShadow − R1) | 21.2 | 23.6 |
+| floor outside the pool, raw | 118.0 | 119.9 |
+| gobo pool, post | 201.6 | 203.0 |
+| shadow pixels, post | 167.7 | 166.5 |
+| floor band with the floor hidden | 64.5 | 64.4 |
+
+Every term agrees within a few luma: the floor's base, the gobo's
+contribution, the shadow depth and the post chain. The probes (env ambients,
+`DStagePointLight01`, `a2_spotlight` colour, intensity and caster count, the
+transparent stage material) read the same on both. The darker smudges in the
+retail footage (`dclive/01`, `dclive/14`) are therefore not this state; they
+are INFERRED to come from a different light preset or camera, which this round
+did not chase. Nothing changed. Sheets: `x1_sheet.png`, `n3_sheet.png`,
+`x1t_shadow.png` / `n3t_shadow.png`, `dl_floor_x_vs_n.png`.
+
+### 10.2 Streetside peak: the sky is screen-aligned
+
+**Decomposition (MEASURED, protocols `ss_*`, `ss2_*`; native `n5`, `n8`,
+Xenia `x2`, `x3`).** Native and Xenia read identical inputs: env ambients,
+fog, the floor and sky materials, the stripe lines' showing state, tex_xfm,
+tex_gen and tex_wrap.
+
+- The road is not drawn in peak: `default_environment.grp` is hidden, so
+  hiding `Street.mat`'s meshes changes nothing on either side. The road is
+  ruled out.
+- Order: `peak_reflection.refl` (WorldReflection::DrawShowing, mirrored camera,
+  draw mode 8), then the black placeholder at 50%, then the direct scene. The
+  floor is the reflection times 0.5; with the reflection off it is black on
+  both.
+- With the sky hidden (`peak_sky_1 set_showing FALSE`), native matches Xenia
+  within 0.5 luma everywhere on the floor. The whole floor difference was the
+  sky.
+
+**Cause (MEASURED).** `sky_peak_1.mat` and `sky_peak_2.mat` read
+`screen_aligned 1` (`peak_street.mat` 0). That is ShaderOptions bit 13
+(`RndShaderStandard::CalcShaderOpts`), and the shipped permutation
+`standard_0000000000002010.vs` (xenia-gpu-shader-compiler ucode,
+`round5/shdis-Lbmu/`) replaces the vertex UV with the vertex's own screen
+position before the texgen rows:
+
+```
+rcp r0.x, r2.w ; mul r0.xy, r2.xy, r0.x ; mad r0.xy, r0.xy, 0.5, 0.5 ; subsc r0.z, 1, r0.y
+dp2add o0.x, r0.zx, c20.yx, c20.w ; dp2add o0.y, r0.zx, c21.yx, c21.w
+```
+
+`standard_0000000000000010.vs` feeds the vertex UV to the same two dp2adds.
+A ruler test on Xenia confirms it: the sky equals the texture sampled at
+u = screen x / 1280 (`ss5_*`, `x6/`, `pred/x6_ruler*.png`). Native ignored
+the flag and mapped the cylinder's own UVs (u = 0.5 + angle/180 around, v
+down its 6124-unit height), so:
+
+- direct, it showed the texture's starfield where retail shows the
+  searchlight fan;
+- reflected, it sampled stars and beams where retail samples the texture's
+  bottom third, navy (24, 25, 54). Navy times the reflection ambient
+  (0.22, 0.216, 0.255) is (5.3, 5.4, 13.8); Xenia reads (5.2, 5.6, 13.2) on
+  the near floor. That was round 4's "blue lift" (section 9.3).
+
+**Fix (engine 2e26676, comment 141d468).** `rndshape::MatScreenAligned`
+(RndShape_DC3.h: the material's GetScreenAligned under the DC3 retail model,
+false for rb3-xenon; RndShape_RB3Wii.h: false) sets bit 9 of `colorMod.w` in
+both material builders (`FillScreenAligned`, after FillColorMod), and
+`vs_main` / `vs_skinned` pass `texGenSourceUV(vertex.uv, clipPos)` to
+computeTexGenUV. No new uniform, bind group, buffer or getenv.
+
+**Test (dc3 bb3c4d9ed, `native/tests/test_screen_aligned_texgen.cpp`).** The
+flag through both builders, and the engine's own WGSL on a GPU against the
+microcode's arithmetic for screen-aligned and plain materials. Five sabotages,
+each caught: the WGSL always returning the vertex UV; no FillScreenAligned for
+the primary; none for a NextPass; v not flipped; MatScreenAligned false
+(`round5/sabotage_summary.txt`).
+
+**Before and after (raw, paused, R1 = peak with post off; `x3` Xenia, `n8`
+before, `n19` after):**
+
+| region | Xenia | native before | native after |
+|---|---|---|---|
+| near floor L (640:715, 0:230), RGB | (5.1, 2.8, 9.3) | (16.6, 16.1, 25.1) | (5.0, 2.8, 9.2) |
+| far floor L (470:540, 0:230), RGB | (15.1, 3.1, 19.2) | (20.7, 10.7, 27.5) | (14.4, 2.9, 18.7) |
+| floor band (440:715, 0:1050), luma | 12.8 | 16.2 | 12.5 |
+| sky top (50:120, 300:900), luma | 62.0 | 32.2 | 63.4 |
+| sky term (R1 − R_noSky) vs Xenia, mean abs, sky | — | 11.4 | 2.1 |
+| sky term vs Xenia, mean abs, floor | — | 3.9 | 0.1 |
+| whole R1 vs Xenia, mean abs, floor | — | 6.5 | 2.7 |
+
+The remaining whole-frame floor difference is the dancers (the two sides
+pause on different poses), not the sky. Sheets:
+`pred/r5_R1_before_after.png`, `pred/r5_skyterm_x3_n8_n19.png`.
+
+### 10.3 Finding, not fixed: tex_xfm translation x has the wrong sign
+
+MEASURED with the sky's own material (`ss4_*`, Xenia `x5`, native after the
+fix `n20`): setting `(tex_xfm x) 0.25` on `sky_peak_1.mat` moves the sky's
+features 319 px right on Xenia and 307 px left on native (1280 × 0.25 = 320).
+ty, tex_gen 0 and tex_wrap agree (sky-top luma within 2 on every probe).
+Native's FillTexGen puts `xfm.v.x` into the row as `+tx`. The retail rows
+come from `MakeTex3` (100% in report.json), which for an identity rotation
+gives u − tx, v + ty. Not fixed here: streetside's sky has tx 0, the general
+form under rotation needs MakeTex3's rows derived properly, and rb3-xenon
+shares the code, so a fix needs the DC3 gate and its own test. Any DC3
+material that scrolls its texture in x through tex_xfm (an anim on
+`tex_xfm`) scrolls the wrong way on native.
+
+### 10.4 Tooling notes from this round
+
+- Light presets and anims overwrite DTA sets of env ambients and light
+  colour or intensity within a frame or two, `animate_from_preset` or not;
+  measure by hiding objects (`set_showing FALSE`) instead.
+- `force_shot <name>.shot` plus `{$hamdirector set disable_picking TRUE}`
+  holds one camera on both sides.
+- Iterate with the class name: `{$W iterate Mat $m ...}`. DTA loops are
+  `{do ($n $t) {set $n 0} ...}`.
+- tex_xfm keys are `(tex_xfm x|y|z|yaw|...)`.
+- Xenia frames carry a debug GLITCH banner in rows 25-39; measure below row
+  45.
+- zsh does not word-split `$VAR` in `for`; generate protocol files in Python.
+- The native eval server listens on the sweep's port base + 1.
+- `native_song_sweep.py` needs `--stall 1400` for a paused session, or its
+  hang detector kills it.
+- Retail shader binaries with a constant prefix (first bytes zero) need
+  `tail -c +65` before `xenia-gpu-shader-compiler --shader_input_type=vs
+  --shader_output_type=ucode` will disassemble them.
+- Native `set use_environ` / `set prelit` on a material had no visible
+  effect in a live session while tex_xfm and tex_gen sets did; INFERRED that
+  those two are not re-read into the material uniforms after load. Not chased.
+
+### 10.5 The Xenia MAX-alpha caveat (post lane §35), checked against this round
+
+Xenia applies MIN/MAX alpha blending without the blend factors, so a
+Multiply draw that writes the bloom mask over-blooms the floor under it on
+Xenia. Neither item here depends on it:
+
+- Every comparison in 10.1 and 10.2 that decides a cause is raw (post off on
+  both sides, `{rnd toggle_all_postprocs}`), where bloom does not run.
+- No Multiply material that writes alpha covers either floor. dclive's
+  Multiply materials are `DLV_PeakTransSetFloor01.mat` and
+  `DLV_PeakTransStage01.mat` (peak only, and `alpha_write` 0); streetside's
+  are `Building2_shadows.mat` and `building1_shadows.mat` (`alpha_write` 0).
+  (`milo-mat-export`; `round5/dclive_mats/`, `matx-9s4K/`.)
+- dclive's post-on pool and shadow pixels agree within 1.4 luma anyway.
+
+### 10.6 DCI normal `floor_r` (handed over by the post lane): one-frame noise
+
+The post lane read `floor_r` 40.1 (and 41.4 on another build) against Xenia
+42.3..44.9 (mean 43.4, n=14), each from one native frame at camera
+correlation 0.46-0.48. MEASURED with the post lane's own scorer
+(`p55_series.py ... 0.45 normal`, full chain, `DC3_DISPLAY_GAMMA=off`, this
+branch with the screen-aligned fix, which DCI does not use):
+
+- The Xenia reference camera is native's `P1_area1_far03.shot`
+  (`cur_shot` at the matching frames), not a `near01` shot: forcing
+  `P1_area1_near01.shot` or `area1_near01.shot` gives correlation 0.17 at
+  best.
+- On that camera `floor_r` swings 24.8..51.6 across frames with framing and
+  dancer reflections; the region is mirror floor.
+- Native frames at correlation >= 0.45, from three sessions (director's own
+  cuts `n21`, `n22`; `P1_area1_far03` forced, `n23`): 41.3, 41.8, 42.0, 42.0,
+  42.5, 42.9, 43.5, 43.8, mean 42.5 (n=8), against Xenia's mean 43.4.
+
+So native sits about one level under Xenia's mean, overlapping its range,
+and at the 42.4 the Xenia lane measured before round 4, so nothing points
+at round 4's intensify change. Not chased further.
+Evidence: `round5/dci_floor_r/` (`dci_shots.png` shows the reference beside
+the forced near01 shots).
+
+### 10.7 Verification, round 5
+
+Heads: engine `np-gfx-light` f1ef982 plus this doc commit (np-gfx 51fe8b2
+merged), dc3 `np-gfx-light` 6ff058d59 (np-gfx 8c7e3242c merged; the engine
+pin stays np-gfx's 845adf8).
+
+- dc3 `scripts/native_test.sh` at 6ff058d59: registered 1054, executed 984,
+  passed 984, failed 0, skipped 70, budget 70, rc 0. The three
+  `ScreenAlignedTexGen*` tests ran (not skipped).
+- rb3-xenon `rb3-render`, engine 989cd30 (this branch before the fix)
+  against 2e26676: 11 of 11 frames byte-identical, all gates passed on both.
+- rb3 (tree 1dee2c1f7) built against the fix: 157 of 158 pass; the one
+  failure is the same stale `native_compat_census.check` ledger as round 4.
+- No new render pass, bind group, buffer or getenv.
