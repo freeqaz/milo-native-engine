@@ -20,6 +20,7 @@
 #include "rndobj/Dir.h"
 #include "rndobj/HiResScreen.h"
 #include "rndobj/Mesh.h"
+#include "rndobj/Trans.h"
 #include "rndobj/Utl.h"
 #include "gfx/VertexFormats.h"
 #include "obj/Dir.h"
@@ -534,6 +535,24 @@ void WgpuRnd::Terminate() {
 }
 
 void WgpuRnd::Clear(unsigned int flags, const Hmx::Color& color) {
+    // With a render target bound this is the retail D3DDevice_Clear of that
+    // target (DxRnd::Clear: bit 0 colour, bit 1 depth/stencil), alpha included.
+    // RndTexRenderer::DrawToTexture issues it after selecting its camera when
+    // clear_buffer is set, and what it draws next may never write alpha: DC3's
+    // augmented crew photo (ui/augmented_photo.milo, clear_alpha 1, every
+    // material alpha_write 0) owes its opaque alpha to this clear, and the
+    // results screen shows the snapshot through SrcAlpha materials.  Dropping
+    // it left the target at the pass's transparent black.
+    if (mInPass && mActiveTargetTex && (flags & 3)) {
+        RndTex* tex = mActiveTargetTex;
+        EndActivePass();
+        TexturePassLoad load;
+        load.clearColor = (flags & 1) != 0;
+        load.color = color;
+        load.clearDepth = (flags & 2) != 0;
+        BeginTexturePass(tex, load);
+    }
+    // Unchanged: the colour is also kept as the next frame pass's clear colour.
     mClearColor = color;
 }
 
@@ -545,10 +564,14 @@ void WgpuRnd::EndActivePass() {
     FlushTransparentDraws();
     mPass.End();
     mInPass = false;
+    mClipScissorSet = false; // the next pass starts with a full scissor
 }
 
 void WgpuRnd::ClearDepthForOverlay() {
     if (!mInPass || !mFrameView) return;
+    // The overlay pass has no depth to clear, and leaving it for the MSAA
+    // frame pass would resolve over what it holds (see BeginOverlayPass).
+    if (mFrameInOverlay) return;
     // End current pass, restart with depth cleared but color preserved
     EndActivePass();
     BeginFramePass(false); // false = Load color (preserve), but we override depth below
@@ -603,23 +626,15 @@ void WgpuRnd::ClearDepthForOverlay() {
     mLastSceneCam = nullptr;
 }
 
-void WgpuRnd::FlushPostProcessingForOverlay() {
-    if (!mInPass || !mFrameView) {
-        return;
-    }
-
-    // End the current pass (venue + any existing draws)
-    EndActivePass();
-
-    // Run post-processing now (reads intermediate, writes to framebuffer).
-    // Only run once per frame — subsequent calls just start a new overlay pass
-    // without re-running post-proc (which would overwrite previous HUD draws).
-    if (mIntermediateView && RndPostProc::Current() && !mPostProcFlushed) {
-        mPostProcPass.Run(mEncoder, mIntermediateView, mIntermediateTex,
-                          mIntermediateWidth, mIntermediateHeight,
-                          mDepthSampleView, kMSAASamples, FrameTarget(), mBlackTexView, mGpu);
-    }
-
+// The overlay pass FlushPostProcessingForOverlay opens. Once the frame is in
+// it, every later resume of the frame pass (SavePreBuffer at a second
+// EndWorld, a render target finishing, a texture blend, point tests) reopens
+// this pass instead of the MSAA frame pass: that pass resolves the MSAA buffer
+// into the frame target on End, and the MSAA buffer holds nothing drawn since
+// the flush. The DC3 attract movie (MoviePanel draws after the flush; the
+// blacklight panel's EndWorld then ran SavePreBuffer) was drawn and then wiped
+// every frame on web, and the whole frame went black on desktop.
+void WgpuRnd::BeginOverlayPass() {
     int curW = mGpu.WindowWidth();
     int curH = mGpu.WindowHeight();
 
@@ -641,6 +656,7 @@ void WgpuRnd::FlushPostProcessingForOverlay() {
     rpDesc.depthStencilAttachment = nullptr; // no depth for 2D HUD
 
     mPass = mEncoder.BeginRenderPass(&rpDesc);
+    mFrameInOverlay = true;
     rndshape::DrawLogPassOpen(2);
     mInPass = true;
     mActiveTargetTex = nullptr;
@@ -653,6 +669,26 @@ void WgpuRnd::FlushPostProcessingForOverlay() {
 
     // Force scene uniforms re-bind on the new pass
     mLastSceneCam = nullptr;
+}
+
+void WgpuRnd::FlushPostProcessingForOverlay() {
+    if (!mInPass || !mFrameView) {
+        return;
+    }
+
+    // End the current pass (venue + any existing draws)
+    EndActivePass();
+
+    // Run post-processing now (reads intermediate, writes to framebuffer).
+    // Only run once per frame — subsequent calls just start a new overlay pass
+    // without re-running post-proc (which would overwrite previous HUD draws).
+    if (mIntermediateView && RndPostProc::Current() && !mPostProcFlushed) {
+        mPostProcPass.Run(mEncoder, mIntermediateView, mIntermediateTex,
+                          mIntermediateWidth, mIntermediateHeight,
+                          mDepthSampleView, kMSAASamples, FrameTarget(), mBlackTexView, mGpu);
+    }
+
+    BeginOverlayPass();
     // Mark post-proc as already done so EndDrawing doesn't run it again
     mPostProcFlushed = true;
 
@@ -1084,9 +1120,135 @@ void WgpuRnd::ApplyViewport() {
     uint32_t width = vp.Width ? vp.Width : mCurrentTargetWidth;
     uint32_t height = vp.Height ? vp.Height : mCurrentTargetHeight;
     mPass.SetViewport((float)vp.X, (float)vp.Y, (float)width, (float)height, vp.MinZ, vp.MaxZ);
+    // A pass begun while clip planes are pushed starts with a full scissor.
+    if (!mClipStack.empty()) ApplyClipScissor();
+}
+
+// ----------------------------------------------------------------------------
+// Clip planes (RndDrawable::mClipPlanes) as a scissor rectangle
+// ----------------------------------------------------------------------------
+
+// The hooks exist only in shapes whose Rnd declares them; see RndShape_DC3.h.
+#ifdef MILO_RNDOBJ_SHAPE_HAS_CLIP_PLANES
+namespace {
+struct ScreenPoint { float x, y; bool ok; };
+
+// `p` through the row-major, row-vector view-projection `vp` (CamSceneMatrices)
+// to pixels of a viewport at (vx, vy, vw, vh): WebGPU/D3D NDC, y up.
+ScreenPoint ProjectToPixels(const float* vp, const Vector3& p, float vx, float vy, float vw,
+                            float vh) {
+    float c[4];
+    for (int j = 0; j < 4; j++)
+        c[j] = p.x * vp[0 * 4 + j] + p.y * vp[1 * 4 + j] + p.z * vp[2 * 4 + j] + vp[3 * 4 + j];
+    if (!(c[3] > 1e-6f)) return {0, 0, false};
+    const float nx = c[0] / c[3], ny = c[1] / c[3];
+    return {vx + (nx * 0.5f + 0.5f) * vw, vy + (0.5f - ny * 0.5f) * vh, true};
+}
+} // namespace
+
+void WgpuRnd::PushClipPlanesInternal(ObjPtrVec<RndTransformable>& planes) {
+    uint32_t tw = mCurrentTargetWidth ? mCurrentTargetWidth : (uint32_t)mGpu.WindowWidth();
+    uint32_t th = mCurrentTargetHeight ? mCurrentTargetHeight : (uint32_t)mGpu.WindowHeight();
+    ClipRect r = mClipStack.empty() ? ClipRect{0.0f, 0.0f, (float)tw, (float)th}
+                                    : mClipStack.back();
+    RndCam* cam = RndCam::Current();
+    if (cam) {
+        float vp[16];
+        CamSceneMatrices(cam, vp, nullptr);
+        const Viewport& v = GetViewport();
+        const float vx = (float)v.X, vy = (float)v.Y;
+        const float vw = (float)(v.Width ? v.Width : tw), vh = (float)(v.Height ? v.Height : th);
+        const Vector3& fwd = cam->WorldXfm().m.y; // Milo cameras look down +y
+        for (int i = 0; i < (int)planes.size(); i++) {
+            RndTransformable* t = planes[i];
+            if (!t) continue;
+            const Transform& xfm = t->WorldXfm();
+            // DxRnd: Plane(xfm.v, -xfm.m.z), the kept side is where it is >= 0.
+            Vector3 n(-xfm.m.z.x, -xfm.m.z.y, -xfm.m.z.z);
+            const float nLen = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+            if (!(nLen > 0.0f)) continue;
+            n.Set(n.x / nLen, n.y / nLen, n.z / nLen);
+            // A direction in the plane, across the camera's view: its screen
+            // image is the plane's line at the origin's depth.
+            Vector3 along(n.y * fwd.z - n.z * fwd.y, n.z * fwd.x - n.x * fwd.z,
+                          n.x * fwd.y - n.y * fwd.x);
+            const float aLen = std::sqrt(along.x * along.x + along.y * along.y + along.z * along.z);
+            const ScreenPoint o = ProjectToPixels(vp, xfm.v, vx, vy, vw, vh);
+            const ScreenPoint a = ProjectToPixels(
+                vp, Vector3(xfm.v.x + along.x / aLen, xfm.v.y + along.y / aLen,
+                            xfm.v.z + along.z / aLen), vx, vy, vw, vh);
+            const ScreenPoint in = ProjectToPixels(
+                vp, Vector3(xfm.v.x + n.x, xfm.v.y + n.y, xfm.v.z + n.z), vx, vy, vw, vh);
+            const float dx = a.x - o.x, dy = a.y - o.y;
+            const bool vertical = std::fabs(dx) <= 0.01f * std::fabs(dy);
+            const bool horizontal = std::fabs(dy) <= 0.01f * std::fabs(dx);
+            if (!(aLen > 1e-6f) || !o.ok || !a.ok || !in.ok || (!vertical && !horizontal)) {
+                static bool sWarned = false;
+                if (!sWarned) {
+                    sWarned = true;
+                    fprintf(stderr, "WgpuRnd: clip plane %s is not edge-on to the camera "
+                                    "(screen direction %.2f,%.2f); not clipped (a scissor "
+                                    "edge must be vertical or horizontal on screen)\n",
+                            t->Name(), dx, dy);
+                }
+                continue;
+            }
+            if (vertical) {
+                if (in.x >= o.x) r.x0 = std::max(r.x0, o.x);
+                else r.x1 = std::min(r.x1, o.x);
+            } else {
+                if (in.y >= o.y) r.y0 = std::max(r.y0, o.y);
+                else r.y1 = std::min(r.y1, o.y);
+            }
+        }
+    }
+    mClipStack.push_back(r);
+    ApplyClipScissor();
+}
+
+void WgpuRnd::PopClipPlanesInternal(ObjPtrVec<RndTransformable>&) {
+    if (!mClipStack.empty()) mClipStack.pop_back();
+    ApplyClipScissor();
+}
+#endif // MILO_RNDOBJ_SHAPE_HAS_CLIP_PLANES
+
+bool WgpuRnd::ClipScissor(int rect[4]) const {
+    if (mClipStack.empty()) return false;
+    const ClipRect& r = mClipStack.back();
+    const int x0 = (int)std::floor(std::max(r.x0, 0.0f));
+    const int y0 = (int)std::floor(std::max(r.y0, 0.0f));
+    const int x1 = std::max(x0, (int)std::ceil(r.x1));
+    const int y1 = std::max(y0, (int)std::ceil(r.y1));
+    rect[0] = x0;
+    rect[1] = y0;
+    rect[2] = x1 - x0;
+    rect[3] = y1 - y0;
+    return true;
+}
+
+void WgpuRnd::ApplyClipScissor() {
+    if (!mInPass) return;
+    const uint32_t tw = mCurrentTargetWidth, th = mCurrentTargetHeight;
+    int r[4];
+    if (!ClipScissor(r)) {
+        if (mClipScissorSet) mPass.SetScissorRect(0, 0, tw, th);
+        mClipScissorSet = false;
+        return;
+    }
+    // The pass's attachment bounds the scissor (a validation error otherwise).
+    const uint32_t x = std::min((uint32_t)r[0], tw), y = std::min((uint32_t)r[1], th);
+    const uint32_t w = std::min((uint32_t)r[2], tw - x), h = std::min((uint32_t)r[3], th - y);
+    mPass.SetScissorRect(x, y, w, h);
+    mClipScissorSet = true;
 }
 
 void WgpuRnd::BeginFramePass(bool clear) {
+    if (clear) {
+        mFrameInOverlay = false;
+    } else if (mFrameInOverlay && mFrameView) {
+        BeginOverlayPass();
+        return;
+    }
     if (!mFrameView) {
         return;
     }
@@ -1203,7 +1365,9 @@ void WgpuRnd::BeginFramePass(bool clear) {
     }
 }
 
-void WgpuRnd::BeginTexturePass(RndTex* tex) {
+void WgpuRnd::BeginTexturePass(RndTex* tex) { BeginTexturePass(tex, TexturePassLoad()); }
+
+void WgpuRnd::BeginTexturePass(RndTex* tex, const TexturePassLoad& load) {
     if (!tex) return;
     // Ensure the GPU render target exists (lazy creation).
     // GetGpuTexView calls EnsureRenderTargetData for render-target textures,
@@ -1221,12 +1385,14 @@ void WgpuRnd::BeginTexturePass(RndTex* tex) {
 
     wgpu::RenderPassColorAttachment colorAtt{};
     colorAtt.view = colorView;
-    colorAtt.loadOp = wgpu::LoadOp::Clear;
+    colorAtt.loadOp = load.clearColor ? wgpu::LoadOp::Clear : wgpu::LoadOp::Load;
     colorAtt.storeOp = wgpu::StoreOp::Store;
-    // Use transparent black so impostor/billboard RTT can alpha-cut
-    // the background away. Other RTT users (TexRenderer) don't rely on
-    // background alpha — they overwrite every pixel.
-    colorAtt.clearValue = {0.0, 0.0, 0.0, 0.0};
+    // Selecting a target clears to transparent black so impostor/billboard
+    // RTT can alpha-cut the background away; a TexRenderer that wants another
+    // background (clear_buffer / clear_color / clear_alpha) clears again
+    // through WgpuRnd::Clear.
+    colorAtt.clearValue = {(double)load.color.red, (double)load.color.green,
+                           (double)load.color.blue, (double)load.color.alpha};
 
     wgpu::RenderPassDepthStencilAttachment depthAtt{};
     wgpu::RenderPassDescriptor rpDesc{};
@@ -1237,10 +1403,11 @@ void WgpuRnd::BeginTexturePass(RndTex* tex) {
     wgpu::TextureView depthView = GetGpuTexDepthView(tex);
     if (depthView) {
         depthAtt.view = depthView;
-        depthAtt.depthLoadOp = wgpu::LoadOp::Clear;
+        const wgpu::LoadOp depthLoad = load.clearDepth ? wgpu::LoadOp::Clear : wgpu::LoadOp::Load;
+        depthAtt.depthLoadOp = depthLoad;
         depthAtt.depthStoreOp = wgpu::StoreOp::Store;
         depthAtt.depthClearValue = 1.0f;
-        depthAtt.stencilLoadOp = wgpu::LoadOp::Clear;
+        depthAtt.stencilLoadOp = depthLoad;
         depthAtt.stencilStoreOp = wgpu::StoreOp::Store;
         depthAtt.stencilClearValue = 0;
         rpDesc.depthStencilAttachment = &depthAtt;
@@ -1334,6 +1501,7 @@ void WgpuRnd::BeginDrawing() {
     RndMesh_ResetFrameStats();
     rndshape::DrawLogFrameBegin();
     mPostProcFlushed = false;
+    mFrameInOverlay = false;
     mWorldPostDone = false;
     mPreSavedThisFrame = false;
 
@@ -1641,6 +1809,7 @@ void WgpuRnd::EndDrawing() {
         MaybeCaptureFrame();
         MaybeEncodeVideoFrame();
         FrameCapture::Get().EndFrame();
+        if (mFrameReadyCallback) mFrameReadyCallback();
 
         if (!mGpu.IsHeadless()) {
             mGpu.PresentFrame();

@@ -40,6 +40,12 @@ public:
 #ifdef HX_WEB
     virtual void DebugDescribe(char *buf, size_t bufSize) const override;
     void SetDebugLabel(const char *label);
+    // Bytes of this receiver's stream the AudioWorklet has PLAYED: the clock
+    // StandardStream::GetRawTime reads on web (W-12). GetBytesPlayed() counts
+    // what RenderAudio has handed the mixer, which on web runs the output
+    // queue (140-500 ms) ahead of the speaker and moves in pump-sized steps;
+    // it keeps driving the decode-ahead model in StreamReceiver::Poll.
+    int HeardBytes();
 #endif
 
     // Factory function — register with StreamReceiver::sFactory
@@ -75,5 +81,16 @@ private:
     unsigned int mSilentRenderCount;
     unsigned int mActiveRenderCount;
     float mLastPeak;
+    // One RenderAudio call: the mix frames it filled ([start, end), in
+    // AudioDevice::MixFramesPulled units) and mPlayCursor before/after (its
+    // real bytes sit at the front of the chunk, silence after). HeardBytes()
+    // interpolates them at AudioDevice::MixFramesConsumed().
+    struct HeardMark { long long start, end; int before, after; };
+    static const int kHeardMarks = 256; // >> a 500 ms queue of per-frame pumps
+    HeardMark mHeardMarks[kHeardMarks];
+    int mHeardFirst; // oldest mark still (partly) queued
+    int mHeardCount;
+    int mHeardFloor; // bytes heard before the oldest mark
+    int RenderAudioImpl(float *output, int frameCount);
 #endif
 };

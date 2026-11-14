@@ -120,6 +120,12 @@ public:
 
     // Accessors for Mesh_Wgpu.cpp / Tex_Wgpu.cpp
     GpuDevice& Gpu() { return mGpu; }
+    // Called once per drawn frame after its command buffer is submitted and
+    // before it is presented: the one point where a windowed frame can be read
+    // back (GpuDevice::ReadbackFrame). A consumer's frame grab (dc3's
+    // /api/screenshot) registers here. nullptr clears it.
+    using FrameReadyCallback = void (*)();
+    void SetFrameReadyCallback(FrameReadyCallback cb) { mFrameReadyCallback = cb; }
     PipelineManager& Pipelines() { return mPipelines; }
     wgpu::RenderPassEncoder& CurrentPass() { return mPass; }
     bool IsInPass() const { return mInPass; }
@@ -244,7 +250,34 @@ public:
     bool SubmitSpotBeams(const NativeSpotBeamFrame& frame, const NativeSpotBeam* beams, int count);
     int SpotBeamsDrawn() const { return mSpotBeamsDrawn; }
 
+    // RndDrawable::mClipPlanes (Rnd::PushClipPlanes/PopClipPlanes around a
+    // drawable's DrawShowing). Retail DxRnd::PushClipPlanesInternal turns each
+    // plane transform into a D3D user clip plane: the plane through the
+    // transform's origin with normal -z, keeping the side that normal points
+    // at, in the current camera's clip space. WebGPU has no user clip planes
+    // in core, so each plane becomes one edge of a scissor rectangle instead:
+    // the plane's line on screen at the depth of its origin. That is exact for
+    // a plane the camera sees edge-on (its screen line is vertical or
+    // horizontal), which is what a UI box's clip planes are (the main menu's
+    // motd.lbl marquee: motd_clip_left/right.trans). A plane whose screen line
+    // is oblique cannot be a scissor edge and does not clip (one log line).
+    // Only shapes whose Rnd has the hooks (MILO_RNDOBJ_SHAPE_HAS_CLIP_PLANES);
+    // elsewhere the clip stack below stays empty and every scissor is full.
+#ifdef MILO_RNDOBJ_SHAPE_HAS_CLIP_PLANES
+    void PushClipPlanesInternal(ObjPtrVec<RndTransformable>& planes) override;
+    void PopClipPlanesInternal(ObjPtrVec<RndTransformable>& planes) override;
+#endif
+    // The scissor the innermost pushed planes give, in pixels of the target
+    // current when they were pushed (x, y, w, h; w or h may be 0). False when
+    // no clip plane is in effect.
+    bool ClipScissor(int rect[4]) const;
+    int ClipPlaneDepth() const { return (int)mClipStack.size(); }
+
 private:
+    struct ClipRect { float x0, y0, x1, y1; };
+    std::vector<ClipRect> mClipStack;
+    bool mClipScissorSet = false; // the open pass carries a non-full scissor
+    void ApplyClipScissor();
     void ApplyViewport();
     // The viewport a camera select sets on DC3 (RndCam::Select) and on the Wii
     // (WiiCam::Select): mScreenRect over the current target, depth mZRange.
@@ -252,7 +285,19 @@ private:
     // (rndshape::kCamSelectSetsViewport).
     void ApplyCameraViewport(RndCam* cam);
     void BeginFramePass(bool clear);
+    // How a texture pass starts.  Selecting a target clears it to transparent
+    // black (colour and depth); Rnd::Clear on a bound target restarts the pass
+    // with what the clear asks for and keeps the rest (TexturePassLoad below).
+    struct TexturePassLoad {
+        bool clearColor = true;
+        Hmx::Color color = Hmx::Color(0.0f, 0.0f, 0.0f, 0.0f);
+        bool clearDepth = true;
+    };
+    // The 1x, depthless pass on the frame target that FlushPostProcessingForOverlay
+    // opens; BeginFramePass(false) reopens it once the frame is in it.
+    void BeginOverlayPass();
     void BeginTexturePass(RndTex* tex);
+    void BeginTexturePass(RndTex* tex, const TexturePassLoad& load);
     void EndActivePass();
 public:
     // Clear depth buffer for 2D overlay rendering (HUD on top of 3D scene).
@@ -275,6 +320,7 @@ public:
     void InvalidateSceneUniforms() { mLastSceneEnv = nullptr; }
     void MaybeCaptureFrame();
     void MaybeEncodeVideoFrame();
+    FrameReadyCallback mFrameReadyCallback = nullptr;
 #ifdef HX_IMGUI
     void RenderImGuiOverlay();
 #endif
@@ -336,6 +382,10 @@ public:
     wgpu::TextureView mFrameView;
     bool mInPass = false;
     bool mPostProcFlushed = false;
+    // FlushPostProcessingForOverlay has moved the frame onto the overlay pass:
+    // everything drawn since sits only in the frame target. Resuming the MSAA
+    // frame pass from here would resolve the MSAA buffer over it on End.
+    bool mFrameInOverlay = false;
     RndTex* mActiveTargetTex = nullptr;
     wgpu::TextureFormat mCurrentTargetFormat = wgpu::TextureFormat::Undefined;
     uint32_t mCurrentSampleCount = 1;
@@ -470,6 +520,15 @@ public:
 
 // Global accessor — set during Init
 extern WgpuRnd* gWgpuRnd;
+
+// Copy a render target's colour texture back to the CPU: w*h texels, 4 bytes
+// each, in the target's own channel order (ChooseRenderTargetFormat). False
+// when the texture has no GPU render target. Synchronous (Tex_Wgpu.cpp);
+// MILO_DUMP_RT and consumers' tests use it.
+bool ReadbackGpuRenderTarget(RndTex* tex, std::vector<uint8_t>& texels, int& w, int& h);
+// Feature mark for consumers' tests: this engine clears a bound render target
+// on Rnd::Clear (WgpuRnd::Clear) and can read one back.
+#define MILO_READBACK_GPU_RENDER_TARGET 1
 
 // Free function wrapper — callable from engine code via extern declaration.
 // Flushes PostProc to framebuffer, then starts a new pass for HUD overlay.

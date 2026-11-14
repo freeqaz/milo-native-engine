@@ -821,6 +821,14 @@ void AudioDevice::MixSources(float *output, int frameCount) {
 
     std::lock_guard<std::mutex> lock(mSourceMutex);
 
+    // Every call pulls frameCount frames into the output, sources or not (an
+    // empty mix is silence the worklet still plays); counted once the sources
+    // have rendered, so each sees the chunk's starting frame.
+    struct PulledCounter {
+        long long &n; int add;
+        ~PulledCounter() { n += add; }
+    } pulled{mMixFramesPulled, frameCount};
+
     if (mSources.empty())
         return;
 
@@ -875,6 +883,20 @@ void AudioDevice::MixSources(float *output, int frameCount) {
 }
 
 static int sPumpCount = 0;
+
+long long AudioDevice::MixFramesConsumed() {
+    static const char *kStateKey = "_" MILO_WEB_AUDIO_NS_STR "Audio";
+    if (!mInitialized || !sWorkletReady || !js_audio_worklet_started(kStateKey))
+        return mMixFramesPulled;
+    // Device-rate frames written to the ring and not yet read by the worklet.
+    int queued = (RING_FRAMES - 1) - js_audio_ring_free_frames(kStateKey);
+    if (queued < 0) queued = 0;
+    double queuedMix = queued;
+    if (mDeviceSampleRate > 0 && mSampleRate > 0 && mDeviceSampleRate != mSampleRate)
+        queuedMix = queuedMix * (double)mSampleRate / (double)mDeviceSampleRate;
+    long long consumed = mMixFramesPulled - (long long)(queuedMix + 0.5) - mResampleCarryN;
+    return consumed > 0 ? consumed : 0;
+}
 
 // ---- Off-main pump: decode/top-up only (RB3_WEB_OFFMAIN_MIX) ----------------
 // Publishes each live music stem's freshly-decoded PCM into its per-stem SAB and
