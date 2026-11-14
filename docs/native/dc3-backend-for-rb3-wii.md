@@ -6910,3 +6910,185 @@ frames; round 4's final binary (r4fix) has 3.
     reach rb3-xenon.
   - `native_compat_census.py check` reports OK: 454 flags, regen clean, no
     getenv added.
+
+## 36. DC3 spotlight post: NgSpotlightDrawer's beams in the retail composite (lane np-gfx-spot, round 2, 2026-11-14)
+
+Round 1 made native `NgSpotlightDrawer::RenderScene` call `ClearPostProc()`.
+This round draws what the original's spotlight post draws on DC3 and adds it
+in the DC3 retail composite. Engine `c8bb064` (SpotBeamPass perf) + `c10a262`
+(DC3 wiring); dc3 `a5cb1c83f` (the native `RenderScene` + test). Evidence:
+dc3 `archive/np-gfx-2026-11-14/lanes/spot/round2/` (gitignored).
+
+### 36.1 What the original draws (MEASURED unless marked)
+
+All from the DC3 decomp source of `SpotlightDrawer_NG.cpp` and the DC3
+shader microcode (`postprocess_*`, `depthvolume_*`, blur).
+
+- **Gate.** `RenderScene` runs only when `sLights` is non-empty, the drawer is
+  `Showing()`, and `CheckSharedResources` + `CheckFogTexture` pass. A
+  postproc override or the blacklight override skips the drawer's `DoPost`
+  entirely.
+- **Target.** `TheShaderMgr` unk25 becomes postprocess option bit 51.
+  `mSpotCam` renders into a half-res target (pre-process texture size >> 1).
+- **Beams.** `RenderBeams` draws each entry with `mLength > 0`, with
+  `DrawShowing`:
+  - shape 0/1: cone shader, cull override 3;
+  - shape 2: sheet shader; shapes 3/4: sphere shader; both cull override 1;
+  - all through the depthvolume shader. `RndShaderDepthVolume::Select` sets
+    blend ONE/ONE, op ADD, depth test and depth write off.
+  - DC3's depthvolume microcode (12 permutations) is byte-identical to RB3's,
+    so the engine's existing `SpotBeamPass` beam shader applies unchanged.
+- **Blur.** `BlurRT`: 5 taps, weights 0.1/0.25/0.3/0.25/0.1, x then y. Same
+  as RB3 except for constant register numbers.
+- **Haze/base term and composite.** `postprocess_0008000000000000` (and the
+  same position in `0008001001208014`):
+
+  ```
+  c += beam(tf12).rgb * (tf5.r * c127.y + c127.x) * c91.x
+  ```
+
+  - `c91.x = mParams.mIntensity * 32` (`SetupForPostProcess`).
+  - `c127 = (base*0.01, smoke*0.01*(1 - base*0.01))` (`SetupFogDensityMap`).
+  - `tf5` is the fog density: the proxy's density map, else
+    `mParams.mTexture`, else black. With black fog the term is just
+    `beam * base * 0.32 * intensity`, so **"haze/base" is not a separate
+    full-screen lift: it scales the beam target**, and the two land as one
+    piece.
+  - Position: after the bloom screen blend (and the glare add), before
+    noise, the colour matrix and the vignette. Not clamped.
+  - **Alpha is not written** by the term, so the beams do not feed the bloom
+    mask. c129 (colour) is not read.
+- **`sShadowSpots`** is filled only under kOldGfx, so it is empty on DC3
+  (kNewGfx). Nothing to draw.
+- **`sCans`** are drawn at world time by `DrawWorld`; the post only clears
+  the list. Nothing for the post to do.
+- **`light_influence`** feeds only `UpdateBoxMap` / `ApplyLightingApprox`,
+  not the post.
+
+Probed drawer params (DTA `iterate SpotlightDrawer`; property values, the
+shader sees ×0.01):
+
+| venue / state | total | base_intensity | smoke_intensity | proxy | light_influence |
+|---|---|---|---|---|---|
+| houseparty | 1.00 | 0.60 | 0.50 | none | 0.20 |
+| dclive normal | 1.00 | 1.00 | 0.75 | none | 0 |
+| rollerrink peak (native and Xenia agree) | 1.00 | 0.70 | 0.00 | none | 0 |
+
+No measured venue has a proxy, so no measured venue needs a fog density map.
+
+### 36.2 What shipped
+
+- **dc3 `SpotlightDrawer_NG.cpp` (native `RenderScene`, HX_NATIVE).** When a
+  native beam renderer is registered, `sLights` is non-empty and the drawer
+  is showing, each entry with `mLength > 0` whose mesh exists and is
+  `Showing()` becomes a `NativeSpotBeam` (mesh, xsection, transform, shape,
+  light position, axis, sheet dir, radii, top radius, length, brighten,
+  colour × intensity, material colour unless animated from a preset). The
+  frame carries the camera chosen as `CheckCam` does, total/base/smoke, the
+  fog texture and `hasProxy`. `SubmitSpotBeams`, then always `ClearPostProc()`.
+  A static vector is reused across frames.
+- **Engine `Rnd_Wgpu`.** The beam renderer now registers under
+  `kRetailPostChain || kDC3RetailPost` (it was RB3-Wii only).
+  `RunDC3SpotBeams()` (DC3 only, `if constexpr`) runs `SpotBeamPass` against
+  the world depth just before `mPostProcPass.Run`, in both
+  `FlushPostProcessingForOverlay` and `EndDrawing`, and only when
+  `RetailPostMode() != 0` (with `DC3_RETAIL_POST=0` nothing reads the
+  target, so nothing is drawn). The existing `MILO_NO_SPOT_BEAMS` probe now
+  also reaches DC3; no getenv was added.
+- **Engine `PostProcPass`.** `RunDC3Retail` takes the beam and fog views and
+  hands `spotScale/Base/Smoke` (`SpotBeamPass::CompositeConstants`, shared
+  with RB3) to the composite. Not passed in debug view 2.
+- **Engine `RB3RetailPostDC3.cpp` (post-lane file), exactly:**
+  1. `DC3CompositeUniforms` gains `float spot[4]` (c91.x, c127.x, c127.y,
+     w = bound); static_assert 208 → 224.
+  2. WGSL `DC3UB` gains `spot: vec4f`; new bindings 13 (`spotBeams`) and 14
+     (`spotFog`).
+  3. `grade_dc3`: after the bloom/glare if/else, before noise,
+     `if (cu.spot.w > 0.5) c += beam * (fog * cu.spot.z + cu.spot.y) * cu.spot.x;`
+  4. `mDC3CompositeBGL` 10 → 12 entries; `RunDC3Composite` fills `cu.spot`
+     and binds the beams/fog (or `mBlackView`) as `e[10]`/`e[11]`.
+  Nothing else in that file was touched; the pass label
+  `DC3RetailPostComposite` is unchanged.
+
+### 36.3 Performance
+
+- `SpotBeamPass` (`c8bb064`): one persistent, grow-only uniform buffer
+  ("SpotBeamUniforms", at least 18 slots of 512 B); blur passes take slots 0
+  and 1 and beam *i* slot 2+*i*, so every dynamic offset is fixed and every
+  bind group is cacheable. Bind groups go through `WgpuRnd`'s
+  `mPostBindGroupCache` (`SetBindGroupCache`), with `Forget` on recreated
+  views/buffers. No per-frame `CreateBindGroup`, buffer or texture.
+- Pass labels are settable; DC3 uses `DC3SpotBeams` and `DC3SpotBlur`. RB3
+  keeps `SpotBeams` / `SpotBeamBlur`.
+- `MILO_GPU_TIMERS=1`, `[GPUTIME]` windows during gameplay, solo runs
+  (per-frame ms):
+
+| cell | DC3SpotBeams | DC3SpotBlur (2 passes) | composite | gpu_sum | beams+blur share |
+|---|---|---|---|---|---|
+| houseparty normal | 0.0141 (max 0.0190) | 0.0139 | 0.0142 (0.0133 without beams, batch) | 0.552 | 5.1% |
+| dclive normal | 0.0146 (max 0.0206) | 0.0131 | 0.0138 | 0.612 | 4.5% |
+| rollerrink peak (batch of 4) | 0.0090 | 0.0144 | 0.0175 | 0.650 | 3.6% |
+
+### 36.4 Against Xenia (native `DC3_DISPLAY_GAMMA=off`; HUD box 21.9 on every frame)
+
+**Houseparty far01, spots-on minus spots-hidden lift** (`lift.py`, cut 0.3):
+
+| side | top | mid | floor | scene |
+|---|---|---|---|---|
+| Xenia | +17.7 | +11.9 | +5.6 | +11.8 |
+| native, beams | +18.0 | +12.2 | +5.7 | +12.0 |
+| native, `MILO_NO_SPOT_BEAMS=1` | +0.4 | −0.1 | +2.8 | +1.1 |
+
+**Houseparty cell-3 regions** (native vs Xenia mean; Xenia range check):
+
+| region | hp_062, no beams | hp_062, beams | far01 spots-on, no beams | far01 spots-on, beams |
+|---|---|---|---|---|
+| scene | −17.9% OUT | +0.4% in | −25.4% OUT | −5.9% OUT |
+| torso | −27.6% OUT | +2.6% in | −30.0% OUT | −4.4% in |
+| fridge_glare | −23.1% OUT | +2.9% in | — | — |
+| back_wall | −4.9% OUT | −4.4% in | −19.5% OUT | +1.9% in |
+| wood_floor | −6.1% OUT | +3.5% in | −25.3% OUT | +5.3% in |
+| rug | −8.3% OUT | 0.0% in | −15.9% OUT | −0.4% in |
+| crowd_l | +4.9% in | +14.6% OUT | −36.5% OUT | −36.6% OUT |
+
+- far01 spots-hidden reads the same with and without beams (control).
+- crowd_l in far01 is −34..−37% in every condition, so it is not
+  spot-related (open).
+- far03 (n=2 each side) reads scene +1.3% with beams, −17.9% without, but
+  several regions there land outside Xenia's narrow range both ways
+  (fridge +13.2%, wood_floor +18.1%, torso +17.2% with beams).
+
+**Whole song, every native frame paired with its best Xenia frame**
+(`cmpx.py`, cut 0.45; median per-pair %, p10..p90 in the json):
+
+| cell | scene, beams | scene, none | top, beams | top, none |
+|---|---|---|---|---|
+| houseparty normal | +1.1% | −16.7% | +0.1% | −17.8% |
+| dclive normal | −0.8% | −8.2% | +1.7% | −14.4% |
+| rollerrink peak | +12.1% | +2.0% | +3.4% | −4.7% |
+
+- rollerrink peak's floor band reads +42.1% with beams and +17.6% without.
+  The paired sheet shows the beat-animated disco floor tiles differing per
+  frame, not the cones; the cones look alike (INFERRED from the sheet). The
+  Xenia caveats (flare-lit regions under the fixed occlusion sample count,
+  Multiply overlays over-blooming) apply to that cell too.
+
+### 36.5 Guard, consumers, where it stops
+
+- **Test.** dc3 `RetailLightingTest.SpotlightPostHandsEachBeamToTheBackend`
+  (`native/tests/test_retail_lighting.cpp`): a recording renderer sees one
+  call with one beam (the zero-length spot is skipped) carrying the right
+  fields and frame params; the list is empty after `DoPost`; a hidden drawer
+  submits nothing. Sabotage (an early `ClearPostProc(); return;` in the
+  native `RenderScene`) fails it with 0 calls.
+- **Consumers** (engine `130f669` base vs `c10a262`):
+  - rb3-xenon `rb3-render`: 11 frames, 11 identical, 0 differing; both
+    "ALL GATES PASSED". (rb3-xenon is DC3-shaped but `kDC3RetailPost` is
+    false, so it registers no beam renderer.)
+  - rb3 (`rb3-native rb3-tests`): built; ctest 158/158.
+  - `native_compat_census.py check` (rb3, engine `c10a262`): OK, 455 flags.
+- **Stopped at:** haze/base and beams, shipped together (base scales the
+  beam target). Shadow spots and cans need nothing on DC3.
+- **Open:** proxy fog density maps are not rendered (fog stays black); no
+  measured venue has a proxy. The far01 crowd_l gap and the rollerrink
+  floor tiles are not this pass.
