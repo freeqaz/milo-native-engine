@@ -6,6 +6,7 @@
 // platform/rndshape/RndShape.h, never directly.
 #pragma once
 
+#include <limits>
 #include <type_traits>
 #include <utility>
 
@@ -490,9 +491,12 @@ constexpr bool kGammaSpaceShading = kDC3RetailModel;
 // colour before the target clamps it (retail's rgb is unclamped), where RB3's
 // positive scale keeps its clamped-colour mask. Rects and particles use the
 // magnitude. 0 = no mask (not AllowHDR, or the chain is off). A material with
-// mBloomMultiplier 0 returns 0 too, so it leaves alpha alone where retail
-// writes 0 under it (an opaque one would clear a mask drawn behind it): a known
-// gap, see dc3-backend-for-rb3-wii.md section 8.
+// mBloomMultiplier 0 still writes the mask, which is 0 (retail's c5.z = 0):
+// it returns -FLT_MIN, a scale that keeps the mask write on and rounds the mask
+// to 0. That is how DC3's "debloom" quads work: game_mode_icon's debloom.mat
+// (Multiply, white, bloom_multiplier 0) zeroes the icon's mask under the
+// draw's alpha equation (dst.a * 0), so the mode-select icon does not burn
+// (dc3-backend-for-rb3-wii.md 31.6).
 template <class M>
 inline float BloomMaskScale(const M &m) {
     using Raw = std::remove_cv_t<std::remove_pointer_t<std::decay_t<M>>>;
@@ -508,7 +512,8 @@ inline float BloomMaskScale(const M &m) {
         if (b == Raw::kBlendSrcAlpha || b == Raw::kBlendSrcAlphaAdd || b == Raw::kPreMultAlpha ||
             m->GetAlphaCut() || m->GetAlphaWrite())
             return 0.0f;
-        return -(BloomLumaScale(pp) * m->GetBloomMultiplier());
+        const float scale = -(BloomLumaScale(pp) * m->GetBloomMultiplier());
+        return scale < 0.0f ? scale : -std::numeric_limits<float>::min();
     }
 }
 // The display gamma ramp DxRnd::SetupGamma loads (ramp[i] = pow(i/256, g),
