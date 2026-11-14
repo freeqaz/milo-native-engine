@@ -5595,6 +5595,17 @@ separate before from after beyond that noise:
 | `StreakBloomIsScreenBlendOfMaskedScene` (GPU) | `bloom.ps` taps dropping the mask (`rgb` for `rgb·a`); the composite adding the bloom instead of screen-blending; streak weights normalised to sum 1; half-float bloom sets | each fails |
 | `PassCostAt720p` | none; it is a probe, not a guard | |
 
+### 31.8a Consumers (rb3, rb3-xenon)
+
+Each check used pinned engine worktrees: base `dc7d64e`, and both `ae855ab` and
+`db49bd1` (which contains `ffdd74a`). Each consumer had its own worktree.
+
+| consumer | check | result |
+|---|---|---|
+| rb3-xenon `005274e1c` (DC3 shape, dc3 backend) | `rb3-render <xbox-zip>` default cells, base vs branch | **11 of 11 PNGs byte-identical** at both commits; `RESULT: ALL GATES PASSED` in every leg |
+| rb3 `678e04137` (RB3Wii shape, dc3 backend, Debug) | `ctest` | 158 registered / 150 passed / **1 failed** / 7 skipped (the usual 7). The failure is `native_compat_census.check`: rb3's `NATIVE_COMPAT_LEDGER.md` lags the two new flags (446 → 448: `DC3_RETAIL_POST`, `DC3_DISPLAY_GAMMA`). Regenerated in the scratch worktree, both census tests pass, and the regenerated `.gen.inc` equals the committed one. **Regenerate rb3's ledger when this lands** |
+| rb3 | `rb3-native` with `RB3_FIXED_CLOCK=1` and `setarch -R`, frames 100/600/900 | base vs base differs by 4.99–5.26 mean abs per channel; base vs branch by 4.80–5.56. That is within run-to-run noise, and the mean colour agrees within 0.3/255 |
+
 ### 31.9 Open items, ranked by visibility
 
 1. **Motion blur.** It is in 41 post-procs, including the menus'
