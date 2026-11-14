@@ -993,3 +993,112 @@ These are leads with numbers, not a diagnosis of the post code.
    INFERRED, not tested.
 3. **Warmth over the dancers in peak** (9.2) is the same red bloom as item 1
    over the dancers. It is not a character-light term.
+
+**Revised after 9.7 (Xenia).** Items 1 and 2 were measured against retail
+video, not against the debug XEX. Against Xenia running that XEX with the same
+DTA values, native's post-on streetside stripes and gaps fall inside Xenia's
+range, and Xenia's stripe green is 0 as well. Items 1 and 2 are **withdrawn as
+post-lane leads**; the video's extra red and green are a capture difference
+(state, exposure or encoder), not a native defect. Item 3 goes with them. The
+lead that replaces them is the rink floor (9.7.2): raw lighting matches Xenia
+and the post chain does not.
+
+### 9.7 Against Xenia ground truth
+
+The coordinator's Xenia frames (`archive/np-gfx-2026-11-14/xenia/INDEX.md`)
+run the original debug XEX. They are pre-ramp, so native is compared with
+`DC3_DISPLAY_GAMMA=off`. Two tools made the comparison raw against raw:
+
+- `{rnd toggle_all_postprocs}` (`Rnd.cpp`, `mDisablePostProc`) turns the whole
+  post chain off. It works in Xenia (sent over the DTA channel) and in native
+  (`/api/dta/eval`), so both sides can be read with lighting only.
+- The same DTA probes, sent to both, read the data each side is using.
+
+Numbers are in 640×360 space, Rec.709 luma, averaged over three frames per
+condition. Evidence: `round4/item1_stripes/xenia_toggle/`,
+`round4/item6_rink_floor/` (Xenia frames stay in `archive/…/xenia/`).
+
+#### 9.7.1 Streetside peak: matched (MEASURED)
+
+**The inputs are identical** (Xenia probe vs native probe, awesome state):
+
+- `PeakCity.env` ambient 12338515 (0xBBGGRR: 0.325, 0.271, 0.737) on both.
+- `streetside_peek_pink1.mat` colour 8388863 (1, 0, 0.5), blend 3, intensify 1.
+  Its alpha is beat-keyed: 0.563 in the Xenia frame, 0.57 in native.
+- `streetside_performance_awesome.pp`: bloom_color 232 (0.91, 0, 0), intensity
+  1.4, threshold 8.
+- `peak2`, `peakOrange`, `peakDirectional` and `crowd.env`: the same values.
+
+**Postprocs off, raw lighting:**
+
+| | Xenia | native (engine e391f95) |
+|---|---|---|
+| stripe median rgb | (132..151, 0..1, 165..196) | (145..175, 4..29, 178..227) |
+| stripe R/B | 0.70..0.90 | 0.79..0.81 |
+| stripe region mean | (34..44, 11..13, 39..65) | (39..55, 11..25, 49..68) |
+| whole-frame mean | (34..37, 15..18, 44..58) | (35..45, 17..24, 51..62) |
+
+**Post on:**
+
+| | Xenia | native |
+|---|---|---|
+| stripe region mean | (126..134, 8..10, 59..74) | (146, 13, 71) and (94, 5, 47) |
+| stripe median | (210..226, 0, 215..227) | (226, 18, 215) |
+| whole-frame mean | (87..96, 11..19, 56..66) | (97, 18, 63) and (60, 11, 51) |
+
+Native's two post-on shots differ because the stripes' alpha pulses on the
+beat. Before 9.1 the brief's stripe sample read (34, 1, 34) against Xenia's
+(206, 1, 72); the single-frame r4 sample afterwards was (139, 7, 109). The
+spread between those and the table above is camera, box and the beat.
+
+**So 9.1 closes item 1.** The fix (`kIntensifyScalesAlpha`, engine `d854f7e`)
+is generic: every intensify world material on DC3 now draws at twice its
+alpha, which includes DCI's peak stripe panels. That is reported to the post
+lane, which owns DCI peak, through the coordinator, so it does not chase the
+same deficit through the bloom.
+
+What is left on streetside, minor and not tuned: native's raw stripes carry a
+little green (median G 4..29 against Xenia's 0..1). The material's green is 0,
+so this is lighting, most likely the box map's green (0.24) reaching the
+stripes more than on Xenia. INFERRED, not tested.
+
+#### 9.7.2 Rink normal floor: the deficit is the post chain (MEASURED)
+
+**The inputs are identical** (Xenia vs native probes, normal state):
+
+- `Stage_Carpet.env` ambient 7360314; its real lights `Stage.lit` 7524062 and
+  `Stage1.lit` 13091466.
+- `stage_spotlight.lit`: white, intensity 3, top/bottom radius 100/200, range
+  175, gobo `light_glow01`.
+- `StageCarpet_lightCatcher.mesh`: blend 6, white. `Rink_lightCatcher.env`
+  ambient 6118749. The mirror-ball spots are white.
+
+**Floor band luma (paused native; Xenia three frames per condition):**
+
+| condition | Xenia | native |
+|---|---|---|
+| post on | 148.7..155.6 | 114.4..119.5 |
+| postprocs off | 113.9..116.5 | 113.7..118.1 |
+| off, light catcher hidden | | 120.8 |
+| off, stage spotlight hidden | | 78.1 |
+
+Whole-frame means agree: Xenia post on (115..118, 85..89, 73), off
+(83..90, 60..62, 49..52); native post on (96, 71, 59), off (87, 62, 49).
+
+- Raw lighting matches within a few levels. The −19% is all post chain:
+  Xenia's chain raises the floor by about +35 luma, native's by about +1.
+- The gobo pool (8.1) is in place: hiding the spot drops the floor by about
+  40 levels. The light catcher costs about 3. Neither is the gap.
+- The data active on that frame is `rollerrink_performance_high.pp`: bloom
+  colour (0.97, 0.84, 0.62), threshold 8, intensity 1.6, no streak;
+  saturation −10, contrast 5, colorxfm on, vignette on. A warm bloom that
+  lifts a mid-grey floor by +35 needs a threshold or extraction that lets
+  ~115-luma pixels through. That is a lead for the post lane, not a
+  diagnosis.
+- Caveats: the camera shots differ slightly (native's paused frame against
+  Xenia's far shots), and native draws the gameplay feedback ring and flame
+  under the lead where Xenia shows only a faint ring. The flame is gameplay
+  state (scoring), not lighting. Both are outside the floor band measured.
+
+Handed to the post lane: **rollerrink normal, post chain adds +1 luma where
+Xenia's adds +35, with raw lighting matched.**
