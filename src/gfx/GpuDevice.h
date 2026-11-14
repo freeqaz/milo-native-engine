@@ -5,14 +5,43 @@
 #include <unordered_map>
 
 #ifndef __EMSCRIPTEN__
+#include "gfx/PresentScale.h"
+#endif
+
+#ifndef __EMSCRIPTEN__
 struct GLFWwindow;
 #endif
 
 struct GpuDeviceDesc {
     bool headless = false;
+    // Headless: the frame. Windowed: the window's initial size (screen
+    // coordinates; HiDPI scaling is the window system's, see InitWindow).
     int width = 1280;
     int height = 720;
     const char* title = "DC3 Native";
+    // Windowed only. Non-zero: every frame is drawn at frameWidth x
+    // frameHeight into a texture GpuDevice owns, and PresentFrame scales it
+    // into the window, aspect kept, black bars where the shapes differ
+    // (gfx/PresentScale.h). WindowWidth/Height are then the FRAME's size --
+    // what every render target, viewport and readback is sized from -- and
+    // SurfaceWidth/Height the window's. Zero: the swapchain is the frame and
+    // follows the window (the behaviour before dc3 PLAN H-18; rb3's own
+    // GpuDevice boot keeps it).
+    int frameWidth = 0;
+    int frameHeight = 0;
+    // Open fullscreen on the monitor (its desktop mode, no mode switch).
+    // MILO_FULLSCREEN=1 does the same. F11 or Alt+Enter toggles at run time.
+    bool fullscreen = false;
+};
+
+// Why GpuDevice::Init failed.
+enum class GpuInitFailure {
+    NoFailure,  // (not "None": X11 defines None as a macro)
+    NoWindow,         // no window system, or GLFW could not open a window
+    SurfaceUnusable,  // a window opened but WebGPU cannot present to it on any
+                      // window system tried (dc3 PLAN H-33)
+    NoAdapter,
+    NoDevice,
 };
 
 // Sampler descriptor for cache key
@@ -66,6 +95,8 @@ public:
     GLFWwindow* Window() { return mWindow; }
 #endif
 
+    GpuInitFailure InitFailure() const { return mInitFailure; }
+
     // Surface management
     wgpu::TextureFormat SurfaceFormat() const { return mSurfaceFormat; }
     void ResizeSurface(int width, int height);
@@ -73,7 +104,39 @@ public:
     // Frame lifecycle
     wgpu::TextureView AcquireNextFrame();
     void PresentFrame();
-    wgpu::Texture& SurfaceTexture() { return mSurfaceTex; }
+    // The texture this frame is drawn into: the swapchain texture, or -- with
+    // a fixed frame size (GpuDeviceDesc::frameWidth) -- the owned frame
+    // texture PresentFrame scales into the swapchain.
+    wgpu::Texture& SurfaceTexture() { return mFrameTex ? mFrameTex : mSurfaceTex; }
+    // The window's surface size in pixels (equal to WindowWidth/Height
+    // without a fixed frame size).
+    int SurfaceWidth() const { return mSurfaceWidth; }
+    int SurfaceHeight() const { return mSurfaceHeight; }
+    bool HasFixedFrame() const { return (bool)mFrameTex; }
+#ifndef __EMSCRIPTEN__
+    // Where the last presented frame went in the window (surface pixels).
+    PresentRect LastPresentRect() const { return mPresentRect; }
+    // Map a point in window coordinates (GLFW cursor positions) to frame
+    // pixels. False when the point is outside the picture (on a bar).
+    bool WindowToFrame(double winX, double winY, double& frameX, double& frameY) const;
+
+    // Fullscreen (dc3 PLAN H-18): borderless on the monitor the window is
+    // mostly on, at that monitor's current mode; leaving restores the window's
+    // last position and size. F11 and Alt+Enter toggle (applied in
+    // PollEvents).
+    void SetFullscreen(bool on);
+    bool IsFullscreen() const;
+
+    // A windowed surface that has stopped handing out frames for good (dc3
+    // PLAN H-33): no frame acquired since Init for kSurfaceGiveUpSeconds. The
+    // caller should stop with SurfaceFailureReason(); AcquireNextFrame never
+    // returns immediately on a failure, so the loop does not spin meanwhile.
+    bool SurfaceFailed() const { return mSurfaceFailed; }
+    const std::string& SurfaceFailureReason() const { return mSurfaceFailureReason; }
+    static constexpr double kSurfaceGiveUpSeconds = 5.0;
+    // Which GLFW window system the window is on ("x11", "wayland", "cocoa").
+    const char* WindowSystemName() const;
+#endif
 
     // Feature queries
     bool HasBCCompression() const { return mHasBCCompression; }
@@ -119,8 +182,15 @@ private:
     bool InitInstance();
     bool InitAdapter();
     bool InitDevice();
-    bool InitWindow(const GpuDeviceDesc& desc);
+    bool InitWindow(const GpuDeviceDesc& desc, int platform);
     bool InitSurface();
+    bool InitPresentation(const GpuDeviceDesc& desc);
+    bool SurfaceUsable(std::string& why);
+    void DestroyWindow();
+    void QuerySurfaceSize(int& w, int& h) const;
+    void CreateFrameTexture();
+    void ApplyPendingFullscreenToggle();
+    static void KeyCallback(GLFWwindow* win, int key, int scancode, int action, int mods);
 #endif
     void ConfigureSurface();
 
@@ -134,15 +204,35 @@ private:
     bool mNullBackend = false;
 #ifndef __EMSCRIPTEN__
     GLFWwindow* mWindow = nullptr;
+    void (*mPrevKeyCallback)(GLFWwindow*, int, int, int, int) = nullptr;
+    bool mFullscreenToggleRequested = false;
+    int mWindowedX = 0, mWindowedY = 0, mWindowedW = 0, mWindowedH = 0;
+    PresentScale mPresentScale;
+    PresentRect mPresentRect;
+    bool mSurfaceNeedsConfigure = false;
+    bool mEverAcquired = false;
+    bool mSurfaceFailed = false;
+    std::string mSurfaceFailureReason;
+    long long mAcquireFailures = 0;
+    double mFirstFailureTime = 0.0;
+    int mSurfaceFault = 0;  // MILO_SURFACE_FAULT (test hook), see GpuDevice.cpp
 #endif
+    GpuInitFailure mInitFailure = GpuInitFailure::NoFailure;
+    // The frame's size: WindowWidth/Height.
     int mWidth = 0;
     int mHeight = 0;
+    // The swapchain's configured size.
+    int mSurfaceWidth = 0;
+    int mSurfaceHeight = 0;
     bool mHeadless = false;
     bool mHasBCCompression = false;
     bool mDeviceLost = false;
 
     // Surface texture (stored for CopyTextureToTexture in web frame resolve)
     wgpu::Texture mSurfaceTex;
+    // The fixed-size frame (GpuDeviceDesc::frameWidth), windowed only.
+    wgpu::Texture mFrameTex;
+    wgpu::TextureView mFrameView;
     bool mSurfaceCopySrc = false; // surface configured with CopySrc usage
 
     // Headless offscreen target

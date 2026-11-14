@@ -14,6 +14,11 @@
 //                     its pad-driven mode, otherwise a one-frame press of the
 //                     wake button (kPad_L3, or MILO_INPUT_WAKE_BUTTON). See
 //                     platform/JoypadScriptHook.h.
+//   [+N] highlight name  move the focused list's highlight onto the entry
+//                     `name` (down / up presses, closed loop through the game's
+//                     JoypadScriptSelectFn), starting at frame N (default: at
+//                     once); a wait like wait_screen, so `+N` lines after it
+//                     count from the frame it was satisfied.
 
 #include "os/Joypad.h"
 #include "os/JoypadMsgs.h"
@@ -252,11 +257,15 @@ static bool HostModifierHeld(JoypadKeyDownFn keyDown, void *ctx) {
 
 unsigned int JoypadKeyboardButtons(JoypadKeyDownFn keyDown, void *ctx) {
 #ifndef __EMSCRIPTEN__
-    if (HostModifierHeld(keyDown, ctx)) return 0;
+    // Every bound key is read, chord or not: with GLFW sticky keys a read is
+    // what consumes a tap, so a key tapped inside a host chord and left
+    // unread stays "pressed" and lands on the first poll after the modifier
+    // is let go (Alt+Enter toggled fullscreen and then pressed A, dc3 H-18).
     unsigned int buttons = 0;
     for (int i = 0; i < kNumKeyBindings; i++) {
         if (keyDown(kKeyBindings[i].key, ctx)) buttons |= (1u << kKeyBindings[i].button);
     }
+    if (HostModifierHeld(keyDown, ctx)) return 0;
     return buttons;
 #else
     (void)keyDown;
@@ -313,6 +322,7 @@ enum ScriptDirectiveType {
     kDirectiveButton,
     kDirectiveWaitScreen,
     kDirectiveWake, // a button directive that asks gWakeNeeded first
+    kDirectiveHighlight, // press down/up until the focused list's highlight is on a name
 };
 
 struct ScriptDirective {
@@ -332,8 +342,19 @@ static int gWaitSatisfiedFrame = -1;
 static int gWaitStartFrame = -1;
 static const int kWaitTimeoutFrames = 30 * 60; // 30 seconds at 60fps
 static JoypadScriptWakeNeededFn gWakeNeeded = nullptr;
+static JoypadScriptSelectFn gSelectQuery = nullptr;
+// `highlight`: a press at most every kSelectStepFrames (the flows' own spacing for
+// list scrolls), and only while the game reports the list still.
+static const int kSelectStepFrames = 15;
+static const int kSelectTimeoutFrames = 60 * 60;
+static const int kSelectNotFoundFrames = 2 * 60;
+static bool gSelecting = false;
+static int gSelectStartFrame = -1;
+static int gSelectLastPress = -1;
+static int gSelectPresses = 0;
 
 void JoypadScriptSetWakeNeeded(JoypadScriptWakeNeededFn fn) { gWakeNeeded = fn; }
+void JoypadScriptSetSelectQuery(JoypadScriptSelectFn fn) { gSelectQuery = fn; }
 
 static JoypadButton ParseButtonName(const char *name) {
     // Confirm / A
@@ -410,6 +431,16 @@ static void LoadInputScript() {
             gScript.push_back(d);
             continue;
         }
+        // highlight <name>: at once (the name is kept as written: list
+        // entries are symbols, case and all)
+        if (sscanf(line, " highlight %63s", screenBuf) == 1) {
+            ScriptDirective d = {};
+            d.type = kDirectiveHighlight;
+            strncpy(d.screenName, screenBuf, sizeof(d.screenName) - 1);
+            d.frame = -1; // no start frame: begins when reached
+            gScript.push_back(d);
+            continue;
+        }
 
         // Parse button: "+N button" (relative) or "N button" (absolute)
         const char *p = line;
@@ -424,7 +455,18 @@ static void LoadInputScript() {
 
         int frame;
         char btnName[64];
-        if (sscanf(p, "%d %63s", &frame, btnName) != 2) continue;
+        char argBuf[64];
+        int nf = sscanf(p, "%d %63s %63s", &frame, btnName, argBuf);
+        if (nf < 2) continue;
+        if (nf == 3 && !strcmp(btnName, "highlight")) {
+            ScriptDirective d = {};
+            d.type = kDirectiveHighlight;
+            d.frame = frame;
+            d.relative = isRelative;
+            strncpy(d.screenName, argBuf, sizeof(d.screenName) - 1);
+            gScript.push_back(d);
+            continue;
+        }
 
         for (char *c = btnName; *c; c++) {
             if (*c >= 'A' && *c <= 'Z') *c += 32;
@@ -502,6 +544,55 @@ static unsigned int GetScriptedButtons(int currentFrame) {
             }
 
             break; // Still waiting
+        }
+
+        if (d.type == kDirectiveHighlight) {
+            if (!gSelecting && d.frame >= 0) {
+                int startFrame = d.relative
+                    ? (gWaitSatisfiedFrame >= 0 ? gWaitSatisfiedFrame + d.frame : d.frame)
+                    : d.frame;
+                if (currentFrame < startFrame) break; // not yet
+            }
+            if (!gSelecting) {
+                gSelecting = true;
+                gSelectStartFrame = currentFrame;
+                gSelectLastPress = -kSelectStepFrames;
+                gSelectPresses = 0;
+            }
+            int delta = 0;
+            JoypadScriptSelectState state = kJoypadSelectNoList;
+            if (gSelectQuery && TheUI && !TheUI->InTransition())
+                state = gSelectQuery(d.screenName, &delta);
+            if (state == kJoypadSelectReady && delta == 0) {
+                printf("DC3 Input: highlight '%s' satisfied at frame %d (%d presses)\n",
+                    d.screenName, currentFrame, gSelectPresses);
+                gSelecting = false;
+                gWaitSatisfiedFrame = currentFrame;
+                gScriptCursor++;
+                continue;
+            }
+            // A list that has settled and still has no such entry will not grow
+            // one: give up after a short grace (the list may still be filling).
+            const bool gone = state == kJoypadSelectNotFound
+                && currentFrame - gSelectStartFrame > kSelectNotFoundFrames;
+            if (!gSelectQuery || gone || currentFrame - gSelectStartFrame > kSelectTimeoutFrames) {
+                static const char *const kWhy[] = {"no focused list", "no such entry",
+                                                   "list still moving", "highlight never arrived"};
+                printf("DC3 Input: TIMEOUT highlight '%s': %s (%d presses, %d frames); "
+                       "the rest of the script is abandoned\n",
+                    d.screenName, gSelectQuery ? kWhy[state] : "the game registered no select query",
+                    gSelectPresses, currentFrame - gSelectStartFrame);
+                gSelecting = false;
+                gScriptCursor = gScript.size();
+                break;
+            }
+            if (state == kJoypadSelectReady
+                && currentFrame - gSelectLastPress >= kSelectStepFrames) {
+                buttons |= (1 << (delta > 0 ? kPad_DDown : kPad_DUp));
+                gSelectLastPress = currentFrame;
+                gSelectPresses++;
+            }
+            break; // still selecting
         }
 
         if (d.type == kDirectiveButton || d.type == kDirectiveWake) {

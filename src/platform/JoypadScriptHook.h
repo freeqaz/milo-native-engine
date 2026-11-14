@@ -33,4 +33,37 @@ typedef bool (*JoypadScriptWakeNeededFn)();
 // the first JoypadPoll; the directive reads it at the frame it fires.
 void JoypadScriptSetWakeNeeded(JoypadScriptWakeNeededFn fn);
 
+// ---------------------------------------------------------------------------
+// `highlight NAME` (or `+N highlight NAME`: from N frames after the last
+// satisfied wait): move the focused list's highlight onto the entry NAME, by
+// pressing down / up, whatever row it is on. It does not confirm.
+//
+// A flow that counts presses ("51 downs reach omg") breaks as soon as the list
+// changes -- downloadable songs, a sort order, an unlocked entry -- and then
+// plays the wrong song, silently. `highlight omg` asks the game where omg is
+// relative to the highlight, presses toward it one row at a time (a press
+// every few frames, only while the list is still), and is satisfied when the
+// highlight is on it; a `+60 confirm` after it then plays omg however many
+// rows precede it. Like wait_screen it is a wait: the `+N` lines after it
+// count from the frame the highlight arrived.
+//
+// The game answers through a JoypadScriptSelectFn. With none registered the
+// directive gives up at once; when the entry is never reached (no focused
+// list, no such entry, a list that does not move) it gives up after its
+// timeout. Either way it says why and the rest of the script is abandoned:
+// pressing on would confirm the wrong entry.
+enum JoypadScriptSelectState {
+    kJoypadSelectNoList = 0, // nothing focused that the game can search
+    kJoypadSelectNotFound, // the focused list has no entry by that name
+    kJoypadSelectMoving, // the list is still scrolling; ask again later
+    kJoypadSelectReady, // *delta = entry's row - highlighted row (0 = on it)
+};
+typedef JoypadScriptSelectState (*JoypadScriptSelectFn)(const char *name, int *delta);
+
+// Defined so a game can compile its answer only against an engine that has it.
+#define MILO_JOYPAD_SCRIPT_HIGHLIGHT 1
+
+// Register (or, with nullptr, clear) the game's answer.
+void JoypadScriptSetSelectQuery(JoypadScriptSelectFn fn);
+
 #endif // MILO_ENGINE_PLATFORM_JOYPADSCRIPTHOOK_H
