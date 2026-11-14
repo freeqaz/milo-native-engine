@@ -1,7 +1,8 @@
 // DC3PostChain.cpp — np-gfx-post: fills gfx/RB3RetailPost's DC3 parameters
 // from a dc3-decomp RndPostProc the way NgPostProc::DoPost sets the retail
 // shader constants (dc3-decomp rndobj/PostProc_NG.cpp: DoBloom, SetBloomColor,
-// ModulateColorXfm, CheckNoise, CheckChromaticAberration, CheckVignette), and
+// ModulateColorXfm, CheckNoise, CheckChromaticAberration, CheckVignette,
+// CheckMotionBlur), and
 // the display ramp (DxRnd::SetupGamma). Built for the DC3 shape on the dc3
 // backend, i.e. for dc3-decomp AND rb3-xenon; everything here is gated on
 // rndshape::kDC3RetailPost, which only dc3-decomp's accessors turn on, so
@@ -136,6 +137,18 @@ void FillDC3(const P *pp, float flickerMul, RetailPostParams &out) {
         out.chromaticOffset = pp->GetChromaticAberrationOffset();
         out.chromaticSharpen = pp->GetChromaticSharpen() ? 1.0f : 0.0f;
         out.noiseMidtone = pp->GetNoiseMidtone() ? 1.0f : 0.0f;
+        // CheckMotionBlur: DoMotionBlur() = blend > 0 && weight.Pack() > 0 &&
+        // !TheHiResScreen.IsActive(); c105 = (weight.rgb * blend, weight.a).
+        // (DoVelocity's camera velocity buffer, bit 42, is not ported.)
+        out.motionBlur = pp->DoMotionBlur();
+        if (out.motionBlur) {
+            const Hmx::Color &mw = pp->GetMotionBlurWeight();
+            const float blend = pp->GetMotionBlurBlend();
+            out.motionBlurParams[0] = mw.red * blend;
+            out.motionBlurParams[1] = mw.green * blend;
+            out.motionBlurParams[2] = mw.blue * blend;
+            out.motionBlurParams[3] = mw.alpha;
+        }
         // The noise map, seeds and scales are filled by PostProcPass, which
         // owns the stationary seed (NgPostProc::mRandomSeed).
     }

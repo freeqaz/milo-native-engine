@@ -349,12 +349,13 @@ void PostProcPass::RunDC3Retail(wgpu::CommandEncoder& encoder, P* pp, int mode,
             mLoggedPostProc = pp;
             const char* dir = pp->Dir() ? pp->Dir()->Name() : "";
             fprintf(stderr, "DC3 post: %s (%s) bloom I=%.2f thr=%.2f streak=%d glare=%d c6=(%.2f %.2f %.2f) "
-                     "xfm=%d vignette=%.2f chroma=%.2f noise=%d\n",
+                     "xfm=%d vignette=%.2f chroma=%.2f noise=%d motion_blur=%d(%.3f %.3f %.3f %.3f)\n",
                      pp->Name(), dir, pp->BloomIntensity(), pp->GetBloomThreshold(),
                      (int)pp->GetBloomStreak(), (int)pp->GetBloomGlare(), rp.bloomColor[0],
                      rp.bloomColor[1], rp.bloomColor[2], (int)pp->ColorXfmEnabled(),
                      pp->GetVignetteIntensity(), pp->GetChromaticAberrationOffset(),
-                     (int)(bool)rp.noiseMap);
+                     (int)(bool)rp.noiseMap, (int)rp.motionBlur, rp.motionBlurParams[0],
+                     rp.motionBlurParams[1], rp.motionBlurParams[2], rp.motionBlurParams[3]);
         }
         mRetail.Run(encoder, sceneView, intermediateView, w, h, frameView, rp, gpu);
     }
