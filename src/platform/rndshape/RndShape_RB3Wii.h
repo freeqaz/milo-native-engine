@@ -646,6 +646,11 @@ constexpr bool kMultiplyBlendIsLit = false;
 // Intensify scales alpha in the UI phase only (MaterialAlphaScale); see the
 // DC3 shape's kIntensifyScalesAlpha. Not measured for RB3 Wii.
 constexpr bool kIntensifyScalesAlpha = false;
+// alpha_cut drives alpha-to-coverage and a `a < ref` discard, as before; see
+// the DC3 shape's kAlphaCutIsCoverage / kAlphaTestIsGreater. Not measured for
+// RB3 Wii.
+constexpr bool kAlphaCutIsCoverage = true;
+constexpr bool kAlphaTestIsGreater = false;
 // The display gamma ramp. DxRnd::InitRenderState ends in DxRnd::SetupGamma,
 // which reads the system config's (rnd (gamma g)) and, when present, sets
 // D3DDevice_SetGammaRamp with entry i = (u16)(pow(i / 256, g) * 1024) * 64
