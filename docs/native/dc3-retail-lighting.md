@@ -451,6 +451,9 @@ The shader's `dc3ProjLight` returns the identity unless
 | rb3 | `ctest` in a worktree build against this branch (rerun at 5514b3f) | 158 registered, 151 passed, 0 failed, 7 skipped |
 | rb3 | `drawlog-golden.py --fixed-clock --canonical-order` | fails with "dump frame=61 != expected 60" on the **base** binary as well, so it predates this lane and says nothing about it |
 | getenv census | `native_compat_census.py --engine-root <this branch> check` | OK, 442 flags. This lane adds no getenv. |
+| rb3-xenon, round 2 | `rb3-render` over `xbox-zip`, engine 5664e9d (round-2 base) vs 41760b4 | 11 of 11 PNGs byte-identical |
+| rb3, round 2 | `ctest` in the lane's rb3 worktree (rb3 1dee2c1f7) against 41760b4 | 158 registered, 1 failed, 7 skipped. The failure is `native_compat_census.check`: that worktree's ledger is stale against the np-gfx merge's flags. The same check fails against the base engine 5664e9d, and rb3 main's copy passes. |
+| getenv census, round 2 | rb3 main's `native_compat_census.py --engine-root <this branch> check` | OK, 446 flags, the same as on the base 5664e9d. The 4 above round 1's 442 came in with the np-gfx merge, and `git diff 5664e9d HEAD` has no `getenv`. |
 | dc3 | `native/tests/test_retail_lighting.cpp`, 9 tests | pass. Each sabotage listed in the dc3 commits fails it. |
 | dc3 | `RehearseProjectionTest.DancerIsDrawnThroughTheProjection` | Failed under the retail model: 2-3% "character-coloured" against a 10% bar. The kept shots show the dancer drawn, saturated rather than washed out. The test's green ≥ 80 rule was measuring overexposure, so it now detects the dancer by hue. It passes on both the base and this branch, and reads 0.0% on the reveal-off shots. |
 
