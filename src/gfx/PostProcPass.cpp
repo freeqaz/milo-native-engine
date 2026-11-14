@@ -2,6 +2,7 @@
 #include "gfx/GpuDevice.h"
 #include "rndobj/PostProc.h"
 #include "rndobj/ColorXfm.h"
+#include "rndobj/Tex.h"
 #include "platform/rndshape/RndShape.h"
 #include "gfx/RB3RetailPost.h"
 #include "platform/TexGpu.h"
@@ -618,7 +619,17 @@ bool PostProcPass::NoiseConstants(RndPostProc* pp, float seeds[4], float params[
     if (!rndshape::PostProcNoiseMap(pp, noise)) return false;
     // NgPostProc::CheckNoise: no noise unless the intensity is non-zero AND
     // there is a map.
-    map = (noise.intensity != 0.0f && noise.map) ? GetGpuTexView(noise.map) : wgpu::TextureView();
+    // GetGpuTexView answers only for a texture something has uploaded, and
+    // materials upload theirs as they bind them (MaterialSetup's ResolveMap).
+    // noise_mono.tex is bound by nothing but this pass, so without the presync
+    // here it never reached the GPU in game: every "awesome" frame ran with
+    // its noise silently off, -30% luma against the image (np-gfx round 4,
+    // Xenia). Once resident, PresyncBitmap is a lookup and a fingerprint.
+    map = wgpu::TextureView();
+    if (noise.intensity != 0.0f && noise.map) {
+        if (!noise.map->IsRenderTarget()) noise.map->PresyncBitmap();
+        map = GetGpuTexView(noise.map);
+    }
     if (!map) return false;
     midtone = noise.midtone;
     // Stationary noise keeps the seed pair NgPostProc::Select rolled
