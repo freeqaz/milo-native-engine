@@ -171,6 +171,13 @@ bool MeshDrawsAsGlyph(RndMesh* mesh, bool skinned) {
     return !mesh->Name()[0] && !skinned;
 }
 
+bool MeshShadesAsText(RndMesh* mesh) {
+    if (!mesh) return false;
+    GameRenderHook* hook = GetGameRenderHook();
+    if (hook && hook->MarksTextGlyphMeshes()) return IsMarkedTextGlyphMesh(mesh);
+    return !mesh->Name()[0];
+}
+
 MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh) {
     // DC3 BaseMaterial getters, whatever the rndobj shape (platform/rndshape/).
     auto mat = rndshape::Mat(rawMat);

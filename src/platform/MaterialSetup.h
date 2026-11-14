@@ -41,3 +41,11 @@ bool TextMeshKeepsAtlasRGB(RndMesh* mesh, RndMat* mat, bool skinned);
 // that the page is inferred: unnamed and not skinned (DC3's HamRibbon hand
 // trail is unnamed but skinned).
 bool MeshDrawsAsGlyph(RndMesh* mesh, bool skinned);
+
+// True when a mesh takes the text colour path (BuildMaterialParams' isTextMesh:
+// forced prelit, atlas alpha into RGB unless TextMeshKeepsAtlasRGB). A game
+// that marks its glyph pages (MarksTextGlyphMeshes) gets it for marked meshes
+// only, so an unnamed ribbon, beam or billboard shades with its own material
+// (DC3's hamribbon.mat: lit, use_environ 0). Without the mark: every unnamed
+// mesh, skinned or not, as before.
+bool MeshShadesAsText(RndMesh* mesh);
