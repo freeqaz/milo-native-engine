@@ -18,8 +18,13 @@ enum DXTFormat {
 
 namespace TextureConvert {
 
-// Create GPU texture from Milo bitmap data (handles byte-swap, untile, format conversion)
-wgpu::Texture CreateFromBitmap(GpuDevice& gpu, const RndBitmap& bmp, int numMips = 0);
+// Create GPU texture from Milo bitmap data (handles byte-swap, untile, format conversion).
+// `numMips` is the bitmap's mip count below the base (0 = count the chain).
+// `maxLevels` caps the levels created and uploaded, base included (0 = no cap):
+// the consumer's texture loader may upload fewer levels than the bitmap carries
+// (DC3's DxTex::SyncBitmap uploads at most 2; rndshape::kBitmapMaxMipLevels).
+wgpu::Texture CreateFromBitmap(GpuDevice& gpu, const RndBitmap& bmp, int numMips = 0,
+                               int maxLevels = 0);
 
 // Create cube texture from 6 face bitmaps (for environment maps)
 wgpu::Texture CreateCubeFromBitmaps(GpuDevice& gpu, const RndBitmap* const* faces, int numFaces = 6);

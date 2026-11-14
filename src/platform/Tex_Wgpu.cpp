@@ -218,8 +218,14 @@ void RndTex::PresyncBitmap() {
         mip = mip->nextMip();
     }
 
+    // The consumer's loader decides how many of those levels reach the GPU:
+    // DC3's DxTex::SyncBitmap creates a regular texture with
+    // min(NumMips()+1, 2) levels (rndshape::kBitmapMaxMipLevels; 0 = all).
+    // The other bitmapped kinds DC3 creates with one level (kRegularLinear,
+    // movie, scratch) carry no mips, so the cap only ever bites on kRegular;
+    // render targets and cube maps do not come through here.
     wgpu::Texture gpuTex = TextureConvert::CreateFromBitmap(
-        gWgpuRnd->Gpu(), mBitmap, numMips);
+        gWgpuRnd->Gpu(), mBitmap, numMips, rndshape::kBitmapMaxMipLevels);
 
     if (!gpuTex) {
         sPresyncCreateFail++;
@@ -264,6 +270,7 @@ GpuTexDebugInfo GetGpuTexDebugInfo(RndTex* tex) {
         info.height = d.lastH;
         info.view = (const void*)d.view.Get();
         info.texture = (const void*)d.texture.Get();
+        if (d.texture) info.mipLevels = (int)d.texture.GetMipLevelCount();
     }
     return info;
 }

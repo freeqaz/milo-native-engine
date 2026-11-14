@@ -499,6 +499,11 @@ inline RndBitmap *CubeFaceBitmap(RndCubeTex *c, int face) { return &c->mBitmap[f
 // in hardware; TextureConvert decodes them to RGBA8 (gfx/GxTextureDecode).
 constexpr bool kGxTextureLayout = true;
 
+// ---- bitmap mip levels -----------------------------------------------------
+// Levels of a RndBitmap texture uploaded, base included; 0 = every authored mip
+// (and the GX path regenerates its own chain). See RndShape_DC3.h for DC3's cap.
+constexpr int kBitmapMaxMipLevels = 0;
+
 // ---- draw modes ------------------------------------------------------------
 // RB3's WorldReflection::DrawShowing sets mode 7 for the mirrored pass
 // (world/Reflection.cpp: SetDrawMode((Mode)7)); DC3 renumbered it to 8 when it
