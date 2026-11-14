@@ -354,6 +354,12 @@ void DrawMeshImmediate(RndMesh* mesh) {
     // --- Capture record ---
     if (capturing) {
         RecordDrawCall(mesh, mat, matParams, skinned, (int)matBlend, heuristics);
+        auto& rec = FrameCapture::Get().LastRecord();
+        rec.hasPipeState = true;
+        rec.pipeZMode = (int)key.zMode;
+        rec.pipeCull = (int)key.cull;
+        rec.passHasDepth = key.hasDepth;
+        rec.glyph = isGlyphMesh;
     }
 
     // --- Draw ---

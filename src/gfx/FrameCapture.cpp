@@ -88,6 +88,9 @@ void FrameCapture::DumpToStderr() const {
                 r.cameraName ? r.cameraName : "?",
                 r.blend, r.zMode, r.cull);
         if (r.skinned) fprintf(stderr, " SKINNED");
+        if (r.hasPipeState)
+            fprintf(stderr, " pipe(z=%d cull=%d depth=%d)%s", r.pipeZMode, r.pipeCull,
+                    (int)r.passHasDepth, r.glyph ? " GLYPH" : "");
         if (r.deferred) fprintf(stderr, " DEFERRED(dist=%.1f)", r.distSq);
         fprintf(stderr, "\n");
 
