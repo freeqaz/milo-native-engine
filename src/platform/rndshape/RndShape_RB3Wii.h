@@ -465,9 +465,17 @@ constexpr bool kPartMaterialTint = true;
 struct PartBillboardTerms {
     bool retailXbox = false;
     float screenAspect = 1.0f;
+    bool velocityVerts = false;
+    bool aligned = false;
+    bool stretched = false;
+    bool constantArea = false;
+    bool perspective = false;
+    float stretchScale = 1.0f;
+    float rel[9] = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f};
 };
 inline PartBillboardTerms PartBillboard(RndParticleSys *) { return {}; }
 inline float PartSwingArm(const RndParticle *) { return 0.0f; }
+inline Vector3 PartVelocity(const RndParticle *) { return Vector3(0.0f, 0.0f, 0.0f); }
 // Read only by the Xbox-shader colour model (ParticleShaderColor), which this
 // shape does not use; declared so that model compiles here.
 inline bool MatUseEnviron(RndMat *m) { return m->mUseEnviron; }
@@ -499,6 +507,11 @@ constexpr int kDrawModeReflection = 7;
 // Less test the first opaque draw at each pixel wins -- the sky dome, drawn
 // first, hid the whole skyline.
 constexpr bool kCamSelectSetsViewport = false;
+
+// ---- flare point tests -----------------------------------------------------
+// WgpuRnd waits after the submit for point-test answers not ready at world end
+// (see the DC3 shape): RB3 keeps the one-frame answer latency on desktop.
+constexpr bool kPointTestWaitAfterSubmit = true;
 
 // ---- render-to-texture -----------------------------------------------------
 // RB3's RndTexRenderer::DrawToTexture brackets the draw into its output texture
