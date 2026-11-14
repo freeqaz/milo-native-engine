@@ -429,6 +429,11 @@ if(MILO_ENGINE_GPU_BACKEND STREQUAL "dc3")
         # RB3's per-draw state log and provenance sidecar (RB3DrawLogDebug.h);
         # the DC3 shape's draw-log hooks are inline no-ops.
         list(APPEND MILO_ENGINE_PLATFORM_SOURCES src/platform/rndshape/RB3WiiDrawLog.cpp)
+    else()
+        # DC3's own light model behind the rndshape seam (dc3-decomp only:
+        # rndshape::kDC3RetailModel is false for rb3-xenon, which compiles the
+        # same shape and gets the old answers from this TU).
+        list(APPEND MILO_ENGINE_PLATFORM_SOURCES src/platform/rndshape/DC3SceneLighting.cpp)
     endif()
 elseif(MILO_ENGINE_GPU_BACKEND STREQUAL "rb3")
     list(APPEND MILO_ENGINE_PLATFORM_SOURCES ${MILO_ENGINE_GPU_PLATFORM_SOURCES_RB3})

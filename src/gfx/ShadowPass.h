@@ -13,6 +13,12 @@ public:
     void Init(GpuDevice& gpu);
     void Render(wgpu::CommandEncoder& encoder, UniformRingBuffer& objectRing,
                 UniformRingBuffer& boneRing, GpuDevice& gpu);
+    // Draw `meshes` into the map with `clipFromWorld` (column-major) at depth
+    // 0, over a cleared depth of 1: a coverage map, not a depth map. The DC3
+    // shape's projected shadow light (rndshape::CollectProjShadowCasters);
+    // leaves Available() and LightViewProj() alone.
+    void RenderCasters(wgpu::CommandEncoder& encoder, GpuDevice& gpu,
+                       const float clipFromWorld[16], RndMesh* const* meshes, int numMeshes);
     void Terminate();
 
     // Outputs consumed by main pass

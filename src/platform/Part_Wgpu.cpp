@@ -10,6 +10,8 @@
 #include "rndobj/Mat.h"
 #include "platform/rndshape/RndShape.h"
 
+#include "gfx/RenderPipelineCache.h"
+
 #include <cmath>
 #include <cstring>
 #include <vector>
@@ -43,6 +45,8 @@ static wgpu::ShaderModule sParticleShader;
 static wgpu::BindGroupLayout sParticleBGL;       // group 1: texture + sampler
 static wgpu::PipelineLayout sParticlePipelineLayout;
 static bool sParticlePipelineReady = false;
+// Pipelines by blend/target/depth/samples/mask (gfx/RenderPipelineCache.h).
+static RenderPipelineCache sParticlePipelines;
 
 static const char* kParticleShaderSource = R"WGSL(
 struct SceneUB {
@@ -417,8 +421,14 @@ void DrawParticlesBillboard(RndParticleSys* sys) {
     pipeDesc.primitive.cullMode = wgpu::CullMode::None;
     pipeDesc.multisample.count = gWgpuRnd->CurrentSampleCount();
 
-    // TODO: cache pipeline by blend mode
-    wgpu::RenderPipeline pipe = dev.CreateRenderPipeline(&pipeDesc);
+    // Cached (gfx/RenderPipelineCache.h): a per-draw CreateRenderPipeline
+    // recompiled the particle shader for every system, every frame.
+    wgpu::RenderPipeline pipe = sParticlePipelines.GetOrCreate(
+        dev,
+        RenderPipelineCache::MakeKey(bs, ct.format, ct.writeMask,
+                                     gWgpuRnd->CurrentPassHasDepth(),
+                                     pipeDesc.multisample.count, maskScale, 0u),
+        pipeDesc);
 
     // Bind group 0: reuse the main renderer's scene bind group (same SceneBGL)
     wgpu::BindGroup& sceneBG = gWgpuRnd->SceneBindGroup();
@@ -456,6 +466,7 @@ void DrawParticlesBillboard(RndParticleSys* sys) {
 }
 
 void PartTerminate() {
+    sParticlePipelines.Clear();
     sParticleVB = nullptr;
     sParticleIB = nullptr;
     sParticleVBCapacity = 0;

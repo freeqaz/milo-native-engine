@@ -15,6 +15,7 @@
 #include "rndobj/Mat.h"
 #include "rndobj/Cam.h"
 #include "rndobj/CubeTex.h"
+#include "rndobj/Draw.h"
 #include "rndobj/Env.h"
 #include "rndobj/Lit.h"
 #include "rndobj/Mesh.h"
@@ -53,18 +54,93 @@ inline RndMat *DefaultMat() { return TheRnd.DefaultMat(); }
 template <class T>
 inline T *Mat(T *m) { return m; }
 
+// ---- which consumer -------------------------------------------------------
+// Two consumers compile this shape: dc3-decomp and rb3-xenon. DC3's own light
+// model (the image's NgEnviron / NgMat / RndShaderStandard / standard.vs+ps,
+// docs/native/dc3-retail-lighting.md) is selected only for dc3-decomp, told
+// apart by a structural fact of its rndobj: DC3's RndEnviron is a drawable
+// (`class RndEnviron : public RndTransformable, public RndDrawable`, dc3-decomp
+// src/system/rndobj/Env.h:14) and rb3-xenon's is a bare Hmx::Object
+// (rb3-xenon src/system/rndobj/Env.h:47). rb3-xenon therefore keeps every
+// answer below that it had before, and renders as it did.
+//
+// DependentEnvT<T>::type is RndEnviron, spelled so a branch that uses DC3-only
+// members is not checked for the other consumer (see DependentMatT below).
+template <class T> struct DependentEnvT { using type = RndEnviron; };
+template <class T>
+constexpr bool kDC3RetailModelFor =
+    std::is_base_of<RndDrawable, typename DependentEnvT<T>::type>::value;
+constexpr bool kDC3RetailModel = kDC3RetailModelFor<void>;
+
 // Whether a material ignores lighting entirely (register colour x texture, no
-// ambient, lights or vertex colour). DC3 has no such material state.
+// ambient, lights or vertex colour). DC3 (retail model): a material with
+// use_environ off that is not prelit. RndShaderStandard::CalcShaderOpts gates
+// both light bits (16 real, 17 approx) on mat->UseEnviron(), and
+// NgMat::SetupAmbient puts (1,1,1,1) in c1 for such a material, so the shipped
+// permutation 0x10 draws texel * c0 * 1 (100% matched; shaders section of the
+// doc). rb3-xenon: no such state.
 template <class T>
-inline bool MatUnlit(const T &) { return false; }
+inline bool MatUnlit(const T &m) {
+    if constexpr (kDC3RetailModelFor<T>) return m && !m->UseEnviron() && !m->Prelit();
+    else { (void)m; return false; }
+}
 // Whether a prelit material's vertex colour is its ambient term (lights add
-// on top). DC3's prelit materials skip lighting.
+// on top). DC3 (retail model): prelit and use_environ, as permutation 0x20110
+// computes (vertex * c1 + box) * c0 with c1 the environ's ambient. Prelit
+// without use_environ (0x100 with c1 = 1) is the vertex colour as authored.
 template <class T>
-inline bool MatPrelitAmbient(const T &) { return false; }
-// RB3's retail material terms (RndShape.h). DC3 materials keep the dc3
-// shader's own specular/normal/rim model.
+inline bool MatPrelitAmbient(const T &m) {
+    if constexpr (kDC3RetailModelFor<T>) return m && m->Prelit() && m->UseEnviron();
+    else { (void)m; return false; }
+}
+// The retail material terms (RndShape.h), from DC3's RndShaderStandard::
+// CalcShaderOpts (100% matched) and NgMat::SetRegularShaderConst:
+//   any of them only when the draw has a real or an approx light (the shader
+//   reads that per draw, retailLightsOn) and the material uses the environ;
+//   specular (bit 2) = SpecularRGB().Pack() != 0, c2 = (rgb, max(power, 0.5));
+//   per-pixel (bit 0) = AllowPerPixel (1 on native, WgpuShaderMgr::Init) &&
+//   GetPerPixelLit(); then normal map (5), specular map (1), rim (37:
+//   RimRGB().Pack() != 0, c61 = (rgb, max(power, 0.5))), rim map (15);
+//   c14 = 1 - deNormal.
+// rb3-xenon keeps the dc3 shader's own model.
 template <class T>
-inline bool MatRetailTerms(const T &, RetailMatTerms &) { return false; }
+inline bool MatRetailTerms(const T &m, RetailMatTerms &t) {
+    if constexpr (kDC3RetailModelFor<T>) {
+        if (!m || !m->UseEnviron()) return false;
+        const Hmx::Color &spec = m->GetSpecularRGB();
+        t.specular = spec.Pack() != 0;
+        if (t.specular) {
+            t.specular_rgb[0] = spec.red;
+            t.specular_rgb[1] = spec.green;
+            t.specular_rgb[2] = spec.blue;
+        }
+        t.specularPower = spec.alpha - 0.5f >= 0.0f ? spec.alpha : 0.5f;
+        t.perPixel = m->GetPerPixelLit();
+        if (t.perPixel) {
+            t.normalMap = m->NormalMap() != nullptr;
+            t.normalTex = m->NormalMap();
+            t.specularMap = t.specular && m->GetSpecularMap() != nullptr;
+            t.specularTex = m->GetSpecularMap();
+            const Hmx::Color &rim = m->GetRimRGB();
+            t.rim = rim.Pack() != 0;
+            if (t.rim) {
+                t.rim_rgb[0] = rim.red;
+                t.rim_rgb[1] = rim.green;
+                t.rim_rgb[2] = rim.blue;
+            }
+            t.rimPower = rim.alpha - 0.5f >= 0.0f ? rim.alpha : 0.5f;
+            t.rimLightUnder = t.rim && m->GetRimLightUnder();
+            t.rimMap = t.rim && m->GetRimMap() != nullptr;
+            t.rimTex = m->GetRimMap();
+            t.deNormal = m->GetDeNormal();
+        }
+        return true;
+    } else {
+        (void)m;
+        (void)t;
+        return false;
+    }
+}
 // Material colour modulation (RndShape.h; the shader's colorModScale /
 // colorModAlpha). Returns the mode, 0 for none. DC3's RndMat carries it as
 // mColorModFlags / mColorMod (rndobj/Mat.h): WorldCrowd::Draw3DChars sets
@@ -383,8 +459,14 @@ float BloomLumaScale(const RndPostProc *pp);
 // dc3-native frames 50-600 and the glitterati/dclive venues: RGB identical,
 // frame alpha moves on 0.25% of dclive's pixels (PostProcPass reads RGB only).
 constexpr bool kAlphaBlendMax = true;
-// DC3 materials and lights are linear-space values (the dc3 shader's model).
-constexpr bool kGammaSpaceShading = false;
+// DC3 shades in gamma space, as the image does: no bitmap format DxRnd uses
+// carries a gamma sign (rnddx9/Rnd.cpp D3DFormatForBitmap: DXT1/3/5, DXN,
+// A8R8G8B8, A1R5G5B5, X8R8G8B8), the frame is a D3DFMT_A8R8G8B8 EDRAM surface
+// (Rnd_Xbox.cpp), and no standard.ps permutation decodes or encodes, so the
+// shader multiplies texel, material colour and lighting as stored and the
+// target saturates the product (material.gammaShading). rb3-xenon keeps the
+// linear model with the sRGB output encode.
+constexpr bool kGammaSpaceShading = kDC3RetailModel;
 // The pseudo-HDR bloom mask (ShaderOptions bit 22): retail DC3's standard.ps /
 // particles.ps / multimesh write alpha = sat(dot(rgb, c7) * c5.z) for a
 // material whose NgMat::AllowHDR() holds, drawn into the main frame
@@ -427,9 +509,42 @@ float DisplayGamma(bool presenting);
 // ---- end np-gfx-post ----
 
 // ---- scene lighting --------------------------------------------------------
-// DC3 lights through WgpuRnd::WriteSceneUniforms' own environ block.
-inline bool WriteSceneLighting(SceneUniforms &, RndCam *) { return false; }
-inline void FillMeshApproxLighting(RndMesh *, float (*)[4], float *) {}
+// DC3 (retail model): the image's NgEnviron::Select register set, see
+// DC3SceneLighting.cpp and docs/native/dc3-retail-lighting.md. rb3-xenon:
+// returns false / does nothing, so WgpuRnd::WriteSceneUniforms keeps its own
+// environ block for it.
+bool WriteSceneLighting(SceneUniforms &s, RndCam *cam);
+void FillMeshApproxLighting(RndMesh *mesh, float box[6][4], float retail[4]);
+// The vertex shader constant NgEnviron last uploaded to register `reg`
+// (WgpuShaderMgr keeps Vector4 vertex constants). Defined in Rnd_Wgpu.cpp.
+const float *CapturedVConstant(int reg);
+
+// ---- shadows ---------------------------------------------------------------
+// DC3 (retail model): the image has no generic shadow map. Its dancer floor
+// shadows are a projected light with projected_blend 1 (shadow_projected):
+// NgLight::CheckShadowMap draws the light's shadow objects into a 256x256
+// coverage target from the light's cone, and every material with
+// recv_proj_lights darkens its approx-light term by
+// 1 - 0.75 * coverage * colour * sat(c65 . N) (standard.ps 0x100010030011).
+// The native form: WriteSceneLighting finds that light (as NgEnviron::Select
+// does) and puts its cone in SceneUniforms.lightViewProj with
+// shadowEnabled = 2; WgpuRnd::EndDrawing then calls CollectProjShadowCasters
+// and draws the casters into ShadowPass's map, which the next frame samples.
+// rb3-xenon keeps the generic pre-pass. Defined in DC3SceneLighting.cpp.
+constexpr bool kGenericShadowPass = !kDC3RetailModel;
+
+// Rnd::BeginDrawing selects mDefaultEnv every frame (rndobj/Rnd.cpp), so a
+// draw that selects no environ of its own -- the UI after EndWorld -- gets the
+// default environ. WgpuRnd::BeginDrawing used to select it only when none was
+// current, which left the last frame's environ (a venue's) current. DC3
+// follows the image; rb3-xenon keeps the native rule (its renders are pinned
+// byte-identical).
+constexpr bool kSelectDefaultEnvEachFrame = kDC3RetailModel;
+bool CollectProjShadowCasters(ProjShadowCasters &out);
+// The projected light's gobo for the scene WriteSceneLighting just wrote
+// (projected_blend 0: tf10, added as (1 - coverage) gobo c69 sat(c65 . N),
+// standard.ps 0x10030011); null otherwise, and always null for rb3-xenon.
+RndTex *SceneProjTexture();
 
 // ---- per-draw state log ----------------------------------------------------
 // RB3's draw log (RB3DrawLogDebug.h). DC3 and rb3-xenon have no consumer for
