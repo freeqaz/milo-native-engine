@@ -202,6 +202,10 @@ static UiDrawTerms CurrentUiDrawTerms() {
 }
 
 MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh) {
+    return BuildMaterialParams(rawMat, isTextMesh, CurrentUiDrawTerms());
+}
+
+MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh, const UiDrawTerms& uiTerms) {
     // DC3 BaseMaterial getters, whatever the rndobj shape (platform/rndshape/).
     auto mat = rndshape::Mat(rawMat);
     MaterialParams result{};
@@ -253,7 +257,6 @@ MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh) {
     // Retail scales the texel's alpha by intensify too (UiDrawTermsFor); the
     // shader scales rgb only, and alpha is a product, so the factor goes on
     // the material alpha.
-    const UiDrawTerms uiTerms = CurrentUiDrawTerms();
     matUni.color[3] *= MaterialAlphaScale(mat->GetIntensify(), uiTerms.retailMaterialTerms);
 
     // --- Shader variation (skin, hair, etc.) ---
@@ -415,6 +418,10 @@ MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh) {
 }
 
 MaterialParams BuildPassMaterialParams(BaseMaterial* rawNextPass) {
+    return BuildPassMaterialParams(rawNextPass, CurrentUiDrawTerms());
+}
+
+MaterialParams BuildPassMaterialParams(BaseMaterial* rawNextPass, const UiDrawTerms& npUiTerms) {
     auto nextPass = rndshape::Mat(rawNextPass);
     MaterialParams result{};
     MaterialUniforms& npMatUni = result.uniforms;
@@ -436,7 +443,6 @@ MaterialParams BuildPassMaterialParams(BaseMaterial* rawNextPass) {
     // --- Other properties ---
     npMatUni.emissiveMultiplier = nextPass->GetEmissiveMap() ? nextPass->GetEmissiveMultiplier() : 0.0f;
     npMatUni.intensify = nextPass->GetIntensify() ? 2.0f : 1.0f;
-    const UiDrawTerms npUiTerms = CurrentUiDrawTerms();
     npMatUni.color[3] *= MaterialAlphaScale(nextPass->GetIntensify(), npUiTerms.retailMaterialTerms);
     npMatUni.deNormal = nextPass->GetDeNormal();
     npMatUni.hasNormalMap = nextPass->NormalMap() ? 1.0f : 0.0f;

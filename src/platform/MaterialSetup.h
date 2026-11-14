@@ -49,6 +49,12 @@ bool MaterialShadesUnlit(bool matPrelit, bool matUseEnviron, bool retailMaterial
 // Build material parameters for a multi-pass material (simplified, no heuristics)
 MaterialParams BuildPassMaterialParams(BaseMaterial* pass);
 
+// The same two builders with the overlay-phase terms given rather than read
+// from the frame (UiDrawTermsFor(FrameInOverlay())): the seam a test drives
+// to check the terms reach the uniforms.
+MaterialParams BuildMaterialParams(RndMat* mat, bool isTextMesh, const UiDrawTerms& uiTerms);
+MaterialParams BuildPassMaterialParams(BaseMaterial* pass, const UiDrawTerms& uiTerms);
+
 // A text mesh's material routes atlas alpha into RGB (useAlphaAsRGB), right for
 // an atlas that keeps glyphs in alpha with RGB == 0. True when the game's
 // render hook says this mesh's font atlas carries glyph colour in RGB instead
