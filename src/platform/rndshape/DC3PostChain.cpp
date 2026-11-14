@@ -105,6 +105,11 @@ int RetailPostMode() {
     } else {
         static int s = -1;
         if (s < 0) {
+            // Values beyond the registry text (NativeCompatFlags.classification.json,
+            // kept unchanged so rb3's generated ledger stays current):
+            // 'velocity' shows the velocity target (tf10) as stored; 'veldiff' shows
+            // |bit 42's blur - scene| x 8 in the same frame. Unset also runs the camera
+            // velocity blur wherever the post-proc's motion_blur_velocity is on.
             const char *e = getenv("DC3_RETAIL_POST");
             s = !e ? 1 : (e[0] == '0') ? 0 : (strcmp(e, "raw") == 0) ? 2
                 : (strcmp(e, "mask") == 0) ? 3 : (strcmp(e, "bloom") == 0) ? 4

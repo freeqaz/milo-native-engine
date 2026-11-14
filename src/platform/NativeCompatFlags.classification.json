@@ -2150,7 +2150,7 @@
   "DC3_RETAIL_POST": {
     "class": "feature",
     "owner": "render/post",
-    "faithfulStatus": "live: selects the DC3 retail post chain (NgPostProc::DoPost port, np-gfx-post). Unset = the retail chain (bloom mask, bloom/streak/glare, screen-blend composite, noise, colour xfm, vignette, chroma, velocity blur, motion blur, hue converge). '0' = the pre-np-gfx-post generic PostProcPass; 'raw' = chain with no effects (copy); 'mask' / 'bloom' = inspection views of the pseudo-HDR mask / bloom term; 'grade' = chain without bloom; 'velocity' = inspection view of the velocity target (tf10, NgPostProc::DoVelocity); 'veldiff' = what bit 42's velocity blur changed in the frame (|blurred - scene| x 8). Unset also runs the camera velocity blur (bit 42) wherever world.pp's motion_blur_velocity is on. DC3 shape only (rndshape::kDC3RetailPost); rb3-xenon's shape has no dc3 accessors so the flag is never read there [rndshape/DC3PostChain.cpp:30]",
+    "faithfulStatus": "live: selects the DC3 retail post chain (NgPostProc::DoPost port, np-gfx-post). Unset = the retail chain (bloom mask, bloom/streak, screen-blend composite, noise, colour xfm, vignette, chroma). '0' = the pre-np-gfx-post generic PostProcPass; 'raw' = chain with no effects (copy); 'mask' / 'bloom' = inspection views of the pseudo-HDR mask / bloom term; 'grade' = chain without bloom. DC3 shape only (rndshape::kDC3RetailPost); rb3-xenon's shape has no dc3 accessors so the flag is never read there [rndshape/DC3PostChain.cpp:30]",
     "default": "on",
     "read": "value"
   },

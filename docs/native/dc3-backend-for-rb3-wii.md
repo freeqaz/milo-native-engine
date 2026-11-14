@@ -6127,9 +6127,12 @@ choice and `toggle_all_postprocs` (items 2–3). Item 4 is declined (33.6).
 
 Evidence: dc3-decomp `archive/np-gfx-2026-11-14/lanes/post/round3/`. No new
 `getenv`: `DC3_RETAIL_POST` gained the values `velocity` and `veldiff`
-(inspection views); the registry text was regenerated with rb3's
-`native_compat_census.py gen` (448 rows, unchanged count). rb3's
-`NATIVE_COMPAT_LEDGER.md` needs the same regen (it already lagged, 32.10).
+(inspection views). The registry text (`NativeCompatFlags.classification.json`)
+is deliberately **unchanged** and the new values are documented at the
+`getenv` in `DC3PostChain.cpp`: rb3's `NATIVE_COMPAT_LEDGER.md` is generated
+from that text, and a changed text failed rb3's `native_compat_census.check`
+(157/158) until rb3 regenerated it. With the text unchanged rb3 passes
+158/158 (33.10).
 
 ### 33.1 What retail does (MEASURED)
 
@@ -6426,9 +6429,9 @@ CONSUMERS_PLACEHOLDER
 2. **The dci normal-state bloom** (33.8) and **the peak stripe-panel mask**
    (33.9): one Xenia capture of dci (normal and peak) would settle both.
 3. **Item 4** (the motion blur's first frame) stays declined (33.6).
-4. **rb3's `NATIVE_COMPAT_LEDGER.md`** needs a regen for the
-   `DC3_RETAIL_POST` text (it already lagged; `native_compat_census.check`
-   is its only failing ctest).
+4. **Registry text for `DC3_RETAIL_POST`** still lists only the round-1
+   values. Updating it needs a paired rb3 ledger regen, so do it at a landing
+   that also touches rb3.
 5. **For the light lane:** the peak character lights and the peak post-proc
    are both selected by the performance state. The post-proc is a copy
    chosen by `HamDirector`, not a keyed track of the master anim, so
