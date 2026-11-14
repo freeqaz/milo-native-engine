@@ -65,9 +65,13 @@ skips the legacy rim and reflection adds there. The fog takes the
 exponential form under `fogEnabled 2`. With `gammaShading` the output is
 clamped to [0, 1]: no `compressHighlights` shoulder, no `softClipLighting`,
 and no linear-to-sRGB encode, all of which retail lacks. The scan-out ramp
-(0.85) is **not** applied here. That belongs to the np-gfx-post lane, so
-`DisplayGamma` stays 0 in the DC3 shape. Retail hardware captures are
-post-ramp; compare them with `pow(x, 0.85)` applied to a native frame.
+(0.85) is not part of the shading. Since np-gfx-post (`b3b1d66`;
+dc3-backend-for-rb3-wii.md section 31), `rndshape::DisplayGamma` returns the
+system config's 0.85 for dc3-decomp, and `WgpuRnd::EndDrawing` applies it once
+after the UI on every output, headless included. Native captures are therefore
+post-ramp, like retail hardware captures; `DC3_DISPLAY_GAMMA=off` gives the
+pre-ramp frame. rb3-xenon still gets 0, so no ramp. Captures quoted in this
+document before that change are pre-ramp.
 
 ## 3. Dancer floor shadows (projected_blend 1)
 
@@ -134,6 +138,19 @@ without shadow objects get no map, so s = 0 as in retail.
 On the rink, the gobo was the missing half of the floor's light. Without it
 the floor measured luma 55, against retail frames at 105-136 (section 5).
 
+**Round 2: what casts in the streetside normal state.** MEASURED by a probe
+on `CollectProjShadowCasters` (lane archive `round2/shadows/streetside_casters.txt`):
+`a2_spotlight.lit`'s shadow list is `backup0`, `backup1`, `player0`,
+`player1` and `score_star_display`, the last being the boombox group. That
+expands to 87-106 meshes. **The light cones are not in the list**, so retail
+draws no shadow for them either. A false-colour render of the receivers'
+coverage (`round2/shadows/proj_footprint_falsecolour.png`) shows the lead
+dancer's, the right dancer's and the boombox's footprints on the cardboard
+and the road. The integration tree's frame has them as well
+(`round2/shadows/shadow_int_vs_dbg.png`). On the dark road they are faint,
+because the factor scales only the box term (`1 − 0.75 s`), never the
+ambient, as in retail.
+
 **Not done.**
 
 - The receiver's vertex-lit form scales the whole interpolated light. That is
@@ -145,14 +162,170 @@ the floor measured luma 55, against retail frames at 105-136 (section 5).
   still runs into its own render target, which nothing samples, alongside
   the native coverage pass. That is wasted work, not a visible difference.
 
-## 4. Skin and hair (left for a follow-up lane)
+## 4. Skin, hair and the rim (round 2)
 
-Under retailLighting 2, skin and hair materials take `retailShade` like
-everything else, which is what CalcShaderOpts does for a plain standard draw.
-The dedicated variations were disassembled and saved:
-`standard_0000000040020011` (shader variation 1, skin) and
-`standard_0000000080020015` (variation 2, hair). Their fragment maths is not
-implemented here.
+`RndMat::shader_variation` picks a different `standard` permutation:
+`mCustomVariation` is always copied into the options (`CalcShaderOpts`,
+Shader.cpp 550-640). Round 1 ran skin and hair through the plain maths. The
+dancers' materials use five per-pixel permutations, and each of them was
+disassembled, written out as a readable model, and checked against an
+emulation of the shipped microcode:
+
+| permutation | used by (rasa05, the OMG lead) | model vs microcode, worst relative error over 2,500 random pixels |
+|---|---|---|
+| `0000032040035037` skin, rim, rim-under, normal + spec maps | `rasa05_skin`, `rasa05_head` | 7.5e-8 |
+| `0000030040031037` skin, normal + spec maps, no rim | (skin without a rim colour) | 7.5e-8 |
+| `0000030080031017` hair, spec map | `rasa05_hair`, eyebrows | 5.8e-8 |
+| `0000032000031037` no variation, rim, normal + spec maps | `rasa05_jacket`, `rasa05_pants` | 1.9e-8 |
+| `0000030000031017` no variation, spec map | | 2.0e-8 |
+
+MEASURED. The tools are in dc3-decomp `scripts/gpu/xenos_ucode/`:
+
+- `ucode_emu.py` executes xenia's ucode listing (vector and co-issued scalar
+  ALU ops, `_prev` chains, `tfetch`).
+- `char_models.py` holds the models and the check
+  (`python3 char_models.py` prints the table above).
+- `gen_char_shading_cases.py` writes the test table.
+
+The listings and literal tables are in the lane archive under
+`round2/ucode/` and `shaders/standard/`. **There is no cloth variation.** The
+enum is none, skin, hair and world projection, and clothes are `none`.
+
+Notation:
+
+- Constants: c0 is the material colour, c1 the ambient, c2 the specular
+  (rgb, power), c14.x = 1 − de_normal, c19 the second specular colour, c61
+  the rim (rgb, power), c80..c85 the box faces. Point light i has direction
+  L_i, colour c_i and falloff a_i (section 1).
+- p = max(spec-map a · c2.w, 0.5), and n(p) = (p + 2)/2π.
+- V points to the camera, unnormalised in the interpolator.
+- Nk is the normal-mapped normal with de_normal applied. Nf is the same normal
+  at full strength.
+
+**Skin** (`dc3SkinLight`):
+
+- Light is `(1 + rim · box(−V)) · box(Nk) + Σ a_i c_i · sat((Nk·L_i)·(0.55, 0.6, 0.65) + (0.45, 0.4, 0.35))`.
+  This is a per-channel wrap: red wraps furthest past the terminator, which
+  makes the warm shadow side.
+- rim = `((1 − sat(V·Nk))(0.5 Nk.z + 0.5))^c61.w`.
+- Colour is `texel · c0 · (light + c1) · (1 + c61.rgb · back)`. The
+  back-light sheen is `back = Σ a_i c_i sat(−L_i·V) (1 − sat(V·Nf)²)^c61.w`.
+- Specular is `spec-map · c2 · (Σ a_i c_i · 4(1 − sat(V·Nf)²)^0.7 · n(p) · sat(V·R_i)^p + rimf² · n(p) · boxPow(Re, p))`, where:
+  - R_i = reflect(−L_i, Nf) and Re = reflect(−V, Nf);
+  - rimf = (1 − sat(V·Nf))(0.5 Nf.z + 0.5);
+  - boxPow(R, p) = Σ sat(±R_axis)^p · face.
+
+  It uses the full-strength normal and a Fresnel-like `4(1 − cos²)^0.7`
+  weight.
+- With no rim colour (bit 37 clear) the rim and the sheen are absent.
+
+**Hair** (`dc3HairLight`):
+
+- The shipped permutation has no normal map. N is the normalised
+  interpolated normal and n is the raw one.
+- Light is `box(N) + Σ a_i c_i · sat((N·L_i)·(0.75, 0.8, 0.85) + (0.25, 0.2, 0.15))`.
+- Re = reflect(−V, N). The strand is taken as horizontal:
+  t = Re·(ẑ × n) = n.x Re.y − n.y Re.x.
+- With s = |1 − t²| and l1 = s^(4p), the anisotropic lobe is
+  `aniso = c2 · l1 + c19 · s^(2p) · (1 − l1)`.
+- Specular is `spec-map · (Σ a_i c_i sat(L_i·Re) n(p) aniso + (0.25 + (1 − sat(V·N))(0.5 N.z + 0.5)) n(p) boxPow(Re, p))`.
+  The box reflection is tinted by the map only, not by c2.
+- Colour is `texel · c0 · (light + c1) + specular`.
+
+**The plain rim** (round-1 defect, now fixed): the rim also takes the point
+lights from behind,
+`X = ((1 − sat(N·V))(0.5 N.z + 0.5))^p · box(−V) + Σ a_i c_i sat(−L_i·V) (1 − sat(N·V)²)^p (0.5 N.z + 0.5)`,
+and out = `d · (1 + 0.3 c61·X) + 0.7 c61·X + spec`. Round 1 had only the box
+half (relative error 0.89 against the microcode; 2e-8 with the point half).
+
+**Native.**
+
+- `retailShade` now fetches the textures and calls `retailPixelShade`, which
+  takes `dc3SkinLight` / `dc3HairLight` for variations 1 and 2 under
+  retailLighting 2 and the plain path otherwise.
+- The projected-light factor and the AO factors apply as on the plain path.
+  The box term is scaled by `proj.mult`, and `proj.add` is added.
+- Vertex-lit skin and hair keep the plain vertex form. Every shipped skin and
+  hair permutation is per pixel.
+- The rim's point half is DC3-only, gated on retailLighting 2.
+- `native/tests/test_retail_char_shading.cpp` runs the engine's own
+  `retailPixelShade` in a compute shader on 48 random pixels: 12 each of skin,
+  skin without rim, hair and plain + rim. It compares the result with the
+  emulated microcode's output. A second case checks that RB3's form
+  (retailLighting 1) keeps the plain path.
+
+**Not measurable from the cache.** The cache holds no skin+rim permutation
+without rim-under, and no hair+rim permutation. Both are therefore taken as
+the measured forms: `rimLightUnder` is not read, and hair ignores the rim.
+INFERRED.
+
+## 4a. Peak state and Studio 675 (round 2)
+
+**What lights the dancers in peak.** MEASURED by a probe on the environs a
+draw selects (lane archive `round2/environs/streetside_environ_changes.txt`):
+
+- The dancers draw with their own character environs, `player0.env`,
+  `player1.env`, `backup0.env` and `backup1.env`. Each has ambient 0.012, and
+  one real point light, `<who>_area1_01.lit` (range 400, full strength to the
+  edge). The players also carry `battle_p<n>_spot.lit`, whose colour is 0 in
+  this song.
+- The point light's colour is animated by the light preset: (1.15, 0.93,
+  0.66) in the normal state, falling to (0.87, 0.73, 0.64) in peak.
+- `boombox.env` uses `player0_area1_01.lit`. `crowd.env` has `crowd1` and
+  `crowd2`. `MASTER.env` has ambient (0.082, 0.024, 0) and `default_stage01`
+  in white.
+- There is no other character light. The rim comes from the material: c61 on
+  rasa05's jacket, pants, skin and head is (1, 0.502, 0.753, 50), and hair
+  has none. It is lit by the box map and, since round 2, by the point light
+  from behind (section 4).
+
+**The stripes.** They are present in every native peak capture, uncapped and
+with the frame rate pinned to 20 fps (`round2/stripes/`). The stripe meshes
+(`peak_line*.mesh`) draw with an animated material alpha. FrameCapture over
+1000 frames reads `peak_line1` from 0.57 down to 0.00, and the ten lines fade
+in a ramp. No lighting rule touches them. INFERRED: a frame without stripes
+was taken low in that cycle.
+
+**Too dark.** The same song in the same venue (OMG at DCI, retail `dci/05`
+and `dci/06`) is a different section with a blue preset, where native's
+capture is magenta. Luma on a 640x360 resize:
+
+| frame | whole frame | p90 | lower-left floor | centre (dancer) |
+|---|---|---|---|---|
+| retail dci/05 | 44.2 | 120.1 | 35.6 | 63.9 |
+| retail dci/06 | 45.8 | 131.1 | 30.1 | 48.5 |
+| native peak_dci | 25.8 | 83.4 | 14.9 | 30.5 |
+| native with `pow(x, 0.85)` | 31.1 | 90.1 | 19.0 | 37.3 |
+
+The display ramp, which belongs to np-gfx-post, explains about a quarter of
+the gap. The rest is INFERRED to be the preset (retail's blue state lights
+the floor) and the missing glow. **Not settled.**
+
+**Studio 675 (dclive): an authored state, not a colour-order error.**
+Whole-frame mean hue, MEASURED (`round2/dclive/measurements.txt`):
+
+| frame | hue | saturation |
+|---|---|---|
+| native normal | 23.0 | 0.32 |
+| retail warm state (01, 05, 06, 07, 14) | 25.8-28.7 | 0.26-0.36 |
+| retail pink state (09, 12, 13) | 358.9-6.6 | 0.30-0.37 |
+| retail blue state (02, 03, 08, 10) | 212-233 | |
+
+Native sits in the warm state, about 4° redder than retail. A red/blue swap
+would move it to about 200°. No packed channel order is involved anyway:
+light colours are float `Hmx::Color`, and lit DC3 draws do not read vertex
+colour, which is ARGB in any case (`dc3-backend-for-rb3-wii.md` section
+13.1).
+
+The hard red outline on the lead dancer is the game's wrong-limb feedback,
+not lighting. Retail `dci/04` (an arm) and `dci/07` (the whole body, at the
+end pose) show the same outline. The capture route does not dance, so every
+limb is wrong.
+
+What is still different: native's floor is whiter and brighter, the back of
+the stage is darker, and the boombox reads silver where retail's warm frames
+show it gold. Retail's pink frame 09 shows it silver too, so the boombox
+colour is INFERRED to follow the light or the song.
 
 ## 5. Results
 
@@ -207,12 +380,58 @@ Caching the bind groups with dynamic offsets is the obvious next step.
 DC3's own `NgLight::RenderShadows` also still draws the same casters into a
 target nothing samples (section 3).
 
+**Round 2 captures.** Before is the 5664e9d merge build and after is
+5dcd3a2. Both are six venues and both states, with every cell gameplay =
+yes. The sheets are in the lane archive under
+`round2/sheets/<venue>_before_after.png`, the close-ups under `round2/skin/`,
+and the streetside floor crop is `round2/shadows/streetside_normal_feet_after_r2.png`.
+
+- By eye, skin now reads warmer and lighter on the shadow side, from the
+  per-channel wrap. The jackets' rim now includes the point light from
+  behind (section 4).
+- The streetside crop shows the lead's leg shadow and the boombox's shadow
+  on the cardboard.
+- The camera shot differs between the two runs, so floor luma is not
+  comparable frame to frame. The shading itself is checked by the microcode
+  test, not by these pictures.
+
+**Frame time, round 2 (streetside normal state).** Three builds from engine
+5dcd3a2:
+
+- `full`;
+- `noskin`, with the skin and hair branch disabled;
+- `noshadow`, where `WriteDC3ProjShadow` returns early and
+  `CollectDC3Casters` returns false.
+
+They ran interleaved, three rounds each, on OMG, sampling 10 s from 20 s into
+gameplay, on an RTX 3090. The box was loaded (31-41 on 32 cores) and the GPU
+was shared with other lanes. GPU time is a per-process `nvidia-smi pmon` SM%
+times the frame time, so it is an estimate.
+Data: dc3-decomp lane archive `round2/frametime_ab.txt`.
+
+| cost | GPU ms/frame, per round | CPU ms/frame |
+|---|---|---|
+| projected shadows (native coverage pass + receiver taps) | 0.32, 0.18, 0.29 | about 0.27 (perf: `ShadowPass::RenderCasters` 5.3% + `CollectProjShadowCasters` 1.5% of a 3.95 ms frame) |
+| skin and hair maths | −0.01, +0.09, −0.05, i.e. within noise | none expected (WGSL only) |
+| DC3's own `NgLight::RenderShadows` into a target nothing samples | | about 0.20 (`NgLight::CheckShadowMap` 5.0%) |
+
+The paired CPU deltas (−0.26 to −0.83 ms) are not usable. The box got faster over
+the run (the full build read 6.68, then 4.24, then 3.77 ms), so whichever
+build ran later looks cheaper. `noskin` changes only WGSL and still read
+0.26-0.54 ms cheaper.
+
 **Remaining gap.**
 
-- Skin is darker and greyer than retail's warm tan. Skin and hair use
-  dedicated shader variations (section 4) that this lane did not implement.
+- Skin and hair now run the shipped variations (section 4). What is left of
+  the skin gap is the light reaching it: the character environ's point and
+  box map, and the missing scan-out ramp (np-gfx-post).
 - Overall saturation is still below retail.
-- Venues other than these two were checked by eye only.
+- Peak at DCI reads about 0.6x retail's luma on the same song (section 4a).
+  Of that, the ramp accounts for about a quarter; the rest is not settled.
+- Venues other than streetside, rink, DCI and Studio 675 were checked by eye
+  only.
+- Not done: removing DC3's own unsampled `NgLight::RenderShadows` pass
+  (about 0.2 ms CPU), and caching the caster pass's bind groups.
 
 ## 6. Consumer verification
 
@@ -236,6 +455,10 @@ The shader's `dc3ProjLight` returns the identity unless
 | rb3 | `ctest` in a worktree build against this branch (rerun at 5514b3f) | 158 registered, 151 passed, 0 failed, 7 skipped |
 | rb3 | `drawlog-golden.py --fixed-clock --canonical-order` | fails with "dump frame=61 != expected 60" on the **base** binary as well, so it predates this lane and says nothing about it |
 | getenv census | `native_compat_census.py --engine-root <this branch> check` | OK, 442 flags. This lane adds no getenv. |
+| rb3-xenon, round 2 | `rb3-render` over `xbox-zip`, engine 5664e9d (round-2 base) vs 41760b4 | 11 of 11 PNGs byte-identical |
+| rb3, round 2 | `ctest` in the lane's rb3 worktree (rb3 1dee2c1f7) against 41760b4 | 158 registered, 1 failed, 7 skipped. The failure is `native_compat_census.check`: that worktree's ledger is stale against the np-gfx merge's flags. The same check fails against the base engine 5664e9d, and rb3 main's copy passes. |
+| dc3, round 2 | `scripts/native_test.sh` at dc3 30ce069ac / engine 9929879 | 895 registered, 825 executed, 824 passed, 1 failed, 70 skipped (budget 70). `RetailCharShadingTest` 2/2 pass. The failure is `LargestSongFlowTest.OmgPreloadsAndReachesGameplay`: in the full suite the engine hit its 3000-frame cap in the intro. It passes alone (2 of 2 runs), main 442e1aeff raises the cap, and the integration gate gate-int2 failed it the same way. |
+| getenv census, round 2 | rb3 main's `native_compat_census.py --engine-root <this branch> check` | OK, 446 flags, the same as on the base 5664e9d. The 4 above round 1's 442 came in with the np-gfx merge, and `git diff 5664e9d HEAD` has no `getenv`. |
 | dc3 | `native/tests/test_retail_lighting.cpp`, 9 tests | pass. Each sabotage listed in the dc3 commits fails it. |
 | dc3 | `RehearseProjectionTest.DancerIsDrawnThroughTheProjection` | Failed under the retail model: 2-3% "character-coloured" against a 10% bar. The kept shots show the dancer drawn, saturated rather than washed out. The test's green ≥ 80 rule was measuring overexposure, so it now detects the dancer by hue. It passes on both the base and this branch, and reads 0.0% on the reveal-off shots. |
 
@@ -247,6 +470,7 @@ The shader's `dc3ProjLight` returns the identity unless
 | The mesh ambient keeps a 0.08 floor. | np-gfx-blend | **covered** | The floor lives only in the `EnvHasAmbientFogOwner` arm of `WriteSceneUniforms`, which DC3 no longer reaches. rb3-xenon still does, unchanged. Test: `AmbientAndPointLightsAreTheEnvironsOwn`, with ambient (0.02, 0.3, 0.4). |
 | Particles take environ ambient × material colour (engine c6e10c5). | np-gfx-blend | **consistent** | Particles read `env->AmbientColor()` themselves. The scene ambient here is that same value, unfloored, so particles and meshes agree with retail's c1. |
 | (a) Colour space: the Xbox 360 renders in gamma space. | np-gfx-hud | **covered, same conclusion** | Section 2 reaches it independently, and `kGammaSpaceShading = kDC3RetailModel` (c44d878) switches every DC3 draw, world and UI. `UiDrawTermsFor` ORs `GameRenderHook::UiShadesInGammaSpace` into that constant, so for DC3 the hook is redundant and can be retired at merge. |
+| `NativeUiMaterialTerms.WorldPhaseUnchanged` expected the world to stay linear. | np-gfx-hud (test) | **test updated** (dc3 30ce069ac) | It was written before the world switched to gamma space, and it failed in the integration gate for that reason alone. It now expects `gammaShading` true in the world phase and still expects `retailMaterialTerms` false. |
 | (b) Xenia headless PNGs carry an sRGB LUT. | np-gfx-hud | **not applicable** | Every retail reference used here is captured footage (`retail/INDEX.md`), not Xenia output. |
 | (c) `MaterialShadesUnlit` applied only under the UI terms. | np-gfx-hud | **covered** | `MatUnlit` above is the same rule for every DC3 draw. `MaterialShadesUnlit` adds nothing for DC3 and can be retired at merge, or kept for a consumer that opts into the UI terms without the DC3 shape. |
 | (d) The scene-light path drops RndLight intensity. | np-gfx-hud | **covered** | Intensity lives in the colour: `SetPackedColor` multiplies it in, and `Intensity()` is the max channel. `WriteDC3Retail` and the projected light read `GetColor()`, as `SetPointLightRegisters` does. Test: intensity 3 reaches c66. |

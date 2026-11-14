@@ -944,6 +944,27 @@ fn linearToSrgb(color: vec3f) -> vec3f {
     return select(lo, hi, color > vec3f(0.0031308));
 }
 
+// ---- np-gfx-post: DC3 pseudo-HDR bloom mask source ----
+// Retail DC3 standard.ps / particles.ps with option bit 22 (mPseudoHDR, set for
+// NgMat::AllowHDR materials drawn into the main frame) write
+//   alpha = sat(dot(rgb, c7) * c5.z),  c7 = (0.3, 0.59, 0.11) * SetBloomColor's
+//   scale, c5.z = NgMat::mBloomMultiplier
+// where rgb is the colour BEFORE the 8-bit target clamps it, in the units it is
+// stored in (retail shades in gamma space: COLOUR_SPACE.md). So a lit value
+// above 1 blooms. Natively that is the colour before the highlight clamp /
+// compression, put into the units the shader writes: encoded when the shader
+// encodes (linear shading), as is when it shades in gamma space. The material
+// carries -(c7 scale * c5.z) in bloomMaskScale (rndshape::BloomMaskScale, DC3
+// shape); RB3's positive scale keeps its own clamped-colour mask above.
+fn dc3BloomMaskSource(preTone: vec3f, encode: bool) -> vec3f {
+    let c = max(preTone, vec3f(0.0));
+    if (encode) {
+        return linearToSrgb(c);
+    }
+    return c;
+}
+// ---- end np-gfx-post ----
+
 // === Vertex Shader (static meshes) ===
 @vertex
 fn vs_main(vertex: VertexInput) -> VertexOutput {
@@ -1086,39 +1107,181 @@ fn dc3ProjLight(worldPos: vec3f, N: vec3f) -> Dc3Proj {
     return r;
 }
 
-fn retailShade(surfaceInput: VertexOutput, base: vec3f, ambientLight: vec3f, rawVtx: vec3f,
-               prelitAmbient: bool) -> vec3f {
-    let ao = surfaceInput.retailAO;
-    var ambientTerm = ambientLight;
-    if (prelitAmbient) {
-        ambientTerm = rawVtx * ambientLight;
-    }
-    let perPixel = isEnabled(material.retailFlags.x) && retailLightsOn();
-    let proj = dc3ProjLight(surfaceInput.worldPos, normalize(surfaceInput.worldNormal));
-    if (!perPixel) {
-        // Per-vertex lighting. The shipped cache has no vertex-lit receiver
-        // permutation (every projected-light mask has per_pixel_lit), so this
-        // form is native-only: it scales the interpolated light (box and
-        // points) and adds the gobo.
-        return base * (ao.x * ambientTerm + surfaceInput.vertexLit * proj.mult + proj.add) +
-            surfaceInput.vertexSpec;
-    }
-    let uv = surfaceInput.uv;
-    let normalSample = textureSample(normalMapTex, diffuseSampler, uv);
-    let specSample = textureSample(specularMapTex, diffuseSampler, uv);
-    let rimSample = textureSample(rimMapTex, diffuseSampler, uv);
+// The box map sampled along a direction with a Phong exponent per face:
+// pow(sat(+-R.axis), p) times the face colour.
+fn boxLightPow(R: vec3f, power: f32) -> vec3f {
+    var box = vec3f(0.0);
+    box += pow(saturate( R.x), power) * object.boxLight[0].rgb;
+    box += pow(saturate(-R.x), power) * object.boxLight[1].rgb;
+    box += pow(saturate( R.y), power) * object.boxLight[2].rgb;
+    box += pow(saturate(-R.y), power) * object.boxLight[3].rgb;
+    box += pow(saturate( R.z), power) * object.boxLight[4].rgb;
+    box += pow(saturate(-R.z), power) * object.boxLight[5].rgb;
+    return box;
+}
 
-    var N = normalize(surfaceInput.worldNormal);
+// DC3's skin and hair (RndMat shader_variation 1 and 2): the per-pixel
+// standard.ps permutations 0000032040035037 (skin, rim, rim-under, normal and
+// specular maps, 3 points) and 0000030080031017 (hair, specular map, 3
+// points), read from the shipped microcode and checked against an emulation of
+// it to 1e-7 over random inputs (docs/native/dc3-retail-lighting.md, "Skin and
+// hair"). DC3 only: scene.retailLighting 2.
+//
+// Skin. Nk is the normal-mapped normal with the deNormal factor, Nf the same
+// normal at full strength; L_i, c_i, a_i a point light's direction, colour,
+// falloff; p = max(spec map a * c2.w, 0.5); n(p) = (p + 2) / 2 pi.
+//   diffuse light = (1 + rim box(-V)) box(Nk) + sum a_i c_i wrap(Nk . L_i),
+//     wrap(x) = sat(x (0.55, 0.6, 0.65) + (0.45, 0.4, 0.35))   (red wraps most)
+//     rim = ((1 - sat(V . Nk)) (0.5 Nk.z + 0.5))^rimPower
+//   colour = texel c0 (light + ambient) (1 + rimColour back)
+//     back = sum a_i c_i sat(-L_i . V) (1 - sat(V . Nf)^2)^rimPower
+//   specular = spec (sum a_i c_i 4 (1 - sat(V . Nf)^2)^0.7 n(p) sat(V . R_i)^p
+//                    + rimf^2 n(p) boxPow(Re, p)),
+//     R_i = reflect(-L_i, Nf), Re = reflect(-V, Nf),
+//     rimf = (1 - sat(V . Nf)) (0.5 Nf.z + 0.5)
+// Without a rim colour (option bit 37 clear) the rim and back terms are absent.
+struct Dc3CharLight {
+    diffuse: vec3f,    // multiplies the texel (ambient included)
+    spec: vec3f,       // added
+}
+
+fn dc3SkinLight(worldPos: vec3f, Nk: vec3f, Nf: vec3f, V: vec3f, ao: vec4f,
+                ambientTerm: vec3f, proj: Dc3Proj, specColor: vec3f, power: f32,
+                hasSpec: bool) -> Dc3CharLight {
+    var r: Dc3CharLight;
+    let hasRim = dot(abs(material.retailRim.rgb), vec3f(1.0)) > 0.0;
+    let rimPower = material.retailRim.a;
+    let vnf = saturate(dot(V, Nf));
+    let sin2 = 1.0 - vnf * vnf;
+    var rimLift = 0.0;
+    var sheen = 0.0;
+    if (hasRim) {
+        rimLift = pow(max((1.0 - saturate(dot(V, Nk))) * (0.5 * Nk.z + 0.5), 0.0), rimPower);
+        sheen = pow(sin2, rimPower);
+    }
+    let boxN = ao.x * boxLightSample(Nk);
+    var light = (1.0 + rimLift * boxLightSample(-V)) * boxN + (proj.mult - vec3f(1.0)) * boxN +
+        proj.add;
+    var back = vec3f(0.0);
+    var spec = vec3f(0.0);
+    let lobe = power * 0.1591549 + 0.3183099;
+    let fres = 4.0 * pow(sin2, 0.7);
+    let pointLightCount = i32(scene.numPointLights);
+    for (var i = 0; i < 4; i++) {
+        if (i >= pointLightCount) {
+            break;
+        }
+        let L = retailPointDir(i, worldPos);
+        let c = retailPointAO(ao, i) * retailPointColor(i, worldPos);
+        light += c * saturate(dot(Nk, L) * vec3f(0.55, 0.6, 0.65) + vec3f(0.45, 0.4, 0.35));
+        back += c * saturate(-dot(L, V)) * sheen;
+        let R = 2.0 * dot(Nf, L) * Nf - L;
+        spec += c * fres * lobe * pow(saturate(dot(V, R)), power);
+    }
+    let Re = 2.0 * dot(V, Nf) * Nf - V;
+    let rimf = (1.0 - vnf) * (0.5 * Nf.z + 0.5);
+    spec += rimf * rimf * lobe * ao.x * boxLightPow(Re, power);
+    r.diffuse = (ao.x * ambientTerm + light) * (vec3f(1.0) + material.retailRim.rgb * back);
+    r.spec = select(vec3f(0.0), specColor * spec, hasSpec);
+    return r;
+}
+
+// Hair. N the normal (the shipped permutation has no normal map), n the
+// interpolated normal before normalising, Re = reflect(-V, N), and the strand
+// direction taken as horizontal: t = Re . (z x n) = n.x Re.y - n.y Re.x.
+//   diffuse light = box(N) + sum a_i c_i wrap(N . L_i),
+//     wrap(x) = sat(x (0.75, 0.8, 0.85) + (0.25, 0.2, 0.15))
+//   s = |1 - t^2|, l1 = s^(4p), aniso = c2 l1 + c19 s^(2p) (1 - l1)
+//     (c2 the specular colour, c19 the second specular colour)
+//   specular = spec map rgb (sum a_i c_i sat(L_i . Re) n(p) aniso
+//                            + (0.25 + (1 - sat(V . N)) (0.5 N.z + 0.5)) n(p) boxPow(Re, p))
+// The box reflection is not tinted by c2; only the map tints it.
+fn dc3HairLight(worldPos: vec3f, N: vec3f, nRaw: vec3f, V: vec3f, ao: vec4f,
+                ambientTerm: vec3f, proj: Dc3Proj, specMap: vec3f, power: f32,
+                hasSpec: bool) -> Dc3CharLight {
+    var r: Dc3CharLight;
+    let boxN = ao.x * boxLightSample(N);
+    var light = boxN + (proj.mult - vec3f(1.0)) * boxN + proj.add;
+    let Re = 2.0 * dot(V, N) * N - V;
+    let t = nRaw.x * Re.y - nRaw.y * Re.x;
+    let s = abs(1.0 - t * t);
+    let l1 = pow(s, 4.0 * power);
+    let aniso = material.retailSpec.rgb * l1 +
+        material.specular2Color.rgb * pow(s, 2.0 * power) * (1.0 - l1);
+    let lobe = power * 0.1591549 + 0.3183099;
+    var spec = vec3f(0.0);
+    let pointLightCount = i32(scene.numPointLights);
+    for (var i = 0; i < 4; i++) {
+        if (i >= pointLightCount) {
+            break;
+        }
+        let L = retailPointDir(i, worldPos);
+        let c = retailPointAO(ao, i) * retailPointColor(i, worldPos);
+        light += c * saturate(dot(N, L) * vec3f(0.75, 0.8, 0.85) + vec3f(0.25, 0.2, 0.15));
+        spec += c * saturate(dot(L, Re)) * lobe * aniso;
+    }
+    let rimb = (1.0 - saturate(dot(V, N))) * (0.5 * N.z + 0.5);
+    spec += (0.25 + rimb) * lobe * ao.x * boxLightPow(Re, power);
+    r.diffuse = ao.x * ambientTerm + light;
+    r.spec = select(vec3f(0.0), specMap * spec, hasSpec);
+    return r;
+}
+
+// The per-pixel half of retailShade, after the texture fetches. Everything it
+// reads besides the scene, material and object uniforms is an argument, so a
+// compute shader can run it on chosen inputs
+// (dc3-decomp native/tests/test_retail_char_shading.cpp).
+struct RetailPixel {
+    worldPos: vec3f,
+    normal: vec3f,        // interpolated, not normalised (hair reads it raw)
+    tangent: vec3f,
+    bitangent: vec3f,
+    normalSample: vec4f,
+    specSample: vec4f,
+    rimSample: vec4f,
+    ao: vec4f,            // retailAOFactors
+}
+
+fn retailPixelShade(p: RetailPixel, base: vec3f, ambientTerm: vec3f, proj: Dc3Proj) -> vec3f {
+    let ao = p.ao;
+    let normalSample = p.normalSample;
+    let specSample = p.specSample;
+    let rimSample = p.rimSample;
+    var N = normalize(p.normal);
+    var Nfull = N;   // the normal map at full strength (skin's specular)
     if (isEnabled(material.retailFlags.y)) {
         let x = normalSample.r * 2.0 - 1.0;
         let y = normalSample.g * 2.0 - 1.0;
         let z = saturate(1.0 - x * x - y * y);
         let k = 1.0 - material.deNormal;
-        N = normalize(z * surfaceInput.worldNormal + k * x * surfaceInput.worldBitangent +
-                      k * y * surfaceInput.worldTangent);
+        N = normalize(z * p.normal + k * x * p.bitangent + k * y * p.tangent);
+        Nfull = normalize(z * p.normal + x * p.bitangent + y * p.tangent);
     }
-    let worldPos = surfaceInput.worldPos;
+    let worldPos = p.worldPos;
     let V = normalize(scene.cameraPos - worldPos);
+
+    // DC3 skin and hair (dc3SkinLight / dc3HairLight above).
+    let skin = shaderVariationIs(material.shaderVariation, kShaderVariationSkin);
+    let hair = shaderVariationIs(material.shaderVariation, kShaderVariationHair);
+    if (scene.retailLighting > 1.5 && (skin || hair)) {
+        var specColor = material.retailSpec.rgb;
+        var power = material.retailSpec.a;
+        var specMap = vec3f(1.0);
+        if (isEnabled(material.retailFlags.z)) {
+            specMap = specSample.rgb;
+            specColor *= specSample.rgb;
+            power = max(power * specSample.a, 0.5);
+        }
+        var c: Dc3CharLight;
+        if (skin) {
+            c = dc3SkinLight(worldPos, N, Nfull, V, ao, ambientTerm, proj, specColor, power,
+                             retailHasSpecular());
+        } else {
+            c = dc3HairLight(worldPos, N, p.normal, V, ao, ambientTerm, proj,
+                             specMap, power, retailHasSpecular());
+        }
+        return base * c.diffuse + c.spec;
+    }
     var diffuse = base * (ao.x * ambientTerm + retailDiffuseLight(worldPos, N, ao) +
                           (proj.mult - vec3f(1.0)) * ao.x * boxLightSample(N) + proj.add);
 
@@ -1141,12 +1304,59 @@ fn retailShade(surfaceInput: VertexOutput, base: vec3f, ambientLight: vec3f, raw
             rimColor *= rimSample.rgb;
             rimPower = max(rimPower * rimSample.a, 0.5);
         }
-        let rimBase = (1.0 - saturate(dot(N, V))) * (0.5 * N.z + 0.5);
-        let rim = pow(max(rimBase, 0.0), rimPower) * rimColor * boxLightSample(-V);
+        let NdotV = saturate(dot(N, V));
+        let up = 0.5 * N.z + 0.5;
+        let rimBase = (1.0 - NdotV) * up;
+        var rimLight = pow(max(rimBase, 0.0), rimPower) * boxLightSample(-V);
+        if (scene.retailLighting > 1.5) {
+            // DC3's standard.ps (0000032000031037) also lights the rim from
+            // behind: each point light adds sat(-L . V) (1 - sat(N . V)^2)^p
+            // (0.5 N.z + 0.5) of its colour.
+            let sheen = pow(1.0 - NdotV * NdotV, rimPower) * up;
+            let pointLightCount = i32(scene.numPointLights);
+            for (var i = 0; i < 4; i++) {
+                if (i >= pointLightCount) {
+                    break;
+                }
+                rimLight += retailPointAO(ao, i) * retailPointColor(i, worldPos) *
+                    saturate(-dot(retailPointDir(i, worldPos), V)) * sheen;
+            }
+        }
+        let rim = rimColor * rimLight;
         diffuse *= vec3f(1.0) + 0.3 * rim;
         rimAdd = 0.7 * rim;
     }
     return diffuse + rimAdd + spec;
+}
+
+fn retailShade(surfaceInput: VertexOutput, base: vec3f, ambientLight: vec3f, rawVtx: vec3f,
+               prelitAmbient: bool) -> vec3f {
+    let ao = surfaceInput.retailAO;
+    var ambientTerm = ambientLight;
+    if (prelitAmbient) {
+        ambientTerm = rawVtx * ambientLight;
+    }
+    let perPixel = isEnabled(material.retailFlags.x) && retailLightsOn();
+    let proj = dc3ProjLight(surfaceInput.worldPos, normalize(surfaceInput.worldNormal));
+    if (!perPixel) {
+        // Per-vertex lighting. The shipped cache has no vertex-lit receiver
+        // permutation (every projected-light mask has per_pixel_lit), so this
+        // form is native-only: it scales the interpolated light (box and
+        // points) and adds the gobo.
+        return base * (ao.x * ambientTerm + surfaceInput.vertexLit * proj.mult + proj.add) +
+            surfaceInput.vertexSpec;
+    }
+    let uv = surfaceInput.uv;
+    var px: RetailPixel;
+    px.worldPos = surfaceInput.worldPos;
+    px.normal = surfaceInput.worldNormal;
+    px.tangent = surfaceInput.worldTangent;
+    px.bitangent = surfaceInput.worldBitangent;
+    px.normalSample = textureSample(normalMapTex, diffuseSampler, uv);
+    px.specSample = textureSample(specularMapTex, diffuseSampler, uv);
+    px.rimSample = textureSample(rimMapTex, diffuseSampler, uv);
+    px.ao = ao;
+    return retailPixelShade(px, base, ambientTerm, proj);
 }
 
 // === Fragment Shader ===
@@ -1435,6 +1645,10 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
                            dot(scene.colorXfm[2], c4));
     }
 
+    // np-gfx-post: the colour before the target clamps or compresses it, for
+    // the DC3 bloom mask (dc3BloomMaskSource below).
+    let bloomMaskPreTone = finalColor;
+
     if (gammaShading) {
         // Retail: the 8-bit target saturates the product; no shoulder.
         finalColor = clamp(finalColor, vec3f(0.0), vec3f(1.0));
@@ -1470,6 +1684,13 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
         let mask = dot(finalColor, vec3f(0.3, 0.59, 0.11)) * material.bloomMaskScale;
         return vec4f(finalColor, clamp(mask, 0.0, 1.0));
     }
+    // ---- np-gfx-post: DC3 pseudo-HDR bloom mask (negative bloomMaskScale) ----
+    if (material.bloomMaskScale < 0.0) {
+        let src = dc3BloomMaskSource(bloomMaskPreTone, !gammaShading && scene.outputLinear < 0.5);
+        let mask = dot(src, vec3f(0.3, 0.59, 0.11)) * -material.bloomMaskScale;
+        return vec4f(finalColor, clamp(mask, 0.0, 1.0));
+    }
+    // ---- end np-gfx-post ----
 
     return vec4f(finalColor, baseColor.a);
 }

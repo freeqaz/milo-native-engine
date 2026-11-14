@@ -28,6 +28,7 @@ const char* DofPassWgslSource();       // gfx/DofPass.cpp, depth of field
 const char* DrawRect2DWgslSource();    // gfx/DrawRect2D.cpp
 const char* PostProcPassWgslSource();  // gfx/PostProcPass.cpp
 const char* RB3RetailPostWgslSource(); // gfx/RB3RetailPost.cpp
+const char* DC3RetailPostWgslSource(); // gfx/RB3RetailPostDC3.cpp, DC3's retail post chain
 const char* DisplayRampWgslSource();   // gfx/DisplayRamp.cpp
 const char* PointTestPassWgslSource(); // gfx/PointTestPass.cpp, flare occlusion queries
 const char* ShadowPassWgslSource();    // gfx/ShadowPass.cpp
