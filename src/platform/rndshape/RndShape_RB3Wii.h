@@ -162,6 +162,7 @@ public:
     bool Prelit() const { return mMat->mPreLit; }
     bool GetFog() const { return mMat->mFog; }
     bool GetIntensify() const { return mMat->mIntensify; }
+    bool GetUseEnviron() const { return mMat->mUseEnviron; }
     ShaderVariation GetShaderVariation() const { return mMat->mShaderVariation; }
     RndTex *GetEmissiveMap() const { return mMat->mEmissiveMap; }
     float GetEmissiveMultiplier() const { return mMat->mEmissiveMultiplier; }

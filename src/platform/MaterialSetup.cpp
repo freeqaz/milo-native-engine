@@ -193,6 +193,10 @@ float MaterialAlphaScale(bool intensify, bool retailMaterialTerms) {
     return intensify && retailMaterialTerms ? 2.0f : 1.0f;
 }
 
+bool MaterialShadesUnlit(bool matPrelit, bool matUseEnviron, bool retailMaterialTerms) {
+    return retailMaterialTerms && !matPrelit && !matUseEnviron;
+}
+
 static UiDrawTerms CurrentUiDrawTerms() {
     return UiDrawTermsFor(gWgpuRnd && gWgpuRnd->FrameInOverlay());
 }
@@ -321,7 +325,8 @@ MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh) {
     // An unlit material (rndshape::MatUnlit; RB3-Wii use_environ=0) already
     // skips lighting, and forcing prelit on top of it would pull in the raw
     // vertex colour, which an unlit Wii material never sees.
-    const bool unlit = rndshape::MatUnlit(mat);
+    const bool unlit = rndshape::MatUnlit(mat) ||
+        MaterialShadesUnlit(mat->Prelit(), mat->GetUseEnviron(), uiTerms.retailMaterialTerms);
     matUni.unlit = unlit ? 1.0f : 0.0f;
     matUni.gammaShading = uiTerms.gammaShading ? 1.0f : 0.0f;
     bool isMultiplyBlend = (matBlend == BaseMaterial::kBlendMultiply) && !unlit;
@@ -436,7 +441,9 @@ MaterialParams BuildPassMaterialParams(BaseMaterial* rawNextPass) {
     npMatUni.deNormal = nextPass->GetDeNormal();
     npMatUni.hasNormalMap = nextPass->NormalMap() ? 1.0f : 0.0f;
     // Force prelit for multiply-blend passes (same rationale as primary material)
-    const bool npUnlit = rndshape::MatUnlit(nextPass);
+    const bool npUnlit = rndshape::MatUnlit(nextPass) ||
+        MaterialShadesUnlit(nextPass->Prelit(), nextPass->GetUseEnviron(),
+                            npUiTerms.retailMaterialTerms);
     npMatUni.unlit = npUnlit ? 1.0f : 0.0f;
     npMatUni.gammaShading = npUiTerms.gammaShading ? 1.0f : 0.0f;
     bool npMultiply = (nextPass->GetBlend() == BaseMaterial::kBlendMultiply) && !npUnlit;

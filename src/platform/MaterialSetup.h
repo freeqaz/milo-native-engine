@@ -40,6 +40,11 @@ bool MaterialShadesPrelit(bool matPrelit, bool isTextMesh, bool isOverlayPass,
 // Factor on the material alpha: 2 for an intensify material under the retail
 // UI terms (DC3's standard.ps: `mul r0, r0, c5.yyyy`, alpha included), else 1.
 float MaterialAlphaScale(bool intensify, bool retailMaterialTerms);
+// material.unlit under the retail UI terms: a lit material with use_environ 0
+// takes an ambient of 1 and no lights (NgMat::SetupAmbient; the shader options
+// set mRealLights/mApproxLights only for use_environ materials), so it shows
+// its colour times its texture whatever environ is current.
+bool MaterialShadesUnlit(bool matPrelit, bool matUseEnviron, bool retailMaterialTerms);
 
 // Build material parameters for a multi-pass material (simplified, no heuristics)
 MaterialParams BuildPassMaterialParams(BaseMaterial* pass);
