@@ -17,7 +17,6 @@
 #include <cstring>
 #include <cmath>
 #include <algorithm>
-#include <limits>
 #include <cstdio>
 
 // Detect venue TV/arcade screen materials that expect a dynamically-assigned
@@ -247,19 +246,6 @@ float MaterialAlphaScale(bool intensify, bool retailMaterialTerms) {
     return intensify && (retailMaterialTerms || rndshape::kIntensifyScalesAlpha) ? 2.0f : 1.0f;
 }
 
-bool MaterialAlphaToCoverage(bool alphaCut) {
-    return alphaCut && rndshape::kAlphaCutIsCoverage;
-}
-
-float MaterialAlphaTestRef(bool alphaCut, int alphaThreshold) {
-    if (!alphaCut) return 0.0f;
-    const float ref = alphaThreshold / 255.0f;
-    if (!rndshape::kAlphaTestIsGreater) return ref;
-    // `a < next float above ref` is `a <= ref`. FLT_MIN floor: the next float
-    // above 0 is a denormal, which a GPU may flush to 0 (and then drop nothing).
-    return std::max(std::nextafter(ref, 2.0f), std::numeric_limits<float>::min());
-}
-
 static UiDrawTerms CurrentUiDrawTerms() {
     return UiDrawTermsFor(gWgpuRnd && gWgpuRnd->FrameInOverlay());
 }
@@ -279,7 +265,11 @@ MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh, const UiDraw
     BaseMaterial::Blend matBlend = mat->GetBlend();
     MaterialShaderColor(mat->GetColor(), matBlend, matUni.color);
 
-    matUni.alphaThreshold = MaterialAlphaTestRef(mat->GetAlphaCut(), mat->GetAlphaThreshold());
+    if (mat->GetAlphaCut()) {
+        matUni.alphaThreshold = mat->GetAlphaThreshold() / 255.0f;
+    } else {
+        matUni.alphaThreshold = 0.0f;
+    }
 
     // --- Specular ---
     const Hmx::Color& spec = mat->GetSpecularRGB();
@@ -493,7 +483,7 @@ MaterialParams BuildPassMaterialParams(BaseMaterial* rawNextPass, const UiDrawTe
 
     // --- Color ---
     MaterialShaderColor(nextPass->GetColor(), nextPass->GetBlend(), npMatUni.color);
-    npMatUni.alphaThreshold = MaterialAlphaTestRef(nextPass->GetAlphaCut(), nextPass->GetAlphaThreshold());
+    npMatUni.alphaThreshold = nextPass->GetAlphaCut() ? nextPass->GetAlphaThreshold() / 255.0f : 0.0f;
 
     // --- Specular ---
     const Hmx::Color& nps = nextPass->GetSpecularRGB();

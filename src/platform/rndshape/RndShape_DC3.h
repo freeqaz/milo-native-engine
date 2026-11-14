@@ -710,24 +710,6 @@ constexpr bool kMultiplyBlendIsLit = kDC3RetailModel;
 // intensify, alpha 0.57 down to 0.025, alpha_write) drew half as opaque and
 // wrote half the bloom mask retail does. rb3-xenon keeps the UI-only rule.
 constexpr bool kIntensifyScalesAlpha = kDC3RetailModel;
-// alpha_cut is an alpha TEST and nothing else (np-gfx-light round 7).
-// NgMat::SetBasicState (dc3-decomp rndobj/Mat_NG.cpp) sets
-// SetAlphaTestEnable(mAlphaCut) and, when set, SetAlphaFunc(5 = GREATER,
-// alpha_threshold): a fragment survives only if its alpha is strictly above
-// threshold / 255, and a surviving fragment blends at its own alpha. No DC3
-// code sets the alpha-to-mask state (the decomp's whole set of
-// D3DDevice_SetRenderState_* calls has no AlphaToMask). The engine turned
-// alpha_cut into alpha-to-coverage on the 4x MSAA main pass, so a SrcAlpha
-// alpha_cut material was covered by alpha AND blended by it, i.e. drawn at
-// about alpha squared, in a 4-sample screen-door pattern: throneroom's peak
-// columns (peak_columns_1..16.mat: SrcAlpha, alpha_cut, threshold 0) read
-// 46.5 against Xenia's 52.7 in their box, and 52.2 with alpha_cut cleared
-// live. Under a plain test the threshold-0 cut must still drop alpha-0
-// texels (which is what keeps them out of the depth buffer), so the shader's
-// `a < ref` discard is handed the next float above the reference, making it
-// `a <= ref` (MaterialAlphaTestRef). rb3-xenon keeps both of its rules.
-constexpr bool kAlphaCutIsCoverage = !kDC3RetailModel;
-constexpr bool kAlphaTestIsGreater = kDC3RetailModel;
 // The pseudo-HDR bloom mask (ShaderOptions bit 22): retail DC3's standard.ps /
 // particles.ps / multimesh write alpha = sat(dot(rgb, c7) * c5.z) for a
 // material whose NgMat::AllowHDR() holds, drawn into the main frame
