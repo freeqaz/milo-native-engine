@@ -1513,10 +1513,11 @@ void WgpuRnd::BeginDrawing() {
             sChecked = true;
             const char *env = getenv("MILO_CAPTURE_FRAME");
             if (env) sCaptureFrame = atoi(env);
+            // Armed once; the BeginFrame below (after mFrameID++) starts it.
+            // A BeginFrame here as well consumed every CaptureNextFrame (F12,
+            // /api/capture/next) and the second call then switched it off.
+            if (sCaptureFrame >= 0) FrameCapture::Get().SetCaptureFrame(sCaptureFrame);
         }
-        FrameCapture::Get().BeginFrame(mFrameID);
-        if (sCaptureFrame >= 0 && mFrameID == sCaptureFrame)
-            FrameCapture::Get().SetCaptureFrame(sCaptureFrame);
     }
 
     // Skip if GPU not initialized or device lost
