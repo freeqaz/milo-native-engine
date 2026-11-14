@@ -588,7 +588,8 @@ constexpr bool kAlphaBlendMax = true;
 // weights the scene by that alpha. Returns c7's scale (SetBloomColor:
 // 1/threshold above 1, else 1) for such a material while the retail chain runs
 // with a current RndPostProc, else 0 (no mask). The caller decides "main frame".
-float BloomMaskScale(const MatView &m);
+// envFadeOutCancels: the DC3 shape's rect switch; not established for RB3-Wii, ignored.
+float BloomMaskScale(const MatView &m, bool envFadeOutCancels = true);
 // RB3 shades in gamma space: retail's standard.ps multiplies the texel by the
 // material colour and the ambient + diffuse lighting sum as stored and
 // authored, and writes the product straight to an 8-bit target

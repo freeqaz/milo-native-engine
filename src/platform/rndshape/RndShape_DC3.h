@@ -497,8 +497,15 @@ constexpr bool kGammaSpaceShading = kDC3RetailModel;
 // (Multiply, white, bloom_multiplier 0) zeroes the icon's mask under the
 // draw's alpha equation (dst.a * 0), so the mode-select icon does not burn
 // (dc3-backend-for-rb3-wii.md 31.6).
+//
+// The mask also needs the environ not to fade out: RndShaderStandard,
+// RndShaderParticles, RndShaderMultimesh and RndShaderSyncTrack::CalcShaderOpts
+// (dc3-decomp rndobj/Shader.cpp) set mPseudoHDR only when !fadeOut, with
+// fadeOut = env->FadeOut() && env->FadeEnd() != env->FadeStart() for the
+// current environ. RndShaderDrawRect::CalcShaderOpts has no such test, so a
+// rect passes envFadeOutCancels = false.
 template <class M>
-inline float BloomMaskScale(const M &m) {
+inline float BloomMaskScale(const M &m, bool envFadeOutCancels = true) {
     using Raw = std::remove_cv_t<std::remove_pointer_t<std::decay_t<M>>>;
     if constexpr (!kDC3RetailPost || !MatHasBloomMultiplier<Raw>::value) {
         (void)m;
@@ -507,6 +514,10 @@ inline float BloomMaskScale(const M &m) {
         if (!m || !RetailBloomMaskActive()) return 0.0f;
         const RndPostProc *pp = RndPostProc::Current();
         if (!pp) return 0.0f;
+        if (envFadeOutCancels) {
+            const RndEnviron *env = RndEnviron::Current();
+            if (env && env->FadeOut() && env->FadeEnd() != env->FadeStart()) return 0.0f;
+        }
         // NgMat::AllowHDR (dc3-decomp rndobj/Mat_NG.cpp).
         const auto b = m->GetBlend();
         if (b == Raw::kBlendSrcAlpha || b == Raw::kBlendSrcAlphaAdd || b == Raw::kPreMultAlpha ||
