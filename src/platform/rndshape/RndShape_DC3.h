@@ -438,7 +438,8 @@ constexpr bool kRetailPostChain = false;
 // DC3_RETAIL_POST (rndshape/DC3PostChain.cpp): unset or anything else = 1 (the
 // retail chain), "0" = 0 (PostProcPass's previous composite), "raw" = 2 (the
 // scene ungraded), "mask" = 3 / "bloom" = 4 (the chain showing the bloom mask /
-// the bloom term; for inspection), "grade" = 5 (the chain without bloom).
+// the bloom term; for inspection), "grade" = 5 (the chain without bloom),
+// "velocity" = 6 (the chain, showing DoVelocity's velocity target instead).
 // Always 0 without kDC3RetailPost (rb3-xenon).
 int RetailPostMode();
 // The frame's alpha carries the bloom mask this frame.
@@ -447,7 +448,7 @@ inline bool RetailBloomMaskActive() {
         return false;
     } else {
         const int m = RetailPostMode();
-        return m == 1 || m == 3 || m == 4;
+        return m == 1 || m == 3 || m == 4 || m == 6;
     }
 }
 // The post-process Rnd::DoPostProcess runs and Rnd::BeginDrawing takes the
@@ -457,6 +458,17 @@ inline bool RetailBloomMaskActive() {
 // carries the HX_NATIVE accessor; rb3-xenon (no blacklight field, and an
 // override typed PostProcessor*) gets Current() (DC3PostChain.cpp).
 RndPostProc *ActivePostProc();
+// Rnd::DisablePP() ({rnd toggle_all_postprocs}): Rnd::DoPostProcess skips
+// DoPost and DxRnd's FinishPostProcess still copies the scene through the
+// option-free postprocess.ps, so the frame is the ungraded scene. False where
+// the consumer's Rnd has no such accessor (DC3PostChain.cpp).
+bool PostProcDisabled();
+// This frame's RndVelocityBuffer::Draw result (NgPostProc::DoVelocity, run by
+// Rnd::DoPostProcess just before the backend's post pass), taken once: false
+// when Draw did not run or failed its camera test, else `ready` (bit 42 on),
+// `scale` (c122) and the world camera. dc3-decomp's HX_NATIVE
+// RndVelocityBuffer::TakeNativeFrame; false for a consumer without it.
+bool TakeVelocityFrame(bool &ready, float &scale, RndCam *&cam);
 // Fills the chain's parameters from the current RndPostProc (DC3PostChain.cpp).
 void FillRetailPost(const RndPostProc *pp, float flickerMul, ::RetailPostParams &out);
 // SetBloomColor's c7 scale: 1/threshold above 1, else 1 (DC3PostChain.cpp).

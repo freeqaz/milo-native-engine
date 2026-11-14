@@ -54,7 +54,8 @@ struct RetailPostParams {
     float noiseMidtone = 0.0f;
     float time = 0.0f;
     int debugView = 0;            // 1: show the bloom mask, 2: show the bloom term,
-                                  // 3: show the spotlight beam target
+                                  // 3: show the spotlight beam target,
+                                  // 4 (DC3): show the velocity target (tf10)
     // NgSpotlightDrawer's beams (postprocess.ps option bit 51), added after the
     // screen blend and before the colour transform:
     //   c += beam.rgb * (fog.r * spotSmoke + spotBase) * spotScale
@@ -123,6 +124,27 @@ struct RetailPostParams {
     // hue_focus, blend_amount, brightness_power).
     bool hueConverge = false;
     float hueParams[4] = {0, 0, 0, 1};
+    // NgPostProc::DoVelocity (round 3), postprocess.ps bit 42: when
+    // RndVelocityBuffer::Draw returned true (motion_blur_velocity, not the
+    // hi-res screen, the camera's second consecutive frame since a cut) the
+    // camera velocity pass (velocity_camera.ps) writes tf10, a w/2 x h/2
+    // A8R8G8B8 target, from the world depth (tf9):
+    //   world = this frame's camera, unprojected at the pixel's depth
+    //   v     = clamp(prevUV(world) - uv, +-0.02)    prevUV = last frame's VP
+    //   tf10  = (v * 25 + 0.5, 1.767767 |v|, 0)
+    // and the composite, where tf10.z >= 0.003, replaces the scene (RGBA) by
+    // 10 taps along d = (tf10.xy - 0.5) * c122 at uv - 0.023 d + k 0.0046 d
+    // (k = 0..9), weights 0.00876 0.02700 0.06476 0.12099 0.17603 0.17603
+    // 0.12099 0.06476 0.02700 0.00876, plus the centre tap at 0.19947, all
+    // times 1.00549. c122 = min(2, 41.666668 / (ms since the last Draw + 1)).
+    // `velocityReproj` (row-major, row vectors) takes this frame's NDC
+    // (x, y, depth, 1) to last frame's clip space: inverse(VP) * prevVP.
+    // Off: no pass, no target (the composite binds black and never reads it).
+    bool velocity = false;
+    float velocityScale = 0.0f;       // c122
+    float velocityReproj[16] = {};
+    wgpu::TextureView velocityDepth;  // the world depth, multisampled
+    uint32_t velocityDepthSamples = 0;
     // ---- end np-gfx-post ----
 };
 
@@ -212,6 +234,23 @@ private:
     wgpu::TextureView mPrevView[2];
     int mPrevW = 0, mPrevH = 0, mPrevCur = 0;
     uint64_t mRunIndex = 0, mPrevRun = ~0ull;
+    // NgPostProc::DoVelocity's tf10 (RndVelocityBuffer::mVelocityTex, w/2 x
+    // h/2 A8R8G8B8), allocated on the first velocity frame only.
+    bool RunDC3Velocity(wgpu::CommandEncoder& encoder, int sceneW, int sceneH,
+                        const RetailPostParams& p, GpuDevice& gpu);
+    wgpu::Texture mVelTex;
+    wgpu::TextureView mVelView;
+    int mVelW = 0, mVelH = 0;
+    uint64_t mVelRun = ~0ull;                // the composite run it was drawn for
+    wgpu::BindGroupLayout mDC3VelBGL;        // depth (multisampled), uniform
+    wgpu::PipelineLayout mDC3VelPL;
+    wgpu::RenderPipeline mDC3VelPipe;        // velocity_camera.ps
+public:
+    // Inspection/tests: the last velocity target (null until one ran).
+    const wgpu::Texture& VelocityTexture() const { return mVelTex; }
+    int VelocityPasses() const { return mVelPasses; }
+private:
+    int mVelPasses = 0;
     wgpu::Sampler mNoiseSampler;             // linear, wrap (CheckNoise: filter 1, clamp 0)
     wgpu::TextureFormat mDC3FrameFormat = wgpu::TextureFormat::Undefined;
     bool mDC3Ready = false;

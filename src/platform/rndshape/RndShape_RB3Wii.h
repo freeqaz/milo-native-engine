@@ -566,6 +566,9 @@ constexpr bool kDC3RetailPost = false;
 // the declaration; that statement is discarded here, so nothing odr-uses it and
 // no definition is needed for this shape.
 RndPostProc *ActivePostProc();
+// Likewise named under `if constexpr (kDC3RetailPost)` only (Rnd_Wgpu.cpp).
+bool PostProcDisabled();
+bool TakeVelocityFrame(bool &ready, float &scale, RndCam *&cam);
 void FillRetailPost(const RndPostProc *pp, float flickerMul, ::RetailPostParams &out);
 // MILO_RB3_RETAIL_POST: unset or anything else = 1 (retail chain), "0" = 0
 // (PostProcPass's DC3 composite, as before the chain existed), "raw" = 2

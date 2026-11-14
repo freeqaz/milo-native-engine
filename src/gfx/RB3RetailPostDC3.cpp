@@ -47,8 +47,17 @@ struct DC3CompositeUniforms {
     float motionMode[4];   // x: 0 off, 1 prev valid, 2 first frame (no prev yet);
                            // y: 1 = the glare composite (bit 37) instead of bit 4
     float hue[4];          // c222 (CheckHueConverge); z (blend_amount) 0 = off
+    float velocity[4];     // x: c122 (DoVelocity); y: 1 = bit 42 on
 };
-static_assert(sizeof(DC3CompositeUniforms) == 192, "DC3CompositeUniforms layout");
+static_assert(sizeof(DC3CompositeUniforms) == 208, "DC3CompositeUniforms layout");
+
+// velocity_camera.ps: last frame's clip space from this frame's NDC, and the
+// target sizes (full depth w, h; velocity w, h).
+struct DC3VelocityUniforms {
+    float reproj[4][4];
+    float size[4];
+};
+static_assert(sizeof(DC3VelocityUniforms) == 80, "DC3VelocityUniforms layout");
 
 const char* kDC3Shader = R"WGSL(
 struct TapUB {
@@ -67,6 +76,14 @@ struct DC3UB {
     motion: vec4f,
     motionMode: vec4f,
     hue: vec4f,
+    velocity: vec4f,
+};
+struct VelUB {
+    m0: vec4f,
+    m1: vec4f,
+    m2: vec4f,
+    m3: vec4f,
+    size: vec4f,
 };
 
 @group(0) @binding(0) var srcTex: texture_2d<f32>;
@@ -80,6 +97,10 @@ struct DC3UB {
 @group(0) @binding(7) var noiseTex: texture_2d<f32>;
 @group(0) @binding(8) var noiseSamp: sampler;
 @group(0) @binding(9) var prevTex: texture_2d<f32>;
+@group(0) @binding(10) var velTex: texture_2d<f32>;
+// The velocity pass's own layout (mDC3VelBGL).
+@group(0) @binding(11) var velDepth: texture_depth_multisampled_2d;
+@group(0) @binding(12) var<uniform> vu: VelUB;
 
 struct VOut {
     @builtin(position) pos: vec4f,
@@ -137,26 +158,80 @@ struct VOut {
     return acc;
 }
 
-// postprocess.ps up to the motion blur: the graded colour, UNCLAMPED (the
-// shader's single saturate is on the final write).
-fn grade_dc3(uv: vec2f) -> vec3f {
-    // Bit 15 (chroma, c121): three taps on a triangle; bit 43 sharpens with them.
-    var scene: vec3f;
+// velocity_camera.ps (RndVelocityBuffer::Draw's DrawRectDepth, decoded): the
+// pixel's world position from this frame's camera and the depth (retail:
+// the far-plane frustum corners scaled by the linear depth; here this frame's
+// inverse view-projection, folded on the CPU with last frame's into vu.m*),
+// projected by last frame's camera; v = prevUV - uv clamped to +-0.02, written
+// as (v * 25 + 0.5, 1.767767 |v|, 0, 0) into the 8-bit target. One depth
+// sample per output pixel: retail point-samples the full-size depth at the
+// half-size pixel's centre, texel (2i + 1, 2j + 1).
+@fragment fn fs_velocity(in: VOut) -> @location(0) vec4f {
+    let px = vec2i(in.pos.xy);
+    let src = min(px * 2 + vec2i(1), vec2i(vu.size.xy) - vec2i(1));
+    let d = textureLoad(velDepth, src, 0);
+    let uv = (vec2f(px) + 0.5) / vu.size.zw;
+    let ndc = vec2f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+    let p = ndc.x * vu.m0 + ndc.y * vu.m1 + d * vu.m2 + vu.m3;
+    var prevUv = uv;
+    if (p.w != 0.0) {
+        prevUv = vec2f(0.5 + 0.5 * p.x / p.w, 0.5 - 0.5 * p.y / p.w);
+    }
+    let v = clamp(prevUv - uv, vec2f(-0.02), vec2f(0.02));
+    return vec4f(v * 25.0 + 0.5, 1.767767 * length(v), 0.0);
+}
+
+// postprocess.ps bit 42 (postprocess_0000040000000010, decoded): where the
+// velocity target's z is at least 0.003, ten taps of the scene along the
+// velocity d = (tf10.xy - 0.5) * c122, from uv - 0.023 d in steps of 0.0046 d,
+// plus `centre` (the plain or chroma-split scene at uv), RGBA.
+fn velocity_blur(uv: vec2f, centre: vec4f) -> vec4f {
+    let vel = textureSampleLevel(velTex, samp, uv, 0.0);
+    if (vel.z < 0.003) {
+        return centre;
+    }
+    let d = (vel.xy - 0.5) * cu.velocity.x;
+    let st = 0.0046 * d;
+    let b = uv - 0.023 * d;
+    var acc = centre * 0.19947;
+    acc += (textureSampleLevel(srcTex, samp, b, 0.0) +
+            textureSampleLevel(srcTex, samp, b + 9.0 * st, 0.0)) * 0.00876;
+    acc += (textureSampleLevel(srcTex, samp, b + st, 0.0) +
+            textureSampleLevel(srcTex, samp, b + 8.0 * st, 0.0)) * 0.02700;
+    acc += (textureSampleLevel(srcTex, samp, b + 2.0 * st, 0.0) +
+            textureSampleLevel(srcTex, samp, b + 7.0 * st, 0.0)) * 0.06476;
+    acc += (textureSampleLevel(srcTex, samp, b + 3.0 * st, 0.0) +
+            textureSampleLevel(srcTex, samp, b + 6.0 * st, 0.0)) * 0.12099;
+    acc += (textureSampleLevel(srcTex, samp, b + 4.0 * st, 0.0) +
+            textureSampleLevel(srcTex, samp, b + 5.0 * st, 0.0)) * 0.17603;
+    return acc * 1.00549;
+}
+
+// The scene the composite grades: bit 15's chroma split (bit 43 sharpening),
+// then bit 42's velocity blur. Alpha is the scene's (blurred with it).
+fn scene_dc3(uv: vec2f) -> vec4f {
+    let plain = textureSampleLevel(srcTex, samp, uv, 0.0);
+    var scene = plain;
     if (cu.chroma.z > 0.5) {
         let o = cu.chroma.xy;
         let t0 = textureSampleLevel(srcTex, samp, uv + vec2f(-o.x, 0.0), 0.0).rgb;
         let t1 = textureSampleLevel(srcTex, samp, uv + vec2f(0.5 * o.x, 0.866 * o.y), 0.0).rgb;
         let t2 = textureSampleLevel(srcTex, samp, uv + vec2f(0.5 * o.x, -0.866 * o.y), 0.0).rgb;
         if (cu.chroma.w > 0.5) {
-            let center = textureSampleLevel(srcTex, samp, uv, 0.0).rgb;
-            scene = 4.0 * center - t0 - t1 - t2;
+            scene = vec4f(4.0 * plain.rgb - t0 - t1 - t2, plain.a);
         } else {
-            scene = vec3f(t0.r, t1.g, t2.b);
+            scene = vec4f(t0.r, t1.g, t2.b, plain.a);
         }
-    } else {
-        scene = textureSampleLevel(srcTex, samp, uv, 0.0).rgb;
     }
+    if (cu.velocity.y > 0.5) {
+        scene = velocity_blur(uv, scene);
+    }
+    return scene;
+}
 
+// postprocess.ps up to the motion blur: the graded colour, UNCLAMPED (the
+// shader's single saturate is on the final write).
+fn grade_dc3(uv: vec2f, scene: vec3f) -> vec3f {
     // Bit 37 (DoBloom's glare arm, unk28): the glare set ADDED at half the
     // bloom colour, c = scene + 0.5 * c6 * tf7 (postprocess_0000002001200000).
     // Bit 4: screen blend with the three bloom sets (unclamped).
@@ -266,7 +341,14 @@ fn hue_converge(c: vec3f) -> vec3f {
 }
 
 @fragment fn fs_composite_dc3(in: VOut) -> @location(0) vec4f {
-    // Inspection views: the bloom mask (scene alpha) and the bloom term.
+    // Inspection views: the velocity target (tf10 as stored; (0.5, 0.5, 0)
+    // where none ran), the bloom mask (scene alpha) and the bloom term.
+    if (cu.bloomColor.w > 3.5) {
+        if (cu.velocity.y > 0.5) {
+            return vec4f(textureSampleLevel(velTex, samp, in.uv, 0.0).rgb, 1.0);
+        }
+        return vec4f(0.5, 0.5, 0.0, 1.0);
+    }
     if (cu.bloomColor.w > 2.5) {
         let b = textureSampleLevel(bloom0, samp, in.uv, 0.0).rgb
               + textureSampleLevel(bloom1, samp, in.uv, 0.0).rgb
@@ -277,7 +359,7 @@ fn hue_converge(c: vec3f) -> vec3f {
         let a = textureSampleLevel(srcTex, samp, in.uv, 0.0).a;
         return vec4f(a, a, a, 1.0);
     }
-    var c = grade_dc3(in.uv);
+    var c = grade_dc3(in.uv, scene_dc3(in.uv).rgb);
     if (cu.hue.z > 0.0) {
         c = hue_converge(c);
     }
@@ -293,8 +375,9 @@ struct MBOut {
     @location(1) next: vec4f,
 };
 @fragment fn fs_composite_dc3_mb(in: VOut) -> MBOut {
-    let c = grade_dc3(in.uv);
-    let sa = clamp(textureSampleLevel(srcTex, samp, in.uv, 0.0).a, 0.0, 1.0);
+    let scene = scene_dc3(in.uv);
+    let c = grade_dc3(in.uv, scene.rgb);
+    let sa = clamp(scene.a, 0.0, 1.0);
     var o: vec3f;
     var a: f32;
     if (cu.motionMode.x > 1.5) {
@@ -391,13 +474,28 @@ void RB3RetailPost::EnsureDC3Pipelines(GpuDevice& gpu) {
         mDC3PassBGL = dev.CreateBindGroupLayout(&d);
     }
     {
-        wgpu::BindGroupLayoutEntry e[9] = {texEntry(0), sampEntry(1), uniEntry(6, sizeof(DC3CompositeUniforms)),
-                                           texEntry(3), texEntry(4), texEntry(5), texEntry(7), sampEntry(8),
-                                           texEntry(9)};
+        wgpu::BindGroupLayoutEntry e[10] = {texEntry(0), sampEntry(1), uniEntry(6, sizeof(DC3CompositeUniforms)),
+                                            texEntry(3), texEntry(4), texEntry(5), texEntry(7), sampEntry(8),
+                                            texEntry(9), texEntry(10)};
         wgpu::BindGroupLayoutDescriptor d{};
-        d.entryCount = 9;
+        d.entryCount = 10;
         d.entries = e;
         mDC3CompositeBGL = dev.CreateBindGroupLayout(&d);
+    }
+    {
+        // The velocity pass: the multisampled world depth (textureLoad, sample
+        // 0) and its uniform.
+        wgpu::BindGroupLayoutEntry e[2] = {};
+        e[0].binding = 11;
+        e[0].visibility = wgpu::ShaderStage::Fragment;
+        e[0].texture.sampleType = wgpu::TextureSampleType::Depth;
+        e[0].texture.viewDimension = wgpu::TextureViewDimension::e2D;
+        e[0].texture.multisampled = true;
+        e[1] = uniEntry(12, sizeof(DC3VelocityUniforms));
+        wgpu::BindGroupLayoutDescriptor d{};
+        d.entryCount = 2;
+        d.entries = e;
+        mDC3VelBGL = dev.CreateBindGroupLayout(&d);
     }
     {
         wgpu::PipelineLayoutDescriptor d{};
@@ -406,6 +504,8 @@ void RB3RetailPost::EnsureDC3Pipelines(GpuDevice& gpu) {
         mDC3PassPL = dev.CreatePipelineLayout(&d);
         d.bindGroupLayouts = &mDC3CompositeBGL;
         mDC3CompositePL = dev.CreatePipelineLayout(&d);
+        d.bindGroupLayouts = &mDC3VelBGL;
+        mDC3VelPL = dev.CreatePipelineLayout(&d);
     }
     auto make = [&](const char* fs, const wgpu::PipelineLayout& pl, wgpu::TextureFormat fmt) {
         wgpu::ColorTargetState ct{};
@@ -429,6 +529,9 @@ void RB3RetailPost::EnsureDC3Pipelines(GpuDevice& gpu) {
     mDC3StreakPipe = make("fs_streak", mDC3PassPL, mBloomFormat);
     mDC3GlarePipe = make("fs_glare", mDC3PassPL, mBloomFormat);
     mDC3CompositePipe = make("fs_composite_dc3", mDC3CompositePL, mDC3FrameFormat);
+    // RndVelocityBuffer::AllocateData: SetBitmap(w / 2, h / 2, TheRnd.Bpp() =
+    // 32, kRendered): A8R8G8B8.
+    mDC3VelPipe = make("fs_velocity", mDC3VelPL, wgpu::TextureFormat::RGBA8Unorm);
     {
         // The motion-blur composite: the frame, and the feedback target the
         // next frame reads as tf14 (A8R8G8B8, as mPostProcessBuffer).
@@ -624,7 +727,8 @@ void RB3RetailPost::RunDC3Composite(wgpu::CommandEncoder& encoder, const wgpu::T
     cu.bloomColor[0] = p.bloomColor[0];
     cu.bloomColor[1] = p.bloomColor[1];
     cu.bloomColor[2] = p.bloomColor[2];
-    cu.bloomColor[3] = p.debugView == 1 ? 2.0f : p.debugView == 2 ? 3.0f : p.bloom ? 1.0f : 0.0f;
+    cu.bloomColor[3] = p.debugView == 1 ? 2.0f : p.debugView == 2 ? 3.0f : p.debugView == 4 ? 4.0f
+                     : p.bloom ? 1.0f : 0.0f;
     cu.vignette[0] = p.vignetteColor[0];
     cu.vignette[1] = p.vignetteColor[1];
     cu.vignette[2] = p.vignetteColor[2];
@@ -678,13 +782,19 @@ void RB3RetailPost::RunDC3Composite(wgpu::CommandEncoder& encoder, const wgpu::T
     if (p.hueConverge && p.debugView == 0) {
         std::memcpy(cu.hue, p.hueParams, sizeof(cu.hue));
     }
+    // Bit 42: only on a frame whose velocity pass ran (RunDC3Velocity).
+    const bool vel = p.velocity && (p.debugView == 0 || p.debugView == 4) && mVelView && mVelRun == run;
+    if (vel) {
+        cu.velocity[0] = p.velocityScale;
+        cu.velocity[1] = 1.0f;
+    }
     uint64_t off = (uint64_t)(mSlot++ % kSlots) * kSlotStride;
     gpu.Queue().WriteBuffer(mUniforms, off, &cu, sizeof(cu));
 
     // The plain arm fills all three sets; the streak arm two (tf15 black).
     const bool haveBloom = (p.bloom || p.debugView == 2) && mView[0][0];
     const int setsUsed = p.glare ? 1 : p.streak ? 2 : 3;
-    wgpu::BindGroupEntry e[9] = {};
+    wgpu::BindGroupEntry e[10] = {};
     e[0].binding = 0;
     e[0].textureView = sceneView;
     e[1].binding = 1;
@@ -703,9 +813,11 @@ void RB3RetailPost::RunDC3Composite(wgpu::CommandEncoder& encoder, const wgpu::T
     e[7].sampler = mNoiseSampler;
     e[8].binding = 9;
     e[8].textureView = prevRead;
+    e[9].binding = 10;
+    e[9].textureView = vel ? mVelView : mBlackView;
     wgpu::BindGroupDescriptor bgd{};
     bgd.layout = mDC3CompositeBGL;
-    bgd.entryCount = 9;
+    bgd.entryCount = 10;
     bgd.entries = e;
     wgpu::BindGroup bg = gpu.Device().CreateBindGroup(&bgd);
 
@@ -727,6 +839,66 @@ void RB3RetailPost::RunDC3Composite(wgpu::CommandEncoder& encoder, const wgpu::T
     pass.SetBindGroup(0, bg);
     pass.Draw(3);
     pass.End();
+}
+
+// RndVelocityBuffer::Draw's camera pass (velocity_camera.ps) into tf10.
+bool RB3RetailPost::RunDC3Velocity(wgpu::CommandEncoder& encoder, int sceneW, int sceneH,
+                                   const RetailPostParams& p, GpuDevice& gpu) {
+    if (!p.velocity || !p.velocityDepth || p.velocityDepthSamples < 2) return false;
+    if (p.debugView != 0 && p.debugView != 4) return false;
+    // RndVelocityBuffer::AllocateData(w, h): SetBitmap(w / 2, h / 2, ...).
+    const int vw = std::max(1, sceneW / 2), vh = std::max(1, sceneH / 2);
+    if (!mVelTex || mVelW != vw || mVelH != vh) {
+        wgpu::TextureDescriptor td{};
+        td.label = "DC3VelocityBuffer";
+        td.size = {(uint32_t)vw, (uint32_t)vh, 1};
+        td.format = wgpu::TextureFormat::RGBA8Unorm;
+        td.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding |
+                   wgpu::TextureUsage::CopySrc;
+        td.mipLevelCount = 1;
+        mVelTex = gpu.Device().CreateTexture(&td);
+        mVelView = mVelTex.CreateView();
+        mVelW = vw;
+        mVelH = vh;
+    }
+    DC3VelocityUniforms vu{};
+    std::memcpy(vu.reproj, p.velocityReproj, sizeof(vu.reproj));
+    vu.size[0] = (float)sceneW;
+    vu.size[1] = (float)sceneH;
+    vu.size[2] = (float)vw;
+    vu.size[3] = (float)vh;
+    uint64_t off = (uint64_t)(mSlot++ % kSlots) * kSlotStride;
+    gpu.Queue().WriteBuffer(mUniforms, off, &vu, sizeof(vu));
+    wgpu::BindGroupEntry e[2] = {};
+    e[0].binding = 11;
+    e[0].textureView = p.velocityDepth;
+    e[1].binding = 12;
+    e[1].buffer = mUniforms;
+    e[1].offset = off;
+    e[1].size = sizeof(vu);
+    wgpu::BindGroupDescriptor bgd{};
+    bgd.layout = mDC3VelBGL;
+    bgd.entryCount = 2;
+    bgd.entries = e;
+    wgpu::BindGroup bg = gpu.Device().CreateBindGroup(&bgd);
+
+    wgpu::RenderPassColorAttachment ca{};
+    ca.view = mVelView;
+    ca.loadOp = wgpu::LoadOp::Clear;
+    ca.storeOp = wgpu::StoreOp::Store;
+    ca.clearValue = {0.5, 0.5, 0, 0};
+    wgpu::RenderPassDescriptor rp{};
+    rp.label = "DC3Velocity";
+    rp.colorAttachmentCount = 1;
+    rp.colorAttachments = &ca;
+    auto pass = encoder.BeginRenderPass(&rp);
+    pass.SetPipeline(mDC3VelPipe);
+    pass.SetBindGroup(0, bg);
+    pass.Draw(3);
+    pass.End();
+    mVelRun = mRunIndex + 1;   // the composite this Run is about to do
+    mVelPasses++;
+    return true;
 }
 
 // Shipped WGSL accessor (gfx/ShippedWgsl.h).
