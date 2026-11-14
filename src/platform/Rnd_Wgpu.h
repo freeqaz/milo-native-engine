@@ -92,11 +92,10 @@ public:
     // Screen-space 2D drawing (NgRnd override)
     void DrawRect(const Hmx::Rect&, RndMat*, ShaderType, const Hmx::Color&,
                   const Hmx::Color*, const Hmx::Color*) override;
-    // Base Rnd override
+    // Base Rnd override: retail's kDrawRectShader colour model on Xbox shapes
+    // (DrawRectMaterialColor), then the screen-space path above.
     void DrawRect(const Hmx::Rect& r, const Hmx::Color& c, RndMat* m,
-                  const Hmx::Color* tr, const Hmx::Color* bl) override {
-        DrawRect(r, m, kStandardShader, c, tr, bl);
-    }
+                  const Hmx::Color* tr, const Hmx::Color* bl) override;
 
     // On web, returns an owned offscreen texture; on desktop, the swapchain surface.
     // All rendering (post-proc output, overlay passes) targets this view.

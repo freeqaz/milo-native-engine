@@ -272,8 +272,17 @@ template <class M> inline bool MatPinsAlphaWrite(const M *m) {
 constexpr bool kRenderTargetStoresLinear = false;
 
 // ---- 2D rects --------------------------------------------------------------
-// DC3's DrawRect colours a rect by the colour argument alone.
+// kRectModulatesMatColor is the RB3-Wii model (argument x material colour) and
+// stays off here. DC3's (and rb3-xenon's) Xbox DrawRect is
+// kRectXboxDrawRectShader: the colour overload of DxRnd::DrawRect selects
+// kDrawRectShader, which RndShaderDrawRect::Select runs as the `standard`
+// shader with c1 = white and c0 = the material colour (NgMat::SetupShader).
+// Its vertex shader writes `mul o2, r1, c0` (vertex colour x c0) for a prelit
+// material and `mul o2, c1, c0` (c0 alone) otherwise, and the pixel shader
+// multiplies that by the texel. See DrawRectMaterialColor (gfx/DrawRect2D.h).
 constexpr bool kRectModulatesMatColor = false;
+constexpr bool kRectXboxDrawRectShader = true;
+inline bool MatPrelit(RndMat *m) { return m->Prelit(); }
 
 // ---- post-processing -------------------------------------------------------
 // The grain strength the post-process shader adds per pixel, as authored. Only
