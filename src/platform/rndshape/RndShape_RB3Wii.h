@@ -460,6 +460,14 @@ inline Vector3 PartWorldPos(RndParticleSys *s, RndParticle *p) {
 // flavor's BandRnd::DrawParticles: tint by material colour, scale haze alpha
 // by 0.35, and fade haze out within two half-sizes of the camera.
 constexpr bool kPartMaterialTint = true;
+// The Xbox particle vertex shader's billboard (screen aspect, swing arm, its
+// rotation sense) is a DC3-shape term; RB3-Wii keeps the billboard it has.
+struct PartBillboardTerms {
+    bool retailXbox = false;
+    float screenAspect = 1.0f;
+};
+inline PartBillboardTerms PartBillboard(RndParticleSys *) { return {}; }
+inline float PartSwingArm(const RndParticle *) { return 0.0f; }
 // Read only by the Xbox-shader colour model (ParticleShaderColor), which this
 // shape does not use; declared so that model compiles here.
 inline bool MatUseEnviron(RndMat *m) { return m->mUseEnviron; }
