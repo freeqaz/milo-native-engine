@@ -478,9 +478,14 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& i
     // post-process shader and bloom reads the pre-process texture, the
     // depth-of-field image replaces the scene in the composite only; bloom
     // still reads the sharp scene.
+    // DC3: NgDOFProc is one of the registered post processors, so
+    // {rnd toggle_all_postprocs} (Rnd::DoPostProcess skipping every DoPost)
+    // turns the depth of field off with the rest of the chain.
     wgpu::TextureView sceneView = intermediateView;
-    if (mDof.Run(encoder, intermediateView, intermediateTex.GetFormat(), depthView, depthSamples,
-                 intermediateW, intermediateH, gpu)) {
+    bool dofRuns = true;
+    if constexpr (rndshape::kDC3RetailPost) dofRuns = !rndshape::PostProcDisabled();
+    if (dofRuns && mDof.Run(encoder, intermediateView, intermediateTex.GetFormat(), depthView,
+                            depthSamples, intermediateW, intermediateH, gpu)) {
         sceneView = mDof.OutputView();
     }
 
