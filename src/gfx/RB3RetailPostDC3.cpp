@@ -187,6 +187,21 @@ struct VOut {
 }  // namespace
 
 void RB3RetailPost::EnsureDC3Pipelines(GpuDevice& gpu) {
+    // DC3's bloom sets are 8-bit (NgPostProc::BloomTextureSet: TheRnd.Bpp(),
+    // A8R8G8B8), so each pass clamps at 1. Rebuild RB3's shared pass
+    // pipelines and sets in that format once.
+    if (mBloomFormat != wgpu::TextureFormat::RGBA8Unorm) {
+        mBloomFormat = wgpu::TextureFormat::RGBA8Unorm;
+        mReady = false;
+        mDC3Ready = false;
+        for (int s = 0; s < kSets; s++) {
+            mW[s] = mH[s] = 0;
+            for (int k = 0; k < 2; k++) {
+                mTex[s][k] = nullptr;
+                mView[s][k] = nullptr;
+            }
+        }
+    }
     EnsurePipelines(gpu);
     if (mDC3Ready && mDC3FrameFormat == gpu.SurfaceFormat()) return;
     auto& dev = gpu.Device();
@@ -271,9 +286,8 @@ void RB3RetailPost::EnsureDC3Pipelines(GpuDevice& gpu) {
         pd.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
         return dev.CreateRenderPipeline(&pd);
     };
-    const wgpu::TextureFormat kBloomFmt = wgpu::TextureFormat::RGBA16Float;
-    mDC3BloomTapsPipe = make("fs_bloom_taps", mDC3PassPL, kBloomFmt);
-    mDC3StreakPipe = make("fs_streak", mDC3PassPL, kBloomFmt);
+    mDC3BloomTapsPipe = make("fs_bloom_taps", mDC3PassPL, mBloomFormat);
+    mDC3StreakPipe = make("fs_streak", mDC3PassPL, mBloomFormat);
     mDC3CompositePipe = make("fs_composite_dc3", mDC3CompositePL, mDC3FrameFormat);
     mDC3Ready = true;
 }

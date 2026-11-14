@@ -2146,5 +2146,19 @@
     "owner": "input",
     "faithfulStatus": "n/a: logs one line per pad button message JoypadPoll sends (dc3 key tests); Joypad_Native.cpp is compiled by dc3 only",
     "default": "off"
+  },
+  "DC3_RETAIL_POST": {
+    "class": "feature",
+    "owner": "render/post",
+    "faithfulStatus": "live: selects the DC3 retail post chain (NgPostProc::DoPost port, np-gfx-post). Unset = the retail chain (bloom mask, bloom/streak, screen-blend composite, noise, colour xfm, vignette, chroma). '0' = the pre-np-gfx-post generic PostProcPass; 'raw' = chain with no effects (copy); 'mask' / 'bloom' = inspection views of the pseudo-HDR mask / bloom term; 'grade' = chain without bloom. DC3 shape only (rndshape::kDC3RetailPost); rb3-xenon's shape has no dc3 accessors so the flag is never read there [rndshape/DC3PostChain.cpp:30]",
+    "default": "on",
+    "read": "value"
+  },
+  "DC3_DISPLAY_GAMMA": {
+    "class": "feature",
+    "owner": "render/post",
+    "faithfulStatus": "live: override value knob for DC3's display ramp (DxRnd::SetupGamma, ramp = pow(v, g)). Unset = retail: (rnd (gamma g)) from the system config (default.dta: 0.85), applied once after the UI to EVERY output including headless, so captures are POST-ramp. 'off'/'0' = no ramp (the pre-ramp front buffer), else the gamma value. DC3 shape only (rndshape::kDC3RetailPost) [rndshape/DC3PostChain.cpp:50]",
+    "default": "off",
+    "read": "value"
   }
 }

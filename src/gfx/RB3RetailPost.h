@@ -137,6 +137,12 @@ private:
     wgpu::Texture mTex[kSets][2];
     wgpu::TextureView mView[kSets][2];
     int mW[kSets] = {}, mH[kSets] = {};
+    // The bloom sets' format. RB3: RGBA16Float. DC3 (np-gfx-post): RGBA8Unorm,
+    // as NgPostProc::BloomTextureSet::AllocateTextures makes them
+    // (SetBitmap(w, h, TheRnd.Bpp() = 32, kRenderedNoZ): A8R8G8B8), so every
+    // bloom pass saturates at 1 as retail's EDRAM resolve does. Switched by
+    // EnsureDC3Pipelines, which rebuilds the pipelines and sets that use it.
+    wgpu::TextureFormat mBloomFormat = wgpu::TextureFormat::RGBA16Float;
 
     wgpu::ShaderModule mShader;
     wgpu::BindGroupLayout mPassBGL;       // src tex, sampler, uniform

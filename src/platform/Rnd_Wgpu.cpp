@@ -1771,7 +1771,9 @@ void WgpuRnd::EndDrawing() {
 
         // The display gamma ramp (RB3: DxRnd::SetupGamma's D3DDevice_SetGammaRamp),
         // over the finished frame, UI included, when the frame is presented.
-        // DC3 has none.
+        // DC3 (dc3-decomp only, rndshape::kDC3RetailPost) applies it to every
+        // output, headless included, so its captures are post-ramp;
+        // rb3-xenon's DC3 shape returns 0 and the pass never runs.
         if (const float displayGamma = rndshape::DisplayGamma(!mGpu.IsHeadless());
             displayGamma > 0.0f) {
 #ifdef __EMSCRIPTEN__

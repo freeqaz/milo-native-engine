@@ -287,9 +287,10 @@ void RB3RetailPost::EnsurePipelines(GpuDevice& gpu) {
         return dev.CreateRenderPipeline(&pd);
     };
     const wgpu::TextureFormat kBloomFmt = wgpu::TextureFormat::RGBA16Float;
-    mBloomDownPipe = make("fs_bloom_down", mPassPL, kBloomFmt);
-    mDown4Pipe = make("fs_down4", mPassPL, kBloomFmt);
-    mBlurPipe = make("fs_blur", mPassPL, kBloomFmt);
+    // RB3: half float. DC3 (np-gfx-post): 8-bit, see mBloomFormat.
+    mBloomDownPipe = make("fs_bloom_down", mPassPL, mBloomFormat);
+    mDown4Pipe = make("fs_down4", mPassPL, mBloomFormat);
+    mBlurPipe = make("fs_blur", mPassPL, mBloomFormat);
     mCompositePipe = make("fs_composite", mCompositePL, mFrameFormat);
 
     wgpu::BufferDescriptor bd{};
@@ -329,7 +330,7 @@ void RB3RetailPost::EnsureTextures(int sceneW, int sceneH, GpuDevice& gpu) {
             wgpu::TextureDescriptor td{};
             td.label = "RB3RetailBloom";
             td.size = {(uint32_t)w, (uint32_t)h, 1};
-            td.format = wgpu::TextureFormat::RGBA16Float;
+            td.format = mBloomFormat;
             td.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding;
             mTex[s][k] = gpu.Device().CreateTexture(&td);
             mView[s][k] = mTex[s][k].CreateView();
