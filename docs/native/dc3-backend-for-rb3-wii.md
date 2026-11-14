@@ -6640,6 +6640,17 @@ and `gpucount_before`):
   changes), and **0 between frame 2580 and 6000**, at 9 hits a frame;
 - before, measured with a temporary build that clears the cache every frame, so every bind is a creation as in the old code (`round4/native/gpucount_before`, DCI peak, choreo): **10–12 creations a frame**, 8–10 distinct groups plus 2 binds that repeat a group within the frame.
 
+**Frame time.** Live DCI omg on `choreo`/awesome, unpaced, 2 s windows,
+two runs of each binary in ABBA order (`round4/cost/`, RTX 3090):
+- cached: median 3.468 ms/frame (p10–p90 2.800–3.835);
+- every bind a creation: median 3.540 ms/frame (2.908–4.514).
+
+That is 71 µs a frame on the median, and less than the window-to-window
+spread. Another lane's soak run was sharing the GPU during the measurement,
+so read it as "no regression, a small saving". It is not a precise figure.
+The saving matters more on the 890M and phone, where creating a bind group
+is the expensive part. That is INFERRED, not measured.
+
 **Guards** (dc3 `test_dc3_retail_post.cpp`):
 
 | test | what it checks | sabotage and result |
