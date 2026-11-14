@@ -51,7 +51,7 @@ void GpuTimers::SetWindowSeconds(double s) { mWindowSeconds = s > 0.0 ? s : 1.0;
 // no timestamp-query feature, and the emscripten WebGPU headers are a
 // different revision of the API). Everything is a no-op; Active() stays false.
 struct GpuTimers::Impl {};
-void GpuTimers::Init(const wgpu::Device&, const wgpu::Instance&, bool, const char* whyNot, bool) {
+void GpuTimers::Init(const wgpu::Device&, const wgpu::Instance&, bool, const char* whyNot, int) {
     NoteUnavailable(whyNot && *whyNot ? whyNot : "not implemented in the web build");
 }
 void GpuTimers::Shutdown() { sActive = false; }
@@ -113,7 +113,7 @@ struct GpuTimers::Impl {
 static int sGeneration = 0;
 
 void GpuTimers::Init(const wgpu::Device& device, const wgpu::Instance& instance,
-                     bool featureEnabled, const char* whyNot, bool quantizationDisabled) {
+                     bool featureEnabled, const char* whyNot, int quantizationOff) {
     Shutdown();
     if (!Requested()) return;
     if (!featureEnabled || !device) {
@@ -154,13 +154,17 @@ void GpuTimers::Init(const wgpu::Device& device, const wgpu::Instance& instance,
         std::lock_guard<std::mutex> lock(mSnapMutex);
         mSnap = Snapshot();
         mSnap.active = true;
-        mSnap.quantizationDisabled = quantizationDisabled;
+        mSnap.quantizationOff = quantizationOff;
     }
     sActive = true;
     fprintf(stderr,
             "GPU timers ON (MILO_GPU_TIMERS): %d passes/frame max, %d readbacks in flight, "
             "timestamp_quantization %s; [GPUTIME] lines every %.1f s\n",
-            kMaxPasses, kSlots, quantizationDisabled ? "disabled" : "left on", mWindowSeconds);
+            kMaxPasses, kSlots,
+            quantizationOff > 0    ? "off (device confirms)"
+            : quantizationOff == 0 ? "ON (the device still reports it enabled)"
+                                   : "off (requested; the device's toggles cannot be read)",
+            mWindowSeconds);
 }
 
 void GpuTimers::Shutdown() {
@@ -322,7 +326,7 @@ void GpuTimers::PublishWindow(double now) {
     snap.active = true;
     {
         std::lock_guard<std::mutex> lock(mSnapMutex);
-        snap.quantizationDisabled = mSnap.quantizationDisabled;
+        snap.quantizationOff = mSnap.quantizationOff;
     }
     snap.frames = im->frames;
     snap.skipped = im->skipped;
@@ -404,11 +408,11 @@ std::string GpuTimers::LatestJson() const {
     std::string out;
     char buf[512];
     snprintf(buf, sizeof(buf),
-             "{\"requested\":%s,\"active\":%s,\"quantizationDisabled\":%s,\"window\":%lld,"
+             "{\"requested\":%s,\"active\":%s,\"quantizationOff\":%d,\"window\":%lld,"
              "\"windowSeconds\":%.3f,\"frames\":%d,\"skipped\":%d,\"gpuSumMs\":%.4f,"
              "\"gpuSumMaxMs\":%.4f,\"gpuSpanMs\":%.4f,\"gpuSpanMaxMs\":%.4f,\"unavailable\":\"",
              Requested() ? "true" : "false", s.active ? "true" : "false",
-             s.quantizationDisabled ? "true" : "false", s.windowIndex, s.windowSeconds, s.frames,
+             s.quantizationOff, s.windowIndex, s.windowSeconds, s.frames,
              s.skipped, s.sumMeanMs, s.sumMaxMs, s.spanMeanMs, s.spanMaxMs);
     out += buf;
     JsonEscape(out, s.unavailableReason);

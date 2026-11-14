@@ -1,5 +1,9 @@
 #include "gfx/GpuDevice.h"
 #include "gfx/GpuTimers.h"
+#if __has_include(<dawn/native/DawnNative.h>)
+#include <dawn/native/DawnNative.h>  // GetTogglesUsed: confirm the timers' toggle
+#define MILO_HAVE_DAWN_NATIVE_TOGGLES 1
+#endif
 
 #include <GLFW/glfw3.h>
 #if defined(__linux__)
@@ -373,9 +377,10 @@ bool GpuDevice::InitDevice() {
         deviceDesc.nextInChain = &toggles;
         printf("GpuDevice: backend object labels ON (MILO_GPU_LABELS / a Vulkan layer is set)\n");
     }
-    // Dawn quantizes timestamps by default (timestamp_quantization, a
-    // fingerprinting guard) to ~65-100 us, which hides every short pass. The
-    // timers are a local profiling aid, so it is off whenever they are on.
+    // Dawn enables timestamp_quantization by default (a fingerprinting guard
+    // that coarsens timestamps in its tick-to-ns resolve, ~100 us), which can
+    // hide every short pass. The timers are a local profiling aid, so it is off
+    // whenever they are on (read back below).
     static const char* kDisabledToggles[] = {"timestamp_quantization"};
     if (timersFeature) {
         toggles.disabledToggleCount = 1;
@@ -429,7 +434,22 @@ bool GpuDevice::InitDevice() {
 
     mDevice = std::move(device);
     mQueue = mDevice.GetQueue();
-    if (timersWanted) GpuTimers::Get().Init(mDevice, mInstance, timersFeature, timersWhyNot, timersFeature);
+    if (timersWanted) {
+        // Whether timestamps are unquantized, as the DEVICE reports its toggles
+        // (Dawn enables timestamp_quantization by default natively, measured on
+        // the deps' Dawn: it is in GetTogglesUsed unless disabled above).
+        // 1 = off (confirmed), 0 = still on, -1 = cannot ask (no dawn/native).
+        int quantOff = -1;
+#ifdef MILO_HAVE_DAWN_NATIVE_TOGGLES
+        if (timersFeature) {
+            quantOff = 1;
+            for (const char* t : dawn::native::GetTogglesUsed(mDevice.Get()))
+                if (t && strcmp(t, "timestamp_quantization") == 0) quantOff = 0;
+        }
+#endif
+        GpuTimers::Get().Init(mDevice, mInstance, timersFeature, timersWhyNot,
+                              timersFeature ? quantOff : 0);
+    }
     return true;
 }
 

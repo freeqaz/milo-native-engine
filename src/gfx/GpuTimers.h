@@ -40,8 +40,11 @@ public:
     // GpuDevice, after device creation. `featureEnabled`: the device was
     // created with FeatureName::TimestampQuery. When false, `whyNot` is logged
     // as "GPU timers unavailable: <whyNot>" (only if Requested()).
+    // `quantizationOff`: 1 the device confirms timestamp_quantization is off,
+    // 0 it is on (passes under ~0.1 ms read 0 on adapters where Dawn applies
+    // it), -1 unknown (the toggle was disabled but cannot be read back).
     void Init(const wgpu::Device& device, const wgpu::Instance& instance, bool featureEnabled,
-              const char* whyNot, bool quantizationDisabled);
+              const char* whyNot, int quantizationOff);
     // Requested but cannot run (no device path reached Init, the web build).
     void NoteUnavailable(const char* why);
     void Shutdown();
@@ -67,7 +70,7 @@ public:
     struct Snapshot {
         bool active = false;
         std::string unavailableReason;  // non-empty when requested but off
-        bool quantizationDisabled = false;
+        int quantizationOff = -1;  // as Init's argument
         int frames = 0;        // timed frames in the window
         int skipped = 0;       // frames not timed (every readback buffer in flight / overflow)
         double windowSeconds = 0.0;
