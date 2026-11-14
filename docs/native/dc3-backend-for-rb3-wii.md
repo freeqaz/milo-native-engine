@@ -7696,3 +7696,172 @@ That is an owner call, not a lane fix.
 - On rb3 master `7aacd125f` the census fails for the round-8 engine as
   well (a stale ledger), so that is base drift, not this change; the rb3
   clone at `3e36eb5d2` passes.
+
+### 37.9 Round 9b: the census's three post-chain residuals (MEASURED)
+
+The pinned-camshot census (`archive/np-gfx-2026-11-14/xenia/round3/RANKED.md`)
+left three residuals that survive its spotlight (iso) and Multiply (mul)
+isolations and match in raw:
+- **A**, dclive peak: the characters are darker with post on;
+- **B**, streetside peak: `neon_upper` and the sky are darker;
+- **C**, dclive normal: colour difference 8–15 with post on.
+
+Evidence is in `archive/np-gfx-2026-11-14/lanes/post/round9/`:
+- `measure/cmp_base_max.txt` and `measure/cmp_base_fmax.txt`;
+- `measure/term_dE_summary.txt`, `measure/termtab_*.txt` and `measure/xpp_*.txt`;
+- the tools `ncell.sh`, `xpp.sh`, `nterm.sh`, `xterm.sh`, `cells9.py`,
+  `cellsT.py`, `cellsum.py`, `cmpbm.py` and `termtab.py`;
+- the DTA probes `dta/term_*.txt`.
+
+The method is the census's own: `gt3.py measure`, registered pairs, the
+census's timeline and boxes.
+
+**Instrument control.** The base build (`dc3-native-r9c-base`, xxh3
+`e0f1b70b4ab1f3dc`, engine `c6e3d72` / dc3 `e4a93fba5`) reproduces the
+census int21 row on dclive peak far01:
+- dancer box 41.7/46.4 (census 41.0/46.3);
+- skin 70.0/100.1 (census 69.8/99.8);
+- raw 28.5/29.2.
+
+**The procs are the same on both sides.** The full selected-postproc probe
+(`dta/probe_pp_full.txt`, 46 fields) ran at 15, 30, 40 and 50 s. All three
+cells select `world.pp` on both sides, with 0 differing fields:
+
+| cell | bloom_color | intensity | streak | attenuation | angle | saturation | contrast |
+|---|---|---|---|---|---|---|---|
+| dclive peak | 16727727 (R175 G61 B255) | 1.20 | 1 | 0.93 | −45 | 10 | 5 |
+| streetside peak | 232 (R232) | 1.40 | 1 | 0.92 | −55 | 10 | 5 |
+| dclive normal | 15324587 (R171 G212 B233) | 1.00 | 1 | 0.90 | −55 | 8 | 5 |
+
+All three cells share these: threshold 8, no glare, motion blur, hue
+converge or vignette. **All three use the streak arm.**
+
+#### Factorless-MAX cross-check
+
+`dc3-native-r9c-max` is the base with `kAlphaBlendMax = true`, which is
+Xenia's destination-alpha rule (xxh3 `7c4ad6d5063a615d`). Values are median
+N−X % and dE76:
+
+| cell, box | base | factorless MAX | factored MAX (see below) |
+|---|---|---|---|
+| A far01 scene | −12.7% / 12.0 | **−3.1% / 2.7** | −12.7% / 12.3 |
+| A far01 dancer box (X 46.4) | 41.7 | **45.5** | 41.5 |
+| A far01 skin (X 100.1) | 70.0 | 87.7 | 69.6 |
+| A near01 scene | −12.8% / 11.0 | **−1.1% / 2.1** | |
+| B far01 neon_upper | −14.6% / 17.3 | **−3.8% / 2.7** | −15.0% / 16.2 |
+| B far01 sky | −12.3% / 12.8 | **−2.4% / 1.3** | −10.1% / 12.0 |
+| B near01 sky | −18.6% / 17.6 | **−2.9% / 4.7** | |
+| C far01 sign | +11.9% / 12.5 | +10.0% / 11.3 | |
+| C far01 shelves_r | −9.5% / 19.1 | −10.7% / 16.6 | |
+| C far01 scene | +2.1% / 6.6 | +1.2% / 5.4 | |
+
+Reading the table:
+- Factorless MAX reproduces Xenia on A and B to within about the census
+  noise floor (3.4% / dE 2.2).
+- What is left on A is `sky_l` near01 at −14.7% and the skin rule, which
+  RANKED.md already treats as an upper bound.
+- C does not move.
+
+**Which draws.** A third build, `dc3-native-r9c-fmax` (xxh3
+`28ac4cdd589dde97`, scratch only), gives each blend its *factored* MAX,
+`max(src.a·f_src, dst.a·f_dst)`:
+- **Exact** for factors (1,1): Add, Subtract, Lighten and Darken. These
+  become plain MAX.
+- **Exact** for Dest (0,1) and Multiply (dst,0). Both reduce to the
+  equation.
+- **An upper bound** for SrcAlpha, SrcAlphaAdd and PreMultAlpha. These keep
+  the equation, which is greater than or equal to their factored MAX.
+
+fmax reads as base on both A and B. So the whole A/B difference comes from
+SrcAlpha-family draws under Xenia's factorless MAX. That is not the
+Multiply family the census's mul run removed, which is why A and B survived
+that isolation.
+
+**Which rule the hardware runs (INFERRED).** Retail footage refutes
+factorless MAX twice: the song-select debloom cards in §31.5, and the rink
+floor contrast in §35.4. With the factors applied, Multiply's MAX
+*equals* its equation, `max(0, dst.a·src.a)`. That would explain §31.5's
+"mechanism UNKNOWN" without contradicting either piece of footage, and
+ATI-lineage hardware does have factor-weighted MIN/MAX
+(`GL_AMD_blend_minmax_factor`). Under any rule that applies the factors,
+the SrcAlpha family gives at most the equation, so native cannot be too
+dark because of these draws.
+
+**A and B therefore dissolve as Xenia's factorless MAX**, like the carpet
+(§37.1) and the rink (§35). Nothing was changed.
+
+#### Term split: which post term (MEASURED)
+
+Both sides ran a new timeline, `nterm.sh` / `xterm.sh`, with far01 pinned
+throughout. The DTA sets are read back on both sides.
+
+| window | s | state |
+|---|---|---|
+| full | 14–21.5 | as loaded |
+| nobloom | 22.5–29.5 | `bloom_intensity 0` |
+| plain | 30.5–37.5 | intensity back, `bloom_streak 0`, which is the plain three-set arm |
+| full2 | 38.5–45.5 | streak back |
+| raw | 46.5–54 | `toggle_all_postprocs` |
+
+Scene box, dE76 N−X:
+
+| cell | build | full | nobloom | plain | full2 | raw |
+|---|---|---|---|---|---|---|
+| A dclive peak | base | 16.0 | **12.9** | 12.8 | 7.3 | 1.3 |
+| A dclive peak | factorless MAX | 3.7 | **2.3** | 4.5 | 5.1 | 3.3 |
+| B streetside peak | base | 7.9 | **8.1** | 4.5 | 6.5 | 0.8 |
+| B streetside peak | factorless MAX | 4.3 | 5.1 | 1.1 | 0.9 | 0.6 |
+| C dclive normal | base | **6.2** | 3.4 | **1.2** | **10.6** | 2.4 |
+| C dclive normal | factorless MAX | **6.5** | 1.9 | **0.8** | **10.7** | 2.5 |
+
+**A and B are not the bloom chain.** With bloom off on both sides the gap
+stays as large, and factorless MAX closes it there too. So the frame alpha
+reaches the colour by some path other than `bloom.ps`.
+- No native post pass reads frame alpha into RGB except bloom. Checked: the
+  DC3 composite (chroma, velocity, spot beams, noise, matrix, vignette),
+  `DofPass` and `SpotBeamPass`.
+- No pipeline uses a destination-alpha factor.
+- The path is therefore inside the scene. INFERRED candidates are a draw
+  that samples a copy or render target carrying the mask in its alpha, and
+  then blends by that alpha.
+- Not identified. It does not change the verdict: the rule decides the
+  numbers, and the rule is Xenia's.
+
+**C is the streak arm, and it is not alpha.**
+- The two arms disagree on C: the plain arm reads 1.2 / 0.8, the streak arm
+  6.2 and 10.6.
+- Both alpha rules give the same numbers.
+- The sign of the colour error flips between the two streak windows:
+  - full: da +2.3, db +5.6;
+  - full2: da −7.5, db −7.5.
+
+  So the error follows the scene's light colour at the time, not a fixed
+  tint. It is the size or extent of the streak term, not a grade term and
+  not the bloom colour.
+
+Audited equal to retail, with nothing found:
+- `SetBloomBlurWeightsStreak`: the weights, the offsets and the rotation,
+  including the y/x ratio;
+- `BloomTextures<3>`: each set a quarter of the last, off
+  `PreProcessTexture`;
+- the 8-bit targets;
+- the 3+3 pass order and its ping-pong (retail's `mBloomTexture[1] ==
+  [0]` is still a ping-pong through the EDRAM resolve);
+- set1's 4-tap `bloom.ps` straight from the scene;
+- the composite slots (tf7 set0, tf11 set1, tf15 black).
+
+One difference is open: retail's +0.5-texel centre tap, which native
+centres (as the plain arm does). Over three streak passes that could
+amount to 1.5 set texels, about 24 px at set1's 1/16 scale. That is a
+candidate, not a finding.
+
+The next measurement is a frozen frame on both sides, with the streak
+toggled and each set shown alone. Not changed.
+
+**Census sheet 03's "Xenia cream, native lavender"** is the far01 window
+average of this streak term.
+
+#### Consumers, passes, cost
+
+- No engine or dc3 code changed in round 9b.
+- The experiment builds edited only scratch trees and were not committed.
