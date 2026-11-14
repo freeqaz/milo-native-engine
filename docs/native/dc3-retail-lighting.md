@@ -231,9 +231,9 @@ The shader's `dc3ProjLight` returns the identity unless
 
 | consumer | check | result |
 |---|---|---|
-| rb3-xenon | `rb3-render` over `xbox-zip`, base engine 99ee167 vs this branch, same worktree | 11 of 11 PNGs byte-identical, at e24e553 and again at 82a6b89 |
+| rb3-xenon | `rb3-render` over `xbox-zip`, base engine 99ee167 vs this branch, same worktree | 11 of 11 PNGs byte-identical, at e24e553, at 82a6b89 and again at 5514b3f |
 | rb3 (Wii, dc3 GPU backend, i.e. `WgpuRnd` with the RB3Wii shape) | `rb3-native` with `RB3_FIXED_CLOCK=1` and `setarch -R`, screenshots at frames 100/600/900, base vs this branch | not byte-identical **between two base runs** (mean abs diff 4.9-5.5 per pixel). The lane's difference is the same size (4.9-5.6), so it sits inside run-to-run noise. The title scene renders lit. |
-| rb3 | `ctest` in a worktree build against this branch | 158 registered, 151 passed, 0 failed, 7 skipped |
+| rb3 | `ctest` in a worktree build against this branch (rerun at 5514b3f) | 158 registered, 151 passed, 0 failed, 7 skipped |
 | rb3 | `drawlog-golden.py --fixed-clock --canonical-order` | fails with "dump frame=61 != expected 60" on the **base** binary as well, so it predates this lane and says nothing about it |
 | getenv census | `native_compat_census.py --engine-root <this branch> check` | OK, 442 flags. This lane adds no getenv. |
 | dc3 | `native/tests/test_retail_lighting.cpp`, 9 tests | pass. Each sabotage listed in the dc3 commits fails it. |
