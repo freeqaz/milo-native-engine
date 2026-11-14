@@ -202,12 +202,17 @@ inline void VertBoneWeights(const RndMesh::Vert &v, float out[4]) {
 inline int PartTilesAcross(RndParticleSys *s) { return s->NumTilesAcross(); }
 inline int PartTilesDown(RndParticleSys *s) { return s->NumTilesDown(); }
 inline int PartTileIndex(const RndParticle *p) { return p->mCurrentTileIndex; }
-// DC3 particle positions are already in world space, and DC3 draws particle
-// colour as authored.
+// DC3 particle positions are already in world space.
 inline Vector3 PartWorldPos(RndParticleSys *, RndParticle *p) {
     return Vector3(p->pos.x, p->pos.y, p->pos.z);
 }
+// No Wii-TEV tint model here: this shape scales particle colour the way its
+// retail Xbox particle shader does (Part_Wgpu.cpp, ParticleShaderColor).
 constexpr bool kPartMaterialTint = false;
+// The inputs ParticleShaderColor reads: use_environ gates the environ ambient
+// (NgMat::SetupAmbient), intensify doubles the texel (particles PS c5.y).
+inline bool MatUseEnviron(RndMat *m) { return m->UseEnviron(); }
+inline bool MatIntensify(RndMat *m) { return m->GetIntensify(); }
 
 // ---- cube texture ----------------------------------------------------------
 inline RndBitmap *CubeFaceBitmap(RndCubeTex *c, int face) {
