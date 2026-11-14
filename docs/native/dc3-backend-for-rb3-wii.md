@@ -6446,3 +6446,137 @@ Logs: `round3/consumers/`.
    are both selected by the performance state. The post-proc is a copy
    chosen by `HamDirector`, not a keyed track of the master anim, so
    chasing anim frames will not find the missing blue.
+
+## 34. DC3 post chain, round 4: against Xenia, and the chain's bind groups (lane np-gfx-post, 2026-11-14)
+
+Ground truth: the original `debug.xex` running under the Xenia fork. The
+evidence is in dc3-decomp `archive/np-gfx-2026-11-14/xenia/INDEX.md` (the
+Xenia lane) and `lanes/post/round4/` (this lane). Xenia frames are pre-ramp,
+so native is captured with `DC3_DISPLAY_GAMMA=off`.
+
+### 34.1 DCI peak was 30% too dark: the noise overlay never ran (MEASURED, FIXED)
+
+**State decomposition.** One run on each side, DCI, omg, `awesome`. Every
+~1.2 s (native) / 1 s (Xenia) the run sets the venue's
+`dci_performance_awesome.pp`, which `HamDirector` copies into `world.pp` each
+frame, to one of five states. It screenshots each state 3 frames later. The
+table gives the scene-box mean luma over 13–62 s. Tools: `nstates.sh`,
+`xgt_driver_r4.py --eval`, `xstates_label.py`, `*_stats.py`.
+
+| state (bloom I, noise I, sat, contrast) | Xenia (x3) | native before | native after |
+|---|---|---|---|
+| full (1.1, 1, 10, 5) | **50.5** (hi>200 3.19%) | **35.4** (0.77%) | **50.6** (3.62%) |
+| noise off (1.1, 0, 10, 5) | 36.6 | 37.4 | 36.5 |
+| bloom off (0, 1, 10, 5) | 31.3 | 24.1 | 34.2 |
+| bloom + noise off (0, 0, 10, 5) | 25.1 | 23.3 | 25.2 |
+| raw (0, 0, 0, 0) | 29.7 | 28.9 | 27.0 |
+
+Reading the rows:
+- The pre-post scene, the colour matrix and the bloom term all already
+  matched. Bloom alone adds +11.5 (Xenia) vs +11.2 (native), with noise off.
+- The whole gap was the noise overlay. On Xenia it lifts the frame +38%
+  (36.6 → 50.5). On native it changed nothing.
+- **So nothing here is the light lane's.** The stripe panels, the glass
+  elevator and the floor glow are emitted at the right level pre-post.
+
+**Cause.**
+- `GetGpuTexView` answers only for a texture something has uploaded.
+  Materials upload theirs as they bind them (`MaterialSetup`'s `ResolveMap`
+  presyncs).
+- `noise_mono.tex` is bound by no material, so in game
+  `PostProcPass::NoiseConstants` always got a null view, and `CheckNoise`'s
+  "no map, no noise" rule turned the overlay off.
+- The DTA state was right on both sides (live probe: `noise_map
+  noise_mono.tex`, intensity 1, stationary 1, midtone 0;
+  `round4/xenia/x4.out`, `native/probe_noise/`).
+- dc3's `PostProcNoiseTest` presynced the texture itself, so it passed
+  throughout.
+
+**Fix** (`ecd579f`): `NoiseConstants` presyncs a non-render-target map before
+asking for its view. Once the texture is resident this is a map lookup plus
+an 8-sample fingerprint.
+
+**Verified**, same camshot (movement01, 55 s). Same-camera series over the
+Xenia frames correlated > 0.45 with the native frame (`series_r4.py`):
+
+| region | Xenia min..max (mean), n=20 | native before | native after |
+|---|---|---|---|
+| scene | 38.2..61.1 (45.3) | 29.2 OUTSIDE | 41.9 |
+| stripe | 56.6..123.6 (72.7) | 44.6 OUTSIDE | 60.1 |
+| stripe_cyan | 68.7..163.6 (88.3) | 71.4 OUTSIDE (vs 102.0..136.3) | 69.2 |
+| pod (glass elevator) | 46.0..90.0 (57.8) | 19.0 OUTSIDE | 48.8 |
+| floor_glow | 7.4..13.5 (10.3) | 8.9 OUTSIDE | 7.8 |
+| crowd / torso | 28.0..52.9 / 45.1..120.9 | 25.6 / 76.4 | 33.9 / 98.4 |
+
+Whole state: native's 25 awesome frames read mean 50.6 (p5–p95 39.0–64.8);
+Xenia's 112 frames read mean 49.0 (39.7–62.0). Before the fix, native read
+34.8 (27.9–44.5).
+
+Hardware footage of the stripes is whiter still: luma 176 against Xenia's
+101 post-ramp (`numbers_trust.json`). Native now sits inside Xenia's range,
+so if retail is brighter, the remaining difference is Xenia's too.
+
+**Guard.** `PostProcNoiseTest.ThePostChainUploadsANoiseMapNothingElseBinds`
+(dc3). The noise map is a fresh `Copy` of `noise_mono.tex` that has never
+been resident; the pass must upload it and apply it (dark 0.239 → 0.341).
+Sabotage: removing the presync gives 0.239 → 0.239, and the test fails.
+
+### 34.2 Is Xenia's bloom stronger? (item 3, MEASURED)
+
+The Xenia lane saw the song-select card burn white under Xenia where retail
+menus do not. Gameplay bloom shows no sign of the same:
+- With noise off, the bloom term is +11.5 luma on Xenia and +11.2 on native
+  (34.1).
+- With noise on, it is +19.2 vs +16.4.
+- In the DCI normal state, hi>200 and p99 sit inside Xenia's distribution
+  (INDEX.md).
+
+The menu burn is consistent with §31.5. Under MAX destination alpha the
+Multiply "debloom" quads raise the mask to 1, and retail hardware refutes
+that. If Xenia's EDRAM alpha blend resolves to MAX, it would burn the card
+exactly as native did before §31.5. This is INFERRED, not tested in Xenia's
+source. So treat Xenia as a lower bound for peak brightness, as INDEX.md
+says, but a sound reference for the gameplay bloom term.
+
+### 34.3 The post chain's bind groups (dc3 PLAN H-66, DONE)
+
+The chain created a bind group for every pass of every frame. Every one now
+comes from `WgpuRnd::mPostBindGroupCache`, a second `gfx/BindGroupCache.h`
+instance that `EndDrawing` ages with the mesh cache:
+- `RB3RetailPost` (both shapes: bloom and streak sets, composite, glare,
+  velocity);
+- `BloomPass`, `DofPass`, the generic `PostProcPass` composite;
+- `DisplayRamp`.
+
+How it works:
+- **The uniform slot is a dynamic offset.** The chain's uniform buffer is a
+  ring of 256-byte slots, and the slot used to be the binding's static
+  offset, so every frame produced a new key. The binding layouts now set
+  `hasDynamicOffset`; `SetBindGroup` passes the slot, and the key no longer
+  contains it.
+- **The ping-pong is two cached groups.** Motion blur reads black on its
+  first frame, then each half of the feedback pair. Frame 3 onward creates
+  nothing.
+- **Recreated targets are forgotten.** Each recreated target is `Forget()`-ed
+  first: the bloom sets, DoF quarter/out, the feedback pair, the velocity
+  target, the ramp scratch, the uniform buffer on a pipeline rebuild, and
+  WgpuRnd's intermediate, depth-sample view and post-out. So a resize does not
+  pin the old size for 120 frames.
+- A pass used without WgpuRnd (unit tests, and rb3 where it does not attach a
+  cache) still creates its groups directly.
+- `[GPUCOUNT]` gains `postBgLive / postBgCreated / postBgHits /
+  postBgEvicted / postBgUncached`.
+
+**MEASURED** (DCI omg, choreo, `MILO_GPU_COUNTERS=60`, `round4/native/states2`
+and `gpucount_before`):
+- after: `postBgCreated` is 29 for the whole song (start-up and state
+  changes), and **0 between frame 2580 and 6000**, at 9 hits a frame;
+- before, measured with a temporary build that clears the cache every frame, so every bind is a creation as in the old code (`round4/native/gpucount_before`, DCI peak, choreo): **10–12 creations a frame**, 8–10 distinct groups plus 2 binds that repeat a group within the frame.
+
+**Guards** (dc3 `test_dc3_retail_post.cpp`):
+
+| test | what it checks | sabotage and result |
+|---|---|---|
+| `SteadyFrameCreatesNoBindGroup` | DC3 peak / glare / plain / RB3 chain plus `BloomPass` and `DisplayRamp`: frame 3 onward creates nothing | the uniform slot as a static offset again: 7 creations a frame |
+| `ResizeDropsTheOldTargetsGroups` | after a resize the cache holds no more groups than a fresh chain | `Forget` a no-op: 14 groups vs 10 |
+| `DC3RetailPostSource.EveryPostChainBindGroupGoesThroughTheCache` | every `CreateBindGroup` in the post sources is the cache-less fallback; the runtime tests only see what goes through the cache | one `Group()` in `RB3RetailPostDC3.cpp` replaced by a direct create: fails |
