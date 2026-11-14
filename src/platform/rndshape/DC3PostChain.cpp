@@ -108,7 +108,8 @@ int RetailPostMode() {
             const char *e = getenv("DC3_RETAIL_POST");
             s = !e ? 1 : (e[0] == '0') ? 0 : (strcmp(e, "raw") == 0) ? 2
                 : (strcmp(e, "mask") == 0) ? 3 : (strcmp(e, "bloom") == 0) ? 4
-                : (strcmp(e, "grade") == 0) ? 5 : (strcmp(e, "velocity") == 0) ? 6 : 1;
+                : (strcmp(e, "grade") == 0) ? 5 : (strcmp(e, "velocity") == 0) ? 6
+                : (strcmp(e, "veldiff") == 0) ? 7 : 1;
             MILO_LOG("DC3 post: retail chain mode %d (DC3_RETAIL_POST=%s)\n", s, e ? e : "unset");
         }
         return s;
@@ -217,7 +218,6 @@ void FillDC3(const P *pp, float flickerMul, RetailPostParams &out) {
         out.noiseMidtone = pp->GetNoiseMidtone() ? 1.0f : 0.0f;
         // CheckMotionBlur: DoMotionBlur() = blend > 0 && weight.Pack() > 0 &&
         // !TheHiResScreen.IsActive(); c105 = (weight.rgb * blend, weight.a).
-        // (DoVelocity's camera velocity buffer, bit 42, is not ported.)
         out.motionBlur = pp->DoMotionBlur();
         if (out.motionBlur) {
             const Hmx::Color &mw = pp->GetMotionBlurWeight();

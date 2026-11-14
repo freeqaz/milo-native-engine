@@ -341,8 +341,18 @@ fn hue_converge(c: vec3f) -> vec3f {
 }
 
 @fragment fn fs_composite_dc3(in: VOut) -> @location(0) vec4f {
-    // Inspection views: the velocity target (tf10 as stored; (0.5, 0.5, 0)
-    // where none ran), the bloom mask (scene alpha) and the bloom term.
+    // Inspection views: what bit 42 changed in THIS frame (|blurred - scene|
+    // x 8, black where it drew nothing: one frame, so a before/after with no
+    // timing between the two), the velocity target (tf10 as stored; (0.5,
+    // 0.5, 0) where none ran), the bloom mask (scene alpha) and the bloom term.
+    if (cu.bloomColor.w > 4.5) {
+        let plain = textureSampleLevel(srcTex, samp, in.uv, 0.0);
+        if (cu.velocity.y > 0.5) {
+            let d = abs(velocity_blur(in.uv, plain).rgb - plain.rgb) * 8.0;
+            return vec4f(clamp(d, vec3f(0.0), vec3f(1.0)), 1.0);
+        }
+        return vec4f(0.0, 0.0, 0.0, 1.0);
+    }
     if (cu.bloomColor.w > 3.5) {
         if (cu.velocity.y > 0.5) {
             return vec4f(textureSampleLevel(velTex, samp, in.uv, 0.0).rgb, 1.0);
@@ -728,6 +738,7 @@ void RB3RetailPost::RunDC3Composite(wgpu::CommandEncoder& encoder, const wgpu::T
     cu.bloomColor[1] = p.bloomColor[1];
     cu.bloomColor[2] = p.bloomColor[2];
     cu.bloomColor[3] = p.debugView == 1 ? 2.0f : p.debugView == 2 ? 3.0f : p.debugView == 4 ? 4.0f
+                     : p.debugView == 5 ? 5.0f
                      : p.bloom ? 1.0f : 0.0f;
     cu.vignette[0] = p.vignetteColor[0];
     cu.vignette[1] = p.vignetteColor[1];
@@ -783,7 +794,7 @@ void RB3RetailPost::RunDC3Composite(wgpu::CommandEncoder& encoder, const wgpu::T
         std::memcpy(cu.hue, p.hueParams, sizeof(cu.hue));
     }
     // Bit 42: only on a frame whose velocity pass ran (RunDC3Velocity).
-    const bool vel = p.velocity && (p.debugView == 0 || p.debugView == 4) && mVelView && mVelRun == run;
+    const bool vel = p.velocity && (p.debugView == 0 || p.debugView >= 4) && mVelView && mVelRun == run;
     if (vel) {
         cu.velocity[0] = p.velocityScale;
         cu.velocity[1] = 1.0f;
@@ -845,7 +856,7 @@ void RB3RetailPost::RunDC3Composite(wgpu::CommandEncoder& encoder, const wgpu::T
 bool RB3RetailPost::RunDC3Velocity(wgpu::CommandEncoder& encoder, int sceneW, int sceneH,
                                    const RetailPostParams& p, GpuDevice& gpu) {
     if (!p.velocity || !p.velocityDepth || p.velocityDepthSamples < 2) return false;
-    if (p.debugView != 0 && p.debugView != 4) return false;
+    if (p.debugView != 0 && p.debugView < 4) return false;
     // RndVelocityBuffer::AllocateData(w, h): SetBitmap(w / 2, h / 2, ...).
     const int vw = std::max(1, sceneW / 2), vh = std::max(1, sceneH / 2);
     if (!mVelTex || mVelW != vw || mVelH != vh) {

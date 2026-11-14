@@ -56,6 +56,7 @@ struct RetailPostParams {
     int debugView = 0;            // 1: show the bloom mask, 2: show the bloom term,
                                   // 3: show the spotlight beam target,
                                   // 4 (DC3): show the velocity target (tf10)
+                                  // 5 (DC3): show |bit 42's blur - scene| x 8
     // NgSpotlightDrawer's beams (postprocess.ps option bit 51), added after the
     // screen blend and before the colour transform:
     //   c += beam.rgb * (fog.r * spotSmoke + spotBase) * spotScale

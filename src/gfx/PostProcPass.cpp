@@ -413,6 +413,7 @@ void PostProcPass::RunDC3Retail(wgpu::CommandEncoder& encoder, P* pp, int mode,
         if (mode == 3 || mode == 4) rp.debugView = mode - 2;
         if (mode == 5) rp.bloom = false;
         if (mode == 6) rp.debugView = 4;
+        if (mode == 7) rp.debugView = 5;
         // DoVelocity's result for this frame (SetVelocity), retail's bit 42.
         const bool velPending = mVelPending;
         mVelPending = false;
