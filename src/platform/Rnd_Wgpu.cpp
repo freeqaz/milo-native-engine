@@ -403,6 +403,10 @@ void WgpuRnd::InitGpuResources() {
     // Initialize render passes
     mShadowPass.Init(mGpu);
     mPostProcPass.Init(mGpu);
+    // The post chain's bind groups (dc3 PLAN H-66): one cache for the post
+    // chain and the display ramp, aged with the mesh cache each frame.
+    mPostProcPass.SetBindGroupCache(&mPostBindGroupCache);
+    mDisplayRamp.SetBindGroupCache(&mPostBindGroupCache);
 
     // Answer flare point tests with occlusion queries (PointTestHook.h).
     // MILO_NO_POINT_TESTS=1 registers no tester, so the consumer keeps its own
@@ -555,6 +559,7 @@ void WgpuRnd::Terminate() {
         mFrameTimes = nullptr;
     }
     mPostProcPass.Terminate();
+    mPostBindGroupCache.Clear();
     mShadowPass.Terminate();
 
     BoneSetupTerminate();
@@ -588,6 +593,37 @@ void WgpuRnd::Terminate() {
     mFrameView = nullptr;
 
     mGpu.Shutdown();
+}
+
+// np-gfx-post round 3: the post-process the frame is graded by, decided the
+// way PostProcPass::Run decides it (the DC3 shape: Rnd::DoPostProcess's
+// blacklight override, else its override, else the selected post-process;
+// otherwise RndPostProc::Current()). Every site that resolves the frame into
+// the intermediate for the post pass, and every site that runs it, asks this,
+// so an override with nothing selected is graded instead of resolving the
+// world into a target nothing composites.
+static RndPostProc* FramePostProc() {
+    if constexpr (rndshape::kDC3RetailPost) return rndshape::ActivePostProc();
+    return RndPostProc::Current();
+}
+
+static void CamSceneMatrices(RndCam* cam, float* viewProj, float* viewOut);
+
+// np-gfx-post round 3: hands PostProcPass this frame's RndVelocityBuffer::Draw
+// result (NgPostProc::DoVelocity ran in Rnd::DoPostProcess, just before the
+// post pass) with the world camera's view-projection, projected the way the
+// world was drawn. Nothing when the effect is off: no Draw, no call.
+static void FeedVelocity(PostProcPass& pass) {
+    if constexpr (rndshape::kDC3RetailPost) {
+        bool ready = false;
+        float scale = 0.0f;
+        RndCam* cam = nullptr;
+        if (rndshape::TakeVelocityFrame(ready, scale, cam) && cam) {
+            float vp[16];
+            CamSceneMatrices(cam, vp, nullptr);
+            pass.SetVelocity(ready, scale, vp);
+        }
+    }
 }
 
 void WgpuRnd::Clear(unsigned int flags, const Hmx::Color& color) {
@@ -637,7 +673,7 @@ void WgpuRnd::ClearDepthForOverlay() {
 
     int curW = mGpu.WindowWidth();
     int curH = mGpu.WindowHeight();
-    bool hasPostProc = RndPostProc::Current() != nullptr &&
+    bool hasPostProc = FramePostProc() != nullptr &&
                        !(rndshape::kRetailPostChain && mPostProcFlushed);
 
     wgpu::RenderPassColorAttachment colorAtt{};
@@ -738,7 +774,8 @@ void WgpuRnd::FlushPostProcessingForOverlay() {
     // Run post-processing now (reads intermediate, writes to framebuffer).
     // Only run once per frame — subsequent calls just start a new overlay pass
     // without re-running post-proc (which would overwrite previous HUD draws).
-    if (mIntermediateView && RndPostProc::Current() && !mPostProcFlushed) {
+    if (mIntermediateView && FramePostProc() && !mPostProcFlushed) {
+        FeedVelocity(mPostProcPass);
         mPostProcPass.Run(mEncoder, mIntermediateView, mIntermediateTex,
                           mIntermediateWidth, mIntermediateHeight,
                           mDepthSampleView, kMSAASamples, FrameTarget(), mBlackTexView, mGpu);
@@ -768,7 +805,7 @@ void WgpuRnd::FlushWorldPost() {
         // keeps the DC3 composite at EndDrawing, as before.
         if (rndshape::RetailPostMode() == 0) return;
         if (!mInPass || !mFrameView || mActiveTargetTex || !mCurrentPassHasDepth) return;
-        if (!mIntermediateView || !RndPostProc::Current() || mPostProcFlushed) return;
+        if (!mIntermediateView || !FramePostProc() || mPostProcFlushed) return;
 
         EndActivePass();
         const int w = mIntermediateWidth, h = mIntermediateHeight;
@@ -780,6 +817,7 @@ void WgpuRnd::FlushWorldPost() {
             d.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding;
             d.mipLevelCount = 1;
             mPostOutTex = mGpu.Device().CreateTexture(&d);
+            if (mPostOutView) mPostBindGroupCache.Forget(mPostOutView.Get());
             mPostOutView = mPostOutTex.CreateView();
             mPostOutWidth = w;
             mPostOutHeight = h;
@@ -1313,7 +1351,7 @@ void WgpuRnd::BeginFramePass(bool clear) {
     int curH = mGpu.WindowHeight();
     // After FlushWorldPost (RB3) the frame is already graded: the rest of it
     // draws straight to the frame target.
-    bool hasPostProc = RndPostProc::Current() != nullptr &&
+    bool hasPostProc = FramePostProc() != nullptr &&
                        !(rndshape::kRetailPostChain && mPostProcFlushed);
 
     wgpu::RenderPassColorAttachment colorAtt{};
@@ -1328,6 +1366,7 @@ void WgpuRnd::BeginFramePass(bool clear) {
                 iDesc.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding |
                               wgpu::TextureUsage::CopySrc;  // SavePreBuffer
                 iDesc.mipLevelCount = 1;
+                if (mIntermediateView) mPostBindGroupCache.Forget(mIntermediateView.Get());
                 mIntermediateTex = mGpu.Device().CreateTexture(&iDesc);
                 mIntermediateView = mIntermediateTex.CreateView();
                 mIntermediateWidth = curW;
@@ -1350,6 +1389,7 @@ void WgpuRnd::BeginFramePass(bool clear) {
                 iDesc.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding |
                               wgpu::TextureUsage::CopySrc;  // SavePreBuffer
                 iDesc.mipLevelCount = 1;
+                if (mIntermediateView) mPostBindGroupCache.Forget(mIntermediateView.Get());
                 mIntermediateTex = mGpu.Device().CreateTexture(&iDesc);
                 mIntermediateView = mIntermediateTex.CreateView();
                 mIntermediateWidth = curW;
@@ -1651,6 +1691,7 @@ void WgpuRnd::BeginDrawing() {
     mObjectRing.Reset();
     mBoneRing.Reset();
     mBindGroupCache.BeginFrame((uint64_t)mFrameID);
+    mPostBindGroupCache.BeginFrame((uint64_t)mFrameID);
 
 #ifndef __EMSCRIPTEN__
     // The surface follows the window inside GpuDevice::AcquireNextFrame (its
@@ -1823,7 +1864,8 @@ void WgpuRnd::EndDrawing() {
 
         // Post-processing: if active, read from intermediate and draw to frame target
         // Skip if already flushed (e.g., FlushPostProcessingForOverlay was called)
-        if (mIntermediateView && RndPostProc::Current() && !mPostProcFlushed) {
+        if (mIntermediateView && FramePostProc() && !mPostProcFlushed) {
+            FeedVelocity(mPostProcPass);
             mPostProcPass.Run(mEncoder, mIntermediateView, mIntermediateTex,
                               mIntermediateWidth, mIntermediateHeight,
                               mDepthSampleView, kMSAASamples, FrameTarget(), mBlackTexView, mGpu);
@@ -1975,6 +2017,7 @@ void WgpuRnd::CreateDepthTexture(int w, int h) {
         desc.mipLevelCount = 1;
         desc.sampleCount = kMSAASamples;
 
+        if (mDepthSampleView) mPostBindGroupCache.Forget(mDepthSampleView.Get());
         mDepthTex = mGpu.Device().CreateTexture(&desc);
         mDepthView = mDepthTex.CreateView();
         // A binding may select one aspect only; the attachment view keeps both.
@@ -2674,7 +2717,8 @@ void WgpuRnd::LogGpuCounters() {
     fprintf(stderr,
             "[GPUCOUNT] frame=%d bindGroupsLive=%zu bgCreated=%llu bgHits=%llu bgEvicted=%llu "
             "bgUncached=%llu ringBuffers=4 ringBytes=%u ringGrows=%u/%u/%u/%u "
-            "ringQueueWrites=%llu ringQueueBytes=%llu pipelines=%d gpuMeshes=%zu gpuTextures=%zu\n",
+            "ringQueueWrites=%llu ringQueueBytes=%llu pipelines=%d gpuMeshes=%zu gpuTextures=%zu "
+            "postBgLive=%zu postBgCreated=%llu postBgHits=%llu postBgEvicted=%llu postBgUncached=%llu\n",
             (int)mFrameID, mBindGroupCache.Size(),
             (unsigned long long)mBindGroupCache.Creates(),
             (unsigned long long)mBindGroupCache.Hits(),
@@ -2682,7 +2726,11 @@ void WgpuRnd::LogGpuCounters() {
             (unsigned long long)mBindGroupCache.Uncached(), capacity, mSceneRing.Grows(),
             mMaterialRing.Grows(), mObjectRing.Grows(), mBoneRing.Grows(),
             (unsigned long long)writes, (unsigned long long)bytes,
-            mPipelines.CachedPipelineCount(), GpuMeshCount(), GpuTexCount());
+            mPipelines.CachedPipelineCount(), GpuMeshCount(), GpuTexCount(),
+            mPostBindGroupCache.Size(), (unsigned long long)mPostBindGroupCache.Creates(),
+            (unsigned long long)mPostBindGroupCache.Hits(),
+            (unsigned long long)mPostBindGroupCache.Evictions(),
+            (unsigned long long)mPostBindGroupCache.Uncached());
 }
 
 #ifdef HX_IMGUI

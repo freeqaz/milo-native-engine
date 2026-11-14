@@ -243,6 +243,7 @@ void RB3RetailPost::EnsurePipelines(GpuDevice& gpu) {
         e[2].visibility = wgpu::ShaderStage::Fragment;
         e[2].buffer.type = wgpu::BufferBindingType::Uniform;
         e[2].buffer.minBindingSize = sizeof(PassUniforms);
+        e[2].buffer.hasDynamicOffset = true;
         wgpu::BindGroupLayoutDescriptor d{};
         d.entryCount = 3;
         d.entries = e;
@@ -255,6 +256,7 @@ void RB3RetailPost::EnsurePipelines(GpuDevice& gpu) {
         e[2].visibility = wgpu::ShaderStage::Fragment;
         e[2].buffer.type = wgpu::BufferBindingType::Uniform;
         e[2].buffer.minBindingSize = sizeof(CompositeUniforms);
+        e[2].buffer.hasDynamicOffset = true;
         wgpu::BindGroupLayoutDescriptor d{};
         d.entryCount = 8;
         d.entries = e;
@@ -293,6 +295,7 @@ void RB3RetailPost::EnsurePipelines(GpuDevice& gpu) {
     mBlurPipe = make("fs_blur", mPassPL, mBloomFormat);
     mCompositePipe = make("fs_composite", mCompositePL, mFrameFormat);
 
+    if (mBindGroups && mUniforms) mBindGroups->Forget(mUniforms.Get());
     wgpu::BufferDescriptor bd{};
     bd.size = (uint64_t)kSlots * kSlotStride;
     bd.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
@@ -327,6 +330,7 @@ void RB3RetailPost::EnsureTextures(int sceneW, int sceneH, GpuDevice& gpu) {
         h = std::max(1, h >> 2);
         if (mW[s] == w && mH[s] == h && mTex[s][0]) continue;
         for (int k = 0; k < 2; k++) {
+            Forget(mView[s][k]);
             wgpu::TextureDescriptor td{};
             td.label = "RB3RetailBloom";
             td.size = {(uint32_t)w, (uint32_t)h, 1};
@@ -343,7 +347,7 @@ void RB3RetailPost::EnsureTextures(int sceneW, int sceneH, GpuDevice& gpu) {
 void RB3RetailPost::Pass(wgpu::CommandEncoder& encoder, const wgpu::RenderPipeline& pipe,
                          const wgpu::TextureView& dst, const wgpu::TextureView& src,
                          const float* uni, size_t uniBytes, GpuDevice& gpu) {
-    uint64_t off = (uint64_t)(mSlot++ % kSlots) * kSlotStride;
+    const uint32_t off = NextSlot();
     gpu.Queue().WriteBuffer(mUniforms, off, uni, uniBytes);
 
     wgpu::BindGroupEntry e[3] = {};
@@ -353,13 +357,12 @@ void RB3RetailPost::Pass(wgpu::CommandEncoder& encoder, const wgpu::RenderPipeli
     e[1].sampler = mSampler;
     e[2].binding = 2;
     e[2].buffer = mUniforms;
-    e[2].offset = off;
     e[2].size = uniBytes;
     wgpu::BindGroupDescriptor bgd{};
     bgd.layout = mPassBGL;
     bgd.entryCount = 3;
     bgd.entries = e;
-    wgpu::BindGroup bg = gpu.Device().CreateBindGroup(&bgd);
+    wgpu::BindGroup bg = Group(gpu, bgd);
 
     wgpu::RenderPassColorAttachment ca{};
     ca.view = dst;
@@ -372,9 +375,13 @@ void RB3RetailPost::Pass(wgpu::CommandEncoder& encoder, const wgpu::RenderPipeli
     rp.colorAttachments = &ca;
     auto pass = encoder.BeginRenderPass(&rp);
     pass.SetPipeline(pipe);
-    pass.SetBindGroup(0, bg);
+    pass.SetBindGroup(0, bg, 1, &off);
     pass.Draw(3);
     pass.End();
+}
+
+wgpu::BindGroup RB3RetailPost::Group(GpuDevice& gpu, const wgpu::BindGroupDescriptor& d) {
+    return mBindGroups ? mBindGroups->GetOrCreate(gpu.Device(), d) : gpu.Device().CreateBindGroup(&d);
 }
 
 void RB3RetailPost::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& sceneView,
@@ -387,6 +394,7 @@ void RB3RetailPost::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& 
     if (p.dc3) {
         EnsureDC3Pipelines(gpu);
         if (p.bloom) RunDC3Bloom(encoder, bloomSrcView ? bloomSrcView : sceneView, sceneW, sceneH, p, gpu);
+        RunDC3Velocity(encoder, sceneW, sceneH, p, gpu);
         RunDC3Composite(encoder, sceneView, sceneW, sceneH, frameView, p, gpu);
         return;
     }
@@ -438,7 +446,7 @@ void RB3RetailPost::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& 
     cu.spot[1] = p.spotBase;
     cu.spot[2] = p.spotSmoke;
     cu.spot[3] = haveSpot ? 1.0f : 0.0f;
-    uint64_t off = (uint64_t)(mSlot++ % kSlots) * kSlotStride;
+    const uint32_t off = NextSlot();
     gpu.Queue().WriteBuffer(mUniforms, off, &cu, sizeof(cu));
 
     const bool haveBloom = p.bloom && mView[0][0];
@@ -449,7 +457,6 @@ void RB3RetailPost::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& 
     e[1].sampler = mSampler;
     e[2].binding = 6;
     e[2].buffer = mUniforms;
-    e[2].offset = off;
     e[2].size = sizeof(cu);
     for (int s = 0; s < kSets; s++) {
         e[3 + s].binding = 3 + s;
@@ -463,7 +470,7 @@ void RB3RetailPost::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& 
     bgd.layout = mCompositeBGL;
     bgd.entryCount = 8;
     bgd.entries = e;
-    wgpu::BindGroup bg = gpu.Device().CreateBindGroup(&bgd);
+    wgpu::BindGroup bg = Group(gpu, bgd);
 
     wgpu::RenderPassColorAttachment ca{};
     ca.view = frameView;
@@ -476,7 +483,7 @@ void RB3RetailPost::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& 
     rp.colorAttachments = &ca;
     auto pass = encoder.BeginRenderPass(&rp);
     pass.SetPipeline(mCompositePipe);
-    pass.SetBindGroup(0, bg);
+    pass.SetBindGroup(0, bg, 1, &off);
     pass.Draw(3);
     pass.End();
 }
@@ -516,7 +523,7 @@ void RB3RetailPost::Blit(wgpu::RenderPassEncoder& pass, const wgpu::TextureView&
         mBlitDepth = depthFmt;
     }
     PassUniforms pu{};
-    uint64_t off = (uint64_t)(mSlot++ % kSlots) * kSlotStride;
+    const uint32_t off = NextSlot();
     gpu.Queue().WriteBuffer(mUniforms, off, &pu, sizeof(pu));
     wgpu::BindGroupEntry e[3] = {};
     e[0].binding = 0;
@@ -525,23 +532,27 @@ void RB3RetailPost::Blit(wgpu::RenderPassEncoder& pass, const wgpu::TextureView&
     e[1].sampler = mSampler;
     e[2].binding = 2;
     e[2].buffer = mUniforms;
-    e[2].offset = off;
     e[2].size = sizeof(pu);
     wgpu::BindGroupDescriptor bgd{};
     bgd.layout = mPassBGL;
     bgd.entryCount = 3;
     bgd.entries = e;
-    wgpu::BindGroup bg = dev.CreateBindGroup(&bgd);
+    wgpu::BindGroup bg = Group(gpu, bgd);
     pass.SetPipeline(mBlitPipe);
-    pass.SetBindGroup(0, bg);
+    pass.SetBindGroup(0, bg, 1, &off);
     pass.Draw(3);
 }
 
 void RB3RetailPost::Terminate() {
     mBlitPipe = nullptr;
     mBlitSamples = 0;
+    if (mBindGroups && mUniforms) mBindGroups->Forget(mUniforms.Get());
+    Forget(mBlackView);
+    Forget(mVelView);
+    for (int i = 0; i < 2; i++) Forget(mPrevView[i]);
     for (int s = 0; s < kSets; s++) {
         for (int k = 0; k < 2; k++) {
+            Forget(mView[s][k]);
             mTex[s][k] = nullptr;
             mView[s][k] = nullptr;
         }

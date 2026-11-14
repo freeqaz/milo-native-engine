@@ -1,5 +1,6 @@
 #pragma once
 #include <webgpu/webgpu_cpp.h>
+#include "gfx/BindGroupCache.h"
 
 class GpuDevice;
 
@@ -41,6 +42,8 @@ public:
     const wgpu::TextureView& OutputView() const { return mOutView; }
     const wgpu::Texture& OutputTexture() const { return mOutTex; }
     void Terminate();
+    // Bind groups from `cache` (null: four created per run); dc3 PLAN H-66.
+    void SetBindGroupCache(BindGroupCache* cache) { mBindGroups = cache; }
 
 private:
     void EnsurePipelines(wgpu::TextureFormat format, GpuDevice& gpu);
@@ -48,6 +51,10 @@ private:
     void Pass(wgpu::CommandEncoder& encoder, const wgpu::RenderPipeline& pipe,
               const wgpu::BindGroup& bg, const wgpu::TextureView& dst, const char* label);
 
+    wgpu::BindGroup Group(wgpu::Device& dev, const wgpu::BindGroupDescriptor& d) {
+        return mBindGroups ? mBindGroups->GetOrCreate(dev, d) : dev.CreateBindGroup(&d);
+    }
+    BindGroupCache* mBindGroups = nullptr;
     wgpu::TextureFormat mFormat = wgpu::TextureFormat::Undefined;
     wgpu::ShaderModule mShader;
     wgpu::BindGroupLayout mPassBGL;       // src, sampler, offsets

@@ -130,6 +130,7 @@ void BloomPass::EnsurePipelines(GpuDevice& gpu) {
     entries[2].visibility = wgpu::ShaderStage::Fragment;
     entries[2].buffer.type = wgpu::BufferBindingType::Uniform;
     entries[2].buffer.minBindingSize = sizeof(BloomUniforms);
+    entries[2].buffer.hasDynamicOffset = true;   // the uniform slot
 
     wgpu::BindGroupLayoutDescriptor bglDesc{};
     bglDesc.entryCount = 3;
@@ -200,6 +201,10 @@ void BloomPass::EnsureTextures(int sceneW, int sceneH, GpuDevice& gpu) {
         desc.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding;
         desc.mipLevelCount = 1;
 
+        if (mBindGroups) {
+            if (mBloomView[i]) mBindGroups->Forget(mBloomView[i].Get());
+            if (mBloomTempView[i]) mBindGroups->Forget(mBloomTempView[i].Get());
+        }
         mBloomTex[i] = dev.CreateTexture(&desc);
         mBloomView[i] = mBloomTex[i].CreateView();
         mBloomTempTex[i] = dev.CreateTexture(&desc);
@@ -226,7 +231,7 @@ void BloomPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& inte
         uni.texelSizeX = 1.0f / targetW;
         uni.texelSizeY = 1.0f / targetH;
         uni.intensity = intensity;
-        uint64_t uniOffset = (uint64_t)(mUniformSlot++ % kUniformSlots) * kUniformSlotStride;
+        const uint32_t uniOffset = (uint32_t)(mUniformSlot++ % kUniformSlots) * kUniformSlotStride;
         queue.WriteBuffer(mBloomUniformBuffer, uniOffset, &uni, sizeof(uni));
 
         wgpu::BindGroupEntry bgEntries[3] = {};
@@ -236,14 +241,13 @@ void BloomPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& inte
         bgEntries[1].sampler = mDefaultSampler;
         bgEntries[2].binding = 2;
         bgEntries[2].buffer = mBloomUniformBuffer;
-        bgEntries[2].offset = uniOffset;
         bgEntries[2].size = sizeof(BloomUniforms);
 
         wgpu::BindGroupDescriptor bgDesc{};
         bgDesc.layout = mBloomBGL;
         bgDesc.entryCount = 3;
         bgDesc.entries = bgEntries;
-        wgpu::BindGroup bg = dev.CreateBindGroup(&bgDesc);
+        wgpu::BindGroup bg = mBindGroups ? mBindGroups->GetOrCreate(dev, bgDesc) : dev.CreateBindGroup(&bgDesc);
 
         wgpu::RenderPassColorAttachment colorAtt{};
         colorAtt.view = dstView;
@@ -257,7 +261,7 @@ void BloomPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& inte
 
         auto pass = encoder.BeginRenderPass(&rpDesc);
         pass.SetPipeline(pipeline);
-        pass.SetBindGroup(0, bg);
+        pass.SetBindGroup(0, bg, 1, &uniOffset);
         pass.Draw(3);
         pass.End();
     };
@@ -270,7 +274,7 @@ void BloomPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& inte
         uni.texelSizeX = 1.0f / srcW;
         uni.texelSizeY = 1.0f / srcH;
         uni.intensity = blendWeight;
-        uint64_t uniOffset = (uint64_t)(mUniformSlot++ % kUniformSlots) * kUniformSlotStride;
+        const uint32_t uniOffset = (uint32_t)(mUniformSlot++ % kUniformSlots) * kUniformSlotStride;
         queue.WriteBuffer(mBloomUniformBuffer, uniOffset, &uni, sizeof(uni));
 
         wgpu::BindGroupEntry bgEntries[3] = {};
@@ -280,14 +284,13 @@ void BloomPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& inte
         bgEntries[1].sampler = mDefaultSampler;
         bgEntries[2].binding = 2;
         bgEntries[2].buffer = mBloomUniformBuffer;
-        bgEntries[2].offset = uniOffset;
         bgEntries[2].size = sizeof(BloomUniforms);
 
         wgpu::BindGroupDescriptor bgDesc{};
         bgDesc.layout = mBloomBGL;
         bgDesc.entryCount = 3;
         bgDesc.entries = bgEntries;
-        wgpu::BindGroup bg = dev.CreateBindGroup(&bgDesc);
+        wgpu::BindGroup bg = mBindGroups ? mBindGroups->GetOrCreate(dev, bgDesc) : dev.CreateBindGroup(&bgDesc);
 
         wgpu::RenderPassColorAttachment colorAtt{};
         colorAtt.view = dstView;
@@ -300,7 +303,7 @@ void BloomPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& inte
 
         auto pass = encoder.BeginRenderPass(&rpDesc);
         pass.SetPipeline(mBloomUpsamplePipeline);
-        pass.SetBindGroup(0, bg);
+        pass.SetBindGroup(0, bg, 1, &uniOffset);
         pass.Draw(3);
         pass.End();
     };
@@ -322,7 +325,7 @@ void BloomPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& inte
             uni.texelSizeX = 1.0f / mBloomWidth[i];   // source texel size
             uni.texelSizeY = 1.0f / mBloomHeight[i];
             uni.intensity = 0;
-            uint64_t uniOffset = (uint64_t)(mUniformSlot++ % kUniformSlots) * kUniformSlotStride;
+            const uint32_t uniOffset = (uint32_t)(mUniformSlot++ % kUniformSlots) * kUniformSlotStride;
             queue.WriteBuffer(mBloomUniformBuffer, uniOffset, &uni, sizeof(uni));
 
             wgpu::BindGroupEntry bgEntries[3] = {};
@@ -332,14 +335,13 @@ void BloomPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& inte
             bgEntries[1].sampler = mDefaultSampler;
             bgEntries[2].binding = 2;
             bgEntries[2].buffer = mBloomUniformBuffer;
-            bgEntries[2].offset = uniOffset;
             bgEntries[2].size = sizeof(BloomUniforms);
 
             wgpu::BindGroupDescriptor bgDesc{};
             bgDesc.layout = mBloomBGL;
             bgDesc.entryCount = 3;
             bgDesc.entries = bgEntries;
-            wgpu::BindGroup bg = dev.CreateBindGroup(&bgDesc);
+            wgpu::BindGroup bg = mBindGroups ? mBindGroups->GetOrCreate(dev, bgDesc) : dev.CreateBindGroup(&bgDesc);
 
             wgpu::RenderPassColorAttachment colorAtt{};
             colorAtt.view = mBloomView[i + 1];
@@ -353,7 +355,7 @@ void BloomPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& inte
 
             auto pass = encoder.BeginRenderPass(&rpDesc);
             pass.SetPipeline(mBloomDownsamplePipeline);
-            pass.SetBindGroup(0, bg);
+            pass.SetBindGroup(0, bg, 1, &uniOffset);
             pass.Draw(3);
             pass.End();
         }

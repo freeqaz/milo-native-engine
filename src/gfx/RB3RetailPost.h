@@ -32,6 +32,8 @@
 #pragma once
 #include <webgpu/webgpu_cpp.h>
 
+#include "gfx/BindGroupCache.h"
+
 class GpuDevice;
 
 struct RetailPostParams {
@@ -54,7 +56,9 @@ struct RetailPostParams {
     float noiseMidtone = 0.0f;
     float time = 0.0f;
     int debugView = 0;            // 1: show the bloom mask, 2: show the bloom term,
-                                  // 3: show the spotlight beam target
+                                  // 3: show the spotlight beam target,
+                                  // 4 (DC3): show the velocity target (tf10)
+                                  // 5 (DC3): show |bit 42's blur - scene| x 8
     // NgSpotlightDrawer's beams (postprocess.ps option bit 51), added after the
     // screen blend and before the colour transform:
     //   c += beam.rgb * (fog.r * spotSmoke + spotBase) * spotScale
@@ -123,6 +127,27 @@ struct RetailPostParams {
     // hue_focus, blend_amount, brightness_power).
     bool hueConverge = false;
     float hueParams[4] = {0, 0, 0, 1};
+    // NgPostProc::DoVelocity (round 3), postprocess.ps bit 42: when
+    // RndVelocityBuffer::Draw returned true (motion_blur_velocity, not the
+    // hi-res screen, the camera's second consecutive frame since a cut) the
+    // camera velocity pass (velocity_camera.ps) writes tf10, a w/2 x h/2
+    // A8R8G8B8 target, from the world depth (tf9):
+    //   world = this frame's camera, unprojected at the pixel's depth
+    //   v     = clamp(prevUV(world) - uv, +-0.02)    prevUV = last frame's VP
+    //   tf10  = (v * 25 + 0.5, 1.767767 |v|, 0)
+    // and the composite, where tf10.z >= 0.003, replaces the scene (RGBA) by
+    // 10 taps along d = (tf10.xy - 0.5) * c122 at uv - 0.023 d + k 0.0046 d
+    // (k = 0..9), weights 0.00876 0.02700 0.06476 0.12099 0.17603 0.17603
+    // 0.12099 0.06476 0.02700 0.00876, plus the centre tap at 0.19947, all
+    // times 1.00549. c122 = min(2, 41.666668 / (ms since the last Draw + 1)).
+    // `velocityReproj` (row-major, row vectors) takes this frame's NDC
+    // (x, y, depth, 1) to last frame's clip space: inverse(VP) * prevVP.
+    // Off: no pass, no target (the composite binds black and never reads it).
+    bool velocity = false;
+    float velocityScale = 0.0f;       // c122
+    float velocityReproj[16] = {};
+    wgpu::TextureView velocityDepth;  // the world depth, multisampled
+    uint32_t velocityDepthSamples = 0;
     // ---- end np-gfx-post ----
 };
 
@@ -142,6 +167,12 @@ public:
     void Blit(wgpu::RenderPassEncoder& pass, const wgpu::TextureView& src,
               uint32_t samples, wgpu::TextureFormat depthFmt, GpuDevice& gpu);
     void Terminate();
+    // Where the chain's bind groups come from (WgpuRnd's post cache; dc3 PLAN
+    // H-66): every pass's group binds the same views, sampler and uniform
+    // buffer frame after frame -- the uniform slot is a dynamic offset, not
+    // part of the group -- so a steady frame creates none. Null: each pass
+    // creates its group (tests and tools that run the chain alone).
+    void SetBindGroupCache(BindGroupCache* cache) { mBindGroups = cache; }
 
 private:
     static constexpr int kSets = 3;
@@ -160,6 +191,17 @@ private:
     void Pass(wgpu::CommandEncoder& encoder, const wgpu::RenderPipeline& pipe,
               const wgpu::TextureView& dst, const wgpu::TextureView& src,
               const float* uni, size_t uniBytes, GpuDevice& gpu);
+
+    // The bind group for `d` (cached when a cache is attached), and the
+    // dynamic offset of the next uniform slot.
+    wgpu::BindGroup Group(GpuDevice& gpu, const wgpu::BindGroupDescriptor& d);
+    uint32_t NextSlot() { return (uint32_t)(mSlot++ % kSlots) * kSlotStride; }
+    // A view (or buffer) this chain is about to release: the cached groups
+    // binding it go at the cache's next frame.
+    void Forget(const wgpu::TextureView& v) {
+        if (mBindGroups && v) mBindGroups->Forget(v.Get());
+    }
+    BindGroupCache* mBindGroups = nullptr;
 
     wgpu::Texture mTex[kSets][2];
     wgpu::TextureView mView[kSets][2];
@@ -185,6 +227,8 @@ private:
     wgpu::Sampler mSampler;               // linear, clamp
     // One 256-byte slot per pass. Queue::WriteBuffer runs at Submit, ahead of
     // the frame's passes, so passes sharing a slot would all read the last data.
+    // The slot is each pass's dynamic offset (every uniform binding of these
+    // layouts has hasDynamicOffset), so it is not part of any bind group.
     static constexpr int kSlots = 64;
     static constexpr int kSlotStride = 256;
     wgpu::Buffer mUniforms;
@@ -212,6 +256,23 @@ private:
     wgpu::TextureView mPrevView[2];
     int mPrevW = 0, mPrevH = 0, mPrevCur = 0;
     uint64_t mRunIndex = 0, mPrevRun = ~0ull;
+    // NgPostProc::DoVelocity's tf10 (RndVelocityBuffer::mVelocityTex, w/2 x
+    // h/2 A8R8G8B8), allocated on the first velocity frame only.
+    bool RunDC3Velocity(wgpu::CommandEncoder& encoder, int sceneW, int sceneH,
+                        const RetailPostParams& p, GpuDevice& gpu);
+    wgpu::Texture mVelTex;
+    wgpu::TextureView mVelView;
+    int mVelW = 0, mVelH = 0;
+    uint64_t mVelRun = ~0ull;                // the composite run it was drawn for
+    wgpu::BindGroupLayout mDC3VelBGL;        // depth (multisampled), uniform
+    wgpu::PipelineLayout mDC3VelPL;
+    wgpu::RenderPipeline mDC3VelPipe;        // velocity_camera.ps
+public:
+    // Inspection/tests: the last velocity target (null until one ran).
+    const wgpu::Texture& VelocityTexture() const { return mVelTex; }
+    int VelocityPasses() const { return mVelPasses; }
+private:
+    int mVelPasses = 0;
     wgpu::Sampler mNoiseSampler;             // linear, wrap (CheckNoise: filter 1, clamp 0)
     wgpu::TextureFormat mDC3FrameFormat = wgpu::TextureFormat::Undefined;
     bool mDC3Ready = false;

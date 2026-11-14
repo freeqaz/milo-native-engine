@@ -2,10 +2,13 @@
 #include "gfx/GpuDevice.h"
 #include "rndobj/PostProc.h"
 #include "rndobj/ColorXfm.h"
+#include "rndobj/Tex.h"
 #include "platform/rndshape/RndShape.h"
 #include "gfx/RB3RetailPost.h"
 #include "platform/TexGpu.h"
 #include <cstdio>
+#include <cmath>
+#include <utility>
 
 #include <cstring>
 #include <cstdlib>
@@ -320,15 +323,82 @@ float PostProcPass::StepFlicker(RndPostProc* pp, float dt) {
     return 1.0f;
 }
 
+// Row-major, row-vector 4x4 inverse (Gauss-Jordan, partial pivoting).
+static bool Invert4(const double* m, double* out) {
+    double a[4][8];
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 4; j++) {
+            a[i][j] = m[i * 4 + j];
+            a[i][j + 4] = i == j ? 1.0 : 0.0;
+        }
+    }
+    for (int c = 0; c < 4; c++) {
+        int piv = c;
+        for (int r = c + 1; r < 4; r++)
+            if (std::fabs(a[r][c]) > std::fabs(a[piv][c])) piv = r;
+        if (std::fabs(a[piv][c]) < 1e-300) return false;
+        if (piv != c)
+            for (int j = 0; j < 8; j++) std::swap(a[c][j], a[piv][j]);
+        const double inv = 1.0 / a[c][c];
+        for (int j = 0; j < 8; j++) a[c][j] *= inv;
+        for (int r = 0; r < 4; r++) {
+            if (r == c) continue;
+            const double f = a[r][c];
+            if (f == 0.0) continue;
+            for (int j = 0; j < 8; j++) a[r][j] -= f * a[c][j];
+        }
+    }
+    for (int i = 0; i < 4; i++)
+        for (int j = 0; j < 4; j++) out[i * 4 + j] = a[i][j + 4];
+    return true;
+}
+
+void PostProcPass::SetVelocity(bool ready, float scale, const float viewProj[16]) {
+    double cur[16];
+    for (int i = 0; i < 16; i++) cur[i] = viewProj[i];
+    mVelPending = true;
+    mVelReady = false;
+    mVelScale = scale;
+    // A run of ready frames ending is RndVelocityBuffer::ResetFrame (a camera
+    // cut, CamShot::StartAnim): logged, capped, so a capture can be matched
+    // against it.
+    if (!ready && mVelReadyRun > 0 && mVelCutLogs < 64) {
+        mVelCutLogs++;
+        fprintf(stderr, "DC3 post: velocity reset after %d ready frames (camera cut), scale %.3f\n",
+                mVelReadyRun, scale);
+    }
+    mVelReadyRun = ready ? mVelReadyRun + 1 : 0;
+    double inv[16];
+    if (ready && mHavePrevVP && Invert4(cur, inv)) {
+        // NDC (x, y, depth, 1) * inverse(VP) = this frame's world (homogeneous);
+        // * prevVP = last frame's clip position.
+        for (int i = 0; i < 4; i++) {
+            for (int j = 0; j < 4; j++) {
+                double sum = 0.0;
+                for (int k = 0; k < 4; k++) sum += inv[i * 4 + k] * mPrevVP[k * 4 + j];
+                mVelReproj[i * 4 + j] = (float)sum;
+            }
+        }
+        mVelReady = true;
+    }
+    std::memcpy(mPrevVP, cur, sizeof(cur));
+    mHavePrevVP = true;
+}
+
 // np-gfx-post: DC3's retail chain. Modes: rndshape::RetailPostMode (DC3 shape).
 template <class P>
 void PostProcPass::RunDC3Retail(wgpu::CommandEncoder& encoder, P* pp, int mode,
                                 const wgpu::TextureView& sceneView,
                                 const wgpu::TextureView& intermediateView, int w, int h,
+                                const wgpu::TextureView& depthView, uint32_t depthSamples,
                                 wgpu::TextureView& frameView, GpuDevice& gpu) {
     // Dependent on P, so the RB3-Wii shape's instantiation compiles nothing.
     if constexpr (rndshape::kDC3RetailPost && sizeof(P) > 0) {
         StepTime();
+        // {rnd toggle_all_postprocs} (Rnd::mDisablePostProc): Rnd::DoPostProcess
+        // skips DoPost, and DxRnd's FinishPostProcess copies the scene through
+        // the option-free postprocess.ps all the same: the identity (mode 2).
+        if (rndshape::PostProcDisabled()) mode = 2;
         RetailPostParams rp;
         if (mode != 2) {
             rndshape::FillRetailPost(pp, 1.0f, rp);
@@ -343,6 +413,18 @@ void PostProcPass::RunDC3Retail(wgpu::CommandEncoder& encoder, P* pp, int mode,
         }
         if (mode == 3 || mode == 4) rp.debugView = mode - 2;
         if (mode == 5) rp.bloom = false;
+        if (mode == 6) rp.debugView = 4;
+        if (mode == 7) rp.debugView = 5;
+        // DoVelocity's result for this frame (SetVelocity), retail's bit 42.
+        const bool velPending = mVelPending;
+        mVelPending = false;
+        if (velPending && mVelReady && mode != 2) {
+            rp.velocity = true;
+            rp.velocityScale = mVelScale;
+            std::memcpy(rp.velocityReproj, mVelReproj, sizeof(rp.velocityReproj));
+            rp.velocityDepth = depthView;
+            rp.velocityDepthSamples = depthSamples;
+        }
         // Which post-process grades the frame, once per change: the venue's
         // comes through RndPostProc::Select, which logs nothing.
         if (pp != mLoggedPostProc) {
@@ -350,7 +432,7 @@ void PostProcPass::RunDC3Retail(wgpu::CommandEncoder& encoder, P* pp, int mode,
             const char* dir = pp->Dir() ? pp->Dir()->Name() : "";
             fprintf(stderr, "DC3 post: %s (%s) bloom I=%.2f thr=%.2f streak=%d glare=%d c6=(%.2f %.2f %.2f) "
                      "xfm=%d vignette=%.2f chroma=%.2f noise=%d motion_blur=%d(%.3f %.3f %.3f %.3f) "
-                     "hue_converge=%d(%.3f %.3f %.3f %.3f)\n",
+                     "hue_converge=%d(%.3f %.3f %.3f %.3f) velocity=%d\n",
                      pp->Name(), dir, pp->BloomIntensity(), pp->GetBloomThreshold(),
                      (int)pp->GetBloomStreak(), (int)pp->GetBloomGlare(), rp.bloomColor[0],
                      rp.bloomColor[1], rp.bloomColor[2], (int)pp->ColorXfmEnabled(),
@@ -358,7 +440,7 @@ void PostProcPass::RunDC3Retail(wgpu::CommandEncoder& encoder, P* pp, int mode,
                      (int)(bool)rp.noiseMap, (int)rp.motionBlur, rp.motionBlurParams[0],
                      rp.motionBlurParams[1], rp.motionBlurParams[2], rp.motionBlurParams[3],
                      (int)rp.hueConverge, rp.hueParams[0], rp.hueParams[1], rp.hueParams[2],
-                     rp.hueParams[3]);
+                     rp.hueParams[3], (int)pp->GetMotionBlurVelocity());
         }
         mRetail.Run(encoder, sceneView, intermediateView, w, h, frameView, rp, gpu);
     }
@@ -418,7 +500,7 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& i
     if constexpr (rndshape::kDC3RetailPost) {
         if (const int mode = rndshape::RetailPostMode()) {
             RunDC3Retail(encoder, pp, mode, sceneView, intermediateView, intermediateW, intermediateH,
-                         frameView, gpu);
+                         depthView, depthSamples, frameView, gpu);
             return;
         }
     }
@@ -511,7 +593,8 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& i
     bgDesc.layout = mPostProcBGL;
     bgDesc.entryCount = 6;
     bgDesc.entries = bgEntries;
-    wgpu::BindGroup bg = gpu.Device().CreateBindGroup(&bgDesc);
+    wgpu::BindGroup bg = mBindGroups ? mBindGroups->GetOrCreate(gpu.Device(), bgDesc)
+                                     : gpu.Device().CreateBindGroup(&bgDesc);
 
     wgpu::RenderPassColorAttachment colorAtt{};
     colorAtt.view = frameView;
@@ -536,7 +619,17 @@ bool PostProcPass::NoiseConstants(RndPostProc* pp, float seeds[4], float params[
     if (!rndshape::PostProcNoiseMap(pp, noise)) return false;
     // NgPostProc::CheckNoise: no noise unless the intensity is non-zero AND
     // there is a map.
-    map = (noise.intensity != 0.0f && noise.map) ? GetGpuTexView(noise.map) : wgpu::TextureView();
+    // GetGpuTexView answers only for a texture something has uploaded, and
+    // materials upload theirs as they bind them (MaterialSetup's ResolveMap).
+    // noise_mono.tex is bound by nothing but this pass, so without the presync
+    // here it never reached the GPU in game: every "awesome" frame ran with
+    // its noise silently off, -30% luma against the image (np-gfx round 4,
+    // Xenia). Once resident, PresyncBitmap is a lookup and a fingerprint.
+    map = wgpu::TextureView();
+    if (noise.intensity != 0.0f && noise.map) {
+        if (!noise.map->IsRenderTarget()) noise.map->PresyncBitmap();
+        map = GetGpuTexView(noise.map);
+    }
     if (!map) return false;
     midtone = noise.midtone;
     // Stationary noise keeps the seed pair NgPostProc::Select rolled

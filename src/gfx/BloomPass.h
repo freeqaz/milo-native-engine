@@ -1,5 +1,6 @@
 #pragma once
 #include <webgpu/webgpu_cpp.h>
+#include "gfx/BindGroupCache.h"
 #include "obj/Object.h"
 
 class GpuDevice;
@@ -11,6 +12,10 @@ public:
              int sceneW, int sceneH, float intensity, float threshold,
              const Hmx::Color& tint, GpuDevice& gpu);
     void Terminate();
+    // Bind groups from `cache` (null: one created per sub-pass). The uniform
+    // slot is each sub-pass's dynamic offset, so a group is (source, sampler,
+    // buffer) and a steady frame creates none (dc3 PLAN H-66).
+    void SetBindGroupCache(BindGroupCache* cache) { mBindGroups = cache; }
 
     wgpu::TextureView& OutputView() { return mBloomView[0]; }
     bool HasOutput() const { return mBloomView[0] != nullptr; }
@@ -41,6 +46,7 @@ private:
     static constexpr int kUniformSlotStride = 256;
     wgpu::Buffer mBloomUniformBuffer;
     int mUniformSlot = 0;
+    BindGroupCache* mBindGroups = nullptr;
     wgpu::Sampler mDefaultSampler;
     bool mBloomReady = false;
 };

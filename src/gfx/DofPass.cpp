@@ -253,6 +253,11 @@ void DofPass::EnsureTextures(int w, int h, wgpu::TextureFormat format, GpuDevice
     // NgDOFProc's constructor: blur targets are the pre-process texture >> 2.
     const uint32_t qw = (uint32_t)std::max(1, w >> 2);
     const uint32_t qh = (uint32_t)std::max(1, h >> 2);
+    if (mBindGroups) {
+        for (int k = 0; k < 2; k++)
+            if (mQuarterView[k]) mBindGroups->Forget(mQuarterView[k].Get());
+        if (mOutView) mBindGroups->Forget(mOutView.Get());
+    }
     for (int k = 0; k < 2; k++) {
         wgpu::TextureDescriptor td{};
         td.label = k ? "DofBlurB" : "DofBlurA";
@@ -349,7 +354,7 @@ bool DofPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& sceneV
         d.layout = mPassBGL;
         d.entryCount = 3;
         d.entries = e;
-        return dev.CreateBindGroup(&d);
+        return Group(dev, d);
     };
 
     // 1. downsample_4x: scene -> A.  2. blur, horizontal taps: A -> B.
@@ -376,7 +381,7 @@ bool DofPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& sceneV
         d.layout = mCompositeBGL;
         d.entryCount = 5;
         d.entries = e;
-        Pass(encoder, mCompositePipe, dev.CreateBindGroup(&d), mOutView, "DofComposite");
+        Pass(encoder, mCompositePipe, Group(dev, d), mOutView, "DofComposite");
     }
     return true;
 }
