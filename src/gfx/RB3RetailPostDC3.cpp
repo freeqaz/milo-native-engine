@@ -428,6 +428,7 @@ void RB3RetailPost::EnsureDC3Pipelines(GpuDevice& gpu) {
         for (int s = 0; s < kSets; s++) {
             mW[s] = mH[s] = 0;
             for (int k = 0; k < 2; k++) {
+                Forget(mView[s][k]);
                 mTex[s][k] = nullptr;
                 mView[s][k] = nullptr;
             }
@@ -474,6 +475,7 @@ void RB3RetailPost::EnsureDC3Pipelines(GpuDevice& gpu) {
         e.visibility = wgpu::ShaderStage::Fragment;
         e.buffer.type = wgpu::BufferBindingType::Uniform;
         e.buffer.minBindingSize = size;
+        e.buffer.hasDynamicOffset = true;   // the uniform slot (NextSlot)
         return e;
     };
     {
@@ -570,7 +572,7 @@ void RB3RetailPost::EnsureDC3Pipelines(GpuDevice& gpu) {
 void RB3RetailPost::PassDC3(wgpu::CommandEncoder& encoder, const wgpu::RenderPipeline& pipe,
                             const wgpu::TextureView& dst, const wgpu::TextureView& src,
                             const float* uni, size_t uniBytes, GpuDevice& gpu) {
-    uint64_t off = (uint64_t)(mSlot++ % kSlots) * kSlotStride;
+    const uint32_t off = NextSlot();
     gpu.Queue().WriteBuffer(mUniforms, off, uni, uniBytes);
 
     wgpu::BindGroupEntry e[3] = {};
@@ -580,13 +582,12 @@ void RB3RetailPost::PassDC3(wgpu::CommandEncoder& encoder, const wgpu::RenderPip
     e[1].sampler = mSampler;
     e[2].binding = 2;
     e[2].buffer = mUniforms;
-    e[2].offset = off;
     e[2].size = uniBytes;
     wgpu::BindGroupDescriptor bgd{};
     bgd.layout = mDC3PassBGL;
     bgd.entryCount = 3;
     bgd.entries = e;
-    wgpu::BindGroup bg = gpu.Device().CreateBindGroup(&bgd);
+    wgpu::BindGroup bg = Group(gpu, bgd);
 
     wgpu::RenderPassColorAttachment ca{};
     ca.view = dst;
@@ -599,7 +600,7 @@ void RB3RetailPost::PassDC3(wgpu::CommandEncoder& encoder, const wgpu::RenderPip
     rp.colorAttachments = &ca;
     auto pass = encoder.BeginRenderPass(&rp);
     pass.SetPipeline(pipe);
-    pass.SetBindGroup(0, bg);
+    pass.SetBindGroup(0, bg, 1, &off);
     pass.Draw(3);
     pass.End();
 }
@@ -767,6 +768,7 @@ void RB3RetailPost::RunDC3Composite(wgpu::CommandEncoder& encoder, const wgpu::T
     if (mb) {
         if (!mPrevTex[0] || mPrevW != sceneW || mPrevH != sceneH) {
             for (int i = 0; i < 2; i++) {
+                Forget(mPrevView[i]);
                 wgpu::TextureDescriptor td{};
                 td.label = "DC3PostProcessBuffer";
                 td.size = {(uint32_t)sceneW, (uint32_t)sceneH, 1};
@@ -799,7 +801,7 @@ void RB3RetailPost::RunDC3Composite(wgpu::CommandEncoder& encoder, const wgpu::T
         cu.velocity[0] = p.velocityScale;
         cu.velocity[1] = 1.0f;
     }
-    uint64_t off = (uint64_t)(mSlot++ % kSlots) * kSlotStride;
+    const uint32_t off = NextSlot();
     gpu.Queue().WriteBuffer(mUniforms, off, &cu, sizeof(cu));
 
     // The plain arm fills all three sets; the streak arm two (tf15 black).
@@ -812,7 +814,6 @@ void RB3RetailPost::RunDC3Composite(wgpu::CommandEncoder& encoder, const wgpu::T
     e[1].sampler = mSampler;
     e[2].binding = 6;
     e[2].buffer = mUniforms;
-    e[2].offset = off;
     e[2].size = sizeof(cu);
     for (int s = 0; s < kSets; s++) {
         e[3 + s].binding = 3 + s;
@@ -830,7 +831,8 @@ void RB3RetailPost::RunDC3Composite(wgpu::CommandEncoder& encoder, const wgpu::T
     bgd.layout = mDC3CompositeBGL;
     bgd.entryCount = 10;
     bgd.entries = e;
-    wgpu::BindGroup bg = gpu.Device().CreateBindGroup(&bgd);
+    // Motion blur ping-pongs the feedback target, so two groups alternate.
+    wgpu::BindGroup bg = Group(gpu, bgd);
 
     wgpu::RenderPassColorAttachment ca{};
     ca.view = frameView;
@@ -847,7 +849,7 @@ void RB3RetailPost::RunDC3Composite(wgpu::CommandEncoder& encoder, const wgpu::T
     rp.colorAttachments = cas;
     auto pass = encoder.BeginRenderPass(&rp);
     pass.SetPipeline(mb ? mDC3CompositeMBPipe : mDC3CompositePipe);
-    pass.SetBindGroup(0, bg);
+    pass.SetBindGroup(0, bg, 1, &off);
     pass.Draw(3);
     pass.End();
 }
@@ -860,6 +862,7 @@ bool RB3RetailPost::RunDC3Velocity(wgpu::CommandEncoder& encoder, int sceneW, in
     // RndVelocityBuffer::AllocateData(w, h): SetBitmap(w / 2, h / 2, ...).
     const int vw = std::max(1, sceneW / 2), vh = std::max(1, sceneH / 2);
     if (!mVelTex || mVelW != vw || mVelH != vh) {
+        Forget(mVelView);
         wgpu::TextureDescriptor td{};
         td.label = "DC3VelocityBuffer";
         td.size = {(uint32_t)vw, (uint32_t)vh, 1};
@@ -878,20 +881,19 @@ bool RB3RetailPost::RunDC3Velocity(wgpu::CommandEncoder& encoder, int sceneW, in
     vu.size[1] = (float)sceneH;
     vu.size[2] = (float)vw;
     vu.size[3] = (float)vh;
-    uint64_t off = (uint64_t)(mSlot++ % kSlots) * kSlotStride;
+    const uint32_t off = NextSlot();
     gpu.Queue().WriteBuffer(mUniforms, off, &vu, sizeof(vu));
     wgpu::BindGroupEntry e[2] = {};
     e[0].binding = 11;
     e[0].textureView = p.velocityDepth;
     e[1].binding = 12;
     e[1].buffer = mUniforms;
-    e[1].offset = off;
     e[1].size = sizeof(vu);
     wgpu::BindGroupDescriptor bgd{};
     bgd.layout = mDC3VelBGL;
     bgd.entryCount = 2;
     bgd.entries = e;
-    wgpu::BindGroup bg = gpu.Device().CreateBindGroup(&bgd);
+    wgpu::BindGroup bg = Group(gpu, bgd);
 
     wgpu::RenderPassColorAttachment ca{};
     ca.view = mVelView;
@@ -904,7 +906,7 @@ bool RB3RetailPost::RunDC3Velocity(wgpu::CommandEncoder& encoder, int sceneW, in
     rp.colorAttachments = &ca;
     auto pass = encoder.BeginRenderPass(&rp);
     pass.SetPipeline(mDC3VelPipe);
-    pass.SetBindGroup(0, bg);
+    pass.SetBindGroup(0, bg, 1, &off);
     pass.Draw(3);
     pass.End();
     mVelRun = mRunIndex + 1;   // the composite this Run is about to do

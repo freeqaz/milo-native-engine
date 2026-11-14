@@ -193,10 +193,14 @@ public:
     wgpu::BindGroup BoneBindGroup();
 
     BindGroupCache& BindGroups() { return mBindGroupCache; }
+    BindGroupCache& PostBindGroups() { return mPostBindGroupCache; }
     // A texture view is being released (RndTex destroyed, render target
     // recreated): drop the cached bind groups that bind it.
     void ForgetTextureView(const wgpu::TextureView& view) {
-        if (view) mBindGroupCache.Forget(view.Get());
+        if (view) {
+            mBindGroupCache.Forget(view.Get());
+            mPostBindGroupCache.Forget(view.Get());  // e.g. a post-process noise map
+        }
     }
 
     // Ring buffers for per-draw uniforms
@@ -432,6 +436,7 @@ public:
 
     // Bind groups
     BindGroupCache mBindGroupCache;  // mesh-path material/object/bone groups
+    BindGroupCache mPostBindGroupCache;  // the post chain + display ramp (PLAN H-66)
     wgpu::BindGroup mSceneBindGroup;
     wgpu::TextureView mProjLightTexView;  // gobo texture for projected light (or white fallback)
 

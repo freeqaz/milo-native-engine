@@ -403,6 +403,10 @@ void WgpuRnd::InitGpuResources() {
     // Initialize render passes
     mShadowPass.Init(mGpu);
     mPostProcPass.Init(mGpu);
+    // The post chain's bind groups (dc3 PLAN H-66): one cache for the post
+    // chain and the display ramp, aged with the mesh cache each frame.
+    mPostProcPass.SetBindGroupCache(&mPostBindGroupCache);
+    mDisplayRamp.SetBindGroupCache(&mPostBindGroupCache);
 
     // Answer flare point tests with occlusion queries (PointTestHook.h).
     // MILO_NO_POINT_TESTS=1 registers no tester, so the consumer keeps its own
@@ -555,6 +559,7 @@ void WgpuRnd::Terminate() {
         mFrameTimes = nullptr;
     }
     mPostProcPass.Terminate();
+    mPostBindGroupCache.Clear();
     mShadowPass.Terminate();
 
     BoneSetupTerminate();
@@ -812,6 +817,7 @@ void WgpuRnd::FlushWorldPost() {
             d.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding;
             d.mipLevelCount = 1;
             mPostOutTex = mGpu.Device().CreateTexture(&d);
+            if (mPostOutView) mPostBindGroupCache.Forget(mPostOutView.Get());
             mPostOutView = mPostOutTex.CreateView();
             mPostOutWidth = w;
             mPostOutHeight = h;
@@ -1360,6 +1366,7 @@ void WgpuRnd::BeginFramePass(bool clear) {
                 iDesc.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding |
                               wgpu::TextureUsage::CopySrc;  // SavePreBuffer
                 iDesc.mipLevelCount = 1;
+                if (mIntermediateView) mPostBindGroupCache.Forget(mIntermediateView.Get());
                 mIntermediateTex = mGpu.Device().CreateTexture(&iDesc);
                 mIntermediateView = mIntermediateTex.CreateView();
                 mIntermediateWidth = curW;
@@ -1382,6 +1389,7 @@ void WgpuRnd::BeginFramePass(bool clear) {
                 iDesc.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding |
                               wgpu::TextureUsage::CopySrc;  // SavePreBuffer
                 iDesc.mipLevelCount = 1;
+                if (mIntermediateView) mPostBindGroupCache.Forget(mIntermediateView.Get());
                 mIntermediateTex = mGpu.Device().CreateTexture(&iDesc);
                 mIntermediateView = mIntermediateTex.CreateView();
                 mIntermediateWidth = curW;
@@ -1683,6 +1691,7 @@ void WgpuRnd::BeginDrawing() {
     mObjectRing.Reset();
     mBoneRing.Reset();
     mBindGroupCache.BeginFrame((uint64_t)mFrameID);
+    mPostBindGroupCache.BeginFrame((uint64_t)mFrameID);
 
 #ifndef __EMSCRIPTEN__
     // The surface follows the window inside GpuDevice::AcquireNextFrame (its
@@ -2008,6 +2017,7 @@ void WgpuRnd::CreateDepthTexture(int w, int h) {
         desc.mipLevelCount = 1;
         desc.sampleCount = kMSAASamples;
 
+        if (mDepthSampleView) mPostBindGroupCache.Forget(mDepthSampleView.Get());
         mDepthTex = mGpu.Device().CreateTexture(&desc);
         mDepthView = mDepthTex.CreateView();
         // A binding may select one aspect only; the attachment view keeps both.
@@ -2707,7 +2717,8 @@ void WgpuRnd::LogGpuCounters() {
     fprintf(stderr,
             "[GPUCOUNT] frame=%d bindGroupsLive=%zu bgCreated=%llu bgHits=%llu bgEvicted=%llu "
             "bgUncached=%llu ringBuffers=4 ringBytes=%u ringGrows=%u/%u/%u/%u "
-            "ringQueueWrites=%llu ringQueueBytes=%llu pipelines=%d gpuMeshes=%zu gpuTextures=%zu\n",
+            "ringQueueWrites=%llu ringQueueBytes=%llu pipelines=%d gpuMeshes=%zu gpuTextures=%zu "
+            "postBgLive=%zu postBgCreated=%llu postBgHits=%llu postBgEvicted=%llu postBgUncached=%llu\n",
             (int)mFrameID, mBindGroupCache.Size(),
             (unsigned long long)mBindGroupCache.Creates(),
             (unsigned long long)mBindGroupCache.Hits(),
@@ -2715,7 +2726,11 @@ void WgpuRnd::LogGpuCounters() {
             (unsigned long long)mBindGroupCache.Uncached(), capacity, mSceneRing.Grows(),
             mMaterialRing.Grows(), mObjectRing.Grows(), mBoneRing.Grows(),
             (unsigned long long)writes, (unsigned long long)bytes,
-            mPipelines.CachedPipelineCount(), GpuMeshCount(), GpuTexCount());
+            mPipelines.CachedPipelineCount(), GpuMeshCount(), GpuTexCount(),
+            mPostBindGroupCache.Size(), (unsigned long long)mPostBindGroupCache.Creates(),
+            (unsigned long long)mPostBindGroupCache.Hits(),
+            (unsigned long long)mPostBindGroupCache.Evictions(),
+            (unsigned long long)mPostBindGroupCache.Uncached());
 }
 
 #ifdef HX_IMGUI

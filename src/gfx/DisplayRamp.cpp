@@ -96,6 +96,7 @@ bool DisplayRamp::Apply(wgpu::CommandEncoder& encoder, const wgpu::Texture& fram
     }
     if (!mScratch || mW != w || mH != h) {
         wgpu::TextureDescriptor td{};
+        if (mBindGroups && mScratchView) mBindGroups->Forget(mScratchView.Get());
         td.label = "DisplayRampSource";
         td.size = {w, h, 1};
         td.format = fmt;
@@ -120,7 +121,7 @@ bool DisplayRamp::Apply(wgpu::CommandEncoder& encoder, const wgpu::Texture& fram
     bgd.layout = mBGL;
     bgd.entryCount = 1;
     bgd.entries = &be;
-    wgpu::BindGroup bg = dev.CreateBindGroup(&bgd);
+    wgpu::BindGroup bg = mBindGroups ? mBindGroups->GetOrCreate(dev, bgd) : dev.CreateBindGroup(&bgd);
 
     wgpu::RenderPassColorAttachment att{};
     att.view = frameView;

@@ -23,6 +23,16 @@ public:
              const wgpu::TextureView& depthView, uint32_t depthSamples,
              wgpu::TextureView& frameView, wgpu::TextureView& blackTexView, GpuDevice& gpu);
     void Terminate();
+    // The post chain's bind groups (this pass, bloom, depth of field, the
+    // retail chains) come from `cache` -- WgpuRnd's post cache, aged and swept
+    // once per frame -- so a steady frame creates none (dc3 PLAN H-66). Null
+    // (the default): every pass creates its groups, as before.
+    void SetBindGroupCache(BindGroupCache* cache) {
+        mBindGroups = cache;
+        mBloom.SetBindGroupCache(cache);
+        mDof.SetBindGroupCache(cache);
+        mRetail.SetBindGroupCache(cache);
+    }
     // RB3: copies a graded frame over the current pass (RB3RetailPost::Blit).
     void BlitRetail(wgpu::RenderPassEncoder& pass, const wgpu::TextureView& src,
                     uint32_t samples, wgpu::TextureFormat depthFmt, GpuDevice& gpu) {
@@ -78,6 +88,7 @@ private:
     double mPrevVP[16] = {};
     int mVelReadyRun = 0, mVelCutLogs = 0;
 
+    BindGroupCache* mBindGroups = nullptr;
     wgpu::ShaderModule mPostProcShader;
     wgpu::BindGroupLayout mPostProcBGL;
     wgpu::PipelineLayout mPostProcPipelineLayout;

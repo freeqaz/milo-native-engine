@@ -32,6 +32,8 @@
 #pragma once
 #include <webgpu/webgpu_cpp.h>
 
+#include "gfx/BindGroupCache.h"
+
 class GpuDevice;
 
 struct RetailPostParams {
@@ -165,6 +167,12 @@ public:
     void Blit(wgpu::RenderPassEncoder& pass, const wgpu::TextureView& src,
               uint32_t samples, wgpu::TextureFormat depthFmt, GpuDevice& gpu);
     void Terminate();
+    // Where the chain's bind groups come from (WgpuRnd's post cache; dc3 PLAN
+    // H-66): every pass's group binds the same views, sampler and uniform
+    // buffer frame after frame -- the uniform slot is a dynamic offset, not
+    // part of the group -- so a steady frame creates none. Null: each pass
+    // creates its group (tests and tools that run the chain alone).
+    void SetBindGroupCache(BindGroupCache* cache) { mBindGroups = cache; }
 
 private:
     static constexpr int kSets = 3;
@@ -183,6 +191,17 @@ private:
     void Pass(wgpu::CommandEncoder& encoder, const wgpu::RenderPipeline& pipe,
               const wgpu::TextureView& dst, const wgpu::TextureView& src,
               const float* uni, size_t uniBytes, GpuDevice& gpu);
+
+    // The bind group for `d` (cached when a cache is attached), and the
+    // dynamic offset of the next uniform slot.
+    wgpu::BindGroup Group(GpuDevice& gpu, const wgpu::BindGroupDescriptor& d);
+    uint32_t NextSlot() { return (uint32_t)(mSlot++ % kSlots) * kSlotStride; }
+    // A view (or buffer) this chain is about to release: the cached groups
+    // binding it go at the cache's next frame.
+    void Forget(const wgpu::TextureView& v) {
+        if (mBindGroups && v) mBindGroups->Forget(v.Get());
+    }
+    BindGroupCache* mBindGroups = nullptr;
 
     wgpu::Texture mTex[kSets][2];
     wgpu::TextureView mView[kSets][2];
@@ -208,6 +227,8 @@ private:
     wgpu::Sampler mSampler;               // linear, clamp
     // One 256-byte slot per pass. Queue::WriteBuffer runs at Submit, ahead of
     // the frame's passes, so passes sharing a slot would all read the last data.
+    // The slot is each pass's dynamic offset (every uniform binding of these
+    // layouts has hasDynamicOffset), so it is not part of any bind group.
     static constexpr int kSlots = 64;
     static constexpr int kSlotStride = 256;
     wgpu::Buffer mUniforms;
