@@ -560,6 +560,12 @@ inline bool PostProcNoiseMap(const RndPostProc *, PostProcNoise &) { return fals
 constexpr bool kRetailPostChain = true;
 // DC3's retail chain (RndShape_DC3.h, np-gfx-post) is the DC3 shape's only.
 constexpr bool kDC3RetailPost = false;
+// The DC3 shape's Rnd::DoPostProcess selection (blacklight override, then
+// set_postproc_override, then the registered post-proc). PostProcPass names it
+// under `if constexpr (kDC3RetailPost)`, which outside a template still needs
+// the declaration; that statement is discarded here, so nothing odr-uses it and
+// no definition is needed for this shape.
+RndPostProc *ActivePostProc();
 void FillRetailPost(const RndPostProc *pp, float flickerMul, ::RetailPostParams &out);
 // MILO_RB3_RETAIL_POST: unset or anything else = 1 (retail chain), "0" = 0
 // (PostProcPass's DC3 composite, as before the chain existed), "raw" = 2
