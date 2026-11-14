@@ -13,6 +13,7 @@
 // rndshape::DisplayGamma(); 0 means no ramp and the pass never runs.
 #pragma once
 #include <webgpu/webgpu_cpp.h>
+#include "gfx/BindGroupCache.h"
 
 class GpuDevice;
 
@@ -23,8 +24,11 @@ public:
     // does not.
     bool Apply(wgpu::CommandEncoder& encoder, const wgpu::Texture& frameTex,
                const wgpu::TextureView& frameView, float gamma, GpuDevice& gpu);
+    // Bind group from `cache` (null: one created per frame); dc3 PLAN H-66.
+    void SetBindGroupCache(BindGroupCache* cache) { mBindGroups = cache; }
 
 private:
+    BindGroupCache* mBindGroups = nullptr;
     wgpu::ShaderModule mShader;
     wgpu::BindGroupLayout mBGL;
     wgpu::RenderPipeline mPipe;

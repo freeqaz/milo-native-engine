@@ -11,10 +11,12 @@
 #include "gfx/DisplayRamp.h"
 #include "gfx/DrawRect2D.h"
 #include "gfx/PointTestPass.h"
+#include "gfx/PointTestStandIns.h"
 #include "gfx/SpotBeamPass.h"
 #include "gfx/TexBlendPass.h"
 #include "gfx/UniformStructs.h"
 #include "gfx/UniformRingBuffer.h"
+#include "gfx/BindGroupCache.h"
 #include "platform/rndshape/RndShape.h"
 #include "platform/PointTestHook.h"
 #include "platform/SpotBeamHook.h"
@@ -49,7 +51,16 @@ public:
     void SetVConstant(VShaderConstant, const Hmx::Matrix4&) override {}
     void SetVConstant4x3(VShaderConstant, const Hmx::Matrix4&) override {}
     void SetVConstant(VShaderConstant, RndTex*) override {}
-    void SetVConstant(VShaderConstant, const Vector4&) override {}
+    // Vector4 vertex constants are kept: the DC3 shape's retail light model
+    // reads the box map NgEnviron::UpdateApproxLighting uploads (c80..c85)
+    // at draw time, the register the image's standard.vs reads
+    // (rndshape::FillMeshApproxLighting, RndShape_DC3.h). Storing them
+    // changes no render on its own.
+    void SetVConstant(VShaderConstant reg, const Vector4& v) override {
+        if ((unsigned)reg < kNumVConstants) mVConstants[reg] = v;
+    }
+    const Vector4& VConstant(int reg) const { return mVConstants[reg]; }
+    static constexpr unsigned kNumVConstants = 256;
     void SetVConstant(VShaderConstant, const float*, unsigned int) override {}
     void SetVConstant(VShaderConstant, int) override {}
     void SetVConstant(VShaderConstant, bool) override {}
@@ -63,6 +74,9 @@ public:
 
 protected:
     RndShaderProgram* NewShaderProgram() override { return nullptr; }
+
+private:
+    Vector4 mVConstants[kNumVConstants] = {};
 };
 #endif // MILO_RNDOBJ_SHAPE_HAS_NGRND
 
@@ -92,11 +106,10 @@ public:
     // Screen-space 2D drawing (NgRnd override)
     void DrawRect(const Hmx::Rect&, RndMat*, ShaderType, const Hmx::Color&,
                   const Hmx::Color*, const Hmx::Color*) override;
-    // Base Rnd override
+    // Base Rnd override: retail's kDrawRectShader colour model on Xbox shapes
+    // (DrawRectMaterialColor), then the screen-space path above.
     void DrawRect(const Hmx::Rect& r, const Hmx::Color& c, RndMat* m,
-                  const Hmx::Color* tr, const Hmx::Color* bl) override {
-        DrawRect(r, m, kStandardShader, c, tr, bl);
-    }
+                  const Hmx::Color* tr, const Hmx::Color* bl) override;
 
     // On web, returns an owned offscreen texture; on desktop, the swapchain surface.
     // All rendering (post-proc output, overlay passes) targets this view.
@@ -167,17 +180,29 @@ public:
         wgpu::TextureView refractNormal;   // binding 11 (rndshape::MatRefract)
     };
 
-    // Create material bind group (group 1)
-    wgpu::BindGroup CreateMaterialBindGroup(
-        uint32_t bufferOffset, uint32_t bufferSize,
-        const MaterialTexViews& texViews,
-        wgpu::Sampler& diffuseSampler, wgpu::Sampler& mapSampler);
+    // Bind groups for the mesh path (PLAN H-30). The uniform binding of each
+    // takes a dynamic offset (PipelineManager::SetDynamicUniformOffsets): pass
+    // the ring offset Write() returned to SetBindGroup. The groups come from
+    // mBindGroupCache, keyed by every resource they bind, so a draw that binds
+    // what an earlier draw bound reuses its group instead of creating one.
+    // Material (group 1): the material ring + the material's views/samplers.
+    wgpu::BindGroup MaterialBindGroup(const MaterialTexViews& texViews,
+                                      wgpu::Sampler& diffuseSampler, wgpu::Sampler& mapSampler);
+    // Object (group 2): the object ring.
+    wgpu::BindGroup ObjectBindGroup();
+    // Bone (group 3), skinned meshes: the bone ring.
+    wgpu::BindGroup BoneBindGroup();
 
-    // Create object bind group (group 2)
-    wgpu::BindGroup CreateObjectBindGroup(uint32_t bufferOffset, uint32_t bufferSize);
-
-    // Create bone bind group (group 3) — for skinned meshes
-    wgpu::BindGroup CreateBoneBindGroup(uint32_t bufferOffset, uint32_t bufferSize);
+    BindGroupCache& BindGroups() { return mBindGroupCache; }
+    BindGroupCache& PostBindGroups() { return mPostBindGroupCache; }
+    // A texture view is being released (RndTex destroyed, render target
+    // recreated): drop the cached bind groups that bind it.
+    void ForgetTextureView(const wgpu::TextureView& view) {
+        if (view) {
+            mBindGroupCache.Forget(view.Get());
+            mPostBindGroupCache.Forget(view.Get());  // e.g. a post-process noise map
+        }
+    }
 
     // Ring buffers for per-draw uniforms
     UniformRingBuffer& MaterialRing() { return mMaterialRing; }
@@ -235,6 +260,11 @@ public:
     void FinishPointTestReadback();
     int PendingPointTests() const { return (int)mPointTestQueue.size(); }
     int PointTestsInFlight() const { return mPointTestPass.InFlight(); }
+    // FinishPointTestReadback calls that blocked on a readback (never, under a
+    // shape whose rndshape::kPointTestWaitAfterSubmit is false), and the
+    // stand-in answers delivered for late ones (PointTestStandIns).
+    uint64_t PointTestEndWaits() const { return mPointTestEndWaits; }
+    uint64_t PointTestStandInsDelivered() const { return mPointTestStandInsDelivered; }
     // Counts an answer for the frame-times log (MILO_FRAME_TIMES).
     void NotePointTestAnswer(const PointTestPass::Answer& answer);
 
@@ -319,6 +349,9 @@ public:
     void CreateDepthTexture(int w, int h);
     void CreateDefaultTextures();
     void WriteSceneUniforms();
+    // Slot 3 of the scene bind group as WriteSceneUniforms last chose it
+    // (null = the white fallback).
+    wgpu::TextureView ProjLightTexView() const { return mProjLightTexView; }
     // Invalidate cached scene uniforms — forces re-upload next frame.
     // Call when light properties are modified externally (e.g. debug UI).
     void InvalidateSceneUniforms() { mLastSceneEnv = nullptr; }
@@ -342,6 +375,13 @@ public:
     std::vector<PointTestPass::Query> mPointTestQueue;
     bool mPointTestsRan = false;
     uint64_t mPointTestSeqBeforeFrame = 0;  // LastSeq() at BeginDrawing
+    // Without the after-submit wait: each tested key's last answer, the keys a
+    // full PointTestPass could not record last frame, and scratch.
+    PointTestStandIns mPointTestStandIns;
+    std::vector<const void*> mPointTestUnrecordedKeys;
+    std::vector<const void*> mPointTestLateKeys;
+    uint64_t mPointTestEndWaits = 0;
+    uint64_t mPointTestStandInsDelivered = 0;
     struct PointTester : NativePointTester {
         WgpuRnd* rnd = nullptr;
         bool QueuePointTest(const NativePointTest& t) override { return rnd->QueuePointTest(t); }
@@ -397,13 +437,19 @@ public:
     uint32_t mCurrentTargetWidth = 0;
     uint32_t mCurrentTargetHeight = 0;
 
-    // Uniform buffers
+    // Uniform buffers (staged: one WriteBuffer each per frame, PLAN H-31;
+    // FlushUniformRings before the frame Submit)
+    void FlushUniformRings();
+    void LogGpuCounters();
+    int mGpuCountersEvery = 0;  // MILO_GPU_COUNTERS
     UniformRingBuffer mSceneRing;
     UniformRingBuffer mMaterialRing;
     UniformRingBuffer mObjectRing;
     UniformRingBuffer mBoneRing;
 
     // Bind groups
+    BindGroupCache mBindGroupCache;  // mesh-path material/object/bone groups
+    BindGroupCache mPostBindGroupCache;  // the post chain + display ramp (PLAN H-66)
     wgpu::BindGroup mSceneBindGroup;
     wgpu::TextureView mProjLightTexView;  // gobo texture for projected light (or white fallback)
 
@@ -501,6 +547,7 @@ public:
     int mPointTestsRecorded = 0;
     int mPointTestAnswers = 0;
     int mPointTestAgeMax = 0;
+    int mPointTestStandInsFrame = 0;  // stand-ins delivered this frame (pt_standin)
     struct PointTestBatchFrame {
         uint64_t seq = 0;
         int frame = 0;
@@ -524,6 +571,17 @@ public:
 
 // Global accessor — set during Init
 extern WgpuRnd* gWgpuRnd;
+
+// The window opened but nothing can be drawn into it (dc3 PLAN H-33): the
+// surface is unusable on every window system GpuDevice tried, or it has never
+// handed out a frame. WgpuRnd stops the process with this status rather than
+// fall back to an invisible headless run or loop drawing nothing.
+constexpr int kNativeSurfaceExitCode = 97;
+// Called with a one-line reason and kNativeSurfaceExitCode, after the FATAL
+// message is printed; a consumer installs one to route the exit through its own
+// exit records. Must not return. Unset: stdio is flushed and exit() runs.
+using NativeRenderFatalFn = void (*)(const char* reason, int code);
+void SetNativeRenderFatalHandler(NativeRenderFatalFn fn);
 
 // Copy a render target's colour texture back to the CPU: w*h texels, 4 bytes
 // each, in the target's own channel order (ChooseRenderTargetFormat). False

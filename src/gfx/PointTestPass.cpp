@@ -1,5 +1,6 @@
 // PointTestPass — see PointTestPass.h.
 #include "gfx/PointTestPass.h"
+#include "gfx/GpuTimers.h"
 #include "gfx/GpuDevice.h"
 
 #include <cstdio>
@@ -137,11 +138,14 @@ bool PointTestPass::Record(wgpu::CommandEncoder& encoder, const wgpu::TextureVie
         bd.usage = wgpu::BufferUsage::MapRead | wgpu::BufferUsage::CopyDst;
         b->readback = dev.CreateBuffer(&bd);
         b->capacity = cap;
+        mResourceCreates += 4;  // query set, vertex, resolve and readback buffers
     }
 
     // Target pixels -> clip space over the whole target (y down on screen).
     const float sx = 2.0f / (float)w, sy = 2.0f / (float)h;
-    std::vector<float> verts((size_t)count * kVertsPerQuery * 4, 0.0f);
+    // Reused across frames: no per-frame heap allocation in steady state.
+    std::vector<float>& verts = mVerts;
+    verts.assign((size_t)count * kVertsPerQuery * 4, 0.0f);
     for (size_t i = 0; i < count; i++) {
         const Query& q = queries[i];
         float* v = &verts[i * kVertsPerQuery * 4];
@@ -171,6 +175,7 @@ bool PointTestPass::Record(wgpu::CommandEncoder& encoder, const wgpu::TextureVie
     rp.label = "PointTestPass";
     rp.depthStencilAttachment = &da;
     rp.occlusionQuerySet = b->querySet;
+    MILO_GPU_TIME_PASS(rp);
     wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&rp);
     pass.SetViewport(0.0f, 0.0f, (float)w, (float)h, 0.0f, 1.0f);
     pass.SetVertexBuffer(0, b->vertices, 0, (uint64_t)count * kVertsPerQuery * kVertexBytes);
@@ -289,6 +294,15 @@ int PointTestPass::CollectThrough(uint64_t through, bool wait, AnswerFn fn, void
         b->queries.clear();
     }
     return delivered;
+}
+
+void PointTestPass::KeysDueThrough(uint64_t through, std::vector<const void*>& out) const {
+    for (const auto& it : mBatches) {
+        if (it->seq > through) continue;
+        if (it->state != Batch::kRecorded && it->state != Batch::kMapping) continue;
+        for (const Query& q : it->queries)
+            if (q.key) out.push_back(q.key);
+    }
 }
 
 void PointTestPass::Cancel(const void* key) {

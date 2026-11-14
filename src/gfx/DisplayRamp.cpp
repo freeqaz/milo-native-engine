@@ -1,5 +1,6 @@
 // DisplayRamp — see DisplayRamp.h.
 #include "gfx/DisplayRamp.h"
+#include "gfx/GpuTimers.h"
 #include "gfx/GpuDevice.h"
 
 #include <cstdio>
@@ -96,6 +97,7 @@ bool DisplayRamp::Apply(wgpu::CommandEncoder& encoder, const wgpu::Texture& fram
     }
     if (!mScratch || mW != w || mH != h) {
         wgpu::TextureDescriptor td{};
+        if (mBindGroups && mScratchView) mBindGroups->Forget(mScratchView.Get());
         td.label = "DisplayRampSource";
         td.size = {w, h, 1};
         td.format = fmt;
@@ -120,7 +122,7 @@ bool DisplayRamp::Apply(wgpu::CommandEncoder& encoder, const wgpu::Texture& fram
     bgd.layout = mBGL;
     bgd.entryCount = 1;
     bgd.entries = &be;
-    wgpu::BindGroup bg = dev.CreateBindGroup(&bgd);
+    wgpu::BindGroup bg = mBindGroups ? mBindGroups->GetOrCreate(dev, bgd) : dev.CreateBindGroup(&bgd);
 
     wgpu::RenderPassColorAttachment att{};
     att.view = frameView;
@@ -130,6 +132,7 @@ bool DisplayRamp::Apply(wgpu::CommandEncoder& encoder, const wgpu::Texture& fram
     rp.label = "DisplayRampPass";
     rp.colorAttachmentCount = 1;
     rp.colorAttachments = &att;
+    MILO_GPU_TIME_PASS(rp);
     wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&rp);
     pass.SetPipeline(mPipe);
     pass.SetBindGroup(0, bg);

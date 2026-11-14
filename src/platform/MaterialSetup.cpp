@@ -4,6 +4,7 @@
 
 #include "platform/MaterialSetup.h"
 #include "platform/GameRenderHook.h"
+#include "platform/MeshGpuCache.h"
 #include "rndobj/Cam.h"
 #include "platform/Rnd_Wgpu.h"
 #include "platform/TexGpu.h"
@@ -152,6 +153,16 @@ static void FillRefract(const MatT& mat, MaterialUniforms& uni,
     views.refractNormal = ResolveMap(r.normalTex, gWgpuRnd->FlatNormalTexView());
 }
 
+// Screen-aligned texture coordinates (rndshape::MatScreenAligned): bit 9 of
+// colorMod.w (the low byte is the colour-mod mode, bit 8 the band selector,
+// the high half the refraction strength), which the vertex shader reads as
+// materialScreenAligned and answers by feeding the vertex's screen position,
+// not its UV, to the texgen rows. Set after FillColorMod, which assigns w.
+template <class MatT>
+static void FillScreenAligned(const MatT& mat, MaterialUniforms& uni) {
+    if (rndshape::MatScreenAligned(mat)) uni.colorMod[3] |= 1u << 9;
+}
+
 bool TextMeshKeepsAtlasRGB(RndMesh* mesh, RndMat* mat, bool skinned) {
     GameRenderHook* hook = GetGameRenderHook();
     if (!hook) return false;
@@ -160,8 +171,25 @@ bool TextMeshKeepsAtlasRGB(RndMesh* mesh, RndMat* mat, bool skinned) {
     return hook->QueryDrawMaterialPolicy(mesh, mat, skinned, nullptr, camName).isColorIcon;
 }
 
-// The overlay-phase material rules (GameRenderHook::UiShadesInGammaSpace and
-// UiUsesRetailMaterialTerms). The Xbox 360 DxRnd multiplies stored texel and
+bool MeshDrawsAsGlyph(RndMesh* mesh, bool skinned) {
+    if (!mesh) return false;
+    // A game that marks its glyph pages is asked positively: only a marked
+    // mesh is a glyph page.
+    GameRenderHook* hook = GetGameRenderHook();
+    if (hook && hook->MarksTextGlyphMeshes()) return IsMarkedTextGlyphMesh(mesh);
+    // Otherwise infer it: RndText's pages are unnamed and never skinned.
+    return !mesh->Name()[0] && !skinned;
+}
+
+bool MeshShadesAsText(RndMesh* mesh) {
+    if (!mesh) return false;
+    GameRenderHook* hook = GetGameRenderHook();
+    if (hook && hook->MarksTextGlyphMeshes()) return IsMarkedTextGlyphMesh(mesh);
+    return !mesh->Name()[0];
+}
+
+// The overlay-phase material rules (GameRenderHook::UiUsesRetailMaterialTerms;
+// gamma-space shading is the render shape's, rndshape::kGammaSpaceShading). The Xbox 360 DxRnd multiplies stored texel and
 // colour values and writes them to an A8R8G8B8 target with no encode; the dc3
 // shader's linear->sRGB output encode lifted every UI colour (a 0.32 purple
 // drew as 0.60: washed-out move cards). The engine also forced UI and text to
@@ -176,7 +204,6 @@ UiDrawTerms UiDrawTermsFor(bool frameInOverlay) {
     if (!frameInOverlay) return t;
     GameRenderHook* hook = GetGameRenderHook();
     if (!hook) return t;
-    t.gammaShading = t.gammaShading || hook->UiShadesInGammaSpace();
     t.retailMaterialTerms = hook->UiUsesRetailMaterialTerms();
     return t;
 }
@@ -198,11 +225,9 @@ void MaterialShaderColor(const Hmx::Color& matColor, BaseMaterial::Blend blend, 
 }
 
 float MaterialAlphaScale(bool intensify, bool retailMaterialTerms) {
-    return intensify && retailMaterialTerms ? 2.0f : 1.0f;
-}
-
-bool MaterialShadesUnlit(bool matPrelit, bool matUseEnviron, bool retailMaterialTerms) {
-    return retailMaterialTerms && !matPrelit && !matUseEnviron;
+    // UI phase: the retail terms. World: the DC3 shape's standard.ps rule
+    // (rndshape::kIntensifyScalesAlpha); rb3-xenon and rb3 keep 1.
+    return intensify && (retailMaterialTerms || rndshape::kIntensifyScalesAlpha) ? 2.0f : 1.0f;
 }
 
 static UiDrawTerms CurrentUiDrawTerms() {
@@ -328,14 +353,23 @@ MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh, const UiDraw
     // Forcing prelit makes the shader output baseColor directly: white material
     // color = multiply identity (no visible change), which is correct behavior
     // when the lighting scripts aren't driving the color.
+    // NOT for DC3: no script drives the colour there. Rink_lightCatcher.mat is
+    // white, lit by its own env (ambient 0.365 + a gobo spot), and the light
+    // IS the modulation factor, so forcing it prelit removed the rink's floor
+    // pool. See rndshape::kMultiplyBlendIsLit (RndShape_DC3.h).
     // An unlit material (rndshape::MatUnlit; RB3-Wii use_environ=0) already
     // skips lighting, and forcing prelit on top of it would pull in the raw
     // vertex colour, which an unlit Wii material never sees.
-    const bool unlit = rndshape::MatUnlit(mat) ||
-        MaterialShadesUnlit(mat->Prelit(), mat->GetUseEnviron(), uiTerms.retailMaterialTerms);
+    // (MaterialShadesUnlit, the same rule applied under the UI terms only, was
+    // retired in np-gfx-light round 3: MatUnlit is that rule for every DC3
+    // draw, and no other consumer opted into the UI terms.)
+    const bool unlit = rndshape::MatUnlit(mat);
     matUni.unlit = unlit ? 1.0f : 0.0f;
     matUni.gammaShading = uiTerms.gammaShading ? 1.0f : 0.0f;
-    bool isMultiplyBlend = (matBlend == BaseMaterial::kBlendMultiply) && !unlit;
+    // The DC3 retail model lights Multiply materials as the image does
+    // (rndshape::kMultiplyBlendIsLit): the heuristic above does not apply.
+    bool isMultiplyBlend = (matBlend == BaseMaterial::kBlendMultiply) && !unlit &&
+                           !rndshape::kMultiplyBlendIsLit;
     const bool uiLit = uiTerms.retailMaterialTerms;
     bool forcePrelit = IsSimpleRender() || (isOverlayPass && !uiLit) || isMultiplyBlend;
     if (isMultiplyBlend) heuristics |= kHeuristicMultiplyPrelit;
@@ -377,6 +411,7 @@ MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh, const UiDraw
     FillRetailTerms(mat, matUni, texViews);
     FillColorMod(mat, matUni);
     FillRefract(mat, matUni, texViews);
+    FillScreenAligned(mat, matUni);
 
     // --- Environment cube map ---
     RndCubeTex* environMap = mat->GetEnvironMap();
@@ -448,12 +483,11 @@ MaterialParams BuildPassMaterialParams(BaseMaterial* rawNextPass, const UiDrawTe
     npMatUni.deNormal = nextPass->GetDeNormal();
     npMatUni.hasNormalMap = nextPass->NormalMap() ? 1.0f : 0.0f;
     // Force prelit for multiply-blend passes (same rationale as primary material)
-    const bool npUnlit = rndshape::MatUnlit(nextPass) ||
-        MaterialShadesUnlit(nextPass->Prelit(), nextPass->GetUseEnviron(),
-                            npUiTerms.retailMaterialTerms);
+    const bool npUnlit = rndshape::MatUnlit(nextPass);
     npMatUni.unlit = npUnlit ? 1.0f : 0.0f;
     npMatUni.gammaShading = npUiTerms.gammaShading ? 1.0f : 0.0f;
-    bool npMultiply = (nextPass->GetBlend() == BaseMaterial::kBlendMultiply) && !npUnlit;
+    bool npMultiply = (nextPass->GetBlend() == BaseMaterial::kBlendMultiply) && !npUnlit &&
+                      !rndshape::kMultiplyBlendIsLit;
     npMatUni.prelit = (nextPass->Prelit() || npMultiply) ? 1.0f : 0.0f;
     if (nextPass->Prelit() && !npMultiply && rndshape::MatPrelitAmbient(nextPass))
         npMatUni.prelit = 2.0f;
@@ -493,6 +527,7 @@ MaterialParams BuildPassMaterialParams(BaseMaterial* rawNextPass, const UiDrawTe
     FillRetailTerms(nextPass, npMatUni, npTexViews);
     FillColorMod(nextPass, npMatUni);
     FillRefract(nextPass, npMatUni, npTexViews);
+    FillScreenAligned(nextPass, npMatUni);
 
     // Multi-pass materials don't set their own sampler -- caller reuses primary material's sampler
     result.heuristics = 0;

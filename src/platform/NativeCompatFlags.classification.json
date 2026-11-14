@@ -2146,5 +2146,96 @@
     "owner": "input",
     "faithfulStatus": "n/a: logs one line per pad button message JoypadPoll sends (dc3 key tests); Joypad_Native.cpp is compiled by dc3 only",
     "default": "off"
+  },
+  "DC3_RETAIL_POST": {
+    "class": "feature",
+    "owner": "render/post",
+    "faithfulStatus": "live: selects the DC3 retail post chain (NgPostProc::DoPost port, np-gfx-post). Unset = the retail chain (bloom mask, bloom/streak, screen-blend composite, noise, colour xfm, vignette, chroma). '0' = the pre-np-gfx-post generic PostProcPass; 'raw' = chain with no effects (copy); 'mask' / 'bloom' = inspection views of the pseudo-HDR mask / bloom term; 'grade' = chain without bloom. DC3 shape only (rndshape::kDC3RetailPost); rb3-xenon's shape has no dc3 accessors so the flag is never read there [rndshape/DC3PostChain.cpp:30]",
+    "default": "on",
+    "read": "value"
+  },
+  "DC3_DISPLAY_GAMMA": {
+    "class": "feature",
+    "owner": "render/post",
+    "faithfulStatus": "live: override value knob for DC3's display ramp (DxRnd::SetupGamma, ramp = pow(v, g)). Unset = retail: (rnd (gamma g)) from the system config (default.dta: 0.85), applied once after the UI to EVERY output including headless, so captures are POST-ramp. 'off'/'0' = no ramp (the pre-ramp front buffer), else the gamma value. DC3 shape only (rndshape::kDC3RetailPost) [rndshape/DC3PostChain.cpp:50]",
+    "default": "off",
+    "read": "value"
+  },
+  "MILO_GPU_COUNTERS": {
+    "class": "perf",
+    "owner": "render/perf",
+    "faithfulStatus": "n/a: log-only. MILO_GPU_COUNTERS=N prints one [GPUCOUNT] line every N frames (0 or non-numeric: every 600) with the live bind-group cache size, creates/hits/evictions, uniform-ring sizes, grows and WriteBuffer counts, pipelines, GPU meshes and textures (lane np-drawperf, H-30/H-31 bounds check); unset = no line. No draw change [Rnd_Wgpu.cpp]",
+    "default": "off",
+    "read": "value"
+  },
+  "MILO_GPU_TIMERS": {
+    "class": "perf",
+    "owner": "render/perf",
+    "faithfulStatus": "n/a: log-only. MILO_GPU_TIMERS=1 (truthy) requests WebGPU timestamp-query when the adapter offers it, disables Dawn's timestamp_quantization toggle, and times every render pass (begin/end timestamps, resolved and read back asynchronously, never waited on); one [GPUTIME] window line + one [GPUTIME] pass= line per pass name every ~1 s (per-frame mean/max ms, passes per frame, frame pass sum and span), latest window via GpuTimers::LatestJson (dc3 GET /api/gputime). Unset = no query set, no buffer, no line. Adapter without the feature / web build: one 'GPU timers unavailable: <reason>' line. No draw change [GpuTimers.cpp, GpuDevice.cpp]",
+    "default": "off",
+    "read": "truthy"
+  },
+  "MILO_GPU_LABELS": {
+    "class": "perf",
+    "owner": "render/perf",
+    "faithfulStatus": "n/a: Dawn use_user_defined_labels_in_backend toggle (Vulkan object names for RenderDoc/GFXReconstruct/validation). 1 = on, 0 = off; unset = on only when a Vulkan layer env (VK_INSTANCE_LAYERS, VK_LOADER_LAYERS_ENABLE, ENABLE_VULKAN_RENDERDOC_CAPTURE) is set. Debug names only, no draw change; off saves the per-object name build + vkSetDebugUtilsObjectNameEXT (5-8% of the DC3 main thread, lane np-cpu-perf) [GpuDevice.cpp]",
+    "default": "off",
+    "read": "value"
+  },
+  "MILO_FULLSCREEN": {
+    "class": "feature",
+    "owner": "render/window",
+    "faithfulStatus": "n/a: open the window fullscreen on the primary monitor at its desktop mode (no mode switch); F11 / Alt+Enter toggle at run time either way. For a player (dc3 scripts/play.sh --fullscreen, dc3 PLAN L-1/H-18) [GpuDevice.cpp]",
+    "default": "off",
+    "read": "truthy"
+  },
+  "MILO_GLFW_PLATFORM": {
+    "class": "feature",
+    "owner": "render/window",
+    "faithfulStatus": "n/a: Linux window system for GLFW: x11, wayland or any (default: GLFW's choice, Wayland when WAYLAND_DISPLAY is set). A window whose surface WebGPU cannot present to is re-opened through X11 either way (dc3 PLAN H-33) [GpuDevice.cpp]",
+    "default": "off",
+    "read": "value"
+  },
+  "MILO_SURFACE_FAULT": {
+    "class": "probe",
+    "owner": "render/window",
+    "faithfulStatus": "n/a: test hook for dc3 PLAN H-33: init (every window's surface probe fails), init-once (the first fails; the X11 fallback then runs once), acquire (GetCurrentTexture fails every frame). Exercises the unusable-surface handling on a box whose surface works [GpuDevice.cpp]",
+    "default": "off",
+    "read": "value"
+  },
+  "MILO_PRESENT_SCALE": {
+    "class": "feature",
+    "owner": "render/window",
+    "faithfulStatus": "n/a: windowed WgpuRnd draws at the Rnd virtual resolution and scales the frame into the window, aspect kept, black bars (dc3 PLAN H-18). 0 restores the swapchain-is-the-frame path (picture in the top-left of a larger window) [Rnd_Wgpu.cpp]",
+    "default": "on",
+    "read": "value"
+  },
+  "MILO_WEB_BUNDLE_SLICE_MS": {
+    "class": "perf",
+    "owner": "web/assets",
+    "faithfulStatus": "n/a: web only. Milliseconds of main-thread time one slice of a screen-bundle unpack may take before yielding to the browser (default 6); 0 = unpack the whole bundle in one task, the pre-W-15 behaviour (158-403 ms tasks). Same files, same bytes; only when the main thread yields changes (lane np-web4, W-15) [WebAssets.cpp]",
+    "default": "6",
+    "read": "value"
+  },
+  "VK_INSTANCE_LAYERS": {
+    "class": "probe",
+    "owner": "render/debug",
+    "faithfulStatus": "n/a: external variable owned by the Vulkan loader, only read: set (non-empty, not 0) means a capture/debug layer is loading, which turns MILO_GPU_LABELS' default on so the capture keeps object names [GpuDevice.cpp]",
+    "default": "off",
+    "read": "truthy"
+  },
+  "VK_LOADER_LAYERS_ENABLE": {
+    "class": "probe",
+    "owner": "render/debug",
+    "faithfulStatus": "n/a: external variable owned by the Vulkan loader, only read: set (non-empty, not 0) means a capture/debug layer is loading, which turns MILO_GPU_LABELS' default on so the capture keeps object names [GpuDevice.cpp]",
+    "default": "off",
+    "read": "truthy"
+  },
+  "ENABLE_VULKAN_RENDERDOC_CAPTURE": {
+    "class": "probe",
+    "owner": "render/debug",
+    "faithfulStatus": "n/a: external variable owned by RenderDoc's implicit layer, only read: set (non-empty, not 0) means a capture/debug layer is loading, which turns MILO_GPU_LABELS' default on so the capture keeps object names [GpuDevice.cpp]",
+    "default": "off",
+    "read": "truthy"
   }
 }

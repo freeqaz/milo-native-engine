@@ -10,6 +10,7 @@
 #include "platform/rndshape/RndShape.h"
 #include "obj/Object.h"
 
+#include <cmath>
 #include <cstring>
 
 static const char* k2DShaderSource = R"WGSL(
@@ -62,6 +63,16 @@ struct Vertex2D {
     float uv[2];
     float color[4];
 };
+
+Hmx::Color DrawRectMaterialColor(RndMat* mat) {
+    Hmx::Color k = mat->GetColor();
+    if ((int)mat->GetBlend() == 7) { // kPreMultAlpha
+        k.red *= k.alpha;
+        k.green *= k.alpha;
+        k.blue *= k.alpha;
+    }
+    return k;
+}
 
 void DrawRect2D::Init(GpuDevice& gpu) {
     EnsurePipeline(gpu);
@@ -217,7 +228,10 @@ void DrawRect2D::Draw(wgpu::RenderPassEncoder& pass, const Hmx::Rect& rect, RndM
     float maskScale = 0.0f;
     if (rndshape::RetailBloomMaskActive() && rnd->CurrentPassHasDepth() &&
         !rnd->ActiveTargetTex()) {
-        if (mat) maskScale = rndshape::BloomMaskScale(rndshape::Mat(mat));
+        // DC3's scale is negative (luma of the pre-clamp colour, which a rect
+        // does not have: its colour is the clamped one, so the magnitude is used).
+        // RndShaderDrawRect::CalcShaderOpts ignores the environ's fade-out.
+        if (mat) maskScale = std::fabs(rndshape::BloomMaskScale(rndshape::Mat(mat), false));
         if (maskScale <= 0.0f && !(mat && rndshape::Mat(mat)->GetAlphaWrite()))
             ct.writeMask = wgpu::ColorWriteMask::Red | wgpu::ColorWriteMask::Green |
                            wgpu::ColorWriteMask::Blue;
@@ -263,7 +277,13 @@ void DrawRect2D::Draw(wgpu::RenderPassEncoder& pass, const Hmx::Rect& rect, RndM
     pipeDesc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
     pipeDesc.multisample.count = rnd->CurrentSampleCount();
 
-    wgpu::RenderPipeline pipe = dev.CreateRenderPipeline(&pipeDesc);
+    // Cached: see gfx/RenderPipelineCache.h (a per-rect CreateRenderPipeline
+    // recompiled the shader every frame).
+    wgpu::RenderPipeline pipe = m2dPipelines.GetOrCreate(
+        dev,
+        RenderPipelineCache::MakeKey(bs, ct.format, ct.writeMask, rnd->CurrentPassHasDepth(),
+                                     pipeDesc.multisample.count, maskScale, hasTex ? 1u : 0u),
+        pipeDesc);
 
     wgpu::BindGroupEntry bgEntries[2] = {};
     bgEntries[0].binding = 0;
@@ -275,7 +295,10 @@ void DrawRect2D::Draw(wgpu::RenderPassEncoder& pass, const Hmx::Rect& rect, RndM
     bgDesc.layout = m2dBindGroupLayout;
     bgDesc.entryCount = 2;
     bgDesc.entries = bgEntries;
-    wgpu::BindGroup bg = dev.CreateBindGroup(&bgDesc);
+    // Same view + sampler is the same group: cached (PLAN H-30), dropped
+    // with the texture through WgpuRnd::ForgetTextureView.
+    wgpu::BindGroup bg = gWgpuRnd ? gWgpuRnd->BindGroups().GetOrCreate(dev, bgDesc)
+                                  : dev.CreateBindGroup(&bgDesc);
 
     pass.SetPipeline(pipe);
     pass.SetBindGroup(0, bg);
@@ -284,6 +307,7 @@ void DrawRect2D::Draw(wgpu::RenderPassEncoder& pass, const Hmx::Rect& rect, RndM
 }
 
 void DrawRect2D::Terminate() {
+    m2dPipelines.Clear();
     m2dShader = nullptr;
     m2dBindGroupLayout = nullptr;
     m2dPipelineLayout = nullptr;

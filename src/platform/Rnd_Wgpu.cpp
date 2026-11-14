@@ -2,6 +2,7 @@
 // Replaces Rnd_Stub.cpp with real WebGPU rendering via Dawn
 
 #include "platform/Rnd_Wgpu.h"
+#include "gfx/GpuTimers.h"
 #include "platform/MeshGpuCache.h"
 #include "platform/NativeSettings.h"
 #include "platform/TexGpu.h"
@@ -85,11 +86,34 @@ static double ThreadCpuNow() {
 Rnd& TheRnd = gWgpuRndInstance;
 NgRnd& TheNgRnd = gWgpuRndInstance;
 RndShaderMgr& TheShaderMgr = gWgpuShaderMgr;
+namespace rndshape {
+const float* CapturedVConstant(int reg) {
+    static const float kZero[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    if (reg < 0 || (unsigned)reg >= WgpuShaderMgr::kNumVConstants) return kZero;
+    return &gWgpuShaderMgr.VConstant(reg).x;
+}
+} // namespace rndshape
 #else
 // RB3-Wii's rndobj/Rnd.h declares `extern Rnd* TheRnd`, and has no NG layer.
 Rnd* TheRnd = &gWgpuRndInstance;
 #endif
 WgpuRnd* gWgpuRnd = &gWgpuRndInstance;
+
+static NativeRenderFatalFn gNativeRenderFatalHandler = nullptr;
+void SetNativeRenderFatalHandler(NativeRenderFatalFn fn) { gNativeRenderFatalHandler = fn; }
+
+[[noreturn]] static void NativeRenderFatal(const char* reason) {
+    fflush(stdout);
+    fprintf(stderr,
+            "DC3 Native: FATAL - %s.\n"
+            "  Nothing can be drawn, so the game stops here (exit %d) rather than run\n"
+            "  without a picture. On Linux, MILO_GLFW_PLATFORM=x11 opens the window\n"
+            "  through X11/XWayland; MILO_HEADLESS=1 runs without a window.\n",
+            reason, kNativeSurfaceExitCode);
+    fflush(stderr);
+    if (gNativeRenderFatalHandler) gNativeRenderFatalHandler(reason, kNativeSurfaceExitCode);
+    exit(kNativeSurfaceExitCode);
+}
 
 // Exposed for input subsystem (Joypad_Native, Keyboard_Native)
 #ifndef __EMSCRIPTEN__
@@ -304,8 +328,27 @@ void WgpuRnd::Init() {
         desc.width = getenv("MILO_WIDTH") ? atoi(getenv("MILO_WIDTH")) : 1280;
         desc.height = getenv("MILO_HEIGHT") ? atoi(getenv("MILO_HEIGHT")) : 720;
         desc.title = "DC3 Native — WebGPU";
+        // Windowed, the frame is the Rnd virtual resolution (what viewports and
+        // UI layout are computed in), scaled into whatever size the window has
+        // (dc3 PLAN H-18; gfx/PresentScale.h). MILO_WIDTH/HEIGHT size the
+        // window. Before, the frame was the window, and anything larger than
+        // the virtual resolution got the picture in its top-left corner.
+        // MILO_PRESENT_SCALE=0 restores that.
+        if (!desc.headless && mWidth > 0 && mHeight > 0) {
+            const char* ps = getenv("MILO_PRESENT_SCALE");
+            if (!(ps && ps[0] == '0' && ps[1] == '\0')) {
+                desc.frameWidth = mWidth;
+                desc.frameHeight = mHeight;
+            }
+        }
 
         if (!mGpu.Init(desc)) {
+            if (!desc.headless && mGpu.InitFailure() == GpuInitFailure::SurfaceUnusable) {
+                // A window opened and cannot be drawn into: say so and stop.
+                // Falling back to headless here ran the game invisibly.
+                NativeRenderFatal(("the window cannot be presented to: " +
+                                   mGpu.SurfaceFailureReason()).c_str());
+            }
             printf("DC3 Native: GPU init failed, falling back to headless\n");
             desc.headless = true;
             if (!mGpu.Init(desc)) {
@@ -330,7 +373,9 @@ void WgpuRnd::InitGpuResources() {
     if (mGpuResourcesReady) return; // idempotent — already initialized
     mGpuResourcesReady = true;
 
-    // Initialize pipeline manager
+    // Initialize pipeline manager. The mesh path binds its material, object
+    // and bone uniforms with dynamic offsets into cached bind groups (H-30).
+    mPipelines.SetDynamicUniformOffsets(true);
     mPipelines.Init(&mGpu);
     mPipelines.SetAlphaBlendMax(rndshape::kAlphaBlendMax);
     // Create per-draw ring buffers (64KB each — enough for ~250 draws/frame at 256-byte alignment)
@@ -340,6 +385,15 @@ void WgpuRnd::InitGpuResources() {
     mObjectRing.Init(mGpu.Device(), 64 * 1024, "ObjectUniforms");
     // Bone ring needs more space: 2560 bytes per skinned draw (rounded to 2816 at 256 alignment)
     mBoneRing.Init(mGpu.Device(), 256 * 1024, "BoneUniforms");
+    // Staged: a frame's uniform blocks reach the GPU in one WriteBuffer per
+    // ring, issued by FlushUniformRings before the frame Submit (H-31).
+    mSceneRing.SetStaged(true);
+    mMaterialRing.SetStaged(true);
+    mObjectRing.SetStaged(true);
+    mBoneRing.SetStaged(true);
+    if (const char* c = getenv("MILO_GPU_COUNTERS")) {
+        mGpuCountersEvery = atoi(c) > 0 ? atoi(c) : 600;
+    }
 
     // Create depth texture (use GPU framebuffer dimensions, not Rnd virtual resolution)
     CreateDepthTexture(mGpu.WindowWidth(), mGpu.WindowHeight());
@@ -350,6 +404,10 @@ void WgpuRnd::InitGpuResources() {
     // Initialize render passes
     mShadowPass.Init(mGpu);
     mPostProcPass.Init(mGpu);
+    // The post chain's bind groups (dc3 PLAN H-66): one cache for the post
+    // chain and the display ramp, aged with the mesh cache each frame.
+    mPostProcPass.SetBindGroupCache(&mPostBindGroupCache);
+    mDisplayRamp.SetBindGroupCache(&mPostBindGroupCache);
 
     // Answer flare point tests with occlusion queries (PointTestHook.h).
     // MILO_NO_POINT_TESTS=1 registers no tester, so the consumer keeps its own
@@ -361,7 +419,7 @@ void WgpuRnd::InitGpuResources() {
         if (mFrameTimes)
             fprintf(mFrameTimes,
                     "frame,period_ms,cpu_ms,draw_ms,pt_wait_ms,pt_recorded,pt_answers,pt_age,"
-                    "pt_end_wait_ms,pt_after_submit\n");
+                    "pt_end_wait_ms,pt_after_submit,pt_standin\n");
     }
 
     // Compose RndTexBlender outputs (TexBlendHook.h).
@@ -475,6 +533,9 @@ void WgpuRnd::Terminate() {
     mMsaaTex = nullptr;
     mMsaaView = nullptr;
 
+    // Cached bind groups hold the rings' buffers and the textures' views.
+    mBindGroupCache.Clear();
+
     // Ring buffers
     mMaterialRing.Release();
     mObjectRing.Release();
@@ -499,6 +560,7 @@ void WgpuRnd::Terminate() {
         mFrameTimes = nullptr;
     }
     mPostProcPass.Terminate();
+    mPostBindGroupCache.Clear();
     mShadowPass.Terminate();
 
     BoneSetupTerminate();
@@ -532,6 +594,37 @@ void WgpuRnd::Terminate() {
     mFrameView = nullptr;
 
     mGpu.Shutdown();
+}
+
+// np-gfx-post round 3: the post-process the frame is graded by, decided the
+// way PostProcPass::Run decides it (the DC3 shape: Rnd::DoPostProcess's
+// blacklight override, else its override, else the selected post-process;
+// otherwise RndPostProc::Current()). Every site that resolves the frame into
+// the intermediate for the post pass, and every site that runs it, asks this,
+// so an override with nothing selected is graded instead of resolving the
+// world into a target nothing composites.
+static RndPostProc* FramePostProc() {
+    if constexpr (rndshape::kDC3RetailPost) return rndshape::ActivePostProc();
+    return RndPostProc::Current();
+}
+
+static void CamSceneMatrices(RndCam* cam, float* viewProj, float* viewOut);
+
+// np-gfx-post round 3: hands PostProcPass this frame's RndVelocityBuffer::Draw
+// result (NgPostProc::DoVelocity ran in Rnd::DoPostProcess, just before the
+// post pass) with the world camera's view-projection, projected the way the
+// world was drawn. Nothing when the effect is off: no Draw, no call.
+static void FeedVelocity(PostProcPass& pass) {
+    if constexpr (rndshape::kDC3RetailPost) {
+        bool ready = false;
+        float scale = 0.0f;
+        RndCam* cam = nullptr;
+        if (rndshape::TakeVelocityFrame(ready, scale, cam) && cam) {
+            float vp[16];
+            CamSceneMatrices(cam, vp, nullptr);
+            pass.SetVelocity(ready, scale, vp);
+        }
+    }
 }
 
 void WgpuRnd::Clear(unsigned int flags, const Hmx::Color& color) {
@@ -581,7 +674,7 @@ void WgpuRnd::ClearDepthForOverlay() {
 
     int curW = mGpu.WindowWidth();
     int curH = mGpu.WindowHeight();
-    bool hasPostProc = RndPostProc::Current() != nullptr &&
+    bool hasPostProc = FramePostProc() != nullptr &&
                        !(rndshape::kRetailPostChain && mPostProcFlushed);
 
     wgpu::RenderPassColorAttachment colorAtt{};
@@ -610,6 +703,7 @@ void WgpuRnd::ClearDepthForOverlay() {
     rpDesc.colorAttachments = &colorAtt;
     rpDesc.depthStencilAttachment = &depthAtt;
 
+    MILO_GPU_TIME_PASS(rpDesc);
     mPass = mEncoder.BeginRenderPass(&rpDesc);
     rndshape::DrawLogPassOpen(0);
     mInPass = true;
@@ -655,6 +749,7 @@ void WgpuRnd::BeginOverlayPass() {
     rpDesc.colorAttachments = &colorAtt;
     rpDesc.depthStencilAttachment = nullptr; // no depth for 2D HUD
 
+    MILO_GPU_TIME_PASS(rpDesc);
     mPass = mEncoder.BeginRenderPass(&rpDesc);
     mFrameInOverlay = true;
     rndshape::DrawLogPassOpen(2);
@@ -682,7 +777,8 @@ void WgpuRnd::FlushPostProcessingForOverlay() {
     // Run post-processing now (reads intermediate, writes to framebuffer).
     // Only run once per frame — subsequent calls just start a new overlay pass
     // without re-running post-proc (which would overwrite previous HUD draws).
-    if (mIntermediateView && RndPostProc::Current() && !mPostProcFlushed) {
+    if (mIntermediateView && FramePostProc() && !mPostProcFlushed) {
+        FeedVelocity(mPostProcPass);
         mPostProcPass.Run(mEncoder, mIntermediateView, mIntermediateTex,
                           mIntermediateWidth, mIntermediateHeight,
                           mDepthSampleView, kMSAASamples, FrameTarget(), mBlackTexView, mGpu);
@@ -712,7 +808,7 @@ void WgpuRnd::FlushWorldPost() {
         // keeps the DC3 composite at EndDrawing, as before.
         if (rndshape::RetailPostMode() == 0) return;
         if (!mInPass || !mFrameView || mActiveTargetTex || !mCurrentPassHasDepth) return;
-        if (!mIntermediateView || !RndPostProc::Current() || mPostProcFlushed) return;
+        if (!mIntermediateView || !FramePostProc() || mPostProcFlushed) return;
 
         EndActivePass();
         const int w = mIntermediateWidth, h = mIntermediateHeight;
@@ -724,6 +820,7 @@ void WgpuRnd::FlushWorldPost() {
             d.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding;
             d.mipLevelCount = 1;
             mPostOutTex = mGpu.Device().CreateTexture(&d);
+            if (mPostOutView) mPostBindGroupCache.Forget(mPostOutView.Get());
             mPostOutView = mPostOutTex.CreateView();
             mPostOutWidth = w;
             mPostOutHeight = h;
@@ -970,6 +1067,19 @@ void DeliverPointTestAnswer(const PointTestPass::Answer& a, void* user) {
     r.area = a.area;
     fn(r);
 }
+// A stand-in (PointTestStandIns): to the consumer only, so the frame-times log
+// counts real answers and their age.
+void DeliverPointTestStandIn(const PointTestPass::Answer& a, void*) {
+    NativePointTestResultFn fn = GetNativePointTestResultFn();
+    if (!fn) return;
+    NativePointTestResult r;
+    r.key = a.key;
+    r.pointDone = a.pointDone;
+    r.visible = a.visible;
+    r.areaDone = a.areaDone;
+    r.area = a.area;
+    fn(r);
+}
 }  // namespace
 
 bool WgpuRnd::QueuePointTest(const NativePointTest& t) {
@@ -1014,6 +1124,7 @@ bool WgpuRnd::QueuePointTest(const NativePointTest& t) {
 }
 
 void WgpuRnd::NotePointTestAnswer(const PointTestPass::Answer& a) {
+    if constexpr (!rndshape::kPointTestWaitAfterSubmit) mPointTestStandIns.Note(a);
     if (!mFrameTimes) return;
     mPointTestAnswers++;
     for (const PointTestBatchFrame& bf : mPointTestBatchFrames) {
@@ -1033,6 +1144,12 @@ void WgpuRnd::CancelPointTests(const void* key) {
             i++;
     }
     mPointTestPass.Cancel(key);
+    if constexpr (!rndshape::kPointTestWaitAfterSubmit) {
+        mPointTestStandIns.Forget(key);
+        mPointTestUnrecordedKeys.erase(
+            std::remove(mPointTestUnrecordedKeys.begin(), mPointTestUnrecordedKeys.end(), key),
+            mPointTestUnrecordedKeys.end());
+    }
 }
 
 void WgpuRnd::RunPointTests() {
@@ -1053,6 +1170,23 @@ void WgpuRnd::RunPointTests() {
     const double waitStart = mFrameTimes ? PerfNow() : 0.0;
     mPointTestPass.CollectThrough(mPointTestSeqBeforeFrame, false, DeliverPointTestAnswer, this,
                                   mGpu);
+    if constexpr (!rndshape::kPointTestWaitAfterSubmit) {
+        // No wait after the submit (FinishPointTestReadback): the tests whose
+        // answers are still in flight, or that a full pass could not record
+        // last frame, get their key's last answer now, and the real one at a
+        // later world end.
+        mPointTestLateKeys.clear();
+        mPointTestPass.KeysDueThrough(mPointTestSeqBeforeFrame, mPointTestLateKeys);
+        mPointTestLateKeys.insert(mPointTestLateKeys.end(), mPointTestUnrecordedKeys.begin(),
+                                  mPointTestUnrecordedKeys.end());
+        mPointTestUnrecordedKeys.clear();
+        if (!mPointTestLateKeys.empty()) {
+            const int n =
+                mPointTestStandIns.Deliver(mPointTestLateKeys, DeliverPointTestStandIn, this);
+            mPointTestStandInsDelivered += (uint64_t)n;
+            mPointTestStandInsFrame += n;
+        }
+    }
     if (mFrameTimes) mPointTestWaitMs += (PerfNow() - waitStart) * 1000.0;
 
     if (mPointTestQueue.empty()) return;
@@ -1070,6 +1204,9 @@ void WgpuRnd::RunPointTests() {
         const uint64_t seq = mPointTestPass.LastSeq();
         mPointTestBatchFrames[seq % 8] = {seq, (int)mFrameID};
         mPointTestsRecorded += (int)mPointTestQueue.size();
+    } else if constexpr (!rndshape::kPointTestWaitAfterSubmit) {
+        for (const PointTestPass::Query& q : mPointTestQueue)
+            if (q.key) mPointTestUnrecordedKeys.push_back(q.key);
     }
     mPointTestQueue.clear();
     if (resume) {
@@ -1088,7 +1225,11 @@ void WgpuRnd::RunPointTests() {
 // world end.
 void WgpuRnd::FinishPointTestReadback() {
 #ifndef __EMSCRIPTEN__
+    // DC3 does not wait (rndshape::kPointTestWaitAfterSubmit): a late answer
+    // is delivered at a later world end, with a stand-in until then.
+    if constexpr (!rndshape::kPointTestWaitAfterSubmit) return;
     if (!mPointTestPass.InFlight() || mPointTestSeqBeforeFrame == 0) return;
+    mPointTestEndWaits++;
     const double waitStart = mFrameTimes ? PerfNow() : 0.0;
     const int n = mPointTestPass.CollectThrough(mPointTestSeqBeforeFrame, true,
                                                 DeliverPointTestAnswer, this, mGpu);
@@ -1257,7 +1398,7 @@ void WgpuRnd::BeginFramePass(bool clear) {
     int curH = mGpu.WindowHeight();
     // After FlushWorldPost (RB3) the frame is already graded: the rest of it
     // draws straight to the frame target.
-    bool hasPostProc = RndPostProc::Current() != nullptr &&
+    bool hasPostProc = FramePostProc() != nullptr &&
                        !(rndshape::kRetailPostChain && mPostProcFlushed);
 
     wgpu::RenderPassColorAttachment colorAtt{};
@@ -1272,6 +1413,7 @@ void WgpuRnd::BeginFramePass(bool clear) {
                 iDesc.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding |
                               wgpu::TextureUsage::CopySrc;  // SavePreBuffer
                 iDesc.mipLevelCount = 1;
+                if (mIntermediateView) mPostBindGroupCache.Forget(mIntermediateView.Get());
                 mIntermediateTex = mGpu.Device().CreateTexture(&iDesc);
                 mIntermediateView = mIntermediateTex.CreateView();
                 mIntermediateWidth = curW;
@@ -1294,6 +1436,7 @@ void WgpuRnd::BeginFramePass(bool clear) {
                 iDesc.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding |
                               wgpu::TextureUsage::CopySrc;  // SavePreBuffer
                 iDesc.mipLevelCount = 1;
+                if (mIntermediateView) mPostBindGroupCache.Forget(mIntermediateView.Get());
                 mIntermediateTex = mGpu.Device().CreateTexture(&iDesc);
                 mIntermediateView = mIntermediateTex.CreateView();
                 mIntermediateWidth = curW;
@@ -1331,6 +1474,7 @@ void WgpuRnd::BeginFramePass(bool clear) {
     rpDesc.colorAttachments = &colorAtt;
     rpDesc.depthStencilAttachment = &depthAtt;
 
+    MILO_GPU_TIME_PASS(rpDesc);
     mPass = mEncoder.BeginRenderPass(&rpDesc);
     rndshape::DrawLogPassOpen(clear ? 0 : 1);
     mInPass = true;
@@ -1413,6 +1557,7 @@ void WgpuRnd::BeginTexturePass(RndTex* tex, const TexturePassLoad& load) {
         rpDesc.depthStencilAttachment = &depthAtt;
     }
 
+    MILO_GPU_TIME_PASS(rpDesc);
     mPass = mEncoder.BeginRenderPass(&rpDesc);
     rndshape::DrawLogPassOpen(depthView ? 0 : 2);
     mInPass = true;
@@ -1513,10 +1658,11 @@ void WgpuRnd::BeginDrawing() {
             sChecked = true;
             const char *env = getenv("MILO_CAPTURE_FRAME");
             if (env) sCaptureFrame = atoi(env);
+            // Armed once; the BeginFrame below (after mFrameID++) starts it.
+            // A BeginFrame here as well consumed every CaptureNextFrame (F12,
+            // /api/capture/next) and the second call then switched it off.
+            if (sCaptureFrame >= 0) FrameCapture::Get().SetCaptureFrame(sCaptureFrame);
         }
-        FrameCapture::Get().BeginFrame(mFrameID);
-        if (sCaptureFrame >= 0 && mFrameID == sCaptureFrame)
-            FrameCapture::Get().SetCaptureFrame(sCaptureFrame);
     }
 
     // Skip if GPU not initialized or device lost
@@ -1582,7 +1728,10 @@ void WgpuRnd::BeginDrawing() {
     // Only if no camera is already current (viewer sets its own orbit camera)
     if (mDefaultCam && !RndCam::Current())
         mDefaultCam->Select();
-    if (mDefaultEnv && !rndshape::CurrentEnv())
+    // rndshape::kSelectDefaultEnvEachFrame: the environ every frame, as
+    // Rnd::BeginDrawing does, so a draw that selects no environ of its own
+    // gets the default one, not whichever the last frame left current.
+    if (mDefaultEnv && (rndshape::kSelectDefaultEnvEachFrame || !rndshape::CurrentEnv()))
         mDefaultEnv->Select(nullptr);
 
     // Reset ring buffers for this frame
@@ -1590,20 +1739,12 @@ void WgpuRnd::BeginDrawing() {
     mMaterialRing.Reset();
     mObjectRing.Reset();
     mBoneRing.Reset();
+    mBindGroupCache.BeginFrame((uint64_t)mFrameID);
+    mPostBindGroupCache.BeginFrame((uint64_t)mFrameID);
 
 #ifndef __EMSCRIPTEN__
-    // Poll window size each frame and reconfigure surface if changed.
-    // This catches resize events that the callback may miss (e.g. macOS
-    // live resize where the callback fires but Dawn needs reconfiguration
-    // before the next AcquireNextFrame).
-    if (!mGpu.IsHeadless() && mGpu.Window()) {
-        int winW, winH;
-        glfwGetWindowSize(mGpu.Window(), &winW, &winH);
-        if (winW > 0 && winH > 0 &&
-            (winW != mGpu.WindowWidth() || winH != mGpu.WindowHeight())) {
-            mGpu.ResizeSurface(winW, winH);
-        }
-    }
+    // The surface follows the window inside GpuDevice::AcquireNextFrame (its
+    // framebuffer size, so HiDPI; a fixed frame stays the Rnd virtual size).
 #else
     // Web: poll canvas buffer size and sync GPU surface.
     // The JS ResizeObserver may fire before WASM is ready, leaving the
@@ -1628,6 +1769,13 @@ void WgpuRnd::BeginDrawing() {
         mFrameView = mGpu.AcquireNextFrame();
     }
     if (!mFrameView) {
+#ifndef __EMSCRIPTEN__
+        // A window that has never given a frame (dc3 PLAN H-33): stop with a
+        // message. AcquireNextFrame waited a frame period, so until then the
+        // loop runs near the display rate, not flat out.
+        if (!mGpu.IsHeadless() && mGpu.SurfaceFailed())
+            NativeRenderFatal(mGpu.SurfaceFailureReason().c_str());
+#endif
 #ifdef DEBUG_LOGS
         static int sFailCount = 0;
         if (sFailCount < 10) {
@@ -1692,8 +1840,11 @@ void WgpuRnd::BeginDrawing() {
     encDesc.label = "FrameEncoder";
     mEncoder = mGpu.Device().CreateCommandEncoder(&encDesc);
 
-    // Shadow pre-pass: render depth from light's perspective
-    mShadowPass.Render(mEncoder, mObjectRing, mBoneRing, mGpu);
+    // Shadow pre-pass: render depth from light's perspective. Not for a shape
+    // whose shadows come from its own lights (DC3's projected shadow light,
+    // drawn at EndDrawing; rndshape::kGenericShadowPass).
+    if (rndshape::kGenericShadowPass)
+        mShadowPass.Render(mEncoder, mObjectRing, mBoneRing, mGpu);
 
     // Pre-clear: render-to-texture passes (TexRenderer, TexMovie)
     // Must happen after encoder creation but before main frame pass.
@@ -1762,7 +1913,8 @@ void WgpuRnd::EndDrawing() {
 
         // Post-processing: if active, read from intermediate and draw to frame target
         // Skip if already flushed (e.g., FlushPostProcessingForOverlay was called)
-        if (mIntermediateView && RndPostProc::Current() && !mPostProcFlushed) {
+        if (mIntermediateView && FramePostProc() && !mPostProcFlushed) {
+            FeedVelocity(mPostProcPass);
             mPostProcPass.Run(mEncoder, mIntermediateView, mIntermediateTex,
                               mIntermediateWidth, mIntermediateHeight,
                               mDepthSampleView, kMSAASamples, FrameTarget(), mBlackTexView, mGpu);
@@ -1770,7 +1922,9 @@ void WgpuRnd::EndDrawing() {
 
         // The display gamma ramp (RB3: DxRnd::SetupGamma's D3DDevice_SetGammaRamp),
         // over the finished frame, UI included, when the frame is presented.
-        // DC3 has none.
+        // DC3 (dc3-decomp only, rndshape::kDC3RetailPost) applies it to every
+        // output, headless included, so its captures are post-ramp;
+        // rb3-xenon's DC3 shape returns 0 and the pass never runs.
         if (const float displayGamma = rndshape::DisplayGamma(!mGpu.IsHeadless());
             displayGamma > 0.0f) {
 #ifdef __EMSCRIPTEN__
@@ -1802,9 +1956,27 @@ void WgpuRnd::EndDrawing() {
         }
 #endif
 
+        // The shape's projected shadow lights (DC3: every projected light
+        // with shadow objects): their casters as this frame left them, each
+        // into its tile of the map the next frame's receivers sample
+        // (rndshape::CollectProjShadowCasterSets).
+        {
+            std::vector<rndshape::ProjShadowCasters> lights;
+            if (rndshape::CollectProjShadowCasterSets(lights) > 0) {
+                std::vector<ShadowPass::CasterSet> sets;
+                for (const rndshape::ProjShadowCasters& l : lights)
+                    sets.push_back({l.clipFromWorld, l.meshes.data(), (int)l.meshes.size(), l.tile});
+                mShadowPass.RenderCasters(mEncoder, mGpu, sets.data(), (int)sets.size());
+            }
+        }
+
         wgpu::CommandBuffer cmd = mEncoder.Finish();
+        // The frame's uniform blocks, staged by every ring Write since
+        // BeginDrawing, must be on the queue before the commands that read them.
+        FlushUniformRings();
         mGpu.Queue().Submit(1, &cmd);
         mPointTestPass.Submitted();
+        if (mGpuCountersEvery > 0 && mFrameID % mGpuCountersEvery == 0) LogGpuCounters();
 
         MaybeCaptureFrame();
         MaybeEncodeVideoFrame();
@@ -1814,6 +1986,8 @@ void WgpuRnd::EndDrawing() {
         if (!mGpu.IsHeadless()) {
             mGpu.PresentFrame();
         }
+        // MILO_GPU_TIMERS: resolve this frame's pass timestamps (gfx/GpuTimers.h).
+        GpuTimers::Get().EndFrame(mGpu.Queue());
 
     }
 
@@ -1862,10 +2036,11 @@ void WgpuRnd::WriteFrameTimes() {
     if (!mFrameTimes) return;
     const double now = PerfNow(), cpu = ThreadCpuNow();
     if (mFrameTimesLastEnd > 0.0) {
-        fprintf(mFrameTimes, "%d,%.3f,%.3f,%.3f,%.3f,%d,%d,%d,%.3f,%d\n", (int)mFrameID,
+        fprintf(mFrameTimes, "%d,%.3f,%.3f,%.3f,%.3f,%d,%d,%d,%.3f,%d,%d\n", (int)mFrameID,
                 (now - mFrameTimesLastEnd) * 1000.0, (cpu - mFrameTimesLastCpu) * 1000.0,
                 (now - mFrameTimesBegin) * 1000.0, mPointTestWaitMs, mPointTestsRecorded,
-                mPointTestAnswers, mPointTestAgeMax, mPointTestEndWaitMs, mPointTestAfterSubmit);
+                mPointTestAnswers, mPointTestAgeMax, mPointTestEndWaitMs, mPointTestAfterSubmit,
+                mPointTestStandInsFrame);
         fflush(mFrameTimes);
     }
     mFrameTimesLastEnd = now;
@@ -1876,6 +2051,7 @@ void WgpuRnd::WriteFrameTimes() {
     mPointTestsRecorded = 0;
     mPointTestAnswers = 0;
     mPointTestAgeMax = 0;
+    mPointTestStandInsFrame = 0;
 }
 
 void WgpuRnd::CreateDepthTexture(int w, int h) {
@@ -1894,6 +2070,7 @@ void WgpuRnd::CreateDepthTexture(int w, int h) {
         desc.mipLevelCount = 1;
         desc.sampleCount = kMSAASamples;
 
+        if (mDepthSampleView) mPostBindGroupCache.Forget(mDepthSampleView.Get());
         mDepthTex = mGpu.Device().CreateTexture(&desc);
         mDepthView = mDepthTex.CreateView();
         // A binding may select one aspect only; the attachment view keeps both.
@@ -2137,9 +2314,28 @@ void WgpuRnd::WriteSceneUniforms() {
     RndEnviron* env = rndshape::CurrentEnv();
     if (rndshape::kRenderTargetStoresLinear && mActiveTargetTex) scene.outputLinear = 1.0f;
     if (rndshape::WriteSceneLighting(scene, cam)) {
-        // The content's own lighting model (RB3-Wii: rndshape/RB3WiiSceneLighting.cpp).
-        mProjLightTexView = nullptr;
+        // The content's own lighting model (RB3-Wii: rndshape/RB3WiiSceneLighting.cpp;
+        // DC3: rndshape/DC3SceneLighting.cpp, docs/native/dc3-retail-lighting.md).
+        // DC3's projected_blend 0 light binds its gobo here; RB3-Wii has none.
+        // Upload on demand: textures reach the GPU when a material binds them
+        // (PresyncBitmap), and a gobo is bound by a light alone. Rollerrink's
+        // light_glow01.tex and discoBallReflection.tex are referenced by no
+        // material, so without this the view was null, slot 3 fell back to
+        // white, and every blend-0 light lit its whole cone at full colour
+        // instead of its pool (docs/native/dc3-retail-lighting.md 8.1).
+        RndTex* gobo = rndshape::SceneProjTexture();
+        if (gobo) gobo->PresyncBitmap();
+        mProjLightTexView = gobo ? GetGpuTexView(gobo) : nullptr;
     } else if (env && rndshape::EnvHasAmbientFogOwner(env)) {
+        // The engine's heuristic light model. WHO STILL REACHES THIS ARM: rb3-xenon
+        // (the dc3 render shape without DC3's HX_NATIVE accessors, so
+        // WriteSceneLighting returns false there) -- its captures are pinned
+        // byte-identical by each lane's rb3-render A/B -- and RB3-Wii on any
+        // frame its own RB3WiiSceneLighting declines (it returns false when
+        // neither its retail model nor its venue-light arm applies). DC3 never
+        // does: its shape claims every frame through WriteDC3Retail
+        // (retailLighting 2) since np-gfx-light round 1. Do not delete this arm
+        // while those render with it; do not tune it for DC3, which never sees it.
         // Ambient color (with minimum floor for visibility)
         const Hmx::Color& amb = env->AmbientColor();
         float minAmbient = 0.08f;
@@ -2418,8 +2614,9 @@ void WgpuRnd::WriteSceneUniforms() {
         scene.numLights = 3.0f;
     }
 
-    // Shadow mapping data
-    if (mShadowPass.Available()) {
+    // Shadow mapping data (the generic pre-pass; a shape with its own shadow
+    // light writes these in WriteSceneLighting)
+    if (rndshape::kGenericShadowPass && mShadowPass.Available()) {
         memcpy(scene.lightViewProj, mShadowPass.LightViewProj(), 64);
         scene.shadowEnabled = 1.0f;
         scene.shadowBias = 0.002f;
@@ -2460,17 +2657,17 @@ void WgpuRnd::WriteSceneUniforms() {
     mSceneBindGroup = mGpu.Device().CreateBindGroup(&bgDesc);
 }
 
-wgpu::BindGroup WgpuRnd::CreateMaterialBindGroup(
-    uint32_t bufferOffset, uint32_t bufferSize,
+wgpu::BindGroup WgpuRnd::MaterialBindGroup(
     const MaterialTexViews& texViews,
     wgpu::Sampler& diffuseSampler, wgpu::Sampler& mapSampler)
 {
     wgpu::BindGroupEntry entries[14] = {};
 
+    // The draw's MaterialUniforms block: dynamic offset (SetBindGroup).
     entries[0].binding = 0;
     entries[0].buffer = mMaterialRing.Buffer();
-    entries[0].offset = bufferOffset;
-    entries[0].size = bufferSize;
+    entries[0].offset = 0;
+    entries[0].size = sizeof(MaterialUniforms);
 
     entries[1].binding = 1;
     entries[1].textureView = texViews.diffuse;
@@ -2519,37 +2716,76 @@ wgpu::BindGroup WgpuRnd::CreateMaterialBindGroup(
     desc.entryCount = 14;
     desc.entries = entries;
 
-    return mGpu.Device().CreateBindGroup(&desc);
+    return mBindGroupCache.GetOrCreate(mGpu.Device(), desc);
 }
 
-wgpu::BindGroup WgpuRnd::CreateObjectBindGroup(uint32_t bufferOffset, uint32_t bufferSize) {
+wgpu::BindGroup WgpuRnd::ObjectBindGroup() {
     wgpu::BindGroupEntry entry{};
     entry.binding = 0;
     entry.buffer = mObjectRing.Buffer();
-    entry.offset = bufferOffset;
-    entry.size = bufferSize;
+    entry.offset = 0;
+    entry.size = sizeof(ObjectUniforms);
 
     wgpu::BindGroupDescriptor desc{};
     desc.layout = mPipelines.ObjectLayout();
     desc.entryCount = 1;
     desc.entries = &entry;
 
-    return mGpu.Device().CreateBindGroup(&desc);
+    return mBindGroupCache.GetOrCreate(mGpu.Device(), desc);
 }
 
-wgpu::BindGroup WgpuRnd::CreateBoneBindGroup(uint32_t bufferOffset, uint32_t bufferSize) {
+wgpu::BindGroup WgpuRnd::BoneBindGroup() {
     wgpu::BindGroupEntry entry{};
     entry.binding = 0;
     entry.buffer = mBoneRing.Buffer();
-    entry.offset = bufferOffset;
-    entry.size = bufferSize;
+    entry.offset = 0;
+    entry.size = sizeof(BoneUniforms);
 
     wgpu::BindGroupDescriptor desc{};
     desc.layout = mPipelines.BoneLayout();
     desc.entryCount = 1;
     desc.entries = &entry;
 
-    return mGpu.Device().CreateBindGroup(&desc);
+    return mBindGroupCache.GetOrCreate(mGpu.Device(), desc);
+}
+
+void WgpuRnd::FlushUniformRings() {
+    mSceneRing.Flush(mGpu.Queue());
+    mMaterialRing.Flush(mGpu.Queue());
+    mObjectRing.Flush(mGpu.Queue());
+    mBoneRing.Flush(mGpu.Queue());
+}
+
+// MILO_GPU_COUNTERS=N: one line every N frames (default 600) with the live
+// cached bind groups and the uniform rings, so growth across songs shows.
+void WgpuRnd::LogGpuCounters() {
+    const UniformRingBuffer* rings[4] = {&mSceneRing, &mMaterialRing, &mObjectRing, &mBoneRing};
+    uint64_t writes = 0, bytes = 0;
+    uint32_t capacity = 0;
+    for (const UniformRingBuffer* r : rings) {
+        writes += r->QueueWrites();
+        bytes += r->QueueBytes();
+        capacity += r->Capacity();
+    }
+    fprintf(stderr,
+            "[GPUCOUNT] frame=%d bindGroupsLive=%zu bgCreated=%llu bgHits=%llu bgEvicted=%llu "
+            "bgUncached=%llu ringBuffers=4 ringBytes=%u ringGrows=%u/%u/%u/%u "
+            "ringQueueWrites=%llu ringQueueBytes=%llu pipelines=%d gpuMeshes=%zu gpuTextures=%zu "
+            "postBgLive=%zu postBgCreated=%llu postBgHits=%llu postBgEvicted=%llu postBgUncached=%llu "
+            "ptBatches=%d ptCreated=%llu ptInFlight=%d\n",
+            (int)mFrameID, mBindGroupCache.Size(),
+            (unsigned long long)mBindGroupCache.Creates(),
+            (unsigned long long)mBindGroupCache.Hits(),
+            (unsigned long long)mBindGroupCache.Evictions(),
+            (unsigned long long)mBindGroupCache.Uncached(), capacity, mSceneRing.Grows(),
+            mMaterialRing.Grows(), mObjectRing.Grows(), mBoneRing.Grows(),
+            (unsigned long long)writes, (unsigned long long)bytes,
+            mPipelines.CachedPipelineCount(), GpuMeshCount(), GpuTexCount(),
+            mPostBindGroupCache.Size(), (unsigned long long)mPostBindGroupCache.Creates(),
+            (unsigned long long)mPostBindGroupCache.Hits(),
+            (unsigned long long)mPostBindGroupCache.Evictions(),
+            (unsigned long long)mPostBindGroupCache.Uncached(), mPointTestPass.Batches(),
+            (unsigned long long)mPointTestPass.ResourceCreates(), mPointTestPass.InFlight());
 }
 
 #ifdef HX_IMGUI
@@ -2570,6 +2806,7 @@ void WgpuRnd::RenderImGuiOverlay() {
     rpDesc.colorAttachmentCount = 1;
     rpDesc.colorAttachments = &colorAtt;
 
+    MILO_GPU_TIME_PASS(rpDesc);
     wgpu::RenderPassEncoder imguiPass = mEncoder.BeginRenderPass(&rpDesc);
     ImGui_ImplWGPU_RenderDrawData(drawData, imguiPass.Get());
     imguiPass.End();
@@ -2630,4 +2867,29 @@ void WgpuRnd::DrawRect(const Hmx::Rect& rect, RndMat* mat, ShaderType,
     // Restore the scene bind group so subsequent mesh draws don't mismatch.
     if (mSceneBindGroup)
         mPass.SetBindGroup(0, mSceneBindGroup);
+}
+
+void WgpuRnd::DrawRect(const Hmx::Rect& r, const Hmx::Color& c, RndMat* m,
+                       const Hmx::Color* tr, const Hmx::Color* bl) {
+    if (rndshape::kRectXboxDrawRectShader && m) {
+        // DxRnd::DrawRect -> kDrawRectShader: c0 (material colour) times the
+        // vertex colour when prelit, c0 alone otherwise. RndFlare draws this
+        // way with a material whose colour carries the flare's fade.
+        const Hmx::Color k = DrawRectMaterialColor(m);
+        if (!rndshape::MatPrelit(m)) {
+            DrawRect(r, m, kStandardShader, k, nullptr, nullptr);
+            return;
+        }
+        auto mul = [&k](const Hmx::Color& a) {
+            return Hmx::Color(a.red * k.red, a.green * k.green, a.blue * k.blue,
+                              a.alpha * k.alpha);
+        };
+        const Hmx::Color c2 = mul(c);
+        Hmx::Color tr2, bl2;
+        if (tr) tr2 = mul(*tr);
+        if (bl) bl2 = mul(*bl);
+        DrawRect(r, m, kStandardShader, c2, tr ? &tr2 : nullptr, bl ? &bl2 : nullptr);
+        return;
+    }
+    DrawRect(r, m, kStandardShader, c, tr, bl);
 }

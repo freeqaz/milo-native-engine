@@ -32,6 +32,8 @@
 #pragma once
 #include <webgpu/webgpu_cpp.h>
 
+#include "gfx/BindGroupCache.h"
+
 class GpuDevice;
 
 struct RetailPostParams {
@@ -54,7 +56,9 @@ struct RetailPostParams {
     float noiseMidtone = 0.0f;
     float time = 0.0f;
     int debugView = 0;            // 1: show the bloom mask, 2: show the bloom term,
-                                  // 3: show the spotlight beam target
+                                  // 3: show the spotlight beam target,
+                                  // 4 (DC3): show the velocity target (tf10)
+                                  // 5 (DC3): show |bit 42's blur - scene| x 8
     // NgSpotlightDrawer's beams (postprocess.ps option bit 51), added after the
     // screen blend and before the colour transform:
     //   c += beam.rgb * (fog.r * spotSmoke + spotBase) * spotScale
@@ -65,6 +69,86 @@ struct RetailPostParams {
     float spotScale = 0.0f;       // c91.x: SpotDrawParams::mIntensity * 32
     float spotBase = 0.0f;        // c127.x: mBaseIntensity / 100
     float spotSmoke = 0.0f;       // c127.y: mSmokeIntensity / 100 * (1 - c127.x)
+
+    // ---- np-gfx-post: DC3 (rndshape::kDC3RetailPost) ----------------------
+    // dc3-decomp's NgPostProc::DoBloom and DC3's postprocess.ps, which differ
+    // from RB3's in order and in three effects. Left at these defaults, RB3's
+    // chain is unchanged (separate shader module and pipelines).
+    //   composite  scene (or chroma: red at (u - ox, v), green at
+    //              (u + ox/2, v + 0.866 oy), blue at (u + ox/2, v - 0.866 oy);
+    //              sharpen: 4 scene - those three taps), screen-blended with
+    //              the bloom sets, then the texture noise (overlay into the
+    //              UNCLAMPED screen result), then dp4 against the colour
+    //              matrix, then the vignette:
+    //                w = sat((|uv - 0.5|^2 + I) * 3.724 - 4.655)^2
+    //                out = sat(c + w * (vignetteColor - c))
+    //              No posterize (no shipped DC3 post-process sets it).
+    //   streak     DoBloom's streak arm (mBloomStreak && !mBloomGlare): set0
+    //              = bloom.ps into w/4, three 7-tap streak passes along the
+    //              rotated horizontal; set1 = bloom.ps straight from the scene
+    //              into w/16 (4 bilinear taps at +-2 scene texels, so it
+    //              samples a quarter of each 16x16 block, as retail), three
+    //              passes along the rotated vertical; set2 black.
+    //              SetBloomBlurWeightsStreak (dc3-decomp rndobj/Utl.cpp).
+    bool dc3 = false;
+    bool streak = false;
+    float streakAttenuation = 0.0f;   // mBloomStreakAttenuation
+    float streakAngle = 0.0f;         // mBloomStreakAngle, degrees
+    float screenAspect = 0.5625f;     // TheRnd.Height() / Width() (yRatio)
+    // NgPostProc::CheckNoise: mNoiseMap on sampler 13 (null: no noise), c112
+    // seeds, c113 = (baseScale.xy, topScale or 1 when stationary, intensity).
+    wgpu::TextureView noiseMap;
+    float noiseSeeds[4] = {0, 0, 0, 0};
+    float noiseParams[4] = {0, 0, 0, 0};
+    // NgPostProc::CheckMotionBlur (postprocess.ps bit 24): when
+    // RndPostProc::DoMotionBlur() holds, c105 = (weight.rgb * blend,
+    // weight.a) and the composite mixes in tf14, DxRnd's mPostProcessBuffer
+    // (the previous frame's post-process output, resolved by
+    // FinishPostProcess -> SavePostBuffer before the UI draws over it):
+    //   r   = sat(c105.w * (prev.a - scene.a) / prev.a)      (0 when prev.a = 0)
+    //   k   = max(r, c105.rgb)
+    //   out = sat(c + (prev.rgb - c) * k)    c = the unclamped graded colour
+    //   a   = sat(scene.a + r * (prev.a - scene.a))   (fed back as next prev.a)
+    // Last in the shader, after the vignette. Off: no texture, no extra target,
+    // the composite unchanged. On, the composite writes a second target that
+    // the next frame reads (RB3RetailPost keeps two, ping-ponged).
+    bool motionBlur = false;
+    float motionBlurParams[4] = {0, 0, 0, 0};   // c105
+    // NgPostProc::DoBloom's glare arm (mBloomGlare && !TheHiResScreen.
+    // IsActive()): set0 = bloom.ps, the plain blur across and down, then
+    // bloom_glare.ps (ten taps towards the screen centre, harmonic mean); the
+    // composite (bit 37 instead of bit 4) ADDS 0.5 * c6 * set0 to the scene.
+    bool glare = false;
+    // NgPostProc::CheckHueConverge, postprocess.ps bit 62 (blend_amount > 0),
+    // last of all (after motion blur): the colour to HSV (EasyRGB), its hue
+    // replaced by frac(T + 2 dist(H, T) (1 - focus)), dist the circular hue
+    // distance and T = c222.x, V raised to brightness_power, back to RGB and
+    // mixed in by blend_amount. hueParams = c222 = (hue_target / 360 + 0.5,
+    // hue_focus, blend_amount, brightness_power).
+    bool hueConverge = false;
+    float hueParams[4] = {0, 0, 0, 1};
+    // NgPostProc::DoVelocity (round 3), postprocess.ps bit 42: when
+    // RndVelocityBuffer::Draw returned true (motion_blur_velocity, not the
+    // hi-res screen, the camera's second consecutive frame since a cut) the
+    // camera velocity pass (velocity_camera.ps) writes tf10, a w/2 x h/2
+    // A8R8G8B8 target, from the world depth (tf9):
+    //   world = this frame's camera, unprojected at the pixel's depth
+    //   v     = clamp(prevUV(world) - uv, +-0.02)    prevUV = last frame's VP
+    //   tf10  = (v * 25 + 0.5, 1.767767 |v|, 0)
+    // and the composite, where tf10.z >= 0.003, replaces the scene (RGBA) by
+    // 10 taps along d = (tf10.xy - 0.5) * c122 at uv - 0.023 d + k 0.0046 d
+    // (k = 0..9), weights 0.00876 0.02700 0.06476 0.12099 0.17603 0.17603
+    // 0.12099 0.06476 0.02700 0.00876, plus the centre tap at 0.19947, all
+    // times 1.00549. c122 = min(2, 41.666668 / (ms since the last Draw + 1)).
+    // `velocityReproj` (row-major, row vectors) takes this frame's NDC
+    // (x, y, depth, 1) to last frame's clip space: inverse(VP) * prevVP.
+    // Off: no pass, no target (the composite binds black and never reads it).
+    bool velocity = false;
+    float velocityScale = 0.0f;       // c122
+    float velocityReproj[16] = {};
+    wgpu::TextureView velocityDepth;  // the world depth, multisampled
+    uint32_t velocityDepthSamples = 0;
+    // ---- end np-gfx-post ----
 };
 
 class RB3RetailPost {
@@ -83,18 +167,51 @@ public:
     void Blit(wgpu::RenderPassEncoder& pass, const wgpu::TextureView& src,
               uint32_t samples, wgpu::TextureFormat depthFmt, GpuDevice& gpu);
     void Terminate();
+    // Where the chain's bind groups come from (WgpuRnd's post cache; dc3 PLAN
+    // H-66): every pass's group binds the same views, sampler and uniform
+    // buffer frame after frame -- the uniform slot is a dynamic offset, not
+    // part of the group -- so a steady frame creates none. Null: each pass
+    // creates its group (tests and tools that run the chain alone).
+    void SetBindGroupCache(BindGroupCache* cache) { mBindGroups = cache; }
 
 private:
     static constexpr int kSets = 3;
     void EnsurePipelines(GpuDevice& gpu);
+    // np-gfx-post: the DC3 chain (RetailPostParams::dc3).
+    void EnsureDC3Pipelines(GpuDevice& gpu);
+    void RunDC3Bloom(wgpu::CommandEncoder& encoder, const wgpu::TextureView& bloomSrc,
+                     int sceneW, int sceneH, const RetailPostParams& p, GpuDevice& gpu);
+    void RunDC3Composite(wgpu::CommandEncoder& encoder, const wgpu::TextureView& sceneView,
+                         int sceneW, int sceneH, const wgpu::TextureView& frameView,
+                         const RetailPostParams& p, GpuDevice& gpu);
+    void PassDC3(wgpu::CommandEncoder& encoder, const wgpu::RenderPipeline& pipe,
+                 const wgpu::TextureView& dst, const wgpu::TextureView& src,
+                 const float* uni, size_t uniBytes, GpuDevice& gpu);
     void EnsureTextures(int sceneW, int sceneH, GpuDevice& gpu);
     void Pass(wgpu::CommandEncoder& encoder, const wgpu::RenderPipeline& pipe,
               const wgpu::TextureView& dst, const wgpu::TextureView& src,
               const float* uni, size_t uniBytes, GpuDevice& gpu);
 
+    // The bind group for `d` (cached when a cache is attached), and the
+    // dynamic offset of the next uniform slot.
+    wgpu::BindGroup Group(GpuDevice& gpu, const wgpu::BindGroupDescriptor& d);
+    uint32_t NextSlot() { return (uint32_t)(mSlot++ % kSlots) * kSlotStride; }
+    // A view (or buffer) this chain is about to release: the cached groups
+    // binding it go at the cache's next frame.
+    void Forget(const wgpu::TextureView& v) {
+        if (mBindGroups && v) mBindGroups->Forget(v.Get());
+    }
+    BindGroupCache* mBindGroups = nullptr;
+
     wgpu::Texture mTex[kSets][2];
     wgpu::TextureView mView[kSets][2];
     int mW[kSets] = {}, mH[kSets] = {};
+    // The bloom sets' format. RB3: RGBA16Float. DC3 (np-gfx-post): RGBA8Unorm,
+    // as NgPostProc::BloomTextureSet::AllocateTextures makes them
+    // (SetBitmap(w, h, TheRnd.Bpp() = 32, kRenderedNoZ): A8R8G8B8), so every
+    // bloom pass saturates at 1 as retail's EDRAM resolve does. Switched by
+    // EnsureDC3Pipelines, which rebuilds the pipelines and sets that use it.
+    wgpu::TextureFormat mBloomFormat = wgpu::TextureFormat::RGBA16Float;
 
     wgpu::ShaderModule mShader;
     wgpu::BindGroupLayout mPassBGL;       // src tex, sampler, uniform
@@ -110,6 +227,8 @@ private:
     wgpu::Sampler mSampler;               // linear, clamp
     // One 256-byte slot per pass. Queue::WriteBuffer runs at Submit, ahead of
     // the frame's passes, so passes sharing a slot would all read the last data.
+    // The slot is each pass's dynamic offset (every uniform binding of these
+    // layouts has hasDynamicOffset), so it is not part of any bind group.
     static constexpr int kSlots = 64;
     static constexpr int kSlotStride = 256;
     wgpu::Buffer mUniforms;
@@ -118,4 +237,43 @@ private:
     wgpu::TextureView mBlackView;
     wgpu::TextureFormat mFrameFormat = wgpu::TextureFormat::Undefined;
     bool mReady = false;
+
+    // np-gfx-post: DC3 module (kDC3Shader), its own layouts and pipelines.
+    wgpu::ShaderModule mDC3Shader;
+    wgpu::BindGroupLayout mDC3PassBGL;        // src tex, sampler, taps uniform
+    wgpu::BindGroupLayout mDC3CompositeBGL;   // scene, sampler, uniform, set0..2, noise, noise sampler
+    wgpu::PipelineLayout mDC3PassPL, mDC3CompositePL;
+    wgpu::RenderPipeline mDC3BloomTapsPipe;   // bloom.ps, 4 bilinear taps (the w/16 streak set)
+    wgpu::RenderPipeline mDC3StreakPipe;      // 7-tap streak blur
+    wgpu::RenderPipeline mDC3GlarePipe;       // bloom_glare.ps
+    wgpu::RenderPipeline mDC3CompositePipe;
+    wgpu::RenderPipeline mDC3CompositeMBPipe; // + the motion-blur feedback target
+    // NgPostProc::CheckMotionBlur's tf14 (DxRnd::mPostProcessBuffer, A8R8G8B8):
+    // the composite reads one and writes the other. Allocated on the first
+    // motion-blur frame only. mPrevRun is the mRunIndex that last wrote
+    // mPrev[mPrevCur]; the feedback is valid only on the very next Run.
+    wgpu::Texture mPrevTex[2];
+    wgpu::TextureView mPrevView[2];
+    int mPrevW = 0, mPrevH = 0, mPrevCur = 0;
+    uint64_t mRunIndex = 0, mPrevRun = ~0ull;
+    // NgPostProc::DoVelocity's tf10 (RndVelocityBuffer::mVelocityTex, w/2 x
+    // h/2 A8R8G8B8), allocated on the first velocity frame only.
+    bool RunDC3Velocity(wgpu::CommandEncoder& encoder, int sceneW, int sceneH,
+                        const RetailPostParams& p, GpuDevice& gpu);
+    wgpu::Texture mVelTex;
+    wgpu::TextureView mVelView;
+    int mVelW = 0, mVelH = 0;
+    uint64_t mVelRun = ~0ull;                // the composite run it was drawn for
+    wgpu::BindGroupLayout mDC3VelBGL;        // depth (multisampled), uniform
+    wgpu::PipelineLayout mDC3VelPL;
+    wgpu::RenderPipeline mDC3VelPipe;        // velocity_camera.ps
+public:
+    // Inspection/tests: the last velocity target (null until one ran).
+    const wgpu::Texture& VelocityTexture() const { return mVelTex; }
+    int VelocityPasses() const { return mVelPasses; }
+private:
+    int mVelPasses = 0;
+    wgpu::Sampler mNoiseSampler;             // linear, wrap (CheckNoise: filter 1, clamp 0)
+    wgpu::TextureFormat mDC3FrameFormat = wgpu::TextureFormat::Undefined;
+    bool mDC3Ready = false;
 };

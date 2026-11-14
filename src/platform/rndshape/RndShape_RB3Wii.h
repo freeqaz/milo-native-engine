@@ -247,6 +247,10 @@ inline int MatColorMod(const MatView &m, float colours[3][4]) {
 // flags the band selector (RndShape_DC3.h ColorModAlphaIsBandSelector).
 inline bool ColorModAlphaIsBandSelector(const MatView &, int) { return false; }
 
+// Screen-aligned texture coordinates are DC3's (RndShape_DC3.h
+// MatScreenAligned); RB3 keeps the vertex UVs.
+inline bool MatScreenAligned(const MatView &) { return false; }
+
 // World refraction (RndShape.h RefractTerms) as the Xbox RndMat answers it:
 // GetRefractEnabled is mRefractEnabled && mRefractStrength > 0 && a normal
 // map, and GetRefractNormalMap is mRefractNormalMap, else the material's
@@ -460,6 +464,26 @@ inline Vector3 PartWorldPos(RndParticleSys *s, RndParticle *p) {
 // flavor's BandRnd::DrawParticles: tint by material colour, scale haze alpha
 // by 0.35, and fade haze out within two half-sizes of the camera.
 constexpr bool kPartMaterialTint = true;
+// The Xbox particle vertex shader's billboard (screen aspect, swing arm, its
+// rotation sense) is a DC3-shape term; RB3-Wii keeps the billboard it has.
+struct PartBillboardTerms {
+    bool retailXbox = false;
+    float screenAspect = 1.0f;
+    bool velocityVerts = false;
+    bool aligned = false;
+    bool stretched = false;
+    bool constantArea = false;
+    bool perspective = false;
+    float stretchScale = 1.0f;
+    float rel[9] = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f};
+};
+inline PartBillboardTerms PartBillboard(RndParticleSys *) { return {}; }
+inline float PartSwingArm(const RndParticle *) { return 0.0f; }
+inline Vector3 PartVelocity(const RndParticle *) { return Vector3(0.0f, 0.0f, 0.0f); }
+// Read only by the Xbox-shader colour model (ParticleShaderColor), which this
+// shape does not use; declared so that model compiles here.
+inline bool MatUseEnviron(RndMat *m) { return m->mUseEnviron; }
+inline bool MatIntensify(RndMat *m) { return m->mIntensify; }
 
 // ---- cube texture ----------------------------------------------------------
 inline RndBitmap *CubeFaceBitmap(RndCubeTex *c, int face) { return &c->mBitmap[face]; }
@@ -487,6 +511,11 @@ constexpr int kDrawModeReflection = 7;
 // Less test the first opaque draw at each pixel wins -- the sky dome, drawn
 // first, hid the whole skyline.
 constexpr bool kCamSelectSetsViewport = false;
+
+// ---- flare point tests -----------------------------------------------------
+// WgpuRnd waits after the submit for point-test answers not ready at world end
+// (see the DC3 shape): RB3 keeps the one-frame answer latency on desktop.
+constexpr bool kPointTestWaitAfterSubmit = true;
 
 // ---- render-to-texture -----------------------------------------------------
 // RB3's RndTexRenderer::DrawToTexture brackets the draw into its output texture
@@ -516,6 +545,10 @@ constexpr bool kRenderTargetStoresLinear = true;
 // in sMat->SetColor(), so without the material colour every recoloured
 // garment, hair and eye composes to its untinted grey detail map.
 constexpr bool kRectModulatesMatColor = true;
+// The Xbox `standard`-shader rect colour model (RndShape_DC3.h) is not this
+// shape's; declared so that path compiles here.
+constexpr bool kRectXboxDrawRectShader = false;
+inline bool MatPrelit(RndMat *m) { return m->mPreLit; }
 
 // ---- post-processing -------------------------------------------------------
 // RB3's mNoiseIntensity is a gain on a tiled noise TEXTURE (mNoiseMap scaled by
@@ -550,6 +583,17 @@ inline bool PostProcNoiseMap(const RndPostProc *, PostProcNoise &) { return fals
 // PostProcPass's flicker modulation, applied as NgPostProc::ModulateColorXfm
 // applies mColorModulation (to the 3x3 part only).
 constexpr bool kRetailPostChain = true;
+// DC3's retail chain (RndShape_DC3.h, np-gfx-post) is the DC3 shape's only.
+constexpr bool kDC3RetailPost = false;
+// The DC3 shape's Rnd::DoPostProcess selection (blacklight override, then
+// set_postproc_override, then the registered post-proc). PostProcPass names it
+// under `if constexpr (kDC3RetailPost)`, which outside a template still needs
+// the declaration; that statement is discarded here, so nothing odr-uses it and
+// no definition is needed for this shape.
+RndPostProc *ActivePostProc();
+// Likewise named under `if constexpr (kDC3RetailPost)` only (Rnd_Wgpu.cpp).
+bool PostProcDisabled();
+bool TakeVelocityFrame(bool &ready, float &scale, RndCam *&cam);
 void FillRetailPost(const RndPostProc *pp, float flickerMul, ::RetailPostParams &out);
 // MILO_RB3_RETAIL_POST: unset or anything else = 1 (retail chain), "0" = 0
 // (PostProcPass's DC3 composite, as before the chain existed), "raw" = 2
@@ -578,7 +622,8 @@ constexpr bool kAlphaBlendMax = true;
 // weights the scene by that alpha. Returns c7's scale (SetBloomColor:
 // 1/threshold above 1, else 1) for such a material while the retail chain runs
 // with a current RndPostProc, else 0 (no mask). The caller decides "main frame".
-float BloomMaskScale(const MatView &m);
+// envFadeOutCancels: the DC3 shape's rect switch; not established for RB3-Wii, ignored.
+float BloomMaskScale(const MatView &m, bool envFadeOutCancels = true);
 // RB3 shades in gamma space: retail's standard.ps multiplies the texel by the
 // material colour and the ambient + diffuse lighting sum as stored and
 // authored, and writes the product straight to an 8-bit target
@@ -591,6 +636,12 @@ float BloomMaskScale(const MatView &m);
 // (standard_wgsl.inc, material.gammaShading; particles likewise, Part_Wgpu).
 // Display gamma is separate: see DisplayGamma below.
 constexpr bool kGammaSpaceShading = true;
+// Multiply-blend materials stay forced prelit (MaterialSetup); see the DC3
+// shape's kMultiplyBlendIsLit. Not measured for RB3 Wii.
+constexpr bool kMultiplyBlendIsLit = false;
+// Intensify scales alpha in the UI phase only (MaterialAlphaScale); see the
+// DC3 shape's kIntensifyScalesAlpha. Not measured for RB3 Wii.
+constexpr bool kIntensifyScalesAlpha = false;
 // The display gamma ramp. DxRnd::InitRenderState ends in DxRnd::SetupGamma,
 // which reads the system config's (rnd (gamma g)) and, when present, sets
 // D3DDevice_SetGammaRamp with entry i = (u16)(pow(i / 256, g) * 1024) * 64
@@ -629,6 +680,13 @@ bool WriteSceneLighting(SceneUniforms &s, RndCam *cam);
 // of approx lights queued (NgEnviron::UpdateApproxLighting); both 0 when the
 // retail light model does not apply.
 void FillMeshApproxLighting(RndMesh *mesh, float box[6][4], float retail[4]);
+// Shadows: RB3 keeps WgpuRnd's generic shadow pre-pass and has no projected
+// shadow light (see RndShape_DC3.h for the shape that does).
+constexpr bool kGenericShadowPass = true;
+constexpr bool kSelectDefaultEnvEachFrame = false;
+inline bool CollectProjShadowCasters(ProjShadowCasters &) { return false; }
+inline int CollectProjShadowCasterSets(std::vector<ProjShadowCasters> &) { return 0; }
+inline RndTex *SceneProjTexture() { return nullptr; }
 
 // ---- per-draw state log ----------------------------------------------------
 // The draw log and provenance sidecar RB3's harnesses read (RB3DrawLogDebug.h:

@@ -2,6 +2,7 @@
 // See platform/Rnd_Wgpu_RB3.h.
 
 #include "platform/Rnd_Wgpu_RB3.h"
+#include "gfx/GpuTimers.h"
 
 #include "rndobj/Cam.h"
 #include "rndobj/Mesh.h"
@@ -2033,6 +2034,7 @@ void BandRnd::BeginFrame(RndCam* cam) {
     rp.colorAttachmentCount = 1; rp.colorAttachments = &colorAtt;
     rp.depthStencilAttachment = &depthAtt;
 
+    MILO_GPU_TIME_PASS(rp);
     mPass = mEncoder.BeginRenderPass(&rp);
     mInPass = true;
     ProvNotePassOpen(0);  // W17 R3-UIDUMP: depthLoadOp = Clear
@@ -2122,6 +2124,9 @@ void BandRnd::EndFrame() {
     wgpu::CommandBuffer cmd = mEncoder.Finish();
     mGpu.Queue().Submit(1, &cmd);
     mFrameView = nullptr;
+    // MILO_GPU_TIMERS: resolve this frame's pass timestamps (a consumer's
+    // present pass lands in the next frame's set).
+    GpuTimers::Get().EndFrame(mGpu.Queue());
     // V3-extension: per-frame render diagnostics gated on RENDER_DBG /
     // RB3_RENDER_DBG. Logs camera name + draw count + tri count + clear color
     // every N frames so the gameplay-scene red-screen can be triaged against
@@ -2360,6 +2365,7 @@ void BandRnd::BeginDrawTarget(RndTex* tex) {
     rp.colorAttachmentCount = 1; rp.colorAttachments = &colorAtt;
     rp.depthStencilAttachment = nullptr;
 
+    MILO_GPU_TIME_PASS(rp);
     mPass = mEncoder.BeginRenderPass(&rp);
     mInPass = true;
     ProvNotePassOpen(2);  // W17 R3-UIDUMP: no depth attachment
@@ -2413,6 +2419,7 @@ void BandRnd::EndDrawTarget() {
     rp.colorAttachmentCount = 1; rp.colorAttachments = &colorAtt;
     rp.depthStencilAttachment = &depthAtt;
 
+    MILO_GPU_TIME_PASS(rp);
     mPass = mEncoder.BeginRenderPass(&rp);
     mInPass = true;
     ProvNotePassOpen(1);  // W17 R3-UIDUMP: depthLoadOp = Load (resumed pass)
@@ -2464,6 +2471,7 @@ void BandRnd::ClearDepthForOverlay() {
     rp.colorAttachmentCount = 1; rp.colorAttachments = &colorAtt;
     rp.depthStencilAttachment = &depthAtt;
 
+    MILO_GPU_TIME_PASS(rp);
     mPass = mEncoder.BeginRenderPass(&rp);
     mInPass = true;
     ProvNotePassOpen(0);  // W17 R3-UIDUMP: depthLoadOp = Clear

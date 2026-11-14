@@ -226,7 +226,18 @@ void DrawMeshImmediate(RndMesh* mesh) {
 
     // Text meshes (created by RndText::FontMap) have empty names (not registered in ObjectDir).
     // Debug labels are stored in GpuMeshData::debugLabel for GPU debugging.
-    bool isTextMesh = !mesh->Name()[0];
+    // Only a glyph page gives up its material's depth test and culling
+    // (MeshDrawsAsGlyph: a page the game marked, or -- for a game that does not
+    // mark them -- an unnamed unskinned mesh). Other code builds unnamed meshes
+    // too: spotlight beams, RndRibbon/RndLine, crowd billboards, and DC3's
+    // HamRibbon hand trail (skinned, hamribbon.mat asks zMode 2 / cull 1).
+    // Drawn as text they went through whatever stood in front of them.
+    const bool isGlyphMesh = MeshDrawsAsGlyph(mesh, skinned);
+    // The text colour path (forced prelit, atlas alpha as RGB) follows the same
+    // mark when the game sets one (MeshShadesAsText); otherwise every unnamed
+    // mesh, as before. A ribbon shaded as text happened to look right only
+    // because its vertices are white.
+    bool isTextMesh = MeshShadesAsText(mesh);
 
     // --- Pipeline selection ---
     PipelineKey key{};
@@ -240,8 +251,8 @@ void DrawMeshImmediate(RndMesh* mesh) {
     bool isOverlayPass = !gWgpuRnd->CurrentPassHasDepth();
 
     key.blend = (WgpuBlend)matBlend;
-    key.zMode = isTextMesh ? (WgpuZMode)0 : (WgpuZMode)mat->GetZMode(); // No depth for text
-    WgpuCull matCull = (isTextMesh || isOverlayPass) ? WgpuCull::None : (WgpuCull)mat->GetCull();
+    key.zMode = isGlyphMesh ? (WgpuZMode)0 : (WgpuZMode)mat->GetZMode(); // No depth for text
+    WgpuCull matCull = (isGlyphMesh || isOverlayPass) ? WgpuCull::None : (WgpuCull)mat->GetCull();
     // Reflection mode (rndshape::kDrawModeReflection) flips the camera, reversing winding order.
     // Flip cull mode so front faces aren't discarded.
     if (rndshape::TheRndRef().DrawMode() == rndshape::kDrawModeReflection && matCull != WgpuCull::None) {
@@ -262,7 +273,7 @@ void DrawMeshImmediate(RndMesh* mesh) {
     // AllowHDR material drawn into the main frame writes its luma to alpha.
     const float bloomMaskScale = (!isOverlayPass && !gWgpuRnd->ActiveTargetTex())
         ? rndshape::BloomMaskScale(mat) : 0.0f;
-    if (bloomMaskScale > 0.0f)
+    if (bloomMaskScale != 0.0f)  // DC3: negative (rndshape::BloomMaskScale)
         key.alphaWrite = true;
     key.alphaToCoverage = mat->GetAlphaCut();
     key.depthBias = meshData.depthBias;
@@ -297,9 +308,10 @@ void DrawMeshImmediate(RndMesh* mesh) {
     wgpu::Sampler sampler = gWgpuRnd->Gpu().GetSampler(matParams.samplerDesc);
     wgpu::Sampler mapSampler = gWgpuRnd->Gpu().GetSampler(matParams.mapSamplerDesc);
 
-    wgpu::BindGroup matBG = gWgpuRnd->CreateMaterialBindGroup(
-        matOffset, sizeof(MaterialUniforms), matParams.texViews, sampler, mapSampler);
-    pass.SetBindGroup(1, matBG);
+    // Groups 1-3 are cached by the resources they bind; this draw's uniform
+    // blocks are reached through the dynamic offsets (PLAN H-30).
+    wgpu::BindGroup matBG = gWgpuRnd->MaterialBindGroup(matParams.texViews, sampler, mapSampler);
+    pass.SetBindGroup(1, matBG, 1, &matOffset);
 
     // --- Object uniforms (group 2) ---
     ObjectUniforms objUni{};
@@ -318,9 +330,8 @@ void DrawMeshImmediate(RndMesh* mesh) {
     uint32_t objOffset = gWgpuRnd->ObjectRing().Write(
         gWgpuRnd->Gpu().Queue(), &objUni, sizeof(objUni));
 
-    wgpu::BindGroup objBG = gWgpuRnd->CreateObjectBindGroup(
-        objOffset, sizeof(ObjectUniforms));
-    pass.SetBindGroup(2, objBG);
+    wgpu::BindGroup objBG = gWgpuRnd->ObjectBindGroup();
+    pass.SetBindGroup(2, objBG, 1, &objOffset);
 
     // --- Bone uniforms (group 3) ---
     uint64_t boneToken = 0;   // draw-log identity of the bone data bound
@@ -331,15 +342,15 @@ void DrawMeshImmediate(RndMesh* mesh) {
         uint32_t boneOffset = gWgpuRnd->BoneRing().Write(
             gWgpuRnd->Gpu().Queue(), &boneUni, sizeof(boneUni));
 
-        wgpu::BindGroup boneBG = gWgpuRnd->CreateBoneBindGroup(
-            boneOffset, sizeof(BoneUniforms));
-        pass.SetBindGroup(3, boneBG);
+        wgpu::BindGroup boneBG = gWgpuRnd->BoneBindGroup();
+        pass.SetBindGroup(3, boneBG, 1, &boneOffset);
         if (rndshape::DrawLogActive())
             boneToken = DrawLogToken(gWgpuRnd->BoneRing().Buffer().Get(), boneOffset);
     } else {
         // Static mesh: bind dummy bone bind group (pipeline layout requires group 3)
         EnsureDummyBoneBindGroup();
-        pass.SetBindGroup(3, GetDummyBoneBindGroup());
+        const uint32_t noOffset = 0;  // the dummy buffer holds one block
+        pass.SetBindGroup(3, GetDummyBoneBindGroup(), 1, &noOffset);
         if (rndshape::DrawLogActive())
             boneToken = DrawLogToken(GetDummyBoneBindGroup().Get(), 0);
     }
@@ -347,6 +358,12 @@ void DrawMeshImmediate(RndMesh* mesh) {
     // --- Capture record ---
     if (capturing) {
         RecordDrawCall(mesh, mat, matParams, skinned, (int)matBlend, heuristics);
+        auto& rec = FrameCapture::Get().LastRecord();
+        rec.hasPipeState = true;
+        rec.pipeZMode = (int)key.zMode;
+        rec.pipeCull = (int)key.cull;
+        rec.passHasDepth = key.hasDepth;
+        rec.glyph = isGlyphMesh;
     }
 
     // --- Draw ---
@@ -416,9 +433,9 @@ void DrawMeshImmediate(RndMesh* mesh) {
             uint32_t npMatOffset = gWgpuRnd->MaterialRing().Write(
                 gWgpuRnd->Gpu().Queue(), &npParams.uniforms, sizeof(npParams.uniforms));
 
-            wgpu::BindGroup npMatBG = gWgpuRnd->CreateMaterialBindGroup(
-                npMatOffset, sizeof(MaterialUniforms), npParams.texViews, sampler, mapSampler);
-            pass.SetBindGroup(1, npMatBG);
+            wgpu::BindGroup npMatBG =
+                gWgpuRnd->MaterialBindGroup(npParams.texViews, sampler, mapSampler);
+            pass.SetBindGroup(1, npMatBG, 1, &npMatOffset);
 
             // Object + bone bind groups unchanged, just re-draw
             pass.DrawIndexed(meshData.numIndices);
@@ -461,20 +478,21 @@ void DrawMeshShadow(RndMesh* mesh) {
     uint32_t objOffset = gWgpuRnd->ObjectRing().Write(
         gWgpuRnd->Gpu().Queue(), &objUni, sizeof(objUni));
 
-    // Create object bind group using shadow-specific layout
+    // Object bind group on the shadow layout: one cached group over the ring,
+    // this draw's block reached through the dynamic offset (PLAN H-30).
     {
         wgpu::BindGroupEntry entry{};
         entry.binding = 0;
         entry.buffer = gWgpuRnd->ObjectRing().Buffer();
-        entry.offset = objOffset;
+        entry.offset = 0;
         entry.size = sizeof(ObjectUniforms);
 
         wgpu::BindGroupDescriptor bgDesc{};
         bgDesc.layout = gWgpuRnd->ShadowObjectBGL();
         bgDesc.entryCount = 1;
         bgDesc.entries = &entry;
-        wgpu::BindGroup objBG = gWgpuRnd->Gpu().Device().CreateBindGroup(&bgDesc);
-        pass.SetBindGroup(1, objBG);
+        wgpu::BindGroup objBG = gWgpuRnd->BindGroups().GetOrCreate(gWgpuRnd->Gpu().Device(), bgDesc);
+        pass.SetBindGroup(1, objBG, 1, &objOffset);
     }
 
     // Bone uniforms (group 2) — only for skinned
@@ -488,15 +506,15 @@ void DrawMeshShadow(RndMesh* mesh) {
         wgpu::BindGroupEntry entry{};
         entry.binding = 0;
         entry.buffer = gWgpuRnd->BoneRing().Buffer();
-        entry.offset = boneOffset;
+        entry.offset = 0;
         entry.size = sizeof(BoneUniforms);
 
         wgpu::BindGroupDescriptor bgDesc{};
         bgDesc.layout = gWgpuRnd->ShadowBoneBGL();
         bgDesc.entryCount = 1;
         bgDesc.entries = &entry;
-        wgpu::BindGroup boneBG = gWgpuRnd->Gpu().Device().CreateBindGroup(&bgDesc);
-        pass.SetBindGroup(2, boneBG);
+        wgpu::BindGroup boneBG = gWgpuRnd->BindGroups().GetOrCreate(gWgpuRnd->Gpu().Device(), bgDesc);
+        pass.SetBindGroup(2, boneBG, 1, &boneOffset);
     }
 
     // Draw

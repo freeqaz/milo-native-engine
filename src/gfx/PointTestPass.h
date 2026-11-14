@@ -71,6 +71,10 @@ public:
     // (see LastSeq()) only: later batches are left in flight even when their
     // readback has finished. Under __EMSCRIPTEN__ it never blocks.
     int CollectThrough(uint64_t through, bool wait, AnswerFn fn, void* user, GpuDevice& gpu);
+    // Appends the keys of the batches with sequence number at most `through`
+    // that are recorded or still being read back: the tests whose answers are
+    // due but have not been delivered.
+    void KeysDueThrough(uint64_t through, std::vector<const void*>& out) const;
     // No answer for `key` is delivered after this returns.
     void Cancel(const void* key);
     // Batches recorded or being read back.
@@ -80,6 +84,12 @@ public:
     void Terminate(GpuDevice* gpu);
 
     static constexpr int kMaxBatches = 3;
+
+    // GPU objects (query sets and buffers) created so far, and the batches
+    // allocated: both stop moving once the largest frame's tests fit
+    // (MILO_GPU_COUNTERS reports them).
+    uint64_t ResourceCreates() const { return mResourceCreates; }
+    int Batches() const { return (int)mBatches.size(); }
 
 private:
     struct Batch;
@@ -92,4 +102,6 @@ private:
     wgpu::RenderPipeline mAreaPipe;
     wgpu::TextureFormat mDepthFormat = wgpu::TextureFormat::Undefined;
     uint32_t mSampleCount = 0;
+    uint64_t mResourceCreates = 0;
+    std::vector<float> mVerts;
 };

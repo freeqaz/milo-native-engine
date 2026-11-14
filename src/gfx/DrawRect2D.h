@@ -1,10 +1,21 @@
 #pragma once
 #include <webgpu/webgpu_cpp.h>
 
+#include "gfx/RenderPipelineCache.h"
+
 class GpuDevice;
 class PipelineManager;
 class RndMat;
 namespace Hmx { struct Rect; struct Color; }
+
+// The factor retail's Xbox DrawRect gives a rect drawn with `mat` through the
+// colour overload (kDrawRectShader, shapes with rndshape::kRectXboxDrawRectShader):
+// the material colour, alpha included, with rgb premultiplied by alpha for
+// kPreMultAlpha (NgMat::SetRegularShaderConst's c0). A prelit material
+// multiplies the colour argument by it; any other material draws it alone
+// (the `standard` VS writes `mul o2, c1, c0` with c1 = white). Matched:
+// DxRnd::DrawRect (both overloads) and RndShaderDrawRect::Select, 100%.
+Hmx::Color DrawRectMaterialColor(RndMat* mat);
 
 class DrawRect2D {
 public:
@@ -21,6 +32,8 @@ private:
     wgpu::ShaderModule m2dShader;
     wgpu::BindGroupLayout m2dBindGroupLayout;
     wgpu::PipelineLayout m2dPipelineLayout;
+    // Pipelines by blend/target/depth/samples/mask/texture variant.
+    RenderPipelineCache m2dPipelines;
     // Per-frame arena of 6-vertex rects: Queue::WriteBuffer runs ahead of the
     // whole frame's command buffer, so every rect needs its own slot.
     wgpu::Buffer m2dVertexBuffer;
