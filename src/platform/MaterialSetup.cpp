@@ -160,32 +160,41 @@ bool TextMeshKeepsAtlasRGB(RndMesh* mesh, RndMat* mat, bool skinned) {
     return hook->QueryDrawMaterialPolicy(mesh, mat, skinned, nullptr, camName).isColorIcon;
 }
 
-// material.gammaShading for this draw: the shape's model (RB3-Wii: always),
-// or, for a game whose UI shades in gamma space (GameRenderHook::
-// UiShadesInGammaSpace; dc3), any draw after the frame's world has ended. The
-// Xbox 360 DxRnd multiplies stored texel and colour values and writes them to
-// an A8R8G8B8 target with no encode; the dc3 shader's linear->sRGB output
-// encode lifted every UI colour (a 0.32 purple drew as 0.60: washed-out move
-// cards, a pale score).
-static bool DrawShadesInGammaSpace() {
-    if (rndshape::kGammaSpaceShading) return true;
-    if (!gWgpuRnd || !gWgpuRnd->FrameInOverlay()) return false;
+// The overlay-phase material rules (GameRenderHook::UiShadesInGammaSpace and
+// UiUsesRetailMaterialTerms). The Xbox 360 DxRnd multiplies stored texel and
+// colour values and writes them to an A8R8G8B8 target with no encode; the dc3
+// shader's linear->sRGB output encode lifted every UI colour (a 0.32 purple
+// drew as 0.60: washed-out move cards). The engine also forced UI and text to
+// prelit, which dropped every UI environ: DC3's score digits are a lit font
+// (Eagle-Book(numbers*).mat, prelit 0, use_environ 1) coloured by score.env's
+// violet ambient and magenta score.lit, and drew as their white atlas. The
+// same font is intensify 1 under a 0.5 font_alpha: retail doubles the texel's
+// alpha with its colour, so the digits are opaque.
+UiDrawTerms UiDrawTermsFor(bool frameInOverlay) {
+    UiDrawTerms t;
+    t.gammaShading = rndshape::kGammaSpaceShading;
+    if (!frameInOverlay) return t;
     GameRenderHook* hook = GetGameRenderHook();
-    return hook && hook->UiShadesInGammaSpace();
+    if (!hook) return t;
+    t.gammaShading = t.gammaShading || hook->UiShadesInGammaSpace();
+    t.retailMaterialTerms = hook->UiUsesRetailMaterialTerms();
+    return t;
 }
 
-// Does this overlay-phase draw take the retail material terms
-// (GameRenderHook::UiUsesRetailMaterialTerms; dc3)? The engine otherwise
-// forces UI and text to prelit, which dropped every UI environ: DC3's score
-// digits are a lit font (Eagle-Book(numbers*).mat, prelit 0, use_environ 1)
-// coloured by score.env's violet ambient and magenta score.lit, and drew as
-// their white atlas instead. The same font is intensify 1 under a 0.5
-// font_alpha: retail doubles the texel's alpha with its colour, so the digits
-// are opaque where the engine drew them half transparent.
-static bool DrawUsesRetailUiTerms() {
-    if (!gWgpuRnd || !gWgpuRnd->FrameInOverlay()) return false;
-    GameRenderHook* hook = GetGameRenderHook();
-    return hook && hook->UiUsesRetailMaterialTerms();
+bool MaterialShadesPrelit(bool matPrelit, bool isTextMesh, bool isOverlayPass,
+                          bool isMultiplyBlend, bool simpleRender,
+                          bool retailMaterialTerms) {
+    if (matPrelit || simpleRender || isMultiplyBlend) return true;
+    if (retailMaterialTerms) return false;
+    return isTextMesh || isOverlayPass;
+}
+
+float MaterialAlphaScale(bool intensify, bool retailMaterialTerms) {
+    return intensify && retailMaterialTerms ? 2.0f : 1.0f;
+}
+
+static UiDrawTerms CurrentUiDrawTerms() {
+    return UiDrawTermsFor(gWgpuRnd && gWgpuRnd->FrameInOverlay());
 }
 
 MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh) {
@@ -237,10 +246,11 @@ MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh) {
 
     // --- Intensify ---
     matUni.intensify = mat->GetIntensify() ? 2.0f : 1.0f;
-    // Retail scales the texel's alpha by intensify too (see
-    // DrawUsesRetailUiTerms); the shader scales rgb only, and alpha is a
-    // product, so the factor goes on the material alpha.
-    if (mat->GetIntensify() && DrawUsesRetailUiTerms()) matUni.color[3] *= 2.0f;
+    // Retail scales the texel's alpha by intensify too (UiDrawTermsFor); the
+    // shader scales rgb only, and alpha is a product, so the factor goes on
+    // the material alpha.
+    const UiDrawTerms uiTerms = CurrentUiDrawTerms();
+    matUni.color[3] *= MaterialAlphaScale(mat->GetIntensify(), uiTerms.retailMaterialTerms);
 
     // --- Shader variation (skin, hair, etc.) ---
     // Verified: DC3 materials have correct shader_variation in binary data.
@@ -313,13 +323,15 @@ MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh) {
     // vertex colour, which an unlit Wii material never sees.
     const bool unlit = rndshape::MatUnlit(mat);
     matUni.unlit = unlit ? 1.0f : 0.0f;
-    matUni.gammaShading = DrawShadesInGammaSpace() ? 1.0f : 0.0f;
+    matUni.gammaShading = uiTerms.gammaShading ? 1.0f : 0.0f;
     bool isMultiplyBlend = (matBlend == BaseMaterial::kBlendMultiply) && !unlit;
-    const bool uiLit = DrawUsesRetailUiTerms();
+    const bool uiLit = uiTerms.retailMaterialTerms;
     bool forcePrelit = IsSimpleRender() || (isOverlayPass && !uiLit) || isMultiplyBlend;
     if (isMultiplyBlend) heuristics |= kHeuristicMultiplyPrelit;
     if (isTextMesh) heuristics |= kHeuristicTextMeshDetect;
-    matUni.prelit = (mat->Prelit() || (isTextMesh && !uiLit) || forcePrelit) ? 1.0f : 0.0f;
+    matUni.prelit = MaterialShadesPrelit(mat->Prelit(), isTextMesh, isOverlayPass,
+                                         isMultiplyBlend, IsSimpleRender(), uiLit)
+        ? 1.0f : 0.0f;
     // 2 = prelit whose vertex colour is its ambient (rndshape::MatPrelitAmbient);
     // read only under the RB3 retail light model, any other path sees prelit.
     if (mat->Prelit() && !isTextMesh && !forcePrelit && rndshape::MatPrelitAmbient(mat))
@@ -419,13 +431,14 @@ MaterialParams BuildPassMaterialParams(BaseMaterial* rawNextPass) {
     // --- Other properties ---
     npMatUni.emissiveMultiplier = nextPass->GetEmissiveMap() ? nextPass->GetEmissiveMultiplier() : 0.0f;
     npMatUni.intensify = nextPass->GetIntensify() ? 2.0f : 1.0f;
-    if (nextPass->GetIntensify() && DrawUsesRetailUiTerms()) npMatUni.color[3] *= 2.0f;
+    const UiDrawTerms npUiTerms = CurrentUiDrawTerms();
+    npMatUni.color[3] *= MaterialAlphaScale(nextPass->GetIntensify(), npUiTerms.retailMaterialTerms);
     npMatUni.deNormal = nextPass->GetDeNormal();
     npMatUni.hasNormalMap = nextPass->NormalMap() ? 1.0f : 0.0f;
     // Force prelit for multiply-blend passes (same rationale as primary material)
     const bool npUnlit = rndshape::MatUnlit(nextPass);
     npMatUni.unlit = npUnlit ? 1.0f : 0.0f;
-    npMatUni.gammaShading = DrawShadesInGammaSpace() ? 1.0f : 0.0f;
+    npMatUni.gammaShading = npUiTerms.gammaShading ? 1.0f : 0.0f;
     bool npMultiply = (nextPass->GetBlend() == BaseMaterial::kBlendMultiply) && !npUnlit;
     npMatUni.prelit = (nextPass->Prelit() || npMultiply) ? 1.0f : 0.0f;
     if (nextPass->Prelit() && !npMultiply && rndshape::MatPrelitAmbient(nextPass))

@@ -22,6 +22,25 @@ struct MaterialParams {
 // Build material parameters for a primary material (full heuristics)
 MaterialParams BuildMaterialParams(RndMat* mat, bool isTextMesh);
 
+// The overlay-phase material rules a game opts into through GameRenderHook
+// (UiShadesInGammaSpace, UiUsesRetailMaterialTerms). frameInOverlay: the frame
+// has left its world (WgpuRnd::FrameInOverlay). Outside the overlay phase, or
+// with no hook, gammaShading is the shape's model and retailMaterialTerms false.
+struct UiDrawTerms {
+    bool gammaShading = false;        // material.gammaShading
+    bool retailMaterialTerms = false; // keep the mat's lighting; intensify scales alpha
+};
+UiDrawTerms UiDrawTermsFor(bool frameInOverlay);
+// material.prelit: the material's own flag, or forced for simple render,
+// multiply blend, and -- unless the retail UI terms apply -- text and
+// overlay-pass meshes.
+bool MaterialShadesPrelit(bool matPrelit, bool isTextMesh, bool isOverlayPass,
+                          bool isMultiplyBlend, bool simpleRender,
+                          bool retailMaterialTerms);
+// Factor on the material alpha: 2 for an intensify material under the retail
+// UI terms (DC3's standard.ps: `mul r0, r0, c5.yyyy`, alpha included), else 1.
+float MaterialAlphaScale(bool intensify, bool retailMaterialTerms);
+
 // Build material parameters for a multi-pass material (simplified, no heuristics)
 MaterialParams BuildPassMaterialParams(BaseMaterial* pass);
 
