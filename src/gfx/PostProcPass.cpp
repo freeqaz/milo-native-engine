@@ -392,7 +392,8 @@ void PostProcPass::RunDC3Retail(wgpu::CommandEncoder& encoder, P* pp, int mode,
                                 const wgpu::TextureView& sceneView,
                                 const wgpu::TextureView& intermediateView, int w, int h,
                                 const wgpu::TextureView& depthView, uint32_t depthSamples,
-                                wgpu::TextureView& frameView, GpuDevice& gpu) {
+                                wgpu::TextureView& frameView, const wgpu::TextureView& spotBeams,
+                                const wgpu::TextureView& spotFog, GpuDevice& gpu) {
     // Dependent on P, so the RB3-Wii shape's instantiation compiles nothing.
     if constexpr (rndshape::kDC3RetailPost && sizeof(P) > 0) {
         StepTime();
@@ -416,6 +417,14 @@ void PostProcPass::RunDC3Retail(wgpu::CommandEncoder& encoder, P* pp, int mode,
         if (mode == 5) rp.bloom = false;
         if (mode == 6) rp.debugView = 4;
         if (mode == 7) rp.debugView = 5;
+        // NgSpotlightDrawer's beams (WgpuRnd::RunDC3SpotBeams), retail's bit 51.
+        if (spotBeams && mode != 2) {
+            rp.spotBeams = spotBeams;
+            rp.spotFog = spotFog;
+            rp.spotScale = mSpotK[0];
+            rp.spotBase = mSpotK[1];
+            rp.spotSmoke = mSpotK[2];
+        }
         // DoVelocity's result for this frame (SetVelocity), retail's bit 42.
         const bool velPending = mVelPending;
         mVelPending = false;
@@ -501,7 +510,7 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& i
     if constexpr (rndshape::kDC3RetailPost) {
         if (const int mode = rndshape::RetailPostMode()) {
             RunDC3Retail(encoder, pp, mode, sceneView, intermediateView, intermediateW, intermediateH,
-                         depthView, depthSamples, frameView, gpu);
+                         depthView, depthSamples, frameView, spotBeams, spotFog, gpu);
             return;
         }
     }

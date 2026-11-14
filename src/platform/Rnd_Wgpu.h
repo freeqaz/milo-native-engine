@@ -346,6 +346,7 @@ public:
     // highway, HUD, menus) over the graded image in the same MSAA + depth
     // frame pass. A no-op for DC3 and when post-processing is off or done.
     void FlushWorldPost();
+    void RunDC3SpotBeams();  // DC3: this frame's beams, ahead of its composite
     void CreateDepthTexture(int w, int h);
     void CreateDefaultTextures();
     void WriteSceneUniforms();

@@ -66,6 +66,9 @@ static void FillTexGen(const MatT& mat, MaterialUniforms& uni) {
         uni.texXfmRow0[2] = xfm.v.x;   uni.texXfmRow0[3] = xfm.v.z;
         uni.texXfmRow1[0] = xfm.m.y.x; uni.texXfmRow1[1] = xfm.m.y.y;
         uni.texXfmRow1[2] = xfm.v.y;   uni.texXfmRow1[3] = 0.0f;
+        // DC3: the image's MakeTex3 rows (tx negated, translation before the
+        // matrix, transposed off-diagonals; rndshape::MatRetailTexXfmRows).
+        rndshape::MatRetailTexXfmRows(mat, uni.texXfmRow0, uni.texXfmRow1);
     }
 }
 
@@ -74,11 +77,13 @@ static void FillTexGen(const MatT& mat, MaterialUniforms& uni) {
 // rim maps bound in the slots the dc3 model would use. The dc3 model's own
 // fields (hasNormalMap, specularPower, rimColor, ...) stay zero for these
 // materials, so its terms never run on top of the retail ones.
+// Returns RetailMatTerms::flipNormal, which goes in bit 10 of colorMod.w
+// (FillFlipNormal, after FillColorMod assigns w).
 template <class MatT>
-static void FillRetailTerms(const MatT& mat, MaterialUniforms& uni,
+static bool FillRetailTerms(const MatT& mat, MaterialUniforms& uni,
                             WgpuRnd::MaterialTexViews& views) {
     rndshape::RetailMatTerms t;
-    if (!rndshape::MatRetailTerms(mat, t)) return;
+    if (!rndshape::MatRetailTerms(mat, t)) return false;
     if (t.specular) {
         uni.retailSpec[0] = t.specular_rgb[0];
         uni.retailSpec[1] = t.specular_rgb[1];
@@ -99,6 +104,7 @@ static void FillRetailTerms(const MatT& mat, MaterialUniforms& uni,
     if (t.normalMap) views.normal = ResolveMap(t.normalTex, gWgpuRnd->FlatNormalTexView());
     if (t.specularMap) views.specular = ResolveMap(t.specularTex, gWgpuRnd->WhiteTexView());
     if (t.rimMap) views.rim = ResolveMap(t.rimTex, gWgpuRnd->WhiteTexView());
+    return t.flipNormal;
 }
 
 // RB3's material colour modulation (rndshape::MatColorMod): the three colours
@@ -151,6 +157,26 @@ static void FillRefract(const MatT& mat, MaterialUniforms& uni,
     if (!rndshape::MatRefract(mat, r)) return;
     uni.colorMod[3] |= FloatToHalfBits(r.strength) << 16;
     views.refractNormal = ResolveMap(r.normalTex, gWgpuRnd->FlatNormalTexView());
+}
+
+// Screen-aligned texture coordinates (rndshape::MatScreenAligned): bit 9 of
+// colorMod.w (the low byte is the colour-mod mode, bit 8 the band selector,
+// the high half the refraction strength), which the vertex shader reads as
+// materialScreenAligned and answers by feeding the vertex's screen position,
+// not its UV, to the texgen rows. Set after FillColorMod, which assigns w.
+template <class MatT>
+static void FillScreenAligned(const MatT& mat, MaterialUniforms& uni) {
+    if (rndshape::MatScreenAligned(mat)) uni.colorMod[3] |= 1u << 9;
+}
+
+// DC3's flip_normal (ShaderOptions bit 54, RndShaderStandard::CalcShaderOpts:
+// a per-pixel lit material with GetCull() == kCullBackwards): bit 10 of
+// colorMod.w, which the vertex shaders read as materialFlipNormal and answer
+// by negating the world normal, so the bitangent crossed from it flips too
+// and the tangent does not, as the shipped microcode does
+// (dc3-retail-lighting.md section 11). Set after FillColorMod.
+static void FillFlipNormal(bool flipNormal, MaterialUniforms& uni) {
+    if (flipNormal) uni.colorMod[3] |= 1u << 10;
 }
 
 bool TextMeshKeepsAtlasRGB(RndMesh* mesh, RndMat* mat, bool skinned) {
@@ -398,9 +424,11 @@ MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh, const UiDraw
     texViews.normDetail = ResolveMap(mat->GetNormDetailMap(), gWgpuRnd->FlatNormalTexView());
 
     texViews.refractNormal = gWgpuRnd->FlatNormalTexView();
-    FillRetailTerms(mat, matUni, texViews);
+    const bool flipNormal = FillRetailTerms(mat, matUni, texViews);
     FillColorMod(mat, matUni);
     FillRefract(mat, matUni, texViews);
+    FillScreenAligned(mat, matUni);
+    FillFlipNormal(flipNormal, matUni);
 
     // --- Environment cube map ---
     RndCubeTex* environMap = mat->GetEnvironMap();
@@ -513,9 +541,11 @@ MaterialParams BuildPassMaterialParams(BaseMaterial* rawNextPass, const UiDrawTe
     npTexViews.environCube = gWgpuRnd->BlackCubeTexView();
     npTexViews.normDetail = ResolveMap(nextPass->GetNormDetailMap(), gWgpuRnd->FlatNormalTexView());
     npTexViews.refractNormal = gWgpuRnd->FlatNormalTexView();
-    FillRetailTerms(nextPass, npMatUni, npTexViews);
+    const bool npFlipNormal = FillRetailTerms(nextPass, npMatUni, npTexViews);
     FillColorMod(nextPass, npMatUni);
     FillRefract(nextPass, npMatUni, npTexViews);
+    FillScreenAligned(nextPass, npMatUni);
+    FillFlipNormal(npFlipNormal, npMatUni);
 
     // Multi-pass materials don't set their own sampler -- caller reuses primary material's sampler
     result.heuristics = 0;

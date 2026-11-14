@@ -6910,3 +6910,538 @@ frames; round 4's final binary (r4fix) has 3.
     reach rb3-xenon.
   - `native_compat_census.py check` reports OK: 454 flags, regen clean, no
     getenv added.
+
+## 36. DC3 spotlight post: NgSpotlightDrawer's beams in the retail composite (lane np-gfx-spot, round 2, 2026-11-14)
+
+Round 1 made native `NgSpotlightDrawer::RenderScene` call `ClearPostProc()`.
+This round draws what the original's spotlight post draws on DC3 and adds it
+in the DC3 retail composite. Engine `c8bb064` (SpotBeamPass perf) + `c10a262`
+(DC3 wiring); dc3 `a5cb1c83f` (the native `RenderScene` + test). Evidence:
+dc3 `archive/np-gfx-2026-11-14/lanes/spot/round2/` (gitignored).
+
+### 36.1 What the original draws (MEASURED unless marked)
+
+All from the DC3 decomp source of `SpotlightDrawer_NG.cpp` and the DC3
+shader microcode (`postprocess_*`, `depthvolume_*`, blur).
+
+- **Gate.** `RenderScene` runs only when `sLights` is non-empty, the drawer is
+  `Showing()`, and `CheckSharedResources` + `CheckFogTexture` pass. A
+  postproc override or the blacklight override skips the drawer's `DoPost`
+  entirely.
+- **Target.** `TheShaderMgr` unk25 becomes postprocess option bit 51.
+  `mSpotCam` renders into a half-res target (pre-process texture size >> 1).
+- **Beams.** `RenderBeams` draws each entry with `mLength > 0`, with
+  `DrawShowing`:
+  - shape 0/1: cone shader, cull override 3;
+  - shape 2: sheet shader; shapes 3/4: sphere shader; both cull override 1;
+  - all through the depthvolume shader. `RndShaderDepthVolume::Select` sets
+    blend ONE/ONE, op ADD, depth test and depth write off.
+  - DC3's depthvolume microcode (12 permutations) is byte-identical to RB3's,
+    so the engine's existing `SpotBeamPass` beam shader applies unchanged.
+- **Blur.** `BlurRT`: 5 taps, weights 0.1/0.25/0.3/0.25/0.1, x then y. Same
+  as RB3 except for constant register numbers.
+- **Haze/base term and composite.** `postprocess_0008000000000000` (and the
+  same position in `0008001001208014`):
+
+  ```
+  c += beam(tf12).rgb * (tf5.r * c127.y + c127.x) * c91.x
+  ```
+
+  - `c91.x = mParams.mIntensity * 32` (`SetupForPostProcess`).
+  - `c127 = (base*0.01, smoke*0.01*(1 - base*0.01))` (`SetupFogDensityMap`).
+  - `tf5` is the fog density: the proxy's density map, else
+    `mParams.mTexture`, else black. With black fog the term is just
+    `beam * base * 0.32 * intensity`, so **"haze/base" is not a separate
+    full-screen lift: it scales the beam target**, and the two land as one
+    piece.
+  - Position: after the bloom screen blend (and the glare add), before
+    noise, the colour matrix and the vignette. Not clamped.
+  - **Alpha is not written** by the term, so the beams do not feed the bloom
+    mask. c129 (colour) is not read.
+- **`sShadowSpots`** is filled only under kOldGfx, so it is empty on DC3
+  (kNewGfx). Nothing to draw.
+- **`sCans`** are drawn at world time by `DrawWorld`; the post only clears
+  the list. Nothing for the post to do.
+- **`light_influence`** feeds only `UpdateBoxMap` / `ApplyLightingApprox`,
+  not the post.
+
+Probed drawer params (DTA `iterate SpotlightDrawer`; property values, the
+shader sees ×0.01):
+
+| venue / state | total | base_intensity | smoke_intensity | proxy | light_influence |
+|---|---|---|---|---|---|
+| houseparty | 1.00 | 0.60 | 0.50 | none | 0.20 |
+| dclive normal | 1.00 | 1.00 | 0.75 | none | 0 |
+| rollerrink peak (native and Xenia agree) | 1.00 | 0.70 | 0.00 | none | 0 |
+
+No measured venue has a proxy, so no measured venue needs a fog density map.
+
+### 36.2 What shipped
+
+- **dc3 `SpotlightDrawer_NG.cpp` (native `RenderScene`, HX_NATIVE).** When a
+  native beam renderer is registered, `sLights` is non-empty and the drawer
+  is showing, each entry with `mLength > 0` whose mesh exists and is
+  `Showing()` becomes a `NativeSpotBeam` (mesh, xsection, transform, shape,
+  light position, axis, sheet dir, radii, top radius, length, brighten,
+  colour × intensity, material colour unless animated from a preset). The
+  frame carries the camera chosen as `CheckCam` does, total/base/smoke, the
+  fog texture and `hasProxy`. `SubmitSpotBeams`, then always `ClearPostProc()`.
+  A static vector is reused across frames.
+- **Engine `Rnd_Wgpu`.** The beam renderer now registers under
+  `kRetailPostChain || kDC3RetailPost` (it was RB3-Wii only).
+  `RunDC3SpotBeams()` (DC3 only, `if constexpr`) runs `SpotBeamPass` against
+  the world depth just before `mPostProcPass.Run`, in both
+  `FlushPostProcessingForOverlay` and `EndDrawing`, and only when
+  `RetailPostMode() != 0` (with `DC3_RETAIL_POST=0` nothing reads the
+  target, so nothing is drawn). The existing `MILO_NO_SPOT_BEAMS` probe now
+  also reaches DC3; no getenv was added.
+- **Engine `PostProcPass`.** `RunDC3Retail` takes the beam and fog views and
+  hands `spotScale/Base/Smoke` (`SpotBeamPass::CompositeConstants`, shared
+  with RB3) to the composite. Not passed in debug view 2.
+- **Engine `RB3RetailPostDC3.cpp` (post-lane file), exactly:**
+  1. `DC3CompositeUniforms` gains `float spot[4]` (c91.x, c127.x, c127.y,
+     w = bound); static_assert 208 → 224.
+  2. WGSL `DC3UB` gains `spot: vec4f`; new bindings 13 (`spotBeams`) and 14
+     (`spotFog`).
+  3. `grade_dc3`: after the bloom/glare if/else, before noise,
+     `if (cu.spot.w > 0.5) c += beam * (fog * cu.spot.z + cu.spot.y) * cu.spot.x;`
+  4. `mDC3CompositeBGL` 10 → 12 entries; `RunDC3Composite` fills `cu.spot`
+     and binds the beams/fog (or `mBlackView`) as `e[10]`/`e[11]`.
+  Nothing else in that file was touched; the pass label
+  `DC3RetailPostComposite` is unchanged.
+
+### 36.3 Performance
+
+- `SpotBeamPass` (`c8bb064`): one persistent, grow-only uniform buffer
+  ("SpotBeamUniforms", at least 18 slots of 512 B); blur passes take slots 0
+  and 1 and beam *i* slot 2+*i*, so every dynamic offset is fixed and every
+  bind group is cacheable. Bind groups go through `WgpuRnd`'s
+  `mPostBindGroupCache` (`SetBindGroupCache`), with `Forget` on recreated
+  views/buffers. No per-frame `CreateBindGroup`, buffer or texture.
+- Pass labels are settable; DC3 uses `DC3SpotBeams` and `DC3SpotBlur`. RB3
+  keeps `SpotBeams` / `SpotBeamBlur`.
+- `MILO_GPU_TIMERS=1`, `[GPUTIME]` windows during gameplay, solo runs
+  (per-frame ms):
+
+| cell | DC3SpotBeams | DC3SpotBlur (2 passes) | composite | gpu_sum | beams+blur share |
+|---|---|---|---|---|---|
+| houseparty normal | 0.0141 (max 0.0190) | 0.0139 | 0.0142 (0.0133 without beams, batch) | 0.552 | 5.1% |
+| dclive normal | 0.0146 (max 0.0206) | 0.0131 | 0.0138 | 0.612 | 4.5% |
+| rollerrink peak (batch of 4) | 0.0090 | 0.0144 | 0.0175 | 0.650 | 3.6% |
+
+### 36.4 Against Xenia (native `DC3_DISPLAY_GAMMA=off`; HUD box 21.9 on every frame)
+
+**Houseparty far01, spots-on minus spots-hidden lift** (`lift.py`, cut 0.3):
+
+| side | top | mid | floor | scene |
+|---|---|---|---|---|
+| Xenia | +17.7 | +11.9 | +5.6 | +11.8 |
+| native, beams | +18.0 | +12.2 | +5.7 | +12.0 |
+| native, `MILO_NO_SPOT_BEAMS=1` | +0.4 | −0.1 | +2.8 | +1.1 |
+
+**Houseparty cell-3 regions** (native vs Xenia mean; Xenia range check):
+
+| region | hp_062, no beams | hp_062, beams | far01 spots-on, no beams | far01 spots-on, beams |
+|---|---|---|---|---|
+| scene | −17.9% OUT | +0.4% in | −25.4% OUT | −5.9% OUT |
+| torso | −27.6% OUT | +2.6% in | −30.0% OUT | −4.4% in |
+| fridge_glare | −23.1% OUT | +2.9% in | — | — |
+| back_wall | −4.9% OUT | −4.4% in | −19.5% OUT | +1.9% in |
+| wood_floor | −6.1% OUT | +3.5% in | −25.3% OUT | +5.3% in |
+| rug | −8.3% OUT | 0.0% in | −15.9% OUT | −0.4% in |
+| crowd_l | +4.9% in | +14.6% OUT | −36.5% OUT | −36.6% OUT |
+
+- far01 spots-hidden reads the same with and without beams (control).
+- crowd_l in far01 is −34..−37% in every condition, so it is not
+  spot-related (open).
+- far03 (n=2 each side) reads scene +1.3% with beams, −17.9% without, but
+  several regions there land outside Xenia's narrow range both ways
+  (fridge +13.2%, wood_floor +18.1%, torso +17.2% with beams).
+
+**Whole song, every native frame paired with its best Xenia frame**
+(`cmpx.py`, cut 0.45; median per-pair %, p10..p90 in the json):
+
+| cell | scene, beams | scene, none | top, beams | top, none |
+|---|---|---|---|---|
+| houseparty normal | +1.1% | −16.7% | +0.1% | −17.8% |
+| dclive normal | −0.8% | −8.2% | +1.7% | −14.4% |
+| rollerrink peak | +12.1% | +2.0% | +3.4% | −4.7% |
+
+- rollerrink peak's floor band reads +42.1% with beams and +17.6% without.
+  The paired sheet shows the beat-animated disco floor tiles differing per
+  frame, not the cones; the cones look alike (INFERRED from the sheet). The
+  Xenia caveats (flare-lit regions under the fixed occlusion sample count,
+  Multiply overlays over-blooming) apply to that cell too.
+
+### 36.5 Guard, consumers, where it stops
+
+- **Test.** dc3 `RetailLightingTest.SpotlightPostHandsEachBeamToTheBackend`
+  (`native/tests/test_retail_lighting.cpp`): a recording renderer sees one
+  call with one beam (the zero-length spot is skipped) carrying the right
+  fields and frame params; the list is empty after `DoPost`; a hidden drawer
+  submits nothing. Sabotage (an early `ClearPostProc(); return;` in the
+  native `RenderScene`) fails it with 0 calls.
+- **Consumers** (engine `130f669` base vs `c10a262`):
+  - rb3-xenon `rb3-render`: 11 frames, 11 identical, 0 differing; both
+    "ALL GATES PASSED". (rb3-xenon is DC3-shaped but `kDC3RetailPost` is
+    false, so it registers no beam renderer.)
+  - rb3 (`rb3-native rb3-tests`): built; ctest 158/158.
+  - `native_compat_census.py check` (rb3, engine `c10a262`): OK, 455 flags.
+- **Stopped at:** haze/base and beams, shipped together (base scales the
+  beam target). Shadow spots and cans need nothing on DC3.
+- **Open:** proxy fog density maps are not rendered (fog stays black); no
+  measured venue has a proxy. The far01 crowd_l gap and the rollerrink
+  floor tiles are not this pass.
+
+## 37. DC3 post chain, round 6: throneroom against Xenia, and depth of field (lane np-gfx-post, 2026-11-14)
+
+The brief came from the Xenia ground-truth lane's round 2 (dc3-decomp
+`archive/np-gfx-2026-11-14/xenia/INDEX.md`, cells 1–4), which listed three
+post-chain gaps: the throneroom normal carpet, depth of field in intro and
+venue shots, and the throneroom peak's post lift. Evidence for all of this
+section: dc3-decomp `archive/np-gfx-2026-11-14/lanes/post/round6/`
+(`measure/`, `native/`, `xenia/`, `dof/`, `sheets/`, `sabotage/`, `tools/`,
+`dta/`). Native ran with `DC3_DISPLAY_GAMMA=off`, since Xenia frames are
+pre-ramp.
+
+**Verdicts.**
+- The carpet is Xenia's MAX alpha (§35), not native's grade. No code change.
+- Depth of field never ran on native. Fixed in dc3 (`DOFProc.cpp`); no
+  engine code change.
+- The peak's post lift agrees once it is measured on the same frame:
+  1.53× native vs 1.54–1.58× Xenia. No code change.
+
+### 37.1 Throneroom normal carpet (MEASURED)
+
+The Xenia lane reported that native's grade takes the carpet down 32% and
+Xenia's 15%. I decomposed it stage by stage on matched camshots: same shot by
+the lane's edge correlation, cut 0.45, `tools/states_region.py`,
+`measure/tr_region.txt`. Five states are set on
+`throneroom_performance_high.pp` every ~1.2 s (native) or 1 s (Xenia): full;
+bloom off; the three Multiply overlays hidden, with and without bloom; and
+levels off.
+
+Carpet box, shot `tr_far03`, mean luma:
+
+| state | Xenia | native (shipped) | native, factorless MAX |
+|---|---|---|---|
+| full | 28.7 | 22.3 | 27.6 |
+| bloom off | 22.7 | 21.7 | 21.7 |
+| overlays hidden, full | 47.2 | 46.0 | 45.9 |
+| overlays hidden, bloom off | 43.9 | 42.4 | 42.2 |
+| levels off (in_lo 0) | 39.6 | 33.7 | 38.4 |
+
+Shot `tr_062`, carpet box: full 12.2 / 7.7 / 12.0; bloom off 7.7 / 7.4.
+
+- With bloom off, the carpet agrees to within 1 level on both shots. So the
+  colour matrix, contrast and levels match on this saturated magenta; the
+  brief's "the grade" suspects (hue/saturation order, a clamp before the
+  matrix, the converge term) are all cleared.
+- The whole gap is the bloom term over `carpetShadow.mesh`
+  (`THR_carpetShadow.mat`: blend 6 Multiply, AllowHDR). Xenia adds +6.0 there,
+  native +0.6, and the factorless-MAX build +5.9.
+- With the overlays hidden, all three agree (+3.3 / +3.6 / +3.7). Over the
+  lower third of the frame (`measure/tr_ab.txt`): Xenia's bloom term is +5.0,
+  native +2.9, MAX +7.6, and all about +5 with the overlays hidden.
+- This is the §35 rink mechanism on another venue. The shipped rule stays
+  (`DC3RetailPostTest.BlendedAlphaFollowsTheDrawsEquation`).
+- INFERRED: the lane's "−32% vs −15%" mixes two things. Its raw state is
+  `toggle_all_postprocs`, which on native also clears the spotlights (its
+  own cell 3 finding), so "raw → full" is not a pure post measurement on
+  native.
+
+### 37.2 Depth of field (fixed in dc3)
+
+**Cause.** Retail installs `NgDOFProc` from `NgRnd`'s init
+(`rnddx9/Rnd_Xbox.cpp`), which native never runs.
+- So DC3 native's `TheDOFProc` was the base `DOFProc`: `Set` was a no-op and
+  `Enabled()` returned 0.
+- Every `CameraShot` with `use_depth_of_field 1` and a target
+  (intro CLOSEUP and VENUE shots) therefore reached a proc that dropped it.
+- The engine's `DofPass` (the `NgDOFProc::DoPost`
+  downsample/blur/composite, `postprocess.ps` bit 3) returned at its first
+  check.
+
+**Fix.** dc3 `src/system/rndobj/DOFProc.cpp` (`e7d3c680e`): under
+`HX_NATIVE`, `DOFProc::Init` registers a `NativeDOFProc` that keeps
+`NgDOFProc::Set`'s parameters.
+- blurDepth = max(scale·bd + offset, 0), floored at 0.001.
+- max/min blur go through `DOFOverrides` and are clamped to [0, 1].
+- Enable is set only when maxBlur > 0 and `TheUI->IsGameScreenActive()`,
+  and is cleared only by `UnSet`.
+- The Xbox build is unchanged (`REGISTER_OBJ_FACTORY(DOFProc)`).
+- `NgDOFProc::DoPost` also checks the DataVariable `disable_dof`. That is a
+  debug variable that no shipped data sets, so it is not honoured.
+
+**Guard.** `DC3RetailPostTest.DOFProcKeepsNgDOFProcSetParameters`
+(`native/tests/test_dc3_retail_post.cpp`). It checks:
+- the parameters are kept;
+- the proc stays disabled off the game screen and enables on it;
+- a later Set with maxBlur 0 does not disable it;
+- the 0.001 floor and both clamps;
+- `UnSet` disables it.
+
+Sabotages, all caught, with a vacuity check that a run executing no test is
+not a pass (`sabotage/sab_dof.sh`, `sab_dof.log`):
+- S1: register the base proc again;
+- S2: drop the game-screen gate;
+- S3: clear the enable in `Set`;
+- S4: drop the clamps.
+
+**Before/after** (`measure/dof_sharpness.txt`,
+`sheets/intro_dof_same_shot.png`, `sheets/intro_dof_before_after.png`).
+Sharpness is the Xenia lane's mean |Laplacian| at 1280×720.
+
+Houseparty intro, natural shots:
+- venue03: 14.15 → 9.40;
+- cu01: 15.13 → 10.04;
+- gameplay shot (control, DOF off): 14.54 → 14.55.
+
+The same forced shots on both sides (`{$hamdirector force_shot …}`; the
+camera's position within a shot differs in time between the sides):
+
+| shot | Xenia frame / background | native before | native after |
+|---|---|---|---|
+| venue05 | 11.43 / 13.49 | 13.19 / 14.58 | 10.20 / 11.13 |
+| cu02 | 11.80 / 10.09 | 16.09 / 14.57 | 10.73 / 8.18 |
+
+**Cost** (RTX 3090, 720p, `MILO_GPU_TIMERS=1`, A/B on `force_shot cu02`,
+`measure/dof_cost.txt`):
+
+| pass | ms/frame |
+|---|---|
+| DofComposite | 0.0187 |
+| DofDownsample4x | 0.0104 |
+| DofBlurH | 0.0053 |
+| DofBlurV | 0.0047 |
+| total | ≈0.039 |
+
+- With DOF off the passes are not recorded at all, so it costs nothing.
+- No pass was added or renamed. These four existed and now run on intro
+  shots.
+
+### 37.3 Throneroom peak: post lift (MEASURED on frozen frames)
+
+The brief: post lifts the scene 1.62× on Xenia and 1.39× on native (1.21×
+with native bloom off). It also asked me to check the Multiply overlays
+first, and to use the base with the light-colour fix
+(`Hmx::Color::Unpack` × `(1.0f/255.0f)`, np-gfx-blend `d560e63f0`).
+
+**Method.**
+- That fix is not on np-gfx yet, so native ran on the merged base plus
+  `d560e63f0`: binary `dc3-native-r6color`; with factorless MAX alpha,
+  `r6colormax`.
+- A live state cycle cannot measure the peak. Its cameras move every frame,
+  so within one 0.27 s set only 2 of 17 cycles stay on one camera
+  (`measure/trp_paired_native.txt`).
+- Instead each set is taken on a frozen frame, on both sides:
+  - `{game_panel cheat_pause TRUE}` (the debug build's own cheat pause: no
+    count-in, no pause screen; taskmgr seconds hold still);
+  - then four states, each screenshotted;
+  - then restore and unpause.
+- Native: `tools/npause.sh`. Xenia: `tools/xgt_driver_r6.py --pausecycle`
+  with `tools/xtrpz.sh` / `tools/xtrpg.sh`.
+- States set `bloom_intensity` on `throneroom_performance_awesome.pp` (the
+  force pp HamDirector copies into `world.pp`) and on `world.pp`. "Raw" is
+  `Rnd::mDisablePostProc` via `toggle_all_postprocs`.
+- A fourth state, full again after the toggle pair, is the side-effect
+  control: 1.000 on native and 1.001 on Xenia.
+- Gain = scene luma ratio on the same frozen frame, `tools/paired_states.py`.
+  A set is kept only when all four frames correlate ≥ 0.85 with its first.
+
+Bloom with the three Multiply overlays as captured vs hidden
+(`measure/trpz_paired_native.txt`, `measure/r6p-xtrpz1_paired.txt`):
+
+| build | n | gain, overlays as-is | gain, hidden | overlay effect on the bloom term |
+|---|---|---|---|---|
+| Xenia | 12 | 1.266 | 1.266 | −0.03 |
+| native, Color fix | 15 | 1.235 | 1.235 | −0.00 |
+| native, Color fix, factorless MAX | 15 | 1.263 | 1.263 | +0.01 |
+
+Raw / grade / full (`measure/trpg_paired_native_cut085.txt`,
+`measure/r6p-xtrpg1_paired_cut085.txt`,
+`measure/trpg_paired_native_nocolorfix.txt`; medians in brackets; one frozen
+set of each side, `sheets/trp_frozen_full_grade_raw.png`):
+
+| build | n | grade (grade/raw) | bloom (full/grade) | post (full/raw) |
+|---|---|---|---|---|
+| Xenia | 12 | 1.234 (1.237) | 1.276 (1.270) | 1.575 (1.572) |
+| native, Color fix | 15 | 1.228 (1.226) | 1.245 (1.265) | 1.528 (1.557) |
+| native, no Color fix (`r6dof`) | 15 | 1.221 (1.222) | 1.238 (1.236) | 1.512 (1.514) |
+
+Reading it:
+- **The grade agrees:** 1.228 vs 1.234.
+- **The bloom medians agree:** 1.265 vs 1.270. The means differ by 2.5%
+  (1.245 vs 1.276). Factorless MAX alone closes most of that (1.235 → 1.263
+  on the overlay set), so it is the §35 alpha artifact.
+- **The Multiply overlays play no part at the peak:** hiding
+  `carpetShadow`, `throne_shadow` and `throne_shadow_peak` moves the bloom
+  term by 0.00.
+- **Where the residual sits.** The MAX difference comes from the many
+  blended draws the peak adds (`native/probe_trp_blended.txt`). Blend 3
+  (SrcAlpha): the floors `THR_floor_main`/`THR_floor_raised`,
+  `peak_columns_*`, smoke, clouds, `projection`. Blend 4 (SrcAlphaAdd):
+  sparks, fire, `god_rays`, `THR_lightrays`, `peak_carpet*`. On those,
+  factorless MAX leaves max(src.a, dst.a) where the draw equation leaves
+  src.a² + dst.a·(1 − src.a).
+- **No term is left to fix.** The Color fix is not what moved the number:
+  without it the same frozen-frame measurement gives 1.51× (row 3), and it
+  changes the stages by under 1%. INFERRED: the brief's 1.39× and 1.62×
+  compare frame means across separate runs, so different frames and
+  cameras, at a venue state whose cameras and lights move every frame (the
+  native raw and grade figures are separate `DC3_RETAIL_POST=raw` / `grade`
+  runs).
+- **Net.** On the fixed base, the same frozen frame lifts 1.53× on native
+  and 1.54–1.58× on Xenia.
+
+### 37.4 Softness (MEASURED, no change)
+
+The Xenia lane measured native sharpness at 8–13 against Xenia's 13–17. Its
+own JSON (`xenia/round2/tables/json`) shows that this is not the post chain
+and not uniform:
+- throneroom native raw and post read the same (8.0 vs 7.9, 8.4 vs 8.4),
+  against Xenia ~13;
+- houseparty native is *sharper* than Xenia (16.4 vs 14.7).
+
+The full-screen passes sample at texel centres:
+- the composite uses uv = (px + 0.5)/size between targets of equal size;
+- `DisplayRampPass` uses `textureLoad`.
+
+So there is no half-texel or filter term to fix. INFERRED: it is scene
+content or rendering on throneroom, not post. The velocity blur and the
+motion-blur feedback do not apply: `motion_blur_blend` is 0.00 on
+`throneroom_performance_high.pp` and `world.pp` (`native/probe_tr`), and the
+frozen frames of 36.3 have no camera motion for the velocity blur to act on.
+
+### 37.5 Consumers, passes, cost
+
+- **Render passes.** None added, split or renamed. The four `Dof*` passes now
+  run on intro shots.
+- **Frame time.** DOF costs ≈0.039 ms on a DOF shot and 0 otherwise. Nothing
+  else changed.
+- **No new getenv.**
+- **Engine code.** No change this round (docs only), on top of the np-gfx
+  merge `b7dea75` (np-gfx `6e187ec`).
+- **Consumers.** rb3 master `3e36eb5d2` and rb3-xenon main `15ce9d4bb`
+  were configured with `MILO_ENGINE_PATH` at the lane head `b7dea75`, whose
+  code is np-gfx `6e187ec`:
+  - rb3 `all`: built, and ctest passed 158 of 158 (7 skipped, as on main).
+  - rb3-xenon `rb3-render`: 11 frames, 0 differing pixels against round 5's
+    `3c55115`.
+  - `native_compat_census.py check` reports OK: 455 flags, regen clean. The
+    one flag added since round 5 came in with the np-gfx merges; this lane
+    added no getenv.
+
+### 37.6 Round 7: the same measurements on np-gfx with the Color and spotlight fixes
+
+np-gfx then landed two fixes that change what a throneroom or houseparty
+frame contains:
+- `Hmx::Color::Unpack` multiplies by the image's 1/255 constant, so
+  animated light colours no longer drift (`crow_underlight_light` holds
+  255/200/3);
+- the spotlight list is cleared each frame (`NgSpotlightDrawer::RenderScene`
+  was an empty native stub), so stale spotlights no longer fill all 50
+  box-map spot slots at the throneroom peak, and flares draw once.
+
+I merged np-gfx into the lane (engine `cceacb6`, np-gfx `25f6f3e`; dc3
+`d1d571ec2`, np-gfx `ae6cc55fd`). On that base I built `dc3-native-r7`
+(XXH3 `1f587c12d34a3a27`) and ran the round-6 measurements again, native
+only, with the same states, cuts and scripts (`tools/r7run.sh`,
+`measure/r7_native.txt`). The Xenia rows are round 6's: the original binary
+under Xenia does not depend on either native fix.
+
+Throneroom peak, frozen frames (`r7_trpg`, cut 0.85; medians in brackets):
+
+| build | n | grade (grade/raw) | bloom (full/grade) | post (full/raw) |
+|---|---|---|---|---|
+| Xenia (round 6) | 12 | 1.234 (1.237) | 1.276 (1.270) | 1.575 (1.572) |
+| native, round 7 base | 15 | 1.222 (1.222) | 1.261 (1.263) | 1.541 (1.546) |
+| native, round 6 Color-fix base | 15 | 1.228 (1.226) | 1.245 (1.265) | 1.528 (1.557) |
+
+The side-effect control (full again / full) reads 1.000. With the Multiply
+overlays as-is vs hidden (`r7_trpz`, cut 0.9, n=15), the bloom gain is
+1.256 (median 1.276) both ways: the overlay effect is 0.00, against
+Xenia's 1.266.
+
+- **Item 3 holds on the fixed base.** Grade 1.222 vs 1.234, bloom median
+  1.263 vs 1.270, post 1.541 vs 1.575 (medians 1.546 vs 1.572). The bloom
+  mean moved closer (1.245 → 1.261): the stale spotlights no longer add
+  pre-post light. The residual is still under 3%, and round 6's factorless
+  MAX build already reproduced it. There is no term to fix.
+- **Item 1 does not move.** Throneroom normal, `tr_far03` carpet: full 22.2,
+  bloom off 21.6, overlays hidden 46.1 / 42.5, levels off 33.7, against
+  round 6's 22.3 / 21.7 / 46.0 / 42.4 / 33.7 and Xenia's 28.7 / 22.7 / 47.2
+  / 43.9 / 39.6. `tr_062`: 7.6 / 7.4, hidden 32.9. The normal state has no
+  peak spotlights, so this is expected.
+- **Predating these fixes:** every round-6 native number, i.e. §37.1's native
+  columns, §37.3's native rows, §37.2's houseparty sharpness, and the round-6
+  gate and consumer checks. The houseparty DOF effect is a before/after on
+  one binary pair, so the stale spotlights are in both sides of it. INFERRED:
+  they do not change the conclusion, but the absolute sharpness numbers
+  (9.4/10.0 after DOF) were not re-taken.
+
+### 37.7 Round 8: the same measurements with the spotlight beams (np-gfx `cf2bdfd`)
+
+The spot lane's beams (§36) are now in the retail composite, and they add
+light at the throneroom peak. I merged np-gfx again (engine `6ea6901`, np-gfx
+`cf2bdfd`; dc3 `772331126`, np-gfx `4b229da41`). This merge is where the doc
+conflict came from: both lanes appended a §36, so this section is now §37.
+On that base I built `dc3-native-r8` (XXH3 `96c64f900ffdba77`) and ran
+`tools/r8run.sh` (round 7's script and states; `measure/r8_native.txt`).
+
+Throneroom peak, frozen frames (`r8_trpg`, cut 0.85; medians in brackets):
+
+| build | n | grade (grade/raw) | bloom (full/grade) | post (full/raw) |
+|---|---|---|---|---|
+| Xenia (round 6) | 12 | 1.234 (1.237) | 1.276 (1.270) | 1.575 (1.572) |
+| native, round 8 (beams) | 15 | 1.240 (1.239) | 1.246 (1.261) | 1.544 (1.547) |
+| native, round 7 | 15 | 1.222 (1.222) | 1.261 (1.263) | 1.541 (1.546) |
+
+The control reads 1.000. Overlays as-is vs hidden (`r8_trpz`): bloom gain
+1.248 (median 1.260) both ways, overlay effect 0.00.
+
+The beams are on in these frames. A separate frozen-frame run
+(`r8_trpb`, `tools/beam_term.py`, `measure/r8_beams.txt`, n=12 of 12)
+hides every `SpotlightDrawer` with post on and with post off:
+- With post on, the drawers add median +3.2 levels (mean +2.5, +4.2% of the
+  frame). With post off they add 0.00, because `Rnd::DoPostProcess` skips
+  every post processor when `mDisablePostProc` is set, the drawer's `DoPost`
+  included.
+- So the "raw" state has no beams on either side, and "grade" (bloom
+  intensity 0) keeps them on both, because the beam term is added after the
+  bloom branch. This is why the grade stage rises (1.222 → 1.240) while
+  bloom/grade falls (1.261 → 1.246): the beams land in the grade frame
+  before bloom is measured against it.
+- MILO_GPU_TIMERS over the same run (`gput.py`, 182 gameplay windows, 117
+  with beams every frame): `DC3SpotBeams` 0.0058 ms, `DC3SpotBlur` 0.0116 ms,
+  2.4% of a 0.72 ms GPU frame. That is the spot lane's cost, quoted here only
+  to show the pass ran.
+
+Reading it:
+- **Grade:** 1.240 vs Xenia 1.234, now 0.5% over (it was 1% under without
+  beams).
+- **Bloom medians:** 1.261 vs 1.270. The 2.4% mean gap is still the
+  factorless-MAX artifact of §37.3.
+- **Post:** 1.544 vs 1.575 (medians 1.547 vs 1.572), a 2% gap. It is smaller
+  than the spread between runs. The `r8_trpb` run, on the same binary but
+  with a different frame mix (5 states per set, so the sets fall at other
+  song times), reads post 1.653 (median 1.640), and within `r8_trpg` the
+  sets range 1.369–1.637.
+- **No term to fix.** Item 3's "1.62× vs 1.39×" is closed: on every base
+  since round 6, the same frozen frame lifts within the run-to-run spread of
+  Xenia's.
+- **Carpet (item 1) is unchanged.** `tr_far03` carpet: full 22.2, bloom off
+  21.6, hidden 45.9 / 42.3, levels off 33.7. `tr_062` reads 7.8 / 7.8.
+  Native's bloom over `carpetShadow` is still +0.6, against Xenia's +6.0.
+- **Not re-taken on this base:** houseparty DOF sharpness (§37.2). The DOF
+  effect is a same-binary before/after, so the beams sit on both sides of
+  it.
+
+**Consumers, final engine head.** rb3 master `3e36eb5d2` and rb3-xenon main
+`15ce9d4bb` were configured with `MILO_ENGINE_PATH` at `6ea6901`. The doc
+commits after it change no code. Results:
+- rb3 `all`: built, ctest 158 of 158 passed (7 skipped).
+- rb3-xenon `rb3-render`: 11 frames, 0 differing pixels against round 7
+  (`27da180`). Round 7 had 0 against round 6, and round 6 had 0 against
+  round 5.
+- `native_compat_census.py check`: OK, 455 flags, regen clean.
