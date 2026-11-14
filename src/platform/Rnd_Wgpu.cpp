@@ -85,6 +85,13 @@ static double ThreadCpuNow() {
 Rnd& TheRnd = gWgpuRndInstance;
 NgRnd& TheNgRnd = gWgpuRndInstance;
 RndShaderMgr& TheShaderMgr = gWgpuShaderMgr;
+namespace rndshape {
+const float* CapturedVConstant(int reg) {
+    static const float kZero[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    if (reg < 0 || (unsigned)reg >= WgpuShaderMgr::kNumVConstants) return kZero;
+    return &gWgpuShaderMgr.VConstant(reg).x;
+}
+} // namespace rndshape
 #else
 // RB3-Wii's rndobj/Rnd.h declares `extern Rnd* TheRnd`, and has no NG layer.
 Rnd* TheRnd = &gWgpuRndInstance;

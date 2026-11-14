@@ -888,6 +888,13 @@ fn retailHasSpecular() -> bool {
     return dot(abs(material.retailSpec.rgb), vec3f(1.0)) > 0.0;
 }
 
+// DC3 (scene.retailLighting 2): the material uses the environ. The DC3
+// shape's MatRetailTerms fills the retail terms only for such a material, and
+// a filled set always carries a specular power of at least 0.5.
+fn dc3UsesEnviron() -> bool {
+    return material.retailSpec.a > 0.0;
+}
+
 // Specular evaluated at the vertex: a material with specular but without
 // per_pixel_lit (option bit 2 without bit 0).
 fn retailVertexSpecular(worldPos: vec3f, worldNormal: vec3f, ao: vec4f) -> vec3f {
@@ -1166,6 +1173,34 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
         }
     }
 
+    // DC3 retail environment map (scene.retailLighting 2, standard.ps option
+    // bit 3; permutations 0x30018, 0x30019, 0x80000030019 disassembled in
+    // docs/native/dc3-retail-lighting.md). The cube texel is added to the
+    // diffuse texel BEFORE lighting, weighted by its own alpha:
+    //   (tex + env.rgb * env.a * w) * colour * lighting,
+    // w = 1 - sat(N . V) with env falloff (bit 43), else 1. The lookup is the
+    // reflected view vector R = 2 (N . V) N - V, handed to the cube fetch as
+    // (R.x, R.z, R.y) (the `cube r1, r1.yyxz, r1.zxyy` swizzle). The option is
+    // set only inside CalcShaderOpts' "real or approx light" block, for a
+    // material that uses the environ.
+    if (scene.retailLighting > 1.5 && isEnabled(material.environMapStrength) &&
+        dc3UsesEnviron() && retailLightsOn()) {
+        let envN = normalize(surfaceInput.worldNormal);
+        let envV = normalize(scene.cameraPos - surfaceInput.worldPos);
+        let envNdotV = dot(envN, envV);
+        let envR = 2.0 * envNdotV * envN - envV;
+        let envSample = textureSample(environMapTex, environSampler, vec3f(envR.x, envR.z, envR.y));
+        var envWeight = envSample.a;
+        if (isEnabled(material.environMapFalloff)) {
+            envWeight *= 1.0 - saturate(envNdotV);
+        }
+        if (isEnabled(material.environMapSpecMask)) {
+            envWeight *= textureSample(specularMapTex, mapSampler, surfaceInput.uv).a;
+        }
+        baseColor = vec4f(baseColor.rgb + matRgb * vertexTint * envSample.rgb * envWeight,
+                          baseColor.a);
+    }
+
     // Retail world refraction: the texel's rgb is the diffuse rgb times the
     // refracted frame, or the frame alone without a diffuse map.
     let refract = refractStrength();
@@ -1299,16 +1334,29 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
         emissiveTint = vec3f(1.0);
     }
     finalColor += emissiveTint * material.emissiveMultiplier * emissiveSample.rgb;
-    finalColor += computeRimLighting(surfaceNormal, viewDir, surfaceInput.uv);
-    finalColor += computeEnvironmentReflection(surfaceNormal, viewDir, specularSample);
+    // DC3's retail model has its rim inside retailShade and its environment
+    // map in the texel (above); the native rim and reflection adds are the
+    // other models'.
+    if (scene.retailLighting < 1.5) {
+        finalColor += computeRimLighting(surfaceNormal, viewDir, surfaceInput.uv);
+        finalColor += computeEnvironmentReflection(surfaceNormal, viewDir, specularSample);
+    }
     // RB3 colour modulation scales the shaded colour, additive terms included:
     // DC3 permutation 0x300431010 computes texel * lighting + the interpolated
     // add, then multiplies by the band factors.
     finalColor *= colorModScale(colorModTexA);
 
     if (isEnabled(scene.fogEnabled) && isEnabled(material.materialFogEnabled)) {
-        let cameraDistance = length(surfaceInput.worldPos - scene.cameraPos);
-        let fogFactor = clamp((scene.fogEnd - cameraDistance) / (scene.fogEnd - scene.fogStart), 0.0, 1.0);
+        var fogFactor: f32;
+        if (scene.fogEnabled > 1.5) {
+            // DC3 retail (standard.vs option bit 18, permutation 0x70010):
+            // exp_sat(-2.88539 * clip.w * c91.y), c91.y = 1 / (end - start).
+            let clipW = (scene.viewProj * vec4f(surfaceInput.worldPos, 1.0)).w;
+            fogFactor = saturate(exp2(-2.8853900 * clipW / (scene.fogEnd - scene.fogStart)));
+        } else {
+            let cameraDistance = length(surfaceInput.worldPos - scene.cameraPos);
+            fogFactor = clamp((scene.fogEnd - cameraDistance) / (scene.fogEnd - scene.fogStart), 0.0, 1.0);
+        }
         finalColor = mix(scene.fogColor, finalColor, fogFactor);
     }
 

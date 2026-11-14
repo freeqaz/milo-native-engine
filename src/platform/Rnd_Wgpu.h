@@ -49,7 +49,16 @@ public:
     void SetVConstant(VShaderConstant, const Hmx::Matrix4&) override {}
     void SetVConstant4x3(VShaderConstant, const Hmx::Matrix4&) override {}
     void SetVConstant(VShaderConstant, RndTex*) override {}
-    void SetVConstant(VShaderConstant, const Vector4&) override {}
+    // Vector4 vertex constants are kept: the DC3 shape's retail light model
+    // reads the box map NgEnviron::UpdateApproxLighting uploads (c80..c85)
+    // at draw time, the register the image's standard.vs reads
+    // (rndshape::FillMeshApproxLighting, RndShape_DC3.h). Storing them
+    // changes no render on its own.
+    void SetVConstant(VShaderConstant reg, const Vector4& v) override {
+        if ((unsigned)reg < kNumVConstants) mVConstants[reg] = v;
+    }
+    const Vector4& VConstant(int reg) const { return mVConstants[reg]; }
+    static constexpr unsigned kNumVConstants = 256;
     void SetVConstant(VShaderConstant, const float*, unsigned int) override {}
     void SetVConstant(VShaderConstant, int) override {}
     void SetVConstant(VShaderConstant, bool) override {}
@@ -63,6 +72,9 @@ public:
 
 protected:
     RndShaderProgram* NewShaderProgram() override { return nullptr; }
+
+private:
+    Vector4 mVConstants[kNumVConstants] = {};
 };
 #endif // MILO_RNDOBJ_SHAPE_HAS_NGRND
 
