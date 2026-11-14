@@ -17,6 +17,7 @@
 #include "rndobj/Mat.h"
 #include "platform/rndshape/RndShape.h"
 #include "rndobj/Cam.h"
+#include "rndobj/Env.h"
 #include "rndobj/Rnd.h"
 #include "math/Mtx.h"
 #include <cstdio>
@@ -40,6 +41,8 @@ static void RecordDrawCall(
     rec.materialName = mat->Name();
     RndCam* cam = RndCam::Current();
     rec.cameraName = cam ? cam->Name() : nullptr;
+    RndEnviron* env = rndshape::CurrentEnv();
+    rec.environName = env ? env->Name() : nullptr;
     rec.blend = blend;
     rec.zMode = mat->GetZMode();
     rec.cull = mat->GetCull();

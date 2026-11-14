@@ -131,6 +131,10 @@ public:
     wgpu::TextureFormat CurrentTargetFormat() const { return mCurrentTargetFormat; }
     uint32_t CurrentSampleCount() const { return mCurrentSampleCount; }
     bool CurrentPassHasDepth() const { return mCurrentPassHasDepth; }
+    // The frame has left its world (FlushPostProcessingForOverlay ran): what
+    // draws now is UI/HUD, or a render target that UI draws. Reset by the
+    // frame's clearing BeginFramePass.
+    bool FrameInOverlay() const { return mFrameInOverlay; }
     uint32_t CurrentTargetWidth() const { return mCurrentTargetWidth; }
     uint32_t CurrentTargetHeight() const { return mCurrentTargetHeight; }
     int FrameID() const { return mFrameID; }
