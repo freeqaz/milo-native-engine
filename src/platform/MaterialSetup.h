@@ -42,6 +42,9 @@ bool MaterialShadesPrelit(bool matPrelit, bool isTextMesh, bool isOverlayPass,
 // any phase when the shape says so (rndshape::kIntensifyScalesAlpha: DC3's
 // world draws use the same shader), else 1.
 float MaterialAlphaScale(bool intensify, bool retailMaterialTerms);
+// Whether the material's pipeline turns on alpha-to-coverage (its alpha cut,
+// on a shape with rndshape::kAlphaCutUsesCoverage; DC3: never).
+bool MaterialAlphaToCoverage(BaseMaterial* mat);
 // The material colour as the shader sees it. A premultiplied-alpha material
 // (blend 7, pipeline One / OneMinusSrcAlpha) has its rgb scaled by its alpha
 // before the constant is set -- NgMat::SetRegularShaderConst (Mat_NG.cpp:191,
