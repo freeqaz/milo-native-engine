@@ -154,7 +154,7 @@ implemented here.
 
 Captures come from `scripts/gpu/look_capture.sh` (song omg, 45 s in, every
 cell gameplay = yes). Before is the baseline set at engine 99ee167 / dc3
-29c8bdc3d. After is this branch. The sheets are in dc3-decomp
+29c8bdc3d. After is this branch: the table below is from e24e553, and 82a6b89 re-measured within 1-4 luma (rink 134.1 / 0.315, street 76.6 / 0.358). The sheets are in dc3-decomp
 `archive/np-gfx-2026-11-14/lanes/light/sheets/`
 (`before_after_{normal,peak}.png`). Retail frames are third-party footage and
 appear only in a local sheet that is not to be shared.
@@ -227,9 +227,23 @@ The shader's `dc3ProjLight` returns the identity unless
 
 | consumer | check | result |
 |---|---|---|
-| rb3-xenon | `rb3-render` over `xbox-zip`, base engine 99ee167 vs this branch, same worktree | 11 of 11 PNGs byte-identical |
+| rb3-xenon | `rb3-render` over `xbox-zip`, base engine 99ee167 vs this branch, same worktree | 11 of 11 PNGs byte-identical, at e24e553 and again at 82a6b89 |
 | rb3 (Wii, dc3 GPU backend, i.e. `WgpuRnd` with the RB3Wii shape) | `rb3-native` with `RB3_FIXED_CLOCK=1` and `setarch -R`, screenshots at frames 100/600/900, base vs this branch | not byte-identical **between two base runs** (mean abs diff 4.9-5.5 per pixel). The lane's difference is the same size (4.9-5.6), so it sits inside run-to-run noise. The title scene renders lit. |
 | rb3 | `ctest` in a worktree build against this branch | 158 registered, 151 passed, 0 failed, 7 skipped |
 | rb3 | `drawlog-golden.py --fixed-clock --canonical-order` | fails with "dump frame=61 != expected 60" on the **base** binary as well, so it predates this lane and says nothing about it |
 | getenv census | `native_compat_census.py --engine-root <this branch> check` | OK, 442 flags. This lane adds no getenv. |
-| dc3 | `native/tests/test_retail_lighting.cpp`, 8 tests | pass. Each sabotage listed in the dc3 commit fails it. |
+| dc3 | `native/tests/test_retail_lighting.cpp`, 9 tests | pass. Each sabotage listed in the dc3 commits fails it. |
+| dc3 | `RehearseProjectionTest.DancerIsDrawnThroughTheProjection` | Failed under the retail model: 2-3% "character-coloured" against a 10% bar. The kept shots show the dancer drawn, saturated rather than washed out. The test's green ≥ 80 rule was measuring overexposure, so it now detects the dancer by hue. It passes on both the base and this branch, and reads 0.0% on the reveal-off shots. |
+
+## 7. Findings handed over by other lanes
+
+| finding | lane | state here | how |
+|---|---|---|---|
+| A non-prelit material with `use_environ` 0 is lit by the scene environ; retail gives it white ambient and no lights. | np-gfx-blend | **covered** | `rndshape::MatUnlit` is `!UseEnviron && !Prelit` for the DC3 shape. It applies to every draw, world and UI, through `BuildMaterialParams` and the next-pass path. Test: `MaterialWithoutEnvironIsUnlit`. |
+| The mesh ambient keeps a 0.08 floor. | np-gfx-blend | **covered** | The floor lives only in the `EnvHasAmbientFogOwner` arm of `WriteSceneUniforms`, which DC3 no longer reaches. rb3-xenon still does, unchanged. Test: `AmbientAndPointLightsAreTheEnvironsOwn`, with ambient (0.02, 0.3, 0.4). |
+| Particles take environ ambient × material colour (engine c6e10c5). | np-gfx-blend | **consistent** | Particles read `env->AmbientColor()` themselves. The scene ambient here is that same value, unfloored, so particles and meshes agree with retail's c1. |
+| (a) Colour space: the Xbox 360 renders in gamma space. | np-gfx-hud | **covered, same conclusion** | Section 2 reaches it independently, and `kGammaSpaceShading = kDC3RetailModel` (c44d878) switches every DC3 draw, world and UI. `UiDrawTermsFor` ORs `GameRenderHook::UiShadesInGammaSpace` into that constant, so for DC3 the hook is redundant and can be retired at merge. |
+| (b) Xenia headless PNGs carry an sRGB LUT. | np-gfx-hud | **not applicable** | Every retail reference used here is captured footage (`retail/INDEX.md`), not Xenia output. |
+| (c) `MaterialShadesUnlit` applied only under the UI terms. | np-gfx-hud | **covered** | `MatUnlit` above is the same rule for every DC3 draw. `MaterialShadesUnlit` adds nothing for DC3 and can be retired at merge, or kept for a consumer that opts into the UI terms without the DC3 shape. |
+| (d) The scene-light path drops RndLight intensity. | np-gfx-hud | **covered** | Intensity lives in the colour: `SetPackedColor` multiplies it in, and `Intensity()` is the max channel. `WriteDC3Retail` and the projected light read `GetColor()`, as `SetPointLightRegisters` does. Test: intensity 3 reaches c66. |
+| (e) Retail selects the default environ every frame. | np-gfx-hud | **done** | `rndshape::kSelectDefaultEnvEachFrame` (DC3 shape only). |
