@@ -479,6 +479,24 @@ inline RndBitmap *CubeFaceBitmap(RndCubeTex *c, int face) {
 // via order & 4); none carries the Wii GX 0x40 order bit.
 constexpr bool kGxTextureLayout = false;
 
+// ---- bitmap mip levels -----------------------------------------------------
+// How many levels of a RndBitmap texture reach the GPU, base included
+// (0 = every authored mip). DC3's DxTex::SyncBitmap (rnddx9/Tex.cpp) clamps
+// the level count it passes to CreateTexture/CreateSurface to 2:
+//     82614738  bl     RndBitmap::NumMips
+//     8261473C  addi   r24, r3, 0x1      ; numLevels = NumMips() + 1
+//     82614740  cmpwi  cr6, r24, 0x2
+//     82614744  ble    cr6, +8
+//     82614748  li     r24, 0x2          ; if (numLevels > 2) numLevels = 2
+// so a minified retail texture blends between its base and first mip only,
+// never the blurrier mips below. Cross-checked on the running original under
+// Xenia: the live fetch constants (TheDxRnd.mD3DDevice + 0x480) of dci's
+// world, character and HUD samplers read mip_max_level <= 1 throughout a song.
+// Uploading the whole authored chain made every minified prop and the
+// cylindrical HUD read ~0.65-0.8 of the original's sharpness.
+// rb3-xenon's Tex.cpp SyncBitmap is not decompiled, so it keeps the full chain.
+constexpr int kBitmapMaxMipLevels = kDC3RetailModel ? 2 : 0;
+
 // ---- draw modes ------------------------------------------------------------
 // The Rnd::Mode WorldReflection::DrawShowing sets while it draws the mirrored
 // world (DC3 world/Reflection.cpp: SetDrawMode((Rnd::Mode)8)).
