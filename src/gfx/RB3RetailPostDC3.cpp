@@ -1133,7 +1133,7 @@ void RB3RetailPost::RunDC3Composite(wgpu::CommandEncoder& encoder, const wgpu::T
                 td.format = wgpu::TextureFormat::RGBA8Unorm;
                 td.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding;
                 td.mipLevelCount = 1;
-                mPrevTex[i] = gpu.Device().CreateTexture(&td);
+                mPrevTex[i] = gpu.CreateTexture(td);
                 mPrevView[i] = mPrevTex[i].CreateView();
             }
             mPrevW = sceneW;
@@ -1252,7 +1252,7 @@ bool RB3RetailPost::RunDC3Velocity(wgpu::CommandEncoder& encoder, int sceneW, in
         td.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding |
                    wgpu::TextureUsage::CopySrc;
         td.mipLevelCount = 1;
-        mVelTex = gpu.Device().CreateTexture(&td);
+        mVelTex = gpu.CreateTexture(td);
         mVelView = mVelTex.CreateView();
         mVelW = vw;
         mVelH = vh;

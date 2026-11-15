@@ -601,7 +601,7 @@ bool SpotBeamPass::EnsurePipelines(GpuDevice& gpu) {
     td.size = {1, 1, 1};
     td.format = wgpu::TextureFormat::RGBA8Unorm;
     td.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
-    mWhiteTex = dev.CreateTexture(&td);
+    mWhiteTex = gpu.CreateTexture(td);
     const uint8_t white[4] = {255, 255, 255, 0};
     wgpu::TexelCopyTextureInfo dst{};
     dst.texture = mWhiteTex;
@@ -630,7 +630,7 @@ void SpotBeamPass::EnsureTargets(int w, int h, GpuDevice& gpu) {
         td.format = wgpu::TextureFormat::RGBA8Unorm;
         td.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding |
                    wgpu::TextureUsage::CopySrc;
-        mTex[i] = gpu.Device().CreateTexture(&td);
+        mTex[i] = gpu.CreateTexture(td);
         mView[i] = mTex[i].CreateView();
     }
     mW = w;

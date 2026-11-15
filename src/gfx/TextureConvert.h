@@ -38,10 +38,12 @@ wgpu::Texture CreateCubeFromBitmaps(GpuDevice& gpu, const RndBitmap* const* face
                                     bool mipChain = false);
 
 // Create render target texture
-wgpu::Texture CreateRenderTarget(GpuDevice& gpu, int w, int h, wgpu::TextureFormat fmt);
+wgpu::Texture CreateRenderTarget(GpuDevice& gpu, int w, int h, wgpu::TextureFormat fmt,
+                                 const char* label = "RndTexTarget");
 
 // Create depth-stencil target
-wgpu::Texture CreateDepthTarget(GpuDevice& gpu, int w, int h);
+wgpu::Texture CreateDepthTarget(GpuDevice& gpu, int w, int h,
+                                const char* label = "RndTexDepth");
 
 // Map Milo bitmap format to WebGPU texture format
 wgpu::TextureFormat MapBitmapFormat(const RndBitmap& bmp, bool hasBCSupport);

@@ -310,7 +310,7 @@ void RB3RetailPost::EnsurePipelines(GpuDevice& gpu) {
         td.size = {1, 1, 1};
         td.format = kBloomFmt;
         td.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
-        mBlackTex = dev.CreateTexture(&td);
+        mBlackTex = gpu.CreateTexture(td);
         const uint16_t zero[4] = {0, 0, 0, 0};
         wgpu::TexelCopyTextureInfo dst{};
         dst.texture = mBlackTex;
@@ -338,7 +338,7 @@ void RB3RetailPost::EnsureTextures(int sceneW, int sceneH, GpuDevice& gpu) {
             td.size = {(uint32_t)w, (uint32_t)h, 1};
             td.format = mBloomFormat;
             td.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding;
-            mTex[s][k] = gpu.Device().CreateTexture(&td);
+            mTex[s][k] = gpu.CreateTexture(td);
             mView[s][k] = mTex[s][k].CreateView();
         }
         mW[s] = w;
