@@ -63,7 +63,13 @@ public:
     // Run() that finds the depth of field on does not (they used to compile on
     // the first song frame, with the spot beam and point-test pipelines:
     // docs/native/dc3-backend-for-rb3-wii.md section 38.2).
-    void Prewarm(wgpu::TextureFormat format, GpuDevice& gpu) { EnsurePipelines(format, gpu); }
+    // `enhanced` (LookSettings::postDofFilter at Init) also compiles the tent
+    // downsample and B-spline composite.
+    void Prewarm(wgpu::TextureFormat format, GpuDevice& gpu, bool enhanced = false) {
+        EnsurePipelines(format, gpu);
+        if (enhanced) EnsureEnhancedPipelines(gpu);
+    }
+    bool EnhancedReady() const { return (bool)mDownTentPipe && (bool)mCompositeBSplinePipe; }
     // Bind groups from `cache` (null: four created per run); dc3 PLAN H-66.
     void SetBindGroupCache(BindGroupCache* cache) { mBindGroups = cache; }
 

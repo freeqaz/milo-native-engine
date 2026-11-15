@@ -25,7 +25,17 @@ public:
              wgpu::TextureView& frameView, wgpu::TextureView& blackTexView, GpuDevice& gpu);
     void Terminate();
     // The depth of field's pipelines for a `format` intermediate (DofPass::Prewarm).
-    void PrewarmDof(wgpu::TextureFormat format, GpuDevice& gpu) { mDof.Prewarm(format, gpu); }
+    // `enhanced`: also the enhanced look's tent / B-spline pipelines.
+    void PrewarmDof(wgpu::TextureFormat format, GpuDevice& gpu, bool enhanced = false) {
+        mDof.Prewarm(format, gpu, enhanced);
+    }
+    // The DC3 chain's enhanced-look bloom pipelines (RB3RetailPost::PrewarmDC3Enhanced).
+    void PrewarmDC3Enhanced(bool precision, bool filter, GpuDevice& gpu) {
+        mRetail.PrewarmDC3Enhanced(precision, filter, gpu);
+    }
+    // For the warm's test (dc3 test_fixed_key_pipelines.cpp).
+    bool DofEnhancedReady() const { return mDof.EnhancedReady(); }
+    bool DC3EnhancedReady(bool precision) const { return mRetail.DC3EnhancedReady(precision); }
     // The post chain's bind groups (this pass, bloom, depth of field, the
     // retail chains) come from `cache` -- WgpuRnd's post cache, aged and swept
     // once per frame -- so a steady frame creates none (dc3 PLAN H-66). Null

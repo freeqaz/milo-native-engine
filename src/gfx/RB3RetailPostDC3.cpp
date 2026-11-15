@@ -763,6 +763,12 @@ void RB3RetailPost::EnsureDC3Pipelines(GpuDevice& gpu) {
     mDC3Ready = true;
 }
 
+void RB3RetailPost::PrewarmDC3Enhanced(bool precision, bool filter, GpuDevice& gpu) {
+    if (!precision && !filter) return;
+    EnsureDC3Pipelines(gpu);
+    EnsureDC3Family(precision ? 1 : 0, gpu);   // RunDC3Bloom's `fam` (enhLinear is tests only)
+}
+
 // np-gfx-post round 10: the enhanced look's bloom passes (RetailPostParams::
 // enhPrecision / enhFilter), one family per set format. [1] (RGBA16Float)
 // compiles with kSat, so each pass saturates where the 8-bit sets would.

@@ -205,6 +205,16 @@ public:
     // part of the group -- so a steady frame creates none. Null: each pass
     // creates its group (tests and tools that run the chain alone).
     void SetBindGroupCache(BindGroupCache* cache) { mBindGroups = cache; }
+    // DC3 (dc3-decomp's retail post) with the enhanced look's bloom on at Init
+    // (LookSettings::postPrecision / postBloomFilter): the DC3 chain's
+    // pipelines and that look's family compile now, not on the first
+    // world-graded frame (docs/native/dc3-backend-for-rb3-wii.md section 38.2).
+    // Both off: nothing. A runtime look switch compiles the family on its
+    // first use, once.
+    void PrewarmDC3Enhanced(bool precision, bool filter, GpuDevice& gpu);
+    // Whether that family (RunDC3Bloom's: precision on -> the RGBA16Float one)
+    // is compiled; for the warm's test.
+    bool DC3EnhancedReady(bool precision) const { return (bool)mDC3Fam[precision ? 1 : 0].blur; }
 
 private:
     static constexpr int kSets = 3;
