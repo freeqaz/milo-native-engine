@@ -33,7 +33,45 @@ struct GpuDeviceDesc {
     // Open fullscreen on the monitor (its desktop mode, no mode switch).
     // MILO_FULLSCREEN=1 does the same. F11 or Alt+Enter toggles at run time.
     bool fullscreen = false;
+    // Internal render scale (supersampling). > 1: the frame -- headless, or the
+    // windowed fixed-size frame -- is drawn at the scale times its size and
+    // box-filtered back down where it leaves the renderer: PresentFrame into
+    // the window, ReadbackFrame/ReadbackHeadlessFrame into the size a caller
+    // reads (OutputWidth/Height). WindowWidth/Height are the DRAWN size, so
+    // every render target and viewport follows. 1 (the default): off, nothing
+    // changes. Ignored windowed without a fixed-size frame, and on the web.
+    // The scale actually used is ResolveRenderScale (below):
+    //   renderScale / renderScaleIntegrated  the DEFAULT, by adapter class
+    //       (discrete / anything else: integrated, CPU, unknown -- the scale
+    //       multiplies the main pass's fill by its square, which a handheld's
+    //       iGPU cannot carry). Applies only to a frame presented to a real
+    //       surface; capped so the drawn frame stays within 3840x2160.
+    //   renderScaleExplicit  asked for (0 = not): clamped to [1, 2], used
+    //       headless too, on any adapter, and not capped.
+    float renderScale = 1.0f;
+    float renderScaleIntegrated = 1.0f;
+    float renderScaleExplicit = 0.0f;
 };
+
+// The render scale rule (pure; GpuDevice::Init applies it).
+//   renderScaleExplicit > 0  that, clamped to [1, kRenderScaleMax]
+//   headless (no surface)  1: many headless engines run at once on a test box
+//                          (gates, flow tests with a wall-clock limit), and a
+//                          4x main-pass fill on each is a fleet-wide slowdown
+//   otherwise              the default for the adapter class (renderScale
+//                          on a discrete GPU, renderScaleIntegrated on any
+//                          other), capped so the drawn frame fits
+//                          kRenderScaleCapWidth x kRenderScaleCapHeight, and
+//                          rounded DOWN to a whole number (a fractional box
+//                          filter softens everything: 1.5x measured blurrier
+//                          than 1x on world textures, 0.53 vs 0.77 of Xenia's
+//                          Laplacian energy, at 2.4x the GPU time); floor 1.
+// outputW/H: the size the frame leaves the renderer at (0 = unknown, no cap).
+constexpr float kRenderScaleMax = 2.0f;
+constexpr int kRenderScaleCapWidth = 3840;
+constexpr int kRenderScaleCapHeight = 2160;
+float ResolveRenderScale(const GpuDeviceDesc& desc, bool discreteGpu, bool presentsToSurface,
+                         int outputW, int outputH);
 
 // Why GpuDevice::Init failed.
 enum class GpuInitFailure {
@@ -52,11 +90,38 @@ struct SamplerDesc {
     wgpu::FilterMode minFilter = wgpu::FilterMode::Linear;
     wgpu::FilterMode magFilter = wgpu::FilterMode::Linear;
     wgpu::MipmapFilterMode mipmapFilter = wgpu::MipmapFilterMode::Linear;
+    // > 1 only with all three filters linear (WebGPU's rule); GetSampler
+    // falls back to 1 otherwise.
+    uint16_t maxAnisotropy = 1;
+    // Highest mip level sampled (WebGPU lodMaxClamp). 16 = no limit; 1 limits
+    // the sample to the base and the first mip, whatever the texture holds.
+    float lodMaxClamp = 16.0f;
 
     bool operator==(const SamplerDesc& o) const {
         return addressU == o.addressU && addressV == o.addressV &&
                minFilter == o.minFilter && magFilter == o.magFilter &&
-               mipmapFilter == o.mipmapFilter;
+               mipmapFilter == o.mipmapFilter && maxAnisotropy == o.maxAnisotropy &&
+               lodMaxClamp == o.lodMaxClamp;
+    }
+
+    // The WebGPU descriptor (shared by the desktop and web GpuDevice).
+    // maxAnisotropy > 1 is legal only with all three filters linear; any other
+    // combination falls back to 1.
+    wgpu::SamplerDescriptor ToWgpu() const {
+        wgpu::SamplerDescriptor sd{};
+        sd.addressModeU = addressU;
+        sd.addressModeV = addressV;
+        sd.addressModeW = wgpu::AddressMode::Repeat;
+        sd.minFilter = minFilter;
+        sd.magFilter = magFilter;
+        sd.mipmapFilter = mipmapFilter;
+        sd.lodMinClamp = 0.0f;
+        sd.lodMaxClamp = lodMaxClamp;
+        const bool allLinear = minFilter == wgpu::FilterMode::Linear &&
+                               magFilter == wgpu::FilterMode::Linear &&
+                               mipmapFilter == wgpu::MipmapFilterMode::Linear;
+        sd.maxAnisotropy = (allLinear && maxAnisotropy > 1) ? maxAnisotropy : 1;
+        return sd;
     }
 };
 
@@ -68,6 +133,8 @@ struct SamplerDescHash {
         h ^= std::hash<int>{}(static_cast<int>(s.minFilter)) + 0x9e3779b9 + (h << 6) + (h >> 2);
         h ^= std::hash<int>{}(static_cast<int>(s.magFilter)) + 0x9e3779b9 + (h << 6) + (h >> 2);
         h ^= std::hash<int>{}(static_cast<int>(s.mipmapFilter)) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        h ^= std::hash<int>{}(static_cast<int>(s.maxAnisotropy)) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        h ^= std::hash<float>{}(s.lodMaxClamp) + 0x9e3779b9 + (h << 6) + (h >> 2);
         return h;
     }
 };
@@ -180,6 +247,19 @@ public:
     void PollEvents();
     int WindowWidth() const { return mWidth; }
     int WindowHeight() const { return mHeight; }
+    // The size a frame leaves the renderer at (readback, presentation's
+    // source): WindowWidth/Height unless GpuDeviceDesc::renderScale draws it
+    // larger. Size a readback buffer from these.
+    int OutputWidth() const { return mOutputWidth > 0 ? mOutputWidth : mWidth; }
+    int OutputHeight() const { return mOutputHeight > 0 ? mOutputHeight : mHeight; }
+    bool RenderScaled() const { return mOutputWidth > 0 && (mOutputWidth != mWidth || mOutputHeight != mHeight); }
+    // Drawn width over output width for a target `w` pixels wide: the render
+    // scale when `w` is the frame's drawn width, else 1 (an offscreen target).
+    float RenderScaleFor(int w) const {
+        return RenderScaled() && w == mWidth ? (float)mWidth / (float)OutputWidth() : 1.0f;
+    }
+    // The adapter reported itself a discrete GPU (render scale's default).
+    bool IsDiscreteGpu() const { return mDiscreteGpu; }
     bool IsHeadless() const { return mHeadless; }
 #ifdef __EMSCRIPTEN__
     // The backing-store size of the consumer's canvas (MILO_WEB_CANVAS_SELECTOR,
@@ -214,6 +294,7 @@ private:
     wgpu::TextureFormat mSurfaceFormat = wgpu::TextureFormat::BGRA8Unorm;
 
     bool mNullBackend = false;
+    bool mDiscreteGpu = false;
 #ifndef __EMSCRIPTEN__
     GLFWwindow* mWindow = nullptr;
     void (*mPrevKeyCallback)(GLFWwindow*, int, int, int, int) = nullptr;
@@ -233,6 +314,14 @@ private:
     // The frame's size: WindowWidth/Height.
     int mWidth = 0;
     int mHeight = 0;
+    // GpuDeviceDesc::renderScale: the frame's output size (0 = not scaled),
+    // and the box-filtered copy a scaled frame is read back through.
+    int mOutputWidth = 0;
+    int mOutputHeight = 0;
+    PresentScale mReadbackScale;
+    wgpu::Texture mReadbackTex;
+    bool ReadbackScaled(const wgpu::Texture& src, wgpu::TextureFormat fmt, uint8_t* outPixels,
+                        size_t outSize);
     // The swapchain's configured size.
     int mSurfaceWidth = 0;
     int mSurfaceHeight = 0;

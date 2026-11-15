@@ -12,6 +12,7 @@
 #include "gfx/FrameCapture.h"
 #include "rndobj/Mat.h"
 #include "platform/rndshape/RndShape.h"
+#include "platform/LookProfile.h"
 #include "rndobj/CubeTex.h"
 #include "math/Mtx.h"
 
@@ -293,6 +294,22 @@ static UiDrawTerms CurrentUiDrawTerms() {
     return UiDrawTermsFor(gWgpuRnd && gWgpuRnd->FrameInOverlay());
 }
 
+void ApplyLookSampling(SamplerDesc& desc, bool uiClass, const milo::LookSettings& look) {
+    if (uiClass) {
+        if (look.uiMipLevels > 0) desc.lodMaxClamp = (float)(look.uiMipLevels - 1);
+    } else {
+        desc.maxAnisotropy = look.maxAnisotropy;
+    }
+}
+
+bool MaterialDrawTakesLodBias(bool uiClass, float materialLodBias) {
+    return !uiClass && materialLodBias != 0.0f;
+}
+
+bool MaterialDrawSamplesAtOutputPixels(bool uiClass, bool toTextureTarget, float outputPixelScale) {
+    return uiClass && !toTextureTarget && outputPixelScale > 1.0f;
+}
+
 MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh) {
     return BuildMaterialParams(rawMat, isTextMesh, CurrentUiDrawTerms());
 }
@@ -506,6 +523,11 @@ MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh, const UiDraw
     // Map sampler -- always repeat for tiled texture maps
     result.mapSamplerDesc.addressU = wgpu::AddressMode::Repeat;
     result.mapSamplerDesc.addressV = wgpu::AddressMode::Repeat;
+
+    // Look profile, per texture class (ApplyLookSampling).
+    const bool uiClass = isTextMesh || isOverlayPass;
+    ApplyLookSampling(sampDesc, uiClass, milo::Look());
+    ApplyLookSampling(result.mapSamplerDesc, uiClass, milo::Look());
 
     result.heuristics = heuristics;
     return result;

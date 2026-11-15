@@ -279,6 +279,14 @@ void DrawMeshImmediate(RndMesh* mesh) {
     key.alphaToCoverage = cutCov == CutCoverage::AlphaToCoverage;
     key.cutoutCoverage = cutCov == CutCoverage::Sharpened;
     key.depthBias = meshData.depthBias;
+    // The look's texture LOD bias (LookSettings::lodBias) is for world
+    // textures; text and HUD keep the original's unbiased samples, as their
+    // samplers keep its two mip levels (MaterialSetup ApplyLookSampling).
+    key.lodBias = MaterialDrawTakesLodBias(isTextMesh || isOverlayPass,
+                                           gWgpuRnd->Pipelines().MaterialLodBias());
+    key.outputPixelSampling = MaterialDrawSamplesAtOutputPixels(
+        isTextMesh || isOverlayPass, gWgpuRnd->ActiveTargetTex() != nullptr,
+        gWgpuRnd->Pipelines().OutputPixelScale());
 
     wgpu::RenderPipeline pipeline = gWgpuRnd->Pipelines().GetPipeline(key);
     if (!pipeline) return;
