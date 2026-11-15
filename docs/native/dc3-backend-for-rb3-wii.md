@@ -9125,6 +9125,20 @@ uploads are 1–3% of the attributed time and were left alone (39.6).
   constant into the vertices, and the rect/particle draws building their
   pipeline through the shared `PipelineFor` / `ParticlePipeline`.
   rb3-xenon `rb3-render` and rb3 ctest are the checks.
+- **Neither consumer compiled at first.** The first consumer run (engine
+  `9c9a25b`) built neither of them; dc3's own build and gate could not see
+  either fault. Both are fixed in `f711559`:
+  - **rb3:** `MeshPipelineKey.h` forward-declared `class BaseMaterial;`. On
+    the RB3-Wii shape, `BaseMaterial` is `using BaseMaterial = RndMat`, so the
+    declaration conflicts with it. The header now includes
+    `platform/rndshape/RndShape.h`.
+  - **rb3-xenon:** the in-flight warms were held by `std::shared_ptr`
+    (`make_shared`). Its control block calls `type_info::operator==`.
+    rb3-xenon compiles the engine with `-fms-compatibility`, and in that mode
+    libstdc++ declares the operator out of line but does not export it, so the
+    link fails. The warms are now owned by `PipelineManager`: an entry removed
+    before its callback has run is marked abandoned, and the callback deletes
+    it when it runs.
 
 ### 39.6 Textures and the unattributed frames (not done, measured)
 
