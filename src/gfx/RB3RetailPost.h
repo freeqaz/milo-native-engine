@@ -37,14 +37,15 @@
 class GpuDevice;
 
 struct RetailPostParams {
-    // Render scale (GpuDeviceDesc::renderScale): the scene's drawn size over
-    // its output size, 1 when not scaled. DC3's chain measures its bloom
+    // The scene's drawn size over its LOGICAL size (GpuDevice::RenderScaleFor:
+    // a render scale, a frame at the output's own resolution, or both), 1 when
+    // the frame is drawn at the logical size. DC3's chain measures its bloom
     // targets and chromatic offset in frame pixels -- in the original, 1280x720
-    // ones -- so a supersampled frame keeps them at OUTPUT pixels: the bloom is
-    // built from bloomSrcView already box-filtered to bloomSrcW x bloomSrcH
-    // (the output size), and the chromatic offset divides by the output size.
-    // At 1 (every profile but the enhanced look's desktop render scale; every
-    // RB3 path) nothing here changes.
+    // ones -- so a frame drawn at another size keeps them at LOGICAL pixels:
+    // the bloom is built from bloomSrcView already resampled to bloomSrcW x
+    // bloomSrcH (the logical size), and the chromatic offset divides by the
+    // logical size. At 1 (a 1280x720 frame at 1x; every RB3 path) nothing here
+    // changes.
     float renderScale = 1.0f;
     int bloomSrcW = 0, bloomSrcH = 0;  // bloomSrcView's size; 0 = the scene's
     bool bloom = false;           // NgPostProc::DoBloom's doBloom

@@ -722,6 +722,13 @@ float BloomLumaScale(const RndPostProc *pp);
 // stays dark, as on retail. dc3-decomp (kDC3RetailPost) only; rb3-xenon keeps
 // MAX unchanged.
 constexpr bool kAlphaBlendMax = !kDC3RetailPost;
+// The frame at the output's own resolution (np-outres;
+// GpuDeviceDesc::outputFollowsTarget): a 1920x1080 window or headless
+// MILO_WIDTH x MILO_HEIGHT frame is drawn at 1920x1080, viewports, UI and the
+// post chain's pixel measures laid out in the Rnd's virtual 1280x720 and scaled
+// to it, pillar/letterboxed to keep 16:9. dc3-decomp (kDC3RetailPost) only:
+// rb3-xenon keeps its 1280x720 frame scaled into the window.
+constexpr bool kOutputFollowsTarget = kDC3RetailPost;
 // ---- end np-gfx-post ----
 // DC3 shades in gamma space, as the image does: no bitmap format DxRnd uses
 // carries a gamma sign (rnddx9/Rnd.cpp D3DFormatForBitmap: DXT1/3/5, DXN,

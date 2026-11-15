@@ -86,6 +86,14 @@ public:
     // Test hook: a window shorter than 1 s (seconds; <= 0 restores 1 s).
     void SetWindowSeconds(double s);
 
+    // The render targets the frame is drawn through (np-outres): every
+    // texture with RenderAttachment usage GpuDevice::CreateTexture makes, one
+    // "[GPUTARGET] <label> <w>x<h> samples=<n>" line on stderr the first time
+    // a label is made at a size, so a run shows which targets follow the
+    // frame and which keep a size of their own. Requested() only; cheap (the
+    // seen set is small: targets are made at a resize, not per frame).
+    void NoteTarget(const wgpu::TextureDescriptor& desc);
+
 private:
     GpuTimers() = default;
     void Collect();
@@ -99,6 +107,8 @@ private:
     mutable std::mutex mSnapMutex;
     Snapshot mSnap;
     double mWindowSeconds = 1.0;
+    std::mutex mTargetMutex;
+    std::vector<std::string> mTargetsSeen;
 };
 
 // At a pass begin site, just before encoder.BeginRenderPass(&desc).

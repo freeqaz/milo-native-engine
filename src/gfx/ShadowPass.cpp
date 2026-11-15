@@ -136,7 +136,7 @@ void ShadowPass::EnsurePipelines(GpuDevice& gpu) {
     texDesc.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding |
                     wgpu::TextureUsage::CopySrc;
     texDesc.mipLevelCount = 1;
-    mShadowDepthTex = dev.CreateTexture(&texDesc);
+    mShadowDepthTex = gpu.CreateTexture(texDesc);
     mShadowDepthView = mShadowDepthTex.CreateView();
 
     // Comparison sampler for shadow mapping

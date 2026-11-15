@@ -100,6 +100,51 @@ float ResolveRenderScale(const GpuDeviceDesc& desc, bool discreteGpu, bool prese
     return s < 1.0f ? 1.0f : s;
 }
 
+FrameSizes ResolveFrameSizes(const GpuDeviceDesc& desc, bool discreteGpu, bool presentsToSurface,
+                             int targetW, int targetH) {
+    FrameSizes s;
+    if (desc.outputFollowsTarget && desc.logicalWidth > 0 && desc.logicalHeight > 0) {
+        const PresentRect r = FitPresentRect(desc.logicalWidth, desc.logicalHeight, targetW, targetH);
+        s.outputW = r.w;
+        s.outputH = r.h;
+    } else if (presentsToSurface && desc.frameWidth > 0 && desc.frameHeight > 0) {
+        s.outputW = desc.frameWidth;
+        s.outputH = desc.frameHeight;
+    } else {
+        s.outputW = targetW;
+        s.outputH = targetH;
+    }
+    s.scale = ResolveRenderScale(desc, discreteGpu, presentsToSurface, s.outputW, s.outputH);
+    s.drawnW = (int)(s.outputW * s.scale + 0.5f);
+    s.drawnH = (int)(s.outputH * s.scale + 0.5f);
+    return s;
+}
+
+// The frame's sizes (ResolveFrameSizes): drawn = WindowWidth/Height, output
+// kept only when it differs (OutputWidth falls back to the drawn size), and
+// the box filter on exactly when the frame is drawn larger than its output.
+void GpuDevice::ApplyFrameSizes(const FrameSizes& s, bool atInit) {
+    const int prevW = mWidth, prevH = mHeight, prevOutW = OutputWidth(), prevOutH = OutputHeight();
+    mWidth = s.drawnW;
+    mHeight = s.drawnH;
+    const bool scaled = s.drawnW != s.outputW || s.drawnH != s.outputH;
+    mOutputWidth = scaled ? s.outputW : 0;
+    mOutputHeight = scaled ? s.outputH : 0;
+#ifndef __EMSCRIPTEN__
+    mPresentScale.SetBoxFilter(scaled);
+#endif
+    mReadbackScale.SetBoxFilter(scaled);
+    if (!atInit && s.drawnW == prevW && s.drawnH == prevH && OutputWidth() == prevOutW &&
+        OutputHeight() == prevOutH)
+        return;
+    printf("GpuDevice: frame %dx%d out, render scale %.2f%s on a %s GPU (%dx%d drawn, logical "
+           "%dx%d)\n",
+           OutputWidth(), OutputHeight(), s.scale,
+           mSizeDesc.renderScaleExplicit > 0.0f ? " (asked for)" : "",
+           mDiscreteGpu ? "discrete" : "non-discrete", mWidth, mHeight, LogicalWidth(),
+           LogicalHeight());
+}
+
 GpuDevice::~GpuDevice() {
     Shutdown();
 }
@@ -134,29 +179,19 @@ bool GpuDevice::Init(const GpuDeviceDesc& desc) {
         return false;
     }
 
-    // Render scale: the drawn frame is the adapter class's scale times the
-    // output size.
-    auto applyRenderScale = [&]() {
-        const float scale = ResolveRenderScale(desc, mDiscreteGpu, !mHeadless, mWidth, mHeight);
-        if (!(scale > 1.0f)) return;
-        mOutputWidth = mWidth;
-        mOutputHeight = mHeight;
-        mWidth = (int)(mOutputWidth * scale + 0.5f);
-        mHeight = (int)(mOutputHeight * scale + 0.5f);
-        mPresentScale.SetBoxFilter(true);
-        mReadbackScale.SetBoxFilter(true);
-        printf("GpuDevice: render scale %.2f%s on a %s GPU (%dx%d drawn, %dx%d out)\n", scale,
-               desc.renderScaleExplicit > 0.0f ? " (asked for)" : "",
-               mDiscreteGpu ? "discrete" : "non-discrete", mWidth, mHeight, mOutputWidth,
-               mOutputHeight);
-    };
-    if (mHeadless) applyRenderScale();
+    // The frame's output, render scale and drawn sizes (ResolveFrameSizes).
+    mSizeDesc = desc;
+    mSizeDesc.title = nullptr;  // not kept past Init
+    mFollowsTarget = desc.outputFollowsTarget && desc.logicalWidth > 0 && desc.logicalHeight > 0;
+    mLogicalWidth = mFollowsTarget ? desc.logicalWidth : 0;
+    mLogicalHeight = mFollowsTarget ? desc.logicalHeight : 0;
+    if (mHeadless)
+        ApplyFrameSizes(ResolveFrameSizes(desc, mDiscreteGpu, false, desc.width, desc.height), true);
     if (!mHeadless) {
         ConfigureSurface();
-        if (desc.frameWidth > 0 && desc.frameHeight > 0) {
-            mWidth = desc.frameWidth;
-            mHeight = desc.frameHeight;
-            applyRenderScale();
+        if (mFollowsTarget || (desc.frameWidth > 0 && desc.frameHeight > 0)) {
+            ApplyFrameSizes(
+                ResolveFrameSizes(desc, mDiscreteGpu, true, mSurfaceWidth, mSurfaceHeight), true);
             CreateFrameTexture();
         } else {
             mWidth = mSurfaceWidth;
@@ -754,7 +789,7 @@ void GpuDevice::CreateFrameTexture() {
     td.format = mSurfaceFormat;
     td.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding |
                wgpu::TextureUsage::CopySrc | wgpu::TextureUsage::CopyDst;
-    mFrameTex = mDevice.CreateTexture(&td);
+    mFrameTex = CreateTexture(td);
     mFrameView = mFrameTex.CreateView();
 }
 
@@ -766,6 +801,12 @@ void GpuDevice::ResizeSurface(int width, int height) {
     if (!mFrameTex) {
         mWidth = width;
         mHeight = height;
+    } else if (mFollowsTarget) {
+        // The frame follows the window: its output is the window's fitted
+        // rectangle, re-scaled under the same rule as at Init.
+        ApplyFrameSizes(ResolveFrameSizes(mSizeDesc, mDiscreteGpu, true, width, height));
+        if ((int)mFrameTex.GetWidth() != mWidth || (int)mFrameTex.GetHeight() != mHeight)
+            CreateFrameTexture();
     }
     if (mSurface) {
         ConfigureSurface();
@@ -859,7 +900,7 @@ wgpu::TextureView GpuDevice::AcquireHeadlessFrame() {
         texDesc.format = wgpu::TextureFormat::RGBA8Unorm;
         texDesc.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::CopySrc;
         if (RenderScaled()) texDesc.usage |= wgpu::TextureUsage::TextureBinding;
-        mHeadlessTex = mDevice.CreateTexture(&texDesc);
+        mHeadlessTex = CreateTexture(texDesc);
         mHeadlessView = mHeadlessTex.CreateView();
         mSurfaceFormat = wgpu::TextureFormat::RGBA8Unorm;
     }
@@ -885,7 +926,7 @@ bool GpuDevice::ReadbackScaled(const wgpu::Texture& src, wgpu::TextureFormat fmt
         td.size = {(uint32_t)w, (uint32_t)h, 1};
         td.format = fmt;
         td.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::CopySrc;
-        mReadbackTex = mDevice.CreateTexture(&td);
+        mReadbackTex = CreateTexture(td);
     }
     wgpu::CommandEncoderDescriptor ed{};
     ed.label = "RenderScaleReadbackEncoder";

@@ -79,6 +79,8 @@ static GpuTexData* EnsureRenderTargetData(RndTex* tex) {
     int texH = tex->Height() > 0 ? tex->Height() : 256;
 
     GpuTexData& data = sTexGpuData[tex];
+    // Named for GPU captures and the MILO_GPU_TIMERS target list.
+    const std::string label = std::string("RndTex:") + (tex->Name() ? tex->Name() : "");
     // If the existing texture was uploaded as BC compressed (from PresyncBitmap),
     // it lacks RenderAttachment usage and must be replaced with a proper RGBA target.
     bool needColor = !data.texture || !data.view || (data.texture && !data.renderTarget);
@@ -87,7 +89,7 @@ static GpuTexData* EnsureRenderTargetData(RndTex* tex) {
         // The old view (a BC upload being replaced) leaves the bind-group cache.
         gWgpuRnd->ForgetTextureView(data.view);
         data.texture = TextureConvert::CreateRenderTarget(
-            gWgpuRnd->Gpu(), texW, texH, ChooseRenderTargetFormat(tex)
+            gWgpuRnd->Gpu(), texW, texH, ChooseRenderTargetFormat(tex), label.c_str()
         );
         data.view = data.texture.CreateView();
 
@@ -108,7 +110,7 @@ static GpuTexData* EnsureRenderTargetData(RndTex* tex) {
     }
     if (needDepth) {
         data.depthTexture = TextureConvert::CreateDepthTarget(
-            gWgpuRnd->Gpu(), texW, texH
+            gWgpuRnd->Gpu(), texW, texH, (label + " depth").c_str()
         );
         data.depthView = data.depthTexture.CreateView();
     } else if (!NeedsDepthTarget(tex)) {

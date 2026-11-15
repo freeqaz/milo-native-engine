@@ -277,7 +277,7 @@ void DofPass::EnsureTextures(int w, int h, wgpu::TextureFormat format, GpuDevice
         td.size = {qw, qh, 1};
         td.format = format;
         td.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding;
-        mQuarter[k] = dev.CreateTexture(&td);
+        mQuarter[k] = gpu.CreateTexture(td);
         mQuarterView[k] = mQuarter[k].CreateView();
     }
     wgpu::TextureDescriptor od{};
@@ -286,7 +286,7 @@ void DofPass::EnsureTextures(int w, int h, wgpu::TextureFormat format, GpuDevice
     od.format = format;
     od.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding |
                wgpu::TextureUsage::CopySrc;  // CopySrc: readback in tests
-    mOutTex = dev.CreateTexture(&od);
+    mOutTex = gpu.CreateTexture(od);
     mOutView = mOutTex.CreateView();
     mW = w;
     mH = h;

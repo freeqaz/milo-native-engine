@@ -421,7 +421,7 @@ static wgpu::Texture CreateFromGxBitmap(GpuDevice& gpu, const RndBitmap& bmp) {
     texDesc.format = wgpu::TextureFormat::RGBA8Unorm;
     texDesc.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
     texDesc.mipLevelCount = mipCount;
-    wgpu::Texture tex = gpu.Device().CreateTexture(&texDesc);
+    wgpu::Texture tex = gpu.CreateTexture(texDesc);
     if (!tex) return nullptr;
 
     std::vector<uint8_t> next;
@@ -453,7 +453,7 @@ static wgpu::Texture CreateGxCube(GpuDevice& gpu, const RndBitmap* const* faces,
     texDesc.format = wgpu::TextureFormat::RGBA8Unorm;
     texDesc.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
     texDesc.mipLevelCount = 1;
-    wgpu::Texture tex = gpu.Device().CreateTexture(&texDesc);
+    wgpu::Texture tex = gpu.CreateTexture(texDesc);
     if (!tex) return nullptr;
 
     std::vector<uint8_t> rgba;
@@ -509,7 +509,7 @@ wgpu::Texture CreateFromBitmap(GpuDevice& gpu, const RndBitmap& bmp, int numMips
     texDesc.format = fmt;
     texDesc.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
     texDesc.mipLevelCount = mipCount;
-    wgpu::Texture tex = gpu.Device().CreateTexture(&texDesc);
+    wgpu::Texture tex = gpu.CreateTexture(texDesc);
     if (!tex) return nullptr;
 
     // Upload each mip level
@@ -670,7 +670,7 @@ wgpu::Texture CreateCubeFromBitmaps(GpuDevice& gpu, const RndBitmap* const* face
     texDesc.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
     texDesc.mipLevelCount = levels;
     texDesc.viewFormatCount = 0;
-    wgpu::Texture tex = gpu.Device().CreateTexture(&texDesc);
+    wgpu::Texture tex = gpu.CreateTexture(texDesc);
     if (!tex) return nullptr;
 
     for (int face = 0; face < numFaces && face < 6; face++) {
@@ -751,21 +751,24 @@ wgpu::Texture CreateCubeFromBitmaps(GpuDevice& gpu, const RndBitmap* const* face
     return tex;
 }
 
-wgpu::Texture CreateRenderTarget(GpuDevice& gpu, int w, int h, wgpu::TextureFormat fmt) {
+wgpu::Texture CreateRenderTarget(GpuDevice& gpu, int w, int h, wgpu::TextureFormat fmt,
+                                 const char* label) {
     wgpu::TextureDescriptor desc{};
+    desc.label = label;
     desc.size = {(uint32_t)w, (uint32_t)h, 1};
     desc.format = fmt;
     desc.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding
                | wgpu::TextureUsage::CopyDst | wgpu::TextureUsage::CopySrc;
-    return gpu.Device().CreateTexture(&desc);
+    return gpu.CreateTexture(desc);
 }
 
-wgpu::Texture CreateDepthTarget(GpuDevice& gpu, int w, int h) {
+wgpu::Texture CreateDepthTarget(GpuDevice& gpu, int w, int h, const char* label) {
     wgpu::TextureDescriptor desc{};
+    desc.label = label;
     desc.size = {(uint32_t)w, (uint32_t)h, 1};
     desc.format = wgpu::TextureFormat::Depth24PlusStencil8;
     desc.usage = wgpu::TextureUsage::RenderAttachment;
-    return gpu.Device().CreateTexture(&desc);
+    return gpu.CreateTexture(desc);
 }
 
 } // namespace TextureConvert

@@ -192,9 +192,15 @@ public:
     // The kLodBias a pipeline for `key` is created with.
     float LodBiasFor(const PipelineKey& key) const { return key.lodBias ? mMaterialLodBias : 0.0f; }
     // A render-scaled frame's pixels per output pixel (1 = not scaled; the
-    // renderer sets it from GpuDevice once), and the kOutputPixelScale a
-    // pipeline for `key` is created with.
-    void SetOutputPixelScale(float scale) { mOutputPixelScale = scale; }
+    // renderer sets it from GpuDevice each frame), and the kOutputPixelScale a
+    // pipeline for `key` is created with. A change (a window resized across a
+    // render-scale step) drops the cached pipelines that bake the old one.
+    void SetOutputPixelScale(float scale) {
+        if (scale == mOutputPixelScale) return;
+        mOutputPixelScale = scale;
+        for (auto it = mPipelineCache.begin(); it != mPipelineCache.end();)
+            it = it->first.outputPixelSampling ? mPipelineCache.erase(it) : std::next(it);
+    }
     float OutputPixelScale() const { return mOutputPixelScale; }
     float OutputPixelScaleFor(const PipelineKey& key) const {
         return key.outputPixelSampling ? mOutputPixelScale : 1.0f;

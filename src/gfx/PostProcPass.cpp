@@ -453,21 +453,23 @@ void PostProcPass::RunDC3Retail(wgpu::CommandEncoder& encoder, P* pp, int mode,
                      (int)rp.hueConverge, rp.hueParams[0], rp.hueParams[1], rp.hueParams[2],
                      rp.hueParams[3], (int)pp->GetMotionBlurVelocity());
         }
-        // Render scale: bloom from the scene box-filtered to the output size
-        // (RetailPostParams::renderScale).
+        // A frame drawn at other than the logical size (a render scale, the
+        // output's own resolution, or both): bloom from the scene resampled to
+        // the logical size, so its targets are the original's 1280x720-based
+        // ones (RetailPostParams::renderScale).
         wgpu::TextureView bloomSrc = intermediateView;
         rp.renderScale = gpu.RenderScaleFor(w);
-        if (rp.renderScale > 1.0f && rp.bloom && intermediateTex) {
-            const int ow = gpu.OutputWidth(), oh = gpu.OutputHeight();
+        if (rp.renderScale != 1.0f && rp.bloom && intermediateTex) {
+            const int ow = gpu.LogicalWidth(), oh = gpu.LogicalHeight();
             const wgpu::TextureFormat fmt = intermediateTex.GetFormat();
             if (!mBloomSrcTex || (int)mBloomSrcTex.GetWidth() != ow ||
                 (int)mBloomSrcTex.GetHeight() != oh || mBloomSrcTex.GetFormat() != fmt) {
                 wgpu::TextureDescriptor td{};
-                td.label = "DC3BloomSourceOutputSize";
+                td.label = "DC3BloomSourceLogicalSize";
                 td.size = {(uint32_t)ow, (uint32_t)oh, 1};
                 td.format = fmt;
                 td.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding;
-                mBloomSrcTex = gpu.Device().CreateTexture(&td);
+                mBloomSrcTex = gpu.CreateTexture(td);
                 mBloomSrcView = mBloomSrcTex.CreateView();
                 mBloomSrcScale.SetBoxFilter(true);
                 mBloomSrcScale.SetPassLabel("DC3BloomSourceDownsample");
