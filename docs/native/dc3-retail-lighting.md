@@ -1632,3 +1632,71 @@ dc3 `np-gfx-light` d596f3c16 (np-gfx fd56094e0 merged; the engine pin stays
 - rb3 main a49c0afce built against engine 65c12c7: 158 of 158 pass,
   `native_compat_census.check` included.
 - No new render pass, bind group, buffer or getenv.
+
+## 12. Round 7: the residuals that remain once post is off
+
+Round 7 took the census rows that were still open with post off, plus one
+mechanism question (whether hidden spotlights still light on native). Each
+row was screened against the original under Xenia. Evidence, sheets and tools
+are in dc3-decomp
+`archive/np-gfx-2026-11-14/lanes/light/round7/` (`README.txt`,
+`census_b5_b6_m_max_xenia.txt`, `sheets/`, `evidence/`).
+
+### 12.1 Screening method
+
+- **Frozen, lit, post off.** Both sides pause at song second 20 and force the
+  venue state at 12 s. Both pin the shot with `force_shot` and
+  `disable_picking TRUE`. A beat-driven `PropAnim` is frozen with
+  `stop_animation` and `set_frame` on that anim only. Never freeze every
+  PropAnim: freezing them all at frame 3 hides whole venues.
+- `{rnd toggle_all_postprocs}` turns post off **and clears the spotlights**,
+  so "raw" equals "raw with spots hidden".
+- Native runs with `DC3_DISPLAY_GAMMA=off` and the still performer. A Xenia
+  label is the mean of the frames between its MARK and `end_` MARK (3 s, about
+  180 frames). A native label is one frame.
+- Box values are mean luma (Rec.709 on stored sRGB) in 640x360 coordinates.
+  The noise floor is 3.4% luma / dE76 2.2.
+- **Control for the Xenia rule.** A native build with
+  `rndshape::kAlphaBlendMax = true` (RndShape_DC3.h) takes Xenia's
+  factorless-MAX destination alpha. Retail applies each draw's own blend
+  equation. The bloom mask reads destination alpha, so a post-on gap that
+  closes under this build is Xenia's, not ours (post lane: `dc3-backend-for-rb3-wii.md`
+  §37). Destination alpha does not reach a post-off frame, so this build
+  cannot explain a post-off gap.
+- **Two rules for reading a census box**, both learned this round:
+  1. A box that contains a dancer or crowd silhouette is not a lighting
+     measurement. Poses differ between runs, and between native runs of the
+     same binary. Check the frame before believing the number. The houseparty
+     steps read −8% and then +9% across builds of the same family. The
+     throneroom throne box read +1% to +25%: in far01 it holds the lead
+     dancer's arm.
+  2. Re-read a post-on gap with post off before calling it lighting.
+     Streetside's brick and graffiti were −22% and −16% post-on, but only −2%
+     and −3% post-off.
+
+### 12.2 Results
+
+| row | what the original does | result | tag |
+|---|---|---|---|
+| throneroom peak teal pillars, −12% raw at full alpha, −25% at alpha 0.5 | `NgMat::SetBasicState` (Mat_NG.cpp): alpha_cut is `SetAlphaTestEnable` plus `SetAlphaFunc(5 = GREATER, threshold)` and nothing else. Nothing calls `AlphaToMaskEnable`. `peak_columns_1..16.mat` are SrcAlpha, intensify, alpha_cut at threshold 0 | **Fixed by the coverage rule** (np-menutext, `MaterialCutCoverage` / `MaterialAlphaThreshold`). Native had made every cut alpha-to-coverage on the 4x pass, so the columns drew at about alpha², in a screen-door. On np-menutext 68522e9, frozen raw: 53.0 vs Xenia 52.9 at full alpha, 39.0 vs 38.9 at alpha 0.5, under both `DC3_LOOK=retail` and `enhanced`. Clearing alpha_cut live moves native b5 46.4 → 52.2; Xenia does not move (52.9 → 52.9) | MEASURED |
+| throneroom peak wings / blue_light_l, −14..−20% census | — | **Dissolved: chase phase plus the row above.** Frozen on np-menutext: wing_l −4%, wing_r −3%, blue_light_l +1% | MEASURED |
+| throneroom normal throne, −12% | — | **Dissolved as a box artifact.** The box is the lead dancer's arm. It reads +1%, +12%, +21% and −2% against Xenia across four builds | MEASURED |
+| dclive peak sky, −11..−20% | `DLV_PeakSkyPano.mat` contributes the same on both sides: 11.2 vs 10.8 and 12.8 vs 12.0. Its environ share is −3.5 vs −3.4 | **Post share dissolved as Xenia factorless MAX** (post on: sky_l −14.5% → −9.5%, sky_r −14.1% → −7.3%, scene −13.4% → −3.3%). **Post-off −10% / −10.5% open.** It is unchanged by the MAX build, and its cause lies outside the sky material (INFERRED) | MEASURED / open |
+| houseparty peak neon steps, +16% | stair contributions match. The step-pixel p90 is 233.9 vs 234.6 | **Dissolved as occlusion** (rule 1). Census −8%..+9% depending on the run | MEASURED |
+| streetside normal fence, −20% raw | — | **Dissolved as occlusion** (crowd in the box). On clean fence pixels raw is −2..+3%. Far post-on −5.6% → −0.6% under the MAX build | MEASURED |
+| streetside normal brick / graffiti, −22% / −16% | spots contribute the same on both sides: brick 1.1 vs 1.0, graffiti 10.0 vs 9.9 | **Dissolved as Xenia factorless MAX.** Post-off −2% / −3%. Post-on far −21.9% / −15.4% → −2.2% / −2.2%, near −19.4% / −13.1% → −3.2% / −4.1%. Streetside peak does the same (−11.5% / −13.3% → +2.7% / +1.7%) | MEASURED |
+| do hidden spotlights still light on native? | `SpotlightDrawer` clears `sLights` every frame and never adds a hidden Spotlight | **No.** Hiding every showing Spotlight removes the same light on both sides: houseparty fridge 29.9 vs 29.2, wood floor 6.6 vs 6.4; with post off 0.4 vs 0.5 and 2.1 vs 1.9 | MEASURED |
+| houseparty fridge, +18..+20% | — | **Open.** It is present with spots hidden and with post off, so it is neither spot light nor the MAX rule | MEASURED / open |
+| rollerrink peak booth_top, −10% | — | **Dissolved: within noise.** Post-on −4.6% (before) and +3.9% (np-menutext); post-off −2..+3% | MEASURED |
+
+### 12.3 Cost and verification
+
+- The round-7 engine change (alpha cut as a test with no coverage) cost
+  nothing on the GPU (`MILO_GPU_TIMERS=1`, throneroom peak):
+  MainPassResume 0.399 → 0.385 ms, gpu_sum 0.661 → 0.669 ms. It was reverted
+  in favour of np-menutext's rule, which covers the same case.
+- That lane's two extra tests went to np-menutext:
+  - both material builders (primary and pass) hand the shader the strict test;
+  - the real `peak_columns_1.mat` gets no coverage in either look.
+  Each is shown able to fail: a builder put back on threshold/255 left
+  np-menutext's own tests green and turned these red.
