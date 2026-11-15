@@ -187,6 +187,15 @@ public:
     // default -- every consumer's original samples unbiased. Set once, before
     // any pipeline exists; the caches key on PipelineKey::lodBias, not on the
     // value.
+    // Whether the standard shader's alpha fringe fade runs at all
+    // (rndshape::kAlphaFringeFade). Off, every pipeline is created with
+    // kSkipFringeFade = 1 -- the override that already exists per blend
+    // (BlendSkipsFringeFade), so this adds no pipeline variant. On by default:
+    // the consumer's renderer unchanged. Set once, before any pipeline exists.
+    void SetAlphaFringeFade(bool on) { mAlphaFringeFade = on; }
+    bool AlphaFringeFade() const { return mAlphaFringeFade; }
+    // The kSkipFringeFade a pipeline under `blend` is created with.
+    bool SkipsFringeFade(int blend) const { return !mAlphaFringeFade || BlendSkipsFringeFade(blend); }
     void SetMaterialLodBias(float bias) { mMaterialLodBias = bias; }
     float MaterialLodBias() const { return mMaterialLodBias; }
     // The kLodBias a pipeline for `key` is created with.
@@ -220,6 +229,7 @@ private:
     bool mAlphaBlendMax = false;   // SetAlphaBlendMax
     bool mDynamicUniformOffsets = false;  // SetDynamicUniformOffsets
     float mMaterialLodBias = 0.0f;        // SetMaterialLodBias
+    bool mAlphaFringeFade = true;         // SetAlphaFringeFade
     float mOutputPixelScale = 1.0f;       // SetOutputPixelScale
     void BuildPreWarmKeys(wgpu::TextureFormat mainFmt, wgpu::TextureFormat rtFmt);
 };

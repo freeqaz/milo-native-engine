@@ -722,6 +722,19 @@ float BloomLumaScale(const RndPostProc *pp);
 // stays dark, as on retail. dc3-decomp (kDC3RetailPost) only; rb3-xenon keeps
 // MAX unchanged.
 constexpr bool kAlphaBlendMax = !kDC3RetailPost;
+// The standard shader's alpha fringe fade (standard_wgsl.inc: rgb *= a / 0.1
+// for a < 0.1; PipelineManager::SetAlphaFringeFade). A native heuristic from
+// the port's first shader (2026-03), with no counterpart in the image: the
+// shipped standard pixel shaders write oC0 = texel * interpolated colour (key
+// 0x10) or texel * colour + specular (0x20010) and never touch rgb by alpha,
+// and NgMat::SetBasicState's blend factors do the rest. On DC3 it squared
+// every low-alpha SrcAlpha layer (dclive's peak sky cubes, mat alpha 0.10-0.14
+// times texel alpha, drew at less than half their light), erased every
+// alpha-0 Add layer (DLV_PeakGlass_transparent.mat, alpha 0, Add, drew
+// nothing), and already had to be switched off for Multiply/Darken (G-6) and
+// colour-mod band texels (H-6). dc3-decomp (kDC3RetailModel), both looks;
+// rb3-xenon keeps it.
+constexpr bool kAlphaFringeFade = !kDC3RetailModel;
 // ---- end np-gfx-post ----
 // DC3 shades in gamma space, as the image does: no bitmap format DxRnd uses
 // carries a gamma sign (rnddx9/Rnd.cpp D3DFormatForBitmap: DXT1/3/5, DXN,
