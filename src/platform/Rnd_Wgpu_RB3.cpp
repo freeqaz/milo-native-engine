@@ -2,6 +2,7 @@
 // See platform/Rnd_Wgpu_RB3.h.
 
 #include "platform/Rnd_Wgpu_RB3.h"
+#include "gfx/BindGroupCount.h"
 #include "gfx/GpuTimers.h"
 
 #include "rndobj/Cam.h"
@@ -1880,7 +1881,7 @@ RB3SceneBinding BandRnd::WriteSceneUniforms(RndCam* cam) {
     wgpu::BindGroupDescriptor bd{};
     bd.layout = mPipelines.SceneLayout();
     bd.entryCount = 5; bd.entries = e;
-    sb.group = mGpu.Device().CreateBindGroup(&bd);
+    sb.group = CreateCountedBindGroup(mGpu.Device(), &bd);
     mLastSceneCam = cam;
     if (cam) {
         const Transform& cw = cam->WorldXfm();
@@ -2189,7 +2190,7 @@ wgpu::BindGroup BandRnd::MakeMaterialBindGroupRaw(wgpu::Buffer buf, uint32_t off
     wgpu::BindGroupDescriptor bd{};
     bd.layout = mPipelines.MaterialLayout();
     bd.entryCount = 14; bd.entries = e;
-    return mGpu.Device().CreateBindGroup(&bd);
+    return CreateCountedBindGroup(mGpu.Device(), &bd);
 }
 
 // Resolve a material's diffuse + emissive GPU texture views (performing a lazy
@@ -2244,7 +2245,7 @@ wgpu::BindGroup BandRnd::MakeMaterialBindGroupCached(wgpu::Buffer buf,
     wgpu::BindGroupDescriptor bd{};
     bd.layout = mPipelines.MaterialLayout();
     bd.entryCount = 14; bd.entries = e;
-    return mGpu.Device().CreateBindGroup(&bd);
+    return CreateCountedBindGroup(mGpu.Device(), &bd);
 }
 
 wgpu::BindGroup BandRnd::MakeMaterialBindGroup(uint32_t off, RndMat* mat) {
@@ -2291,7 +2292,7 @@ wgpu::BindGroup BandRnd::MakeMaterialBindGroup(uint32_t off, RndMat* mat) {
     wgpu::BindGroupDescriptor bd{};
     bd.layout = mPipelines.MaterialLayout();
     bd.entryCount = 14; bd.entries = e;
-    return mGpu.Device().CreateBindGroup(&bd);
+    return CreateCountedBindGroup(mGpu.Device(), &bd);
 }
 
 // Xbox 360 compressed vertex unpacking (XboxCVert/Be*/RB3UnpackMeshVerts)
@@ -3420,7 +3421,7 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
         e.binding = 0; e.buffer = slot.objUB; e.offset = 0; e.size = sizeof(ObjectUniforms);
         wgpu::BindGroupDescriptor bd{};
         bd.layout = mPipelines.ObjectLayout(); bd.entryCount = 1; bd.entries = &e;
-        slot.objBG = mGpu.Device().CreateBindGroup(&bd);
+        slot.objBG = CreateCountedBindGroup(mGpu.Device(), &bd);
         sMeshBGCreatesThisFrame++;
     }
     mGpu.Queue().WriteBuffer(slot.objUB, 0, &obj, sizeof(obj));
@@ -5516,7 +5517,7 @@ void BandRnd::DrawMesh(RndMesh* mesh) {
         e.binding = 0; e.buffer = slot.boneUB; e.offset = 0; e.size = sizeof(BoneUniforms);
         wgpu::BindGroupDescriptor bd{};
         bd.layout = mPipelines.BoneLayout(); bd.entryCount = 1; bd.entries = &e;
-        slot.boneBG = mGpu.Device().CreateBindGroup(&bd);
+        slot.boneBG = CreateCountedBindGroup(mGpu.Device(), &bd);
         sMeshBGCreatesThisFrame++;
     }
     mGpu.Queue().WriteBuffer(slot.boneUB, 0, &bones, sizeof(bones));
@@ -6560,7 +6561,7 @@ void BandRnd::DrawParticles(RndParticleSys* sys) {
     bgd.layout = mPartTexBGL;
     bgd.entryCount = 2;
     bgd.entries = bge;
-    wgpu::BindGroup texBG = mGpu.Device().CreateBindGroup(&bgd);
+    wgpu::BindGroup texBG = CreateCountedBindGroup(mGpu.Device(), &bgd);
 
     // W1.6 (SYS-3): thread the group-0 scene binding through an explicit ctx so
     // the particle submit reads a value, not the member directly. Only ctx.scene

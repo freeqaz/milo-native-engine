@@ -1,5 +1,6 @@
 #pragma once
 #include <webgpu/webgpu_cpp.h>
+#include "gfx/BindGroupCount.h"
 #include "gfx/BindGroupCache.h"
 
 class GpuDevice;
@@ -85,7 +86,7 @@ private:
               const wgpu::BindGroup& bg, const wgpu::TextureView& dst, const char* label);
 
     wgpu::BindGroup Group(wgpu::Device& dev, const wgpu::BindGroupDescriptor& d) {
-        return mBindGroups ? mBindGroups->GetOrCreate(dev, d) : dev.CreateBindGroup(&d);
+        return mBindGroups ? mBindGroups->GetOrCreate(dev, d) : CreateCountedBindGroup(dev, &d);
     }
     BindGroupCache* mBindGroups = nullptr;
     wgpu::TextureFormat mFormat = wgpu::TextureFormat::Undefined;

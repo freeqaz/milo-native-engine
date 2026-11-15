@@ -15,6 +15,7 @@
 // kRB3PostProcShaderSource / PostProcUniforms (RB3PostProc.h, W1.4.S2).
 
 #include "platform/Rnd_Wgpu_RB3.h"
+#include "gfx/BindGroupCount.h"
 #include "gfx/PipelineCount.h"
 #include "platform/RB3Quad.h"
 #include "platform/RB3PostProc.h"        // kRB3PostProcShaderSource / PostProcUniforms
@@ -445,7 +446,7 @@ void BandRnd::DrawRect(const Hmx::Rect& rect, const Hmx::Color& paramColor,
                 cbgd.layout = mComposeBGL;
                 cbgd.entryCount = 4;
                 cbgd.entries = cbge;
-                wgpu::BindGroup cbg = mGpu.Device().CreateBindGroup(&cbgd);
+                wgpu::BindGroup cbg = CreateCountedBindGroup(mGpu.Device(), &cbgd);
                 mPass.SetPipeline(cpipe);
                 mPass.SetBindGroup(0, cbg, 0, nullptr);
                 mPass.SetVertexBuffer(0, mQuadVertexBuffer, 0, sizeof(verts));
@@ -521,7 +522,7 @@ void BandRnd::DrawRect(const Hmx::Rect& rect, const Hmx::Color& paramColor,
     bgd.layout = mQuadRectBGL;
     bgd.entryCount = 3;
     bgd.entries = bge;
-    wgpu::BindGroup bg = mGpu.Device().CreateBindGroup(&bgd);
+    wgpu::BindGroup bg = CreateCountedBindGroup(mGpu.Device(), &bgd);
 
     mPass.SetPipeline(pipe);
     mPass.SetBindGroup(0, bg, 0, nullptr);

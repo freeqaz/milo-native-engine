@@ -1,5 +1,6 @@
 // TexBlendPass — see TexBlendPass.h.
 #include "gfx/TexBlendPass.h"
+#include "gfx/BindGroupCount.h"
 #include "gfx/GpuTimers.h"
 #include "gfx/GpuDevice.h"
 
@@ -205,7 +206,7 @@ bool TexBlendPass::Record(wgpu::CommandEncoder& encoder, const wgpu::TextureView
         d.layout = mBgl;
         d.entryCount = 3;
         d.entries = e;
-        return dev.CreateBindGroup(&d);
+        return CreateCountedBindGroup(dev, &d);
     };
 
     wgpu::RenderPassColorAttachment ca{};

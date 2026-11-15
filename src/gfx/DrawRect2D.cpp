@@ -1,4 +1,5 @@
 #include "gfx/DrawRect2D.h"
+#include "gfx/BindGroupCount.h"
 #include "gfx/GpuDevice.h"
 #include "gfx/PipelineCount.h"
 #include "gfx/PipelineManager.h"
@@ -348,7 +349,7 @@ void DrawRect2D::Draw(wgpu::RenderPassEncoder& pass, const Hmx::Rect& rect, RndM
     // Same view + sampler is the same group: cached (PLAN H-30), dropped
     // with the texture through WgpuRnd::ForgetTextureView.
     wgpu::BindGroup bg = gWgpuRnd ? gWgpuRnd->BindGroups().GetOrCreate(dev, bgDesc)
-                                  : dev.CreateBindGroup(&bgDesc);
+                                  : CreateCountedBindGroup(dev, &bgDesc);
 
     pass.SetPipeline(pipe);
     pass.SetBindGroup(0, bg);

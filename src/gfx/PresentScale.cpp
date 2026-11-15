@@ -1,5 +1,6 @@
 // PresentScale -- see PresentScale.h.
 #include "gfx/PresentScale.h"
+#include "gfx/BindGroupCount.h"
 #include "gfx/GpuTimers.h"
 #include "gfx/PipelineCount.h"
 
@@ -205,7 +206,7 @@ PresentRect PresentScale::Encode(wgpu::Device& device, wgpu::CommandEncoder& enc
         bgd.layout = mBGL;
         bgd.entryCount = 2;
         bgd.entries = be;
-        mBindGroup = device.CreateBindGroup(&bgd);
+        mBindGroup = CreateCountedBindGroup(device, &bgd);
         mBoundFrame = frame;
         mBoundNearest = nearest;
     }

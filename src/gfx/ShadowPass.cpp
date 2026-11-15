@@ -1,4 +1,5 @@
 #include "gfx/ShadowPass.h"
+#include "gfx/BindGroupCount.h"
 #include "gfx/GpuTimers.h"
 #include "gfx/GpuDevice.h"
 #include "gfx/UniformRingBuffer.h"
@@ -311,7 +312,7 @@ void ShadowPass::Render(wgpu::CommandEncoder& encoder, UniformRingBuffer& object
     sceneBgDesc.layout = mShadowSceneBGL;
     sceneBgDesc.entryCount = 1;
     sceneBgDesc.entries = &sceneEntry;
-    mShadowSceneBindGroup = gpu.Device().CreateBindGroup(&sceneBgDesc);
+    mShadowSceneBindGroup = CreateCountedBindGroup(gpu.Device(), &sceneBgDesc);
 
     // Begin shadow depth render pass
     wgpu::RenderPassDepthStencilAttachment depthAtt{};
@@ -467,7 +468,7 @@ void ShadowPass::EnsureCasterPipelines(GpuDevice& gpu) {
     sceneBgDesc.layout = mCasterSceneBGL;
     sceneBgDesc.entryCount = 1;
     sceneBgDesc.entries = &clipEntry;
-    mCasterSceneBindGroup = dev.CreateBindGroup(&sceneBgDesc);
+    mCasterSceneBindGroup = CreateCountedBindGroup(dev, &sceneBgDesc);
     mCasterStats.bindGroupsCreated++;
     mCasterReady = true;
 }
@@ -495,7 +496,7 @@ void ShadowPass::EnsureCasterBuffer(GpuDevice& gpu, wgpu::Buffer& buf, uint64_t&
     gd.layout = layout;
     gd.entryCount = 1;
     gd.entries = &e;
-    group = gpu.Device().CreateBindGroup(&gd);
+    group = CreateCountedBindGroup(gpu.Device(), &gd);
     mCasterStats.bindGroupsCreated++;
 }
 

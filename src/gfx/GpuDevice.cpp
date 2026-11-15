@@ -1,5 +1,7 @@
 #include "gfx/GpuDevice.h"
 #include "gfx/GpuTimers.h"
+#include "gfx/FrameCost.h"
+#include "gfx/WgpuCallCount.h"
 #if __has_include(<dawn/native/DawnNative.h>)
 #include <dawn/native/DawnNative.h>  // GetTogglesUsed: confirm the timers' toggle
 #define MILO_HAVE_DAWN_NATIVE_TOGGLES 1
@@ -57,6 +59,10 @@ int ReadSurfaceFault() {
     fprintf(stderr, "GpuDevice: MILO_SURFACE_FAULT=%s not understood (init, init-once, acquire); ignored\n", v);
     return kFaultNone;
 }
+
+// Links gfx/WgpuCallCount.cpp's wrappers out of the static engine library
+// whatever order a consumer's link line puts it in (see WgpuCallCount.h).
+[[maybe_unused]] const bool sWgpuCallCountLinked = WgpuCallCountLinked();
 
 const char* AcquireStatusName(wgpu::SurfaceGetCurrentTextureStatus s) {
     switch (s) {
@@ -801,6 +807,7 @@ wgpu::TextureView GpuDevice::AcquireNextFrame() {
     if (mSurfaceFault == kFaultAcquire) {
         surfTex.status = wgpu::SurfaceGetCurrentTextureStatus::Error;
     } else {
+        framecost::Scope cost(framecost::kAcquire);  // a swapchain wait shows here
         mSurface.GetCurrentTexture(&surfTex);
     }
     if (surfTex.status == wgpu::SurfaceGetCurrentTextureStatus::SuccessOptimal ||
@@ -849,6 +856,7 @@ wgpu::TextureView GpuDevice::AcquireNextFrame() {
 
 void GpuDevice::PresentFrame() {
     if (!mSurface || !mSurfaceTex) return;
+    framecost::Scope cost(framecost::kPresent);  // the scale pass, Present, ProcessEvents
     if (mFrameTex) {
         wgpu::CommandEncoderDescriptor ed{};
         ed.label = "PresentScaleEncoder";
@@ -1036,6 +1044,9 @@ void GpuDevice::EndHeadlessFrame() {
     // drives (PresentFrame calls it on the windowed path).
     mInstance.ProcessEvents();
     if (mHeadlessMaxInFlight <= 0) return;
+    // What the windowed path spends in acquire/present waiting for the GPU,
+    // a headless frame spends here (frame-times gpu_wait_ms).
+    framecost::Scope wait(framecost::kGpuWait);
     mHeadlessInFlight.push_back(mQueue.OnSubmittedWorkDone(
         wgpu::CallbackMode::WaitAnyOnly, [](wgpu::QueueWorkDoneStatus, wgpu::StringView) {}));
     while ((int)mHeadlessInFlight.size() > mHeadlessMaxInFlight) {

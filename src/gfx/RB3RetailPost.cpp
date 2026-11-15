@@ -1,5 +1,6 @@
 // RB3RetailPost — see RB3RetailPost.h for where each step comes from.
 #include "gfx/RB3RetailPost.h"
+#include "gfx/BindGroupCount.h"
 #include "gfx/GpuTimers.h"
 #include "gfx/GpuDevice.h"
 
@@ -384,7 +385,7 @@ void RB3RetailPost::Pass(wgpu::CommandEncoder& encoder, const wgpu::RenderPipeli
 }
 
 wgpu::BindGroup RB3RetailPost::Group(GpuDevice& gpu, const wgpu::BindGroupDescriptor& d) {
-    return mBindGroups ? mBindGroups->GetOrCreate(gpu.Device(), d) : gpu.Device().CreateBindGroup(&d);
+    return mBindGroups ? mBindGroups->GetOrCreate(gpu.Device(), d) : CreateCountedBindGroup(gpu.Device(), &d);
 }
 
 void RB3RetailPost::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& sceneView,

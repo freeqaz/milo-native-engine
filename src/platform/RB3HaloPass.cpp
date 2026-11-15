@@ -11,6 +11,7 @@
 // with them.
 
 #include "platform/Rnd_Wgpu_RB3.h"
+#include "gfx/BindGroupCount.h"
 #include "gfx/GpuTimers.h"
 #include "platform/GameRenderHook.h"   // W1.7 B6: relocated halo-source NAME exclusions
 
@@ -314,7 +315,7 @@ void BandRnd::CompositeHaloBloom() {
             bge[3].binding = 3; bge[3].buffer = mHaloBlendBuf; bge[3].size = 16;
             wgpu::BindGroupDescriptor bgd{};
             bgd.layout = mHaloBlitBGL; bgd.entryCount = 4; bgd.entries = bge;
-            wgpu::BindGroup bg = mGpu.Device().CreateBindGroup(&bgd);
+            wgpu::BindGroup bg = CreateCountedBindGroup(mGpu.Device(), &bgd);
             pass.SetPipeline(mHaloAddPipeline);
             pass.SetBindGroup(0, bg, 0, nullptr);
             pass.Draw(3);
