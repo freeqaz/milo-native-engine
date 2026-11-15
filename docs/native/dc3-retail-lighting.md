@@ -2157,17 +2157,22 @@ shots; not committed):
 | dclive | 34.1 → 34.1 | 0.4% | the win close-up | 23 of 33 |
 
 In the gameplay shots (`area1_far/near/movement`) every dancer is in view
-and nothing is culled. Forcing cu01–cu04, intro_quick01 and
-win_angel_P1_high_dlg in a paused session culled nothing either. Where it
-does cull, each dancer's whole caster set (11–12 meshes) goes at once.
+and nothing is culled. Where it does cull, a dancer's whole caster set
+(7, or 11–12 meshes) goes at once.
 
 **What it changes on screen: nothing that could be found.** In one paused
 session per venue the cull was switched off and on in place (a TMPDIAG file
-flag), at the opening venue shot where streetside culls 23 of 37 casters:
-the frames differ by 397 px, all in the HUD's corner animation, against
-265–371 px between two shots with the cull on. The two dancers it drops
-stand off-screen and so do their shadows. Thirteen other forced shots over
-four venues gave the same: no differing pixels beyond the frame's own
-noise. So this is parity by construction and a small saving, not a visible
-fix; no frame was found where an off-screen dancer's shadow lands in view,
-so there is no Xenia comparison to make.
+flag) at 27 shots: cu01–cu04, intro_quick01 and win_angel_P1_high_dlg in
+all four venues, plus the shot rollerrink, streetside and throneroom open
+on. Four of them culled:
+streetside's opening venue06 (23 of 37), and dclive's cu01 (7),
+intro_quick01 (23) and win dialogue (23). In none of the four does the
+frame change beyond its own noise. The metric: pixels moving by more than 8
+levels between cull on and off, minus those that also move between two
+cull-on shots (HUD animation under the pause). The four read 165, 162, 70
+and 7 px, and a shot where nothing was culled (dclive cu02) reads 351 px.
+The dancers that are dropped stand off-screen, and so do their shadows
+(`ci_ss_intro1.png`: the only changed pixels are the HUD corner). So this is
+parity by construction and a small saving, not a visible fix. No frame was
+found where an off-screen dancer's shadow lands in view, so there is no
+Xenia comparison to make.
