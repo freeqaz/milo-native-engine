@@ -1958,3 +1958,36 @@ differ between the two runs (native's performer is not Xenia's input).
   cut where the gobo pool ends (`step3/dclive_far_crop.png`). This is a
   lead, not a finding: §10.1 matched dclive's shadow depth within 2.4 luma
   on a matched pose.
+
+### 14.5 A larger shadow map does not draw a cleaner edge (not shipped)
+
+Item 11 (c) asked whether a map sized to the output looks cleaner in the
+enhanced look. It was measured on rollerrink cu02 (the dancers' shadows and
+the boombox) at 1920x1080 and 3840x2160. Atlas sizes 512, 1024 (the
+shipped size), 2048 and 4096 give tiles of 256 (retail's size), 512, 1024
+and 2048. The binary was an experiment build (`SHX_MAPSIZE`; the tap
+clamp taken from the texture's size). It is not committed. Mask px and
+edge width are per 720p-equivalent pixel. Edge = pixels darkened by
+10–90% of the full depth, divided by the mask's border length.
+
+| output | tile | mask px | ratio | edge px |
+|---|---|---|---|---|
+| 1080 | 256 | 30375 | 0.762 | 9.39 |
+| 1080 | 512 | 29285 | 0.743 | 9.35 |
+| 1080 | 1024 | 29626 | 0.741 | 8.95 |
+| 1080 | 2048 | 28826 | 0.738 | 8.67 |
+| 2160 | 256 | 28615 | 0.740 | 8.71 |
+| 2160 | 512 | 29153 | 0.741 | 8.28 |
+| 2160 | 1024 | 28359 | 0.737 | 8.13 |
+| 2160 | 2048 | 28589 | 0.738 | 7.73 |
+
+The dancers' poses differ by a few frames from run to run (the pause lands
+within ±50 ms), so mask px varies by up to 5% between runs (28359–30375 over all eight, with no trend in size).
+Shape and darkness stay within that. The edge narrows by at most 0.8 px at
+720p scale. In the 3× zoomed crops of a shoe's shadow and of the boombox
+(lane archive `step3/mapsize/`), the four sizes cannot be told apart.
+Taps and blur are fixed in light space (1.5/256 of the tile, as retail's
+two 5-tap passes over a 256 map). So a finer map samples the same penumbra
+more finely; it does not narrow it. Narrowing it would go past the
+original's edge, which item 11 rules out. The map stays at 1024 (512
+tiles) in both looks.
