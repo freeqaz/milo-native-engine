@@ -9649,13 +9649,24 @@ every comparison is between two binaries built from the same tree.
     loader steps, so a single step longer than the slice still overruns
     it.
 - **Flow tests.** `RunDtaFlow` paces at `DC3_FPS_CAP=240` (kFlowFpsCap),
-  so the slice is 2.5 ms once gameplay is on screen. ymca and omg (8000
-  frames each, 2 runs per side) reach every screen up to and including
-  `game_screen` at the same frame within the base's own run-to-run spread
-  (ymca `game_screen` 3173/3176 → 3171/3172; omg 1910/1904 → 1901/1967, the
-  1967 run reached the title at frame 70 instead of 45–51, before any
-  gameplay; see 41.3). The flows end in gameplay, so no screen after it is
-  counted. `three-songs` runs uncapped (`DC3_FAST_TIME`), so its slice is
+  so the slice is 2.5 ms once gameplay is on screen. Every screen these
+  flows count comes before gameplay, where the rule changes nothing, so any
+  shift is run-to-run noise. ymca (8000 frames, 2 runs per side):
+  `game_screen` 3173/3176 → 3171/3172. omg (3 runs per side):
+
+  | | `title_screen` | `main_screen` | `game_screen` |
+  |---|---|---|---|
+  | base | 48 / 46 / 46 | 123 / 121 / 121 | 1910 / 1904 / 1904 |
+  | new | 45 / 70 / 48 | 120 / 149 / 124 | 1901 / 1967 / 1922 |
+
+  The second new run reached the title 22–24 frames late. The rerun (third
+  column, under the shared lock at load 11–14, because the exclusive lock
+  could not be taken in 30 minutes) reached it at 48, inside the base's
+  range, so the late title did not repeat. Its `game_screen` at 1922 is
+  12–18 frames after the base's. That interval is the loading screen,
+  where the slice is the image's 14 ms, so the cause is noise, not the
+  rule. The flows end in gameplay, so no screen after it is counted.
+  `three-songs` runs uncapped (`DC3_FAST_TIME`), so its slice is
   unchanged.
 - **Tests.**
   - `LoaderBudget.*` (9): the rule, the image's value tracked, the value put
