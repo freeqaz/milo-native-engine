@@ -1,7 +1,8 @@
 // Where a frame's work goes: time spent creating render pipelines, creating
 // GPU textures from bitmaps, uploading mesh geometry, creating bind groups,
 // buffers, textures and texture views, acquiring and presenting the surface,
-// and reading files, summed per kind on every thread that does it, with a
+// reading files, waiting for the GPU (headless) and the consumer's frame
+// pacer's sleep, summed per kind on every thread that does it, with a
 // count per kind. The frame-times log (MILO_FRAME_TIMES) writes each frame's
 // share (pipe_ms / tex_ms / mesh_ms / bg_ms ...), so a hitch can be
 // attributed without a profiler (milo-native-engine
@@ -31,6 +32,8 @@ enum Kind {
     kAcquire,
     kPresent,
     kFileRead,
+    kGpuWait,  // headless: the frames-in-flight wait for the GPU (GpuDevice::EndHeadlessFrame)
+    kPace,     // the consumer's frame pacer sleeping out the period (DC3: Dc3FramePacer::Pace)
     kKinds
 };
 

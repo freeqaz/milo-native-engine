@@ -1044,6 +1044,9 @@ void GpuDevice::EndHeadlessFrame() {
     // drives (PresentFrame calls it on the windowed path).
     mInstance.ProcessEvents();
     if (mHeadlessMaxInFlight <= 0) return;
+    // What the windowed path spends in acquire/present waiting for the GPU,
+    // a headless frame spends here (frame-times gpu_wait_ms).
+    framecost::Scope wait(framecost::kGpuWait);
     mHeadlessInFlight.push_back(mQueue.OnSubmittedWorkDone(
         wgpu::CallbackMode::WaitAnyOnly, [](wgpu::QueueWorkDoneStatus, wgpu::StringView) {}));
     while ((int)mHeadlessInFlight.size() > mHeadlessMaxInFlight) {

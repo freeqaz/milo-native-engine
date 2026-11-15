@@ -54,6 +54,9 @@
 #include <emscripten/html5.h>
 #endif
 
+#if defined(__linux__)
+#include <sys/resource.h>
+#endif
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -86,6 +89,20 @@ static double ThreadCpuNow() {
     if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) == 0) return ts.tv_sec + ts.tv_nsec * 1e-9;
 #endif
     return 0.0;
+}
+
+// This thread's voluntary and involuntary context switches so far (-1 where
+// the platform cannot say per thread).
+static void ThreadCtxSwitches(long out[2]) {
+#if defined(__linux__)
+    rusage ru;
+    if (getrusage(RUSAGE_THREAD, &ru) == 0) {
+        out[0] = ru.ru_nvcsw;
+        out[1] = ru.ru_nivcsw;
+        return;
+    }
+#endif
+    out[0] = out[1] = -1;
 }
 
 #ifdef MILO_RNDOBJ_SHAPE_HAS_NGRND
@@ -465,7 +482,8 @@ void WgpuRnd::InitGpuResources() {
                     "pt_end_wait_ms,pt_after_submit,pt_standin,pipe_ms,tex_ms,mesh_ms,"
                     "pipe_n,tex_n,mesh_n,bg_n,bg_ms,buf_n,buf_ms,gtex_n,gtex_ms,view_n,view_ms,"
                     "acquire_ms,present_ms,file_n,file_ms,game_ms,game_cpu_ms,"
-                    "scene_bg_writes,scene_bg_creates\n");
+                    "scene_bg_writes,scene_bg_creates,gpu_wait_ms,pace_ms,"
+                    "game_vcs,game_ivcs,draw_vcs,draw_ivcs\n");
     }
 
     // Compose RndTexBlender outputs (TexBlendHook.h).
@@ -1848,6 +1866,7 @@ void WgpuRnd::BeginDrawing() {
     if (mFrameTimes) {
         mFrameTimesBegin = PerfNow();
         mFrameTimesBeginCpu = ThreadCpuNow();
+        ThreadCtxSwitches(mFrameTimesBeginCs);
     }
 
     FrameCapture::Get().BeginFrame(mFrameID);
@@ -2197,6 +2216,8 @@ void WgpuRnd::EndDrawing() {
 void WgpuRnd::WriteFrameTimes() {
     if (!mFrameTimes) return;
     const double now = PerfNow(), cpu = ThreadCpuNow();
+    long cs[2];
+    ThreadCtxSwitches(cs);
     if (mFrameTimesLastEnd > 0.0) {
         double costMs[framecost::kKinds];
         long long n[framecost::kKinds];
@@ -2214,7 +2235,7 @@ void WgpuRnd::WriteFrameTimes() {
         fprintf(mFrameTimes,
                 "%d,%.3f,%.3f,%.3f,%.3f,%d,%d,%d,%.3f,%d,%d,%.3f,%.3f,%.3f,"
                 "%lld,%lld,%lld,%lld,%.3f,%lld,%.3f,%lld,%.3f,%lld,%.3f,"
-                "%.3f,%.3f,%lld,%.3f,%.3f,%.3f,%llu,%llu\n",
+                "%.3f,%.3f,%lld,%.3f,%.3f,%.3f,%llu,%llu,%.3f,%.3f,%ld,%ld,%ld,%ld\n",
                 (int)mFrameID, (now - mFrameTimesLastEnd) * 1000.0,
                 (cpu - mFrameTimesLastCpu) * 1000.0, (now - mFrameTimesBegin) * 1000.0,
                 mPointTestWaitMs, mPointTestsRecorded, mPointTestAnswers, mPointTestAgeMax,
@@ -2226,13 +2247,20 @@ void WgpuRnd::WriteFrameTimes() {
                 (mFrameTimesBegin - mFrameTimesLastEnd) * 1000.0,
                 (mFrameTimesBeginCpu - mFrameTimesLastCpu) * 1000.0,
                 (unsigned long long)(mSceneBgWrites - mFrameTimesLastSceneWrites),
-                (unsigned long long)(mSceneBgCreates - mFrameTimesLastSceneCreates));
+                (unsigned long long)(mSceneBgCreates - mFrameTimesLastSceneCreates),
+                costMs[kGpuWait], costMs[kPace],
+                cs[0] < 0 ? -1L : mFrameTimesBeginCs[0] - mFrameTimesLastCs[0],
+                cs[1] < 0 ? -1L : mFrameTimesBeginCs[1] - mFrameTimesLastCs[1],
+                cs[0] < 0 ? -1L : cs[0] - mFrameTimesBeginCs[0],
+                cs[1] < 0 ? -1L : cs[1] - mFrameTimesBeginCs[1]);
         fflush(mFrameTimes);
     }
     mFrameTimesLastSceneWrites = mSceneBgWrites;
     mFrameTimesLastSceneCreates = mSceneBgCreates;
     mFrameTimesLastEnd = now;
     mFrameTimesLastCpu = cpu;
+    mFrameTimesLastCs[0] = cs[0];
+    mFrameTimesLastCs[1] = cs[1];
     mPointTestWaitMs = 0.0;
     mPointTestEndWaitMs = 0.0;
     mPointTestAfterSubmit = 0;
