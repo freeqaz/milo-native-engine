@@ -43,7 +43,36 @@ struct VsOut {
     // as an unscaled frame's does; the window ignores it.
     return c * 0.25;
 }
+
+// fs_box with a fixed ordered dither (PresentScale::SetDither): the box mean,
+// a fraction of an 8-bit level apart from its neighbours, is written as
+// floor(v * 255 + t) / 255 with t a 4x4 Bayer threshold in (0, 1) -- (i + 0.5)
+// / 16, never 0 or 1 -- so a mean that IS an 8-bit level (four equal texels:
+// a flat fill, the inside of a glyph) comes out exactly that level, and one
+// between two levels comes out as the two in the proportion of its fraction
+// over each 4x4 block of output pixels. The pattern is keyed on the OUTPUT
+// pixel (uv over the output pixel's size), not the target position, so a
+// letterboxed present and an origin-0 readback dither alike. Static: it does
+// not move from frame to frame.
+@fragment fn fs_box_dither(in: VsOut) -> @location(0) vec4f {
+    var bayer = array<f32, 16>(0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0,
+                               3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
+    let o = vec2f(abs(dpdx(in.uv.x)), abs(dpdy(in.uv.y))) * 0.25;
+    let c = (textureSampleLevel(frameTex, frameSampler, in.uv + vec2f(-o.x, -o.y), 0.0) +
+             textureSampleLevel(frameTex, frameSampler, in.uv + vec2f(o.x, -o.y), 0.0) +
+             textureSampleLevel(frameTex, frameSampler, in.uv + vec2f(-o.x, o.y), 0.0) +
+             textureSampleLevel(frameTex, frameSampler, in.uv + vec2f(o.x, o.y), 0.0)) * 0.25;
+    let px = vec2u(floor(in.uv / (4.0 * o)));
+    let t = (bayer[(px.y & 3u) * 4u + (px.x & 3u)] + 0.5) / 16.0;
+    return vec4f(floor(c.rgb * 255.0 + t) / 255.0, c.a);
+}
 )WGSL";
+
+// The dither writes 8-bit levels of the value it is given, so only into a
+// linear 8-bit target (an sRGB target quantises after its encode).
+bool DitherableFormat(wgpu::TextureFormat f) {
+    return f == wgpu::TextureFormat::RGBA8Unorm || f == wgpu::TextureFormat::BGRA8Unorm;
+}
 
 }  // namespace
 
@@ -136,7 +165,33 @@ PresentRect PresentScale::Encode(wgpu::Device& device, wgpu::CommandEncoder& enc
         frag.entryPoint = "fs_box";
         pd.label = "PresentScaleBox";
         mBoxPipe = CreateCountedRenderPipeline(device, &pd);
+        mBoxDitherPipe = nullptr;
         mFormat = targetFormat;
+    }
+    const bool box = mBoxFilter && rect.w < fw && rect.h < fh;
+    const bool dither = box && mDither && DitherableFormat(targetFormat);
+    if (dither && !mBoxDitherPipe) {
+        // Only once a dithered box is asked for: with the dither off, none.
+        wgpu::PipelineLayoutDescriptor pld{};
+        pld.bindGroupLayoutCount = 1;
+        pld.bindGroupLayouts = &mBGL;
+        wgpu::PipelineLayout pl = device.CreatePipelineLayout(&pld);
+        wgpu::ColorTargetState ct{};
+        ct.format = targetFormat;
+        ct.writeMask = wgpu::ColorWriteMask::All;
+        wgpu::FragmentState frag{};
+        frag.module = mShader;
+        frag.entryPoint = "fs_box_dither";
+        frag.targetCount = 1;
+        frag.targets = &ct;
+        wgpu::RenderPipelineDescriptor pd{};
+        pd.label = "PresentScaleBoxDither";
+        pd.layout = pl;
+        pd.vertex.module = mShader;
+        pd.vertex.entryPoint = "vs_full";
+        pd.fragment = &frag;
+        pd.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+        mBoxDitherPipe = CreateCountedRenderPipeline(device, &pd);
     }
     const bool nearest = PresentRectIsIntegerScale(rect, fw, fh);
     if (frame && (frame.Get() != mBoundFrame.Get() || nearest != mBoundNearest || !mBindGroup)) {
@@ -168,8 +223,7 @@ PresentRect PresentScale::Encode(wgpu::Device& device, wgpu::CommandEncoder& enc
     wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&rp);
     if (frame && rect.w > 0 && rect.h > 0) {
         pass.SetViewport((float)rect.x, (float)rect.y, (float)rect.w, (float)rect.h, 0.0f, 1.0f);
-        const bool box = mBoxFilter && rect.w < fw && rect.h < fh;
-        pass.SetPipeline(box ? mBoxPipe : mPipe);
+        pass.SetPipeline(dither ? mBoxDitherPipe : box ? mBoxPipe : mPipe);
         pass.SetBindGroup(0, mBindGroup);
         pass.Draw(3);
     }
