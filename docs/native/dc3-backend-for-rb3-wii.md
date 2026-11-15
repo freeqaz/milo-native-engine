@@ -9049,6 +9049,47 @@ uploads are 1–3% of the attributed time and were left alone (39.6).
 - **Rendering identical (MEASURED, milo-viewer, paused rollerrink).** Six
   runs: off, off, cold, warm, truncated, warm again. **0 differing pixels.**
 
+### 39.3a Web (MEASURED: headless Chromium, rollerrink/ymca to results, rAF intervals)
+
+- **A real bug the native A/B could not see.** The web device comes up
+  asynchronously, so boot dirs can finish loading before
+  `WgpuRnd::InitGpuResources`.
+  - The load walk then reached `WarmParticlePipelines` first.
+    `EnsureParticlePipeline` latched a pipeline layout built from a null
+    scene layout, so every particle pipeline after it was invalid.
+  - The run logged 18,245 uncaptured errors (`Invalid RenderPipeline` in
+    MainPassResume) and rejected whole command buffers. Base logged 0.
+  - Native runs never reach it (0 errors in every native run): there the
+    resources exist before any load.
+  - Fix: the walk and `WarmParticlePipelines` both wait for
+    `GpuResourcesReady()`.
+- **The web warm is async too.** It had been a plain create, a few a frame.
+  That is cheap on the page's thread, but the browser's GPU process
+  compiles each one before it presents again.
+  - At 8 a frame the loading screen stalled: max rAF interval 416.6 ms,
+    4 frames over 100 ms.
+  - It is now `CreateRenderPipelineAsync`, taken in by `ProcessEvents`.
+  - A draw that reaches a key still in flight creates that same key at
+    once, because a browser cannot block. The late result is dropped.
+- **Base (engine 8cc0f22) against np-hitch, after both fixes:**
+
+  | | base | np-hitch |
+  |---|---|---|
+  | WebGPU errors | 0 | 0 |
+  | loading screen: max rAF interval / frames over 100 ms | 66.7 ms / 0 | 66.7 ms / 0 |
+  | song: pipeline creates | 27 (16 in the first 300 frames, the last at frame 14160) | 3 (rect, all in the first 60 frames) |
+  | song: max rAF interval / frames over 100 ms | 233 ms / 1 | 183 ms / 1 |
+  | results: pipeline creates | 2 | 0 |
+  | texture creates, whole run | 381 | 381 |
+  | long-task violations | 0 | 0 |
+
+  - The reporter shows no long task in either run. The rAF intervals are
+    the measure.
+  - The 3 rect pipelines most likely belong to dirs that finished loading
+    before the web renderer was up; they are made at their first draw, as
+    before. This was not confirmed.
+  - Texture sharing behaves as on native: 381 creates on both sides.
+
 ### 39.4 Guards
 
 - **Default gate (dc3 `PerformCrowdTest`, `DC3_DTA_FLOW_TESTS`, on by
@@ -9068,6 +9109,12 @@ uploads are 1–3% of the attributed time and were left alone (39.6).
   `WarmStats::drawn`.
 - **`PipelineDiskCacheTest`.** Exact read-back; a damaged blob is a miss
   and is deleted; isolation; the bound; the switch.
+- **Web (dc3 `scripts/web/smoke-test.mjs`).** It now fails on any
+  `GpuDevice: uncaptured error`.
+  - Sabotage, both readiness guards removed: FAIL, 7 errors before
+    main_screen, the first being the group-0 layout error.
+  - Restored build: PASS.
+  - Base (8cc0f22) under the new check: PASS.
 
 ### 39.5 Which consumers this touches
 
