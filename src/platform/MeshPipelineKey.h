@@ -8,12 +8,12 @@
 // is derived from the content, never recorded.
 
 #include "gfx/PipelineManager.h"
+// RndMesh, RndMat and BaseMaterial as the consumer's shape has them: a class
+// on DC3-shaped rndobj, an alias of RndMat on RB3-Wii (where a forward
+// `class BaseMaterial;` conflicts with the alias and rb3 does not compile).
+#include "platform/rndshape/RndShape.h"
 
 #include <cstdint>
-
-class RndMesh;
-class RndMat;
-class BaseMaterial;
 
 // The pass state a mesh's key depends on.
 struct MeshPassContext {

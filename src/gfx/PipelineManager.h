@@ -3,7 +3,6 @@
 #include <webgpu/webgpu_cpp.h>
 #include <unordered_map>
 #include <unordered_set>
-#include <memory>
 #include <vector>
 #include <cstdint>
 
@@ -104,6 +103,12 @@ bool BlendSkipsFringeFade(int blend);
 
 class PipelineManager {
 public:
+    PipelineManager() = default;
+    PipelineManager(const PipelineManager&) = delete;
+    PipelineManager& operator=(const PipelineManager&) = delete;
+    ~PipelineManager() {
+        for (auto& entry : mWarmPending) ReleasePending(entry.second);
+    }
     void Init(GpuDevice* device);
 
     // Get or create pipeline for the given state combination
@@ -242,17 +247,27 @@ private:
     struct DescStorage;
     void BuildDescriptor(const PipelineKey& key, DescStorage& st);
     wgpu::RenderPipeline CreatePipeline(const PipelineKey& key);
+    // One async create in flight. mWarmPending owns it until its entry goes;
+    // ReleasePending then deletes it if the callback has run, or marks it
+    // abandoned and the callback deletes it when it runs (a web drain cannot
+    // wait). Callbacks run only in this thread's ProcessEvents / WaitAny
+    // (CallbackMode::AllowProcessEvents), so the two never race. Not a
+    // shared_ptr: make_shared's control block calls type_info::operator==,
+    // which libstdc++ declares out of line under -fms-compatibility and does
+    // not export, so rb3-xenon (which builds the engine that way) cannot link.
     struct PendingWarm {
         wgpu::Future future{};
         wgpu::RenderPipeline result;
         bool done = false;
         bool ok = false;
+        bool abandoned = false;
     };
+    static void ReleasePending(PendingWarm* pw);
     void FinishWarm(const PipelineKey& key, PendingWarm& pw);
-    void DrainWarms();  // natively waits out every async create; the callbacks own their PendingWarm
+    void DrainWarms();  // natively waits out every async create first
     std::vector<PipelineKey> mWarmQueue;
     std::unordered_set<PipelineKey, PipelineKeyHash> mWarmQueued;  // mWarmQueue's members
-    std::unordered_map<PipelineKey, std::shared_ptr<PendingWarm>, PipelineKeyHash> mWarmPending;
+    std::unordered_map<PipelineKey, PendingWarm*, PipelineKeyHash> mWarmPending;
     std::unordered_set<PipelineKey, PipelineKeyHash> mWarmedUndrawn;  // made by a warm, not yet asked for
     WarmStats mWarmStats;
     wgpu::ShaderModule GetOrCreateShader(uint32_t shaderType);

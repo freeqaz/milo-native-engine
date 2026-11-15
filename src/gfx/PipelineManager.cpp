@@ -746,6 +746,11 @@ bool PipelineManager::WarmAsync(const PipelineKey& key) {
     return true;
 }
 
+void PipelineManager::ReleasePending(PendingWarm* pw) {
+    if (pw->done) delete pw;
+    else pw->abandoned = true;  // its callback deletes it
+}
+
 void PipelineManager::FinishWarm(const PipelineKey& key, PendingWarm& pw) {
     if (mPipelineCache.count(key)) {
         mWarmStats.finished++;  // a draw made it meanwhile (web); keep that one
@@ -763,6 +768,7 @@ void PipelineManager::DrainWarms() {
     for (auto& [key, pw] : mWarmPending)
         if (!pw->done && mDevice) mDevice->Instance().WaitAny(pw->future, UINT64_MAX);
 #endif
+    for (auto& [key, pw] : mWarmPending) ReleasePending(pw);
     mWarmPending.clear();
     mWarmQueue.clear();
     mWarmQueued.clear();
@@ -776,6 +782,7 @@ void PipelineManager::PollWarms() {
     for (auto it = mWarmPending.begin(); it != mWarmPending.end();) {
         if (it->second->done) {
             FinishWarm(it->first, *it->second);
+            delete it->second;
             it = mWarmPending.erase(it);
         } else {
             ++it;
@@ -792,13 +799,17 @@ void PipelineManager::PollWarms() {
         ++issued;
         DescStorage st;
         BuildDescriptor(key, st);
-        auto pw = std::make_shared<PendingWarm>();
+        PendingWarm* pw = new PendingWarm();
         const auto t0 = std::chrono::steady_clock::now();
-        // The callback owns a reference: on the web a drain cannot wait, so
-        // it may fire after the entry is gone.
+        // On the web a drain cannot wait, so the callback may run after the
+        // entry is gone: then it finds the warm abandoned and deletes it.
         pw->future = mDevice->Device().CreateRenderPipelineAsync(
             &st.desc, wgpu::CallbackMode::AllowProcessEvents,
             [pw](wgpu::CreatePipelineAsyncStatus status, wgpu::RenderPipeline p, wgpu::StringView msg) {
+                if (pw->abandoned) {
+                    delete pw;
+                    return;
+                }
                 pw->done = true;
                 pw->ok = status == wgpu::CreatePipelineAsyncStatus::Success;
                 if (pw->ok) pw->result = std::move(p);
@@ -811,7 +822,7 @@ void PipelineManager::PollWarms() {
         framecost::Nanos(framecost::kPipeline) += (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - t0).count();
         pipelinecount::WarmCounter()++;
-        mWarmPending.emplace(key, std::move(pw));
+        mWarmPending.emplace(key, pw);
     }
     mWarmQueue.erase(mWarmQueue.begin(), mWarmQueue.begin() + (ptrdiff_t)i);
 }
@@ -835,6 +846,7 @@ wgpu::RenderPipeline PipelineManager::GetPipeline(const PipelineKey& key) {
         mWarmStats.waitMs += ms;
         RecordPipelineWait(pw.result ? "warm" : "warm(failed)", ms);
         FinishWarm(key, pw);
+        ReleasePending(&pw);  // done: WaitAny ran its callback
         mWarmPending.erase(pit);
         it = mPipelineCache.find(key);
         if (it != mPipelineCache.end()) {
@@ -846,7 +858,11 @@ wgpu::RenderPipeline PipelineManager::GetPipeline(const PipelineKey& key) {
 #else
     // In flight on the web: no blocking wait there, so this draw creates the
     // same key now and the async result is dropped when it lands.
-    if (mWarmPending.erase(key)) mWarmStats.takenEarly++;
+    if (auto pit = mWarmPending.find(key); pit != mWarmPending.end()) {
+        ReleasePending(pit->second);
+        mWarmPending.erase(pit);
+        mWarmStats.takenEarly++;
+    }
 #endif
     if (mWarmQueued.erase(key)) {
         // Still queued: made now, as before; the queue skips it when it gets there.
