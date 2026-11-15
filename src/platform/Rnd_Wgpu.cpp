@@ -1286,9 +1286,11 @@ void WgpuRnd::SetViewport(const Viewport& v) {
 void WgpuRnd::ApplyCameraViewport(RndCam* cam) {
     if (!cam) return;
     const Vector2& z = rndshape::CamZRange(cam);
-    SetViewport(BuildViewportForScreenRect(
-        (int)mCurrentTargetWidth, (int)mCurrentTargetHeight, rndshape::CamScreenRect(cam), z.x, z.y
-    ));
+    // A frame pass's viewport is in output pixels (FrameViewport scales it to
+    // a render-scaled frame); a texture pass's in the texture's.
+    const int w = mActiveTargetTex ? (int)mCurrentTargetWidth : mGpu.OutputWidth();
+    const int h = mActiveTargetTex ? (int)mCurrentTargetHeight : mGpu.OutputHeight();
+    SetViewport(BuildViewportForScreenRect(w, h, rndshape::CamScreenRect(cam), z.x, z.y));
 }
 
 // A viewport set in the virtual resolution's pixels (DC3's RndCam::Select
@@ -1555,8 +1557,13 @@ void WgpuRnd::BeginFramePass(bool clear) {
     RndCam* cam = RndCam::Current();
     const Viewport& prevVp = GetViewport();
     if (cam && cam->TargetTex() == nullptr) {
+        // In output pixels, not the drawn frame's (curW x curH): ApplyViewport's
+        // FrameViewport scales it to a render-scaled frame. Built from curW, a
+        // 2x frame got a viewport twice its size and showed its top-left
+        // quarter until the next RndCam::Select (milo-viewer never reselects).
         SetViewport(BuildViewportForScreenRect(
-            curW, curH, rndshape::CamScreenRect(cam), prevVp.MinZ, prevVp.MaxZ
+            mGpu.OutputWidth(), mGpu.OutputHeight(), rndshape::CamScreenRect(cam), prevVp.MinZ,
+            prevVp.MaxZ
         ));
     } else {
         ApplyViewport();
