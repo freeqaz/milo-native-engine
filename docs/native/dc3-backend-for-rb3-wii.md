@@ -7865,3 +7865,190 @@ average of this streak term.
 
 - No engine or dc3 code changed in round 9b.
 - The experiment builds edited only scratch trees and were not committed.
+
+### 37.10 Round 10: the streak arm's half-texel step (FIXED), and reading Xenia
+
+Evidence: dc3-decomp `archive/np-gfx-2026-11-14/lanes/post/round10/`.
+
+**Round 9b's term split is withdrawn.** It set `bloom_intensity` and
+`bloom_streak` on `{rnd get_selected_postproc}`, which is `world.pp`, and read
+the values back in the same eval, so the read-back passed. But
+`HamDirector::Poll` overwrites `world.pp` every frame: it copies it from the
+camera's post-proc, else the forced one (dclive normal at perf high is
+`dclive_performance_high.pp`), else interpolates A/B. So none of the windows
+changed anything after the first frame. A native run with the same states
+(`native/stk_base_dclive_normal_BAD-noapply`) shows no step at any window
+edge. This withdraws three 9b claims: "A and B are not the bloom chain", "C is
+the streak arm", and the colour-sign argument built on the windows. The
+factorless-MAX and factored-MAX cross-checks stand: they compare builds, not
+windows.
+
+**Method: a scratch override proc on frozen frames.**
+- `{set $r10pp {new PostProc}}`, then `{$r10pp copy {rnd get_selected_postproc} 0}`
+  (kCopyDeep), then `{rnd set_postproc_override $r10pp}`. Clear with
+  `{rnd set_postproc_override ""}`.
+- The director never writes the override, so a set on it persists.
+- `Rnd::DoPostProcess` with an override runs only the override's `DoPost` and
+  skips the other post-processors (the `SpotlightDrawer` beams, DOF), on retail
+  and native alike. Compare override states with each other, not with a frame
+  that has no override (s4 vs s2: +11 luma, the beams).
+- States per frozen frame (`cheat_pause`, the same frame in every state):
+  - s0: copy plus override (streak on);
+  - s1: `bloom_intensity 0`;
+  - s2: intensity back, `bloom_streak 0` (the plain arm);
+  - s3: copy again, which must equal s0 (native: 0.000 abs diff);
+  - s4: no override.
+- Native: `tools/npause10.sh`. Xenia: `tools/xstk.sh` (the round-6 driver,
+  `--pausecycle` at 16–36 s). Terms: D = s0 − s1 (the streak term as
+  composited), P = s2 − s1 (the plain term).
+- Tools: `tools/stkterm.py` (energy, extent) and `tools/stkshift.py`, which
+  finds where each term sits relative to its own frozen scene. It takes the
+  cross-correlation peak of the high-passed term against the high-passed s1.
+  Calibrated on a native frame: a blurred copy moved by (+6, −4) px reads
+  (+6.03, −3.97).
+
+**The half-texel step is real.** `SetBloomBlurWeightsStreak` puts the taps at
+`0.5 ± i·4^pass` texels. Rounds 1–9 read the 0.5 as D3D9's half-texel
+convention and centred it. It is not. `DxRnd::DrawRect` draws its XYZRHW quad
+from (0, 0) to (w, h), uv 0..1, with
+`D3DDevice_SetRenderState_HalfPixelOffset(1)`, so a pixel centre already samples
+its texel centre, exactly as in WebGPU. The 0.5 is therefore a real
+half-texel step along each set's axis on every pass, and the content moves
+−0.5 texel per pass:
+- set0 (w/4, along the rotated horizontal): (−1.9, +2.8) px over three passes
+  at dclive normal's −55°;
+- set1 (w/16, along the rotated vertical): (−19.7, −13.8) px.
+
+The high-passed shift measure sees mostly set0. dclive normal, far01, frozen
+frames:
+
+| side | sets | D (streak term) at | P (plain term) at |
+|---|---|---|---|
+| native, centred taps (rounds 1–9) | 6 (two runs) | (−0.29, +0.24) mean; −0.73..+0.02, +0.04..+0.35 | (−0.29, +0.10) |
+| native, the original's 0.5 | 6 (five runs, two of them the phalf binary below) | (−1.70, +1.60) mean; −2.05..−1.34, +1.30..+2.11 | (see the plain-arm lead) |
+| original under Xenia | 6 | (−1.82, +1.97) mean; −2.36..−1.42, +1.44..+2.42 | (−0.87, +0.17) |
+
+The 0.5 moves native's streak term onto Xenia's: from 2.3 px away to 0.4 px,
+and the two ranges overlap.
+The streak arm's energy and extent were already the original's:
+- D/P per channel: Xenia 0.64–0.74, native 0.65–0.75;
+- D's autocorrelation extent along the streak axes: Xenia u 57.6–60.9 /
+  v 64.1–65.6, native u 60.7–62.2 / v 64.0–65.8. That is within the spread the
+  scene itself puts on this measure, so there is no length difference to fix.
+
+(Native sets 4–6 of the base run and 2–6 of the half run caught the pause menu
+and are not used.)
+
+**Fixed:** `kStreakCentreOffset = 0.5f` in `StreakTaps`
+(`RB3RetailPostDC3.cpp`), DC3 only: `StreakTaps` is reached only through
+`RunDC3Bloom`, i.e. `p.dc3` from `FillDC3`.
+
+**Guard:** dc3 `DC3RetailPostGpuTest.StreakTermSitsWhereTheOriginalsTapsPutIt`.
+- It renders a white 32×32 block through `PostProcPass` at −45°, 0° and −55°,
+  attenuation 0.5.
+- It compares the result with a CPU model written from `NgPostProc::DoBloom`,
+  `bloom.ps` and `SetBloomBlurWeightsStreak`: 8-bit sets, bilinear with clamp,
+  the 0.5 offsets.
+- Measured: per-pixel rms 0.24–0.64 levels, worst 1–3 levels; centroid
+  within 1.6 px of the model (the streak's 8-bit tails make the centroid and
+  energy sensitive to the GPU's rounding of ties, so those two are bounded
+  loosely).
+- Sabotage `kStreakCentreOffset = 0.0f` (the centred taps): rms 3.2–4.2,
+  worst 15–16, centroid (0, 0) against the model's (−17, −14); all five checks
+  fail at all three angles.
+
+**What the fix does to residual C: little.** The round-9b pinned-camshot
+census (dclive normal, `tools/cells10.py`, base = centred taps, half = the fix,
+both on this branch, against the same Xenia cells; dE is the cell's mean
+colour distance to Xenia):
+
+| cell | far01 base | far01 half | near01 base | near01 half | near01 raw base | near01 raw half |
+|---|---|---|---|---|---|---|
+| sign | 11.2 | 10.8 | 5.3 | 5.3 | 1.9 | 0.9 |
+| wall_dots | 14.2 | 13.1 | 11.1 | 11.2 | 1.1 | 0.9 |
+| shelves_r | 16.4 | 15.0 | 10.6 | 9.6 | 2.4 | 1.6 |
+| backwall_c (far01) / steps (near01) | 7.8 | 6.3 | 6.2 | 6.6 | 1.2 | 0.4 |
+| floor_l | 6.7 | 4.8 | 10.3 | 10.3 | 2.9 | 1.0 |
+| dancers | 4.5 | 3.3 | 5.9 | 5.9 | 1.7 | 0.3 |
+| scene | 5.6 | 4.4 | 6.4 | 6.4 | 1.8 | 0.3 |
+
+The raw columns (`toggle_all_postprocs`) are the control: the two builds run
+the same code there, yet scene dE reads 1.8 and 0.3, so a run-to-run spread of
+about 1.5 dE sits under every cell. far01 improves by about that much and
+near01 not at all. The streak term now sits where the original puts it, but
+C (the sign +13%, wall_dots +15%, shelves_r) is not the streak's position, and
+it is still open. Evidence: `measure/cells/{base,half}-dclive-normal-*.json`,
+`measure_cells10.json`.
+
+**Open lead: the plain arm's 0.5.** Retail's `SetBloomBlurWeights` puts the
+15 blur taps at −6.5..+7.5 texels, so by the same reading the plain arm also
+steps half a texel per pass. Native's plain arm is RB3's shared `fs_blur`,
+which centres them. A scratch binary with `(i − 7) + 0.5` in `fs_blur`
+("phalf") on the same frozen frames, P = the plain term's position:
+
+| build | sets | P at |
+|---|---|---|
+| centred plain arm (base, half) | 6 + 3 | (−0.29, +0.10) mean; half runs (−0.13, +0.22), (−0.23, +0.26), (−0.48, +0.21) |
+| plain arm +0.5 (phalf) | 3 | (−0.73, −0.32), (−1.01, −0.21), (−0.97, +0.16); mean (−0.90, −0.12) |
+| original under Xenia | 6 | (−0.87, +0.17) |
+
+x follows the +0.5 build, but y follows the centred one, while a +0.5 on both
+passes predicts about (−2, −2) for set0. So the evidence does not settle it.
+The plain arm is unchanged: changing `fs_blur` would change RB3, and nothing
+measured says which half of the claim is true. The next step is the vertical
+pass's constants in a GPU trace of the original (c138..c152 for the second
+pass). Evidence: `native/ovr1_{half,phalf}_p{14,16}_dclive_normal`,
+`native/ovr6_phalf_dclive_normal`.
+
+**Consumers, passes, cost.** No new pass, texture or getenv; the offsets are
+uniforms the streak passes already take, so the cost is unchanged.
+`StreakTaps` is DC3-only, and rb3-xenon's rb3-render frames are identical
+before and after (11 of 11, max 0). rb3 does not build on this branch at all:
+71eeeb9's `LookProfile.cpp` names `rndshape::kDC3RetailModel`, which the
+RB3Wii shape lacks. np-menutext's a9c0cbf fixes that; the rb3 check here ran on
+a scratch merge of it.
+
+#### Reading Xenia: screen every census row with a MAX build first
+
+This is the rule rounds 5, 6, 7 and 9b established one row at a time. It is
+stated once here; the sections cited hold the evidence.
+
+**The mechanism.** The game sets `BlendOpAlpha` 3 (Xenos MAX) in
+`SetDefaultRenderStates`. The Xenia fork applies MIN/MAX **without the blend
+factors**: the alpha written is `max(src.a, dst.a)` whatever the draw's
+factors are. Every draw that `NgMat::AllowHDR` admits writes the bloom mask
+into alpha, so under Xenia the mask can only grow, and the bloom it gates grows
+with it. Retail footage refutes factorless MAX twice: the song-select debloom
+cards (§31.5) and the rink floor contrast (§35.4). Native follows each draw's
+own equation (`kAlphaBlendMax = !kDC3RetailPost`, `RndShape_DC3.h`), guarded by
+`DC3RetailPostTest.BlendedAlphaFollowsTheDrawsEquation`.
+
+**Which draws it inflates.** Two blend families, measured:
+- **Multiply** (blend 6) overlays and light catchers. Their equation leaves
+  `dst.a·src.a`; factorless MAX leaves the larger of the two. Rows: the rink
+  floor (§35), the throneroom carpet (§37.1), the menu debloom cards (§31.5).
+- **The SrcAlpha family**: SrcAlpha, SrcAlphaAdd and PreMultAlpha. Their
+  equation weights the destination by `1 − src.a` or the source by `src.a`;
+  factorless MAX drops both weights. Rows: dclive peak characters and
+  streetside peak neon/sky (§37.9 A and B), the throneroom peak's 2.5% bloom
+  residual (§37.3).
+
+The factored-MAX build (§37.9) is the control that separates them: it reads as
+native's equation for both families, so neither family's difference survives
+any rule that applies the factors.
+
+**The rule.** Before chasing a census row where native is darker, or blooms
+less, than Xenia (or where a Multiply or SrcAlpha-family draw covers the
+region):
+1. Build native with `kAlphaBlendMax = true` (one line in `RndShape_DC3.h`,
+   scratch only; the sabotage of the alpha guard is the same edit).
+2. Measure the same cell. If the MAX build reproduces Xenia (rounds 5, 6 and
+   9b: to within the census noise floor, 3.4% / dE 2.2), the row is Xenia's
+   alpha rule, not a native bug. Record it and drop it.
+3. Only a row that survives the MAX build is worth chasing.
+
+**Two other Xenia artifacts** to screen for, from the same rounds:
+- Occlusion queries answer a fixed 1000 samples, so flares draw at about 1/80
+  strength (§34). Do not compare flare-lit regions against default Xenia.
+- A DTA `set` on `{rnd get_selected_postproc}` does not persist on either side
+  (above). Use a scratch override proc for any post-proc A/B.
