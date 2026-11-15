@@ -1779,7 +1779,12 @@ class. They are not tested.
 - **`MILO_WIDTH=1920 MILO_HEIGHT=1080` is broken for DC3.** The world renders
   into a 1280x720 rectangle at the top left. The round-8 survey ran at 720p.
 - **An out-of-range `(lights_real i)` crashes Xenia, and SIGSEGVs native DTA
-  eval.** Probe only the indices that exist.
+  eval.** The cause is generic. `PropSync(ObjPtrList<T>&, ...)`
+  (dc3 `src/system/obj/PropSync_p.h`) advances the list iterator `prop->Int(i)`
+  times with no bound, then dereferences it. The asserts there (0x154, 0x15E)
+  do not check the index, so the debug original has nothing to catch this, and
+  crashes the same way under Xenia. Not fixed: the code matches the original.
+  Probe only the indices that exist.
 - `(tex_xfm m x x)` asserts in PropSync: a Matrix3 path needs its last element.
   Use the named paths instead: `x`, `y`, `z`, `x_scale`, `y_scale`, `z_scale`,
   `pitch`, `roll`, `yaw`.
@@ -1804,7 +1809,7 @@ lighting dominates.
 
 | candidate | evidence (4x crops) | verdict |
 |---|---|---|
-| 8-bit banding in dark gradients | dclive far, dark region: native 1060 distinct colours vs Xenia 1576; line bands are visible | proposed: zero-mean dither in the world pass, before the 8-bit store, so text and HUD are untouched |
+| 8-bit banding in dark gradients | **Dissolved: no gap and no banding.** (1) The 1060 vs 1576 distinct-colour count measured hue spread, not precision. Per channel, native has as many levels or more (blue 97 vs 81; red 51 vs 94 because Xenia's red spans 3–96 against native's 0–64). (2) The lines in the 4x crop are dclive's own post scanlines, at the same amplitude on both sides: row period 2.2 px, 1.35 vs 1.33 blue LSB. They are gone post-off on both sides. (3) The original renders the world into A8R8G8B8 EDRAM (`CreateBackBuffers`, Rnd_Xbox.cpp, 2x MSAA) and resolves into A8R8G8B8 pre/post buffers, so it is 8-bit end to end, like native's surface-format scene target. A wider target would not be a parity fix, and the post lane's composite dither already covers the final 8-bit write | cut (round 8, with the coordinator) |
 | per-pixel lighting for vertex-lit materials (faceting, Mach bands) | metamaterial cleared and `per_pixel_lit` set where a material has no normal or spec map. dclive, throneroom, streetside: no visible change. houseparty: +12% mean luma, and 27% of pixels move by more than 8 (floor and stair stripes) | cut: breaks the luma rule |
 | specular aliasing | streetside and houseparty near shots: no shimmer difference against Xenia; the visible difference is floor-texture sharpness | cut |
 | projected shadow resolution and filtering | native already uses a 512² tile with 9 taps, against retail's 256² with two 5-tap blurs. Edges are equally soft, and the shadow is a blob by design | cut |
