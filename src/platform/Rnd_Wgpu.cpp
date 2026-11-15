@@ -11,6 +11,7 @@
 #include "gfx/FrameCapture.h"
 #include "audio/AudioDevice.h"
 #include "gfx/GpuDevice.h"
+#include "gfx/PipelineCount.h"
 #include "gfx/PipelineManager.h"
 #include "platform/LookProfile.h"
 #include "gfx/Screenshot.h"
@@ -455,6 +456,16 @@ void WgpuRnd::InitGpuResources() {
     if constexpr (rndshape::kRetailPostChain || rndshape::kDC3RetailPost) {
         mSpotBeamRenderer.drop = getenv("MILO_NO_SPOT_BEAMS") != nullptr;
         SetNativeSpotBeamRenderer(&mSpotBeamRenderer);
+    }
+
+    // DC3: the passes whose pipelines have fixed keys compile them now
+    // (PrewarmFixedKeyPipelines), not on the first venue frame.
+    if constexpr (rndshape::kDC3RetailPost) {
+        const auto t0 = std::chrono::steady_clock::now();
+        const uint64_t n = PrewarmFixedKeyPipelines();
+        printf("WgpuRnd: prewarmed %llu fixed-key pipelines in %.1f ms\n", (unsigned long long)n,
+               std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0)
+                   .count());
     }
 
     // Native port: disable Xbox 360 safe area shrink (TVs need overscan
@@ -1065,10 +1076,9 @@ bool WgpuRnd::SubmitSpotBeams(const NativeSpotBeamFrame& frame, const NativeSpot
         if (!mesh) continue;
         SpotBeamPass::Draw d;
         if (!SpotBeamPass::BeamConstants(b, c, d.k)) continue;
-        // The shaft is unnamed but only changes through Sync (Spotlight::
-        // Generate's BuildNG*, RndMesh::Copy); EnsureMeshUploaded would take it
-        // for a glyph page and re-upload it every frame.
-        if (!EnsureSyncedMeshUploaded(mesh)) continue;
+        // The shaft only changes through Sync (Spotlight::Generate's BuildNG*,
+        // RndMesh::Copy), so this uploads it once (section 36.6).
+        if (!EnsureMeshUploaded(mesh)) continue;
         GpuMeshData* m = GetMeshGpuData(mesh);
         if (!m || !m->uploaded || m->numIndices <= 0) continue;
         for (int j = 0; j < 12; j++) d.meshXfm[j] = b.meshXfm[j];
@@ -2828,6 +2838,22 @@ void WgpuRnd::FlushUniformRings() {
     mBoneRing.Flush(mGpu.Queue());
 }
 
+// The depth of field, spot beam, point-test and shadow caster pipelines: their
+// keys are fixed once the device is up -- the post intermediate is the surface
+// format, the scene depth Depth24PlusStencil8 x kMSAASamples, the caster map
+// Depth32Float, and the beams have none. Left to first use, all of them
+// compiled on DC3's first venue frame (docs/native/dc3-backend-for-rb3-wii.md
+// section 38.2). Returns the pipelines it created: 0 once they exist with the
+// keys the frame will ask for.
+uint64_t WgpuRnd::PrewarmFixedKeyPipelines() {
+    const uint64_t before = GpuPipelineCreateCount();
+    mShadowPass.PrewarmCasters(mGpu);
+    if (kMSAASamples >= 2) mPostProcPass.PrewarmDof(mGpu.SurfaceFormat(), mGpu);
+    mSpotBeamPass.Prewarm(mGpu);
+    mPointTestPass.Prewarm(wgpu::TextureFormat::Depth24PlusStencil8, kMSAASamples, mGpu);
+    return GpuPipelineCreateCount() - before;
+}
+
 // MILO_GPU_COUNTERS=N: one line every N frames (default 600) with the live
 // cached bind groups and the uniform rings, so growth across songs shows.
 void WgpuRnd::LogGpuCounters() {
@@ -2842,8 +2868,8 @@ void WgpuRnd::LogGpuCounters() {
     fprintf(stderr,
             "[GPUCOUNT] frame=%d bindGroupsLive=%zu bgCreated=%llu bgHits=%llu bgEvicted=%llu "
             "bgUncached=%llu ringBuffers=4 ringBytes=%u ringGrows=%u/%u/%u/%u "
-            "ringQueueWrites=%llu ringQueueBytes=%llu pipelines=%d gpuMeshes=%zu meshUploads=%llu "
-            "gpuTextures=%zu texCreates=%llu "
+            "ringQueueWrites=%llu ringQueueBytes=%llu pipelines=%d pipelineCreates=%llu gpuMeshes=%zu meshUploads=%llu "
+            "gpuTextures=%zu texHolders=%zu texCreates=%llu texShares=%llu "
             "postBgLive=%zu postBgCreated=%llu postBgHits=%llu postBgEvicted=%llu postBgUncached=%llu "
             "ptBatches=%d ptCreated=%llu ptInFlight=%d\n",
             (int)mFrameID, mBindGroupCache.Size(),
@@ -2853,14 +2879,28 @@ void WgpuRnd::LogGpuCounters() {
             (unsigned long long)mBindGroupCache.Uncached(), capacity, mSceneRing.Grows(),
             mMaterialRing.Grows(), mObjectRing.Grows(), mBoneRing.Grows(),
             (unsigned long long)writes, (unsigned long long)bytes,
-            mPipelines.CachedPipelineCount(), GpuMeshCount(),
-            (unsigned long long)GpuMeshUploadCount(), GpuTexCount(),
+            mPipelines.CachedPipelineCount(),
+            (unsigned long long)GpuPipelineCreateCount(), GpuMeshCount(),
+            (unsigned long long)GpuMeshUploadCount(), GpuTexCount(), GpuTexHolderCount(),
             (unsigned long long)GetGpuTexDebugInfo(nullptr).createCount,
+            (unsigned long long)GpuTexShareCount(),
             mPostBindGroupCache.Size(), (unsigned long long)mPostBindGroupCache.Creates(),
             (unsigned long long)mPostBindGroupCache.Hits(),
             (unsigned long long)mPostBindGroupCache.Evictions(),
             (unsigned long long)mPostBindGroupCache.Uncached(), mPointTestPass.Batches(),
             (unsigned long long)mPointTestPass.ResourceCreates(), mPointTestPass.InFlight());
+    // The pipelines created since the last line, by label: a compile mid-song is
+    // a hitch, and this says which one it was.
+    const std::vector<std::string> created = TakeRecentPipelineLabels();
+    if (!created.empty()) {
+        std::string names;
+        for (const std::string& n : created) {
+            if (!names.empty()) names += ", ";
+            names += n;
+        }
+        fprintf(stderr, "[GPUPIPE] frame=%d created=%zu: %s\n", (int)mFrameID, created.size(),
+                names.c_str());
+    }
 }
 
 #ifdef HX_IMGUI

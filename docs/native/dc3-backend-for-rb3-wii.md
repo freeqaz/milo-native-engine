@@ -7146,6 +7146,10 @@ rollerrink rising to ~4.1 ms with the beams and ~2.9 ms with
 - **Not fixed, a lead.** DC3's text meshes are unnamed glyph pages and are
   still re-uploaded every frame, ~5.7 per frame in rollerrink gameplay. `UploadMesh` is ~1.3% of
   main-thread cycles here.
+- **Superseded by section 38.1 (2026-11-15).** The cache is now sync-gated
+  for every mesh. `EnsureSyncedMeshUploaded` is folded back into
+  `EnsureMeshUploaded`, and `SubmitSpotBeams` calls that again. The beam
+  test and its numbers are unchanged.
 
 ## 37. DC3 post chain, round 6: throneroom against Xenia, and depth of field (lane np-gfx-post, 2026-11-14)
 
@@ -8106,3 +8110,319 @@ region):
   strength (§34). Do not compare flare-lit regions against default Xenia.
 - A DTA `set` on `{rnd get_selected_postproc}` does not persist on either side
   (above). Use a scratch override proc for any post-proc A/B.
+
+## 38. Per-frame costs, round 2: glyph pages, first-song-frame pipelines, texture creates (lane np-gfx spotperf, branch np-framecost, 2026-11-15)
+
+The target is a GPD handheld (Radeon 890M, RADV). It is CPU-bound at about
+3–4 ms of main-thread time per frame, and there a buffer create or release
+appears to cost about 25 times what it costs on this box (RTX 3090). So
+this section counts uploads and creates per frame; milliseconds measured
+here would not transfer.
+
+### 38.1 RndText glyph pages were re-uploaded every frame
+
+- **Cause (MEASURED).** `UploadMesh` (`MeshGpuCache.cpp`) took every
+  unnamed mesh for an RndText glyph page and re-read it on every call: an
+  unpack, a new vertex buffer and a new index buffer, both written, and the
+  old pair released. The rule dates from 2026-03 (dc3 `2b00768c9`). That is
+  older than the Sync wiring.
+- **What RndText does per frame.** Nothing to its pages' vertices:
+  - The vertices are written only when the text is rebuilt:
+    `ConstructMeshes` → `FontMap::CleanupSyncMeshes` →
+    `RndMesh::Sync(page.mSyncFlags)`. FontMap3d does the same. A text's
+    rebuild syncs all of that text's pages.
+  - A scroll or a marquee (`UpdateScrolling`, the offset copies in
+    `DrawMesh`) moves only the page transform.
+  - `Sync` reaches this cache in every consumer that uses it. In dc3,
+    `src/system/rndobj/Mesh.cpp` `OnSync` calls `InvalidateGpuMesh` under
+    `HX_NATIVE`. rb3-xenon's `rb3-render` links the engine's weak `OnSync`,
+    because its own body is `#ifndef HX_NATIVE` and the `milo_link_stubs`
+    stub is retired under `RB3_ENGINE_RENDER`. rb3 (RB3-Wii shape) draws
+    through `RB3MeshCache`, which has its own sync-dirty flag, and never
+    reaches this code.
+- **Audit (MEASURED, TMPDIAG, not shipped).** Each re-read the old rule
+  forced was hashed against the mesh's last upload: position, normal,
+  colour, UV, bone data and indices. Tangents were left out, since only a
+  first upload computes MikkTSpace. One headless run of
+  `scripts/native_cpu_profile.py` covered the main menu, song select, YMCA
+  gameplay and its results.
+  - 1.54M forced re-reads were spread over 50 unnamed-mesh kinds: 47 glyph
+    page labels, two HamRibbon trails and one unnamed material-less mesh.
+  - **0** of them found geometry that differed from the last upload.
+  - rb3-xenon `rb3-render` (11 scenes, 4 frames each) had no forced re-read
+    at all.
+- **Fix.** `UploadMesh` uploads a mesh once, and again only after
+  `InvalidateGpuMesh`, named or not. `EnsureSyncedMeshUploaded` (36.6) is
+  folded back into `EnsureMeshUploaded`.
+- **Writing into the existing buffers instead (not done).** The coordinator
+  asked for this if text genuinely rewrites its vertices every frame. It does
+  not. With scoring running (`DC3_POSE_SELFTEST=1`), the HUD's score counter
+  and flashcard names re-sync on change, about once every 100 frames:
+  gameplay re-uploads 0.01 meshes per frame after the fix. The one mesh pair
+  that is synced every frame anywhere is song select's
+  `bg_fill_up.mesh`/`bg_fill_down.mesh`. Those are named, 6 vertices each,
+  and synced every frame by their owner; that is the 2.00 per frame below.
+  An in-place `WriteBuffer` would be correct only if the mesh had not
+  already been drawn in the open frame, because the write lands before the
+  frame's submit. That is a lead, not done.
+- **Counters (MEASURED).** `[GPUCOUNT] meshUploads=` per frame. Two runs
+  each of base (round-1 head) and fix, on the same tree: rollerrink, YMCA,
+  `DC3_POSE_SELFTEST=1` (the score moves), a 10 s window on song select
+  (cursor on YMCA), 30 s of gameplay, 10 s on results. The two runs of each
+  binary agree to the second decimal.
+
+  | | song select | gameplay | results |
+  |---|---|---|---|
+  | base | 111.00 | 9.46 | 25.00 |
+  | fix | 2.00 | 0.01 | 0.00 |
+
+  Every upload creates two buffers and releases two, so song select drops
+  from ~444 buffer creates and releases a frame to 8.
+- **Rendering identical (MEASURED, in one process).** TMPDIAG build:
+  - A flag file freezes the game, so the main loop skips its poll and keeps
+    drawing.
+  - A second flag file switches the old per-call re-read back on.
+  - At each point the grabs are new1, new2 | old1, old2 | new3, with
+    `DC3_DISPLAY_GAMMA=off`.
+  - The seven points: song select ×2, gameplay ×3 (rollerrink, score
+    525,624 and climbing, flashcard names, FLAWLESS), and results ×2.
+
+  The old path's windows re-upload 109, 13, 13, 12 and 25 per frame, while
+  the new path's re-upload 0.00. **Every pair at every point is
+  byte-identical:** 0 differing pixels for new/new, old/old, new→old,
+  old→new and new1/new3.
+- **Guard.** dc3 `TextFrameCostTest.UnchangedTextUploadsNothingAfterItsFirstFrame`
+  (`native/tests/test_text_frame_cost.cpp`) draws three real-font RndTexts
+  for 10 frames, moves one, changes another's string, and draws two more
+  frames. Uploads per frame are `3 0 0 0 0 0 0 0 0 0 0 1 0`, with no
+  texture creates.
+  - Sabotage, the per-call re-read restored: `3 3 3 …`, so it fails.
+  - Sabotage, `InvalidateGpuMesh` dropped from dc3's `OnSync`: the changed
+    string uploads 0. It fails, and so does `SpotBeamFrameCostTest`'s
+    synced-beam check.
+
+### 38.2 Pipelines compiled on the first venue frame, and during the song
+
+- **Counter.** `[GPUCOUNT]` (`MILO_GPU_COUNTERS=N`) gains
+  `pipelineCreates=`: every `CreateRenderPipeline` in the engine, 26 call
+  sites, now goes through `CreateCountedRenderPipeline`
+  (`src/gfx/PipelineCount.h`). The old `pipelines=` field counts only
+  PipelineManager's cache, so it never saw a pass's own pipelines. Each
+  `[GPUCOUNT]` line is followed by `[GPUPIPE] frame=N created=K: …`, naming
+  each pipeline created since the last line with its compile time. An
+  unlabelled descriptor is named `vs:<entry>/fs:<entry>`. PipelineManager's
+  label now carries its whole key (`MainStatic shader=18 blend=3 z=1 …`).
+- **What the first venue frame compiled (MEASURED).** A full rollerrink song,
+  headless, `DC3_POSE_SELFTEST=1`. F0 is the frame that builds the venue
+  (the first frame after the song is confirmed whose draw is over 150 ms).
+  - F0 compiled 19 pipelines. F0+1 compiled 11 more and took 315 ms: the
+    seven spot-beam pipelines, the three depth-of-field ones and one
+    MainStatic. F0 itself had the point-test pair and the shadow caster
+    pair.
+  - Those 14 are owned by `DofPass`, `SpotBeamPass`, `PointTestPass` and
+    `ShadowPass`, each compiled on first use. Their keys do not depend on
+    content: the post intermediate is the surface format, the scene depth is
+    `Depth24PlusStencil8` × `kMSAASamples`, the caster map is `Depth32Float`,
+    and the beams have no key at all.
+- **Fix.** `WgpuRnd::PrewarmFixedKeyPipelines()` compiles the 14 at the end
+  of `WgpuRnd::InitGpuResources`, in the DC3 shape only (`rndshape::kDC3RetailPost`).
+  It returns how many it created, so a second call measures whether the
+  first was right. That is what found the bug below.
+- **Headless SurfaceFormat was wrong until the first frame.** `GpuDevice`'s
+  `mSurfaceFormat` stayed at its `BGRA8Unorm` default until the first
+  `AcquireHeadlessFrame` set `RGBA8Unorm`. A warm at Init therefore built the
+  depth-of-field pipelines for the wrong format, and they were compiled again
+  on first use. `GpuDevice::Init`'s headless branch now sets `RGBA8Unorm`.
+  The RB3 backend already special-cased `IsHeadless()` around this. Its
+  code is unchanged; its comment now says the format is right from Init.
+- **Before/after (MEASURED, same binary, same base).** TMPDIAG: a flag file
+  skips the Init warm. Two full songs each way, interleaved, the frames F0..F0+120:
+
+  | run | pipelines compiled F0 … F0+120 | of them pass pipelines | init warm |
+  |---|---|---|---|
+  | warm, run a | 17 | 3 | 14 in 101 ms |
+  | warm, run b | 17 | 3 | 14 in 23 ms |
+  | no warm, run a | 31 | 17 | — |
+  | no warm, run b | 31 | 17 | — |
+
+  The 3 pass pipelines that remain are `fs_2d` (two variants) and
+  `fs_particle`, 2–9 ms each. The other 14 are MainStatic/MainSkinned
+  material pipelines (below).
+  - Before the fix, the round-1 head put 11 of the pass pipelines on F0+1
+    (315 ms). Without the warm, on the same binary, they land on F0 or F0+1
+    depending on the run.
+  - **Milliseconds on this box are noise here.** The four runs shared the
+    machine with other lanes (load average ~24). One material pipeline took
+    16 ms in one run and 150–220 ms in the next. So the counts are the
+    result.
+  - On a quiet device the warm moves ~20–35 ms of compile from the first
+    venue frame to init (the passes' own compile times: 12–17 ms with the
+    warm against 25–37 ms without it, in the window). The init warm itself
+    took 23 ms (101 ms under load).
+  - On the handheld, the counts are what transfer.
+  - **Web (dc3-web release, headless Chromium, WebGPU over ANGLE/Vulkan).**
+    The same warm runs at Init. It costs **0.9–1.3 ms** of main-thread time
+    in two boots. `createRenderPipeline` returns at once in the browser, and
+    the compile happens in the GPU process. Init runs after the async adapter
+    request, about 25 ms before the first screen. Chrome's violation reports
+    (CDP `Log.startViolationsReport`: long tasks over 50 ms, blocked
+    events) carried none, and no console warning mentions a pipeline.
+    So the web build keeps the warm and is not gated. This box did not test
+    whether that instrument can fire, so "none" means none reported.
+
+- **What still compiles on the venue frame and mid-song (MEASURED, not
+  fixed).** F0 itself still compiles 14–15 material pipelines
+  (`MainStatic`/`MainSkinned`, shader 18, 15–60 ms each here on a quiet
+  box). The song adds about 24 more after F0. Every one of those is a
+  PipelineManager material pipeline, except `fs_particle` and `fs_2d`
+  (2–4 ms). They come in bursts: 7 at once on one frame about 1,400 frames
+  into the song (the first time a group of
+  materials is drawn, ~150–300 ms), 2 at ~2,000 frames, singles until the
+  results screen. Their keys depend on material state (blend, z mode, cull,
+  cutout, alpha write, coverage, sample count), so they cannot be warmed
+  from a fixed list. Leads, in order of value:
+  - a key census at venue load: walk the venue's materials, compute each
+    one's key the way `MaterialSetup` does, and compile them during the
+    load in chunks (`PipelineManager::PreWarmStep` already exists for RB3);
+  - Dawn's blob cache (`dawn::platform::CachingInterface`), so a second
+    launch skips the WGSL→SPIR-V translation;
+  - `CreateRenderPipelineAsync`, drawing nothing with the material until it
+    is ready (changes a frame's pixels, so it needs a ruling).
+  On the GPD, RADV's own disk cache already saves the driver half of the
+  cost from the second launch on; the translation half is paid every launch.
+- **Guard.** dc3 `FixedKeyPipelinesTest.AreCompiledAtInitForTheKeysTheFrameUses`
+  (`native/tests/test_fixed_key_pipelines.cpp`): after one frame,
+  `PrewarmFixedKeyPipelines()` creates 0.
+  - Sabotage, the Init warm skipped: the ask creates 14.
+  - Sabotage, the headless format fix removed: the ask creates 3 (the
+    depth of field's).
+  - A frame that draws beams is not reachable from the test harness
+    (`SpotBeamFrameCostTest`'s frames draw 0 beams, because the DC3
+    composite does not run there). So the beam half is checked by asking,
+    not by drawing.
+- **rb3 and rb3-xenon.** `PrewarmFixedKeyPipelines` is called only under
+  `rndshape::kDC3RetailPost`, so neither consumer runs it. The headless
+  `SurfaceFormat()` change does reach them: `BandRnd` already forced RGBA8
+  headless, and rb3-xenon's `rb3-render` frames are identical (see the
+  lane report for the consumer run).
+
+### 38.3 Texture creates during the song
+
+- **What creates them (MEASURED, TMPDIAG).** One log line per create, with
+  whether the RndTex already had a texture. Over a whole song,
+  **every** create after the venue load was a first draw: no RndTex ever
+  re-created its own texture (`replaced=0` on all of them). DC3's
+  `MaterialSetup` calls `PresyncBitmap` when a texture is first drawn,
+  whereas the original creates it at load (`DxTex::SyncBitmap`); native
+  `SyncBitmap` does nothing. So a song creates every texture it loaded but
+  did not draw until later:
+  - venue and HUD textures first drawn mid-song: the `concentric01`–`25`
+    flipbook (one every 10 frames), `phrase_bullseye`/`shockwave`,
+    `star_wipe`/`star_matte`, `shock_ring_*`, `eq_peakdisplay`,
+    `sideclap_ymca`, the `EagleLightHeavy` font, `count_flashcard`;
+  - the flashcard pool, four instances of one object: `flashcard_default`,
+    `bg_pink`, `bg_spec`, `light`, `charged_xl_icon`, `captured_fx`;
+  - the results screen's directories (`frames_*`, `rtframes_*`,
+    `diamond`/`emerald`, `winner`, `cluster_tab`);
+  - a few created again after a free of the same name: the results and
+    transition directories are unloaded and loaded again, and the new
+    RndTex is a new object.
+  None of them is a per-frame render target, a movie frame or a viseme
+  texture; those are render targets (`EnsureRenderTargetData`) and were
+  never in this count.
+- **Many were byte-identical twins.** A flashcard, a results row and a
+  dancer's eyes and teeth are copies of one object, each with its own
+  copy of the same pixels, and each became its own texture.
+- **Fix.** `PresyncBitmap` keys a kRegular bitmap texture by everything
+  `CreateFromBitmap` is given or reads, and a twin shares the texture and its
+  view.
+  - **The key.** The RndTex type, the format `MapBitmapFormat` picks, the
+    `numMips` and level cap passed in, and then size, bpp, order and every
+    level's bytes and palette (the whole chain, not only the levels the cap
+    uploads). It is a 64-bit FNV-1a hash.
+  - **A hit is confirmed** against the reference holder: the same inputs,
+    the same bytes, and the reference holder must still hold the bitmap it
+    uploaded (same pixel pointer and fingerprint). A collision costs a
+    create, never a wrong texture.
+  - **Anything that one day changes what `CreateFromBitmap` is given per
+    texture** (a per-class level cap, say) has to join `UploadInputs`. The
+    comment in `Tex_Wgpu.cpp` says so.
+  - **The look profile (np-sharp-look, merged here at engine main 7e75fcb).**
+    The level cap is now `milo::Look().bitmapMipLevels`: 2 under Retail and
+    Native, the whole chain under Enhanced. That is one value for the
+    process, and it is in the key anyway. The text/HUD clamp to two levels
+    is not a property of the texture. It is the draw's sampler
+    (`ApplyLookSampling` sets `lodMaxClamp`), and samplers are bound per
+    draw. So a glyph page and a world texture with the same bytes share one
+    texture and still each sample the way their class does. Cube maps (now
+    their whole chain) live in their own map and never share.
+- **Why sharing cannot change a picture.**
+  - Only kRegular textures share, and never one that is or was a render
+    target.
+  - A bitmap texture is `TextureBinding | CopyDst`, and nothing writes it
+    after it is created. Render targets have their own texture
+    (`EnsureRenderTargetData`, which also lets go of a shared one), and
+    `UploadRGBAToRndTex` writes only those. Movie frames are not in this
+    path.
+  - A holder whose bitmap changes is re-created and lets go of the entry.
+    It never writes into it, so its twins keep their pixels.
+  - The view is the default view. Samplers are per material.
+- **Lifetime.** Entries are refcounted. The view leaves the bind-group cache
+  only when the last holder lets go, and when the reference holder goes
+  another holder takes its place.
+  - `[GPUCOUNT] gpuTextures=` now counts distinct live GPU textures: a
+    shared one counts once.
+  - `texHolders=` counts the RndTexes holding one, and `texShares=` counts
+    the uploads that shared.
+- **Counts (MEASURED, one rollerrink song each).**
+
+  | | boot | song select | venue frame F0 | F0+1 … results | whole run |
+  |---|---|---|---|---|---|
+  | before | 147 | 41 | 144 | 250 | 597 |
+  | sharing | 93 | 37 | 129 | 129 | 402 |
+
+  - 195 uploads shared a texture.
+  - F0+1 … results is about 174 s, so the rate goes from ~29 to ~15
+    creates per 20 s.
+  - At the end, 330 distinct textures back 514 holders (514 textures
+    before).
+  - Validation errors: 0.
+  - Restricting sharing to kRegular changed none of these numbers.
+- **Cost of the hash (MEASURED, TMPDIAG timers).** Over a whole run,
+  hashing and comparing take 10–15 ms (at most 0.66 ms per texture, for
+  the 1 MB font atlas). `CreateFromBitmap` takes 51–79 ms over the same
+  run. On the venue-build frame the hash takes ~2 ms, against 20–50 ms of
+  creates, in a 350–760 ms frame.
+  - That is below 1% of the venue load, and less than the creates it
+    saves.
+  - Hashing lazily (only once a second texture of the same shape exists)
+    would remove most of it. That is not done.
+- **Rendering identical (MEASURED, in one process).** The TMPDIAG build
+  froze the game and used a flag file that marks every texture for
+  re-creation and turns sharing off (and, removed, on again).
+  - Each "unshared" window re-created 76–168 textures unshared. Each
+    "shared" window that followed shared 8–76 again.
+  - The seven points: song select ×2, gameplay ×3, and results ×2.
+  - **0 differing pixels** for every pairing at every point.
+- **What is left, and leads.** The remaining ~129 song creates are textures
+  drawn for the first time. Creating them at load, as the original does,
+  would remove them from the song. But it would also create the textures a
+  song loads and never draws, which costs GPU memory on mobile web. That
+  is a lead, not done. On this box a frame whose only extra work is a
+  texture create costs little (median 3.07 ms against 2.66 ms; about 70 ms
+  over a whole song).
+- **Guard.** dc3 `TexShareTest` (`native/tests/test_tex_share.cpp`).
+  `ByteIdenticalBitmapsShareOneTexture`: a twin shares, one differing byte
+  creates, the first holder's delete keeps the twin's texture and a later
+  twin still finds it, a holder whose bitmap changes gets its own, and the
+  last holder's delete removes the entry. `AHolderWhoseBitmapChangesLeavesItsTwinsPixelsAlone`
+  reads the twin's texture back from the GPU (CopySrc via
+  `TextureConvert::SetBitmapTexturesCopyableForTests`) after its partner
+  re-syncs with different pixels. That is checked both ways round: the
+  reference holder changing, and the other holder changing.
+  `OnlyRegularTexturesShare`: a kRegularLinear twin gets its own.
+  - Sabotage, the hit disabled: red.
+  - Sabotage, the owner hand-off removed: red.
+  - Sabotage, write-through (the re-synced holder copies its new pixels
+    into the shared texture): the twin's read-back changes, red.
+  - Sabotage, the type check and the type in the key removed: red.

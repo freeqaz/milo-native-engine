@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <cstring>
 #include <map>
+#include "gfx/PipelineCount.h"
 
 class RenderPipelineCache {
 public:
@@ -52,7 +53,7 @@ public:
         // A bound, so a caller with an unexpectedly wide key space (a float
         // constant per material, say) costs memory no worse than this.
         if (mPipelines.size() >= kMaxEntries) mPipelines.clear();
-        wgpu::RenderPipeline pipe = dev.CreateRenderPipeline(&desc);
+        wgpu::RenderPipeline pipe = CreateCountedRenderPipeline(dev, &desc);
         mPipelines.emplace(key, pipe);
         ++mCreates;
         return pipe;
