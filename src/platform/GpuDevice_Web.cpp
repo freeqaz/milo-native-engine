@@ -224,6 +224,8 @@ bool GpuDevice::ShouldClose() const { return false; }
 // The browser has no headless mode; requestAnimationFrame paces the frames.
 void GpuDevice::EndHeadlessFrame() {}
 
+bool GpuDevice::IsWindowFocused() const { return true; }
+
 void GpuDevice::PollEvents() {
     if (mInstance) mInstance.ProcessEvents();
 }

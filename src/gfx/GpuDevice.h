@@ -245,6 +245,8 @@ public:
     // Window queries
     bool ShouldClose() const;
     void PollEvents();
+    // Whether the window has input focus. True with no window (headless, web).
+    bool IsWindowFocused() const;
     int WindowWidth() const { return mWidth; }
     int WindowHeight() const { return mHeight; }
     // The size a frame leaves the renderer at (readback, presentation's

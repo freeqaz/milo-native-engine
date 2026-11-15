@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include "audio/BackgroundMute.h"
+
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -124,6 +126,12 @@ public:
     // Called from miniaudio callback thread (desktop) or PumpAudio (web)
     void MixSources(float *output, int frameCount);
 
+    // Desktop, main thread, once per frame of a windowed game: the frame clock
+    // and focus state BackgroundMute decides from (audio/BackgroundMute.h).
+    // Never called headless or on the web, where nothing is muted.
+    void NoteMainLoopFrame(bool windowFocused);
+    bool IsBackgroundMuted() const { return mBackgroundMute.IsMuted(); }
+
 #ifdef __EMSCRIPTEN__
     // Web only: called each frame from main loop to push mixed audio
     // into the SharedArrayBuffer ring buffer for the AudioWorklet
@@ -159,6 +167,13 @@ private:
     std::vector<float> mMixBuffer;
 
     std::atomic<bool> mSuspended{false};
+
+    // Background mute: the decision, and the gain the audio thread ramps
+    // towards it (1 = playing, 0 = silent).
+    BackgroundMute mBackgroundMute;
+    float mBackgroundGain = 1.0f;
+    bool mBackgroundMuteReported = false; // main thread only
+    void ApplyBackgroundMute(float *output, int frameCount);
 
     // One-pole stereo-linked peak-limiter gain-reduction envelope (1.0 = no
     // reduction). Persists across audio callbacks so the release is continuous.
