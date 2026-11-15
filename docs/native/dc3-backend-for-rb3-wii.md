@@ -9591,6 +9591,19 @@ every comparison is between two binaries built from the same tree.
     replace it with `goto_screen`, keeping `game_screen` at the bottom. So
     the end of the song, the run-up to results and results itself get the
     scaled slice. Boot, the menus and the loading screens never do.
+  - **Which screens count, read from the running engine** (cap 120, the
+    slice read back through `set_loader_period`): main menu 10 ms;
+    practice's tutorial shell (`tutorial_practice_screen_0` at the bottom)
+    14 ms, the image's; practice `game_screen` 5 ms; practice paused
+    (`practice_pause_screen` pushed over `game_screen`) 5 ms; unpaused 5 ms;
+    main menu again 10 ms; perform `game_screen` 5 ms; perform paused 5 ms.
+    So pause keeps the scaled slice (nothing loads there in practice), and
+    practice's welcome and tutorial screens keep the image's value.
+  - **No pacer target, no scaling.** With `DC3_FPS_CAP=0`, or headless with
+    no cap (the default there, and how `PerformCrowdTest` and the headless
+    boots run), the pacer has no target and the slice is the image's value
+    on every screen, gameplay included. The same screens read 10 ms (14 on
+    the tutorial shell). The DTA flow tests are *paced*, at 240.
   - The value is set through the image's own setter
     (`LoadMgr::SetLoaderPeriod`) before each frame's poll, from
     `native/src/platform/LoaderBudget_Native.cpp`, called from
@@ -9611,7 +9624,13 @@ every comparison is between two binaries built from the same tree.
   | `loading_screen` → `game_screen` (song select → game) | −0.007 s | −0.026 s | 3 of 6 |
   | `perform_endgame_screen` → `perform_final_results_screen` (game → results) | **+0.070 s** | +0.064 s | **6 of 6** |
 
-  - **Game → results is slower** by 0.03–0.09 s (6.83–6.87 → 6.89–6.93 s).
+  - **Game → results is slower** by 0.03–0.09 s (6.83–6.87 → 6.89–6.93 s),
+    in 6 of 6 pairs. **This is a stated trade, not a pass**: the
+    acceptance term "no load gets slower" was waived for game → results
+    only, by the coordinator, because +0.07 s (about 12 frames at 120) on a
+    transition that already takes over a second is below what a player
+    notices, while the run-up and song-end frames it removes are visible
+    hitches with dancers on screen.
     Nearly all of it is the last step, `perform_endgame` →
     `perform_final_results`: the results load at 5 ms a frame takes about
     12 more frames (160–162 → 171–175). The final results screen waits for
@@ -9646,18 +9665,33 @@ every comparison is between two binaries built from the same tree.
     boot at 120, 60 and uncapped logs only the image's value (10 or 14).
   - `LoaderBudgetGameplayTest` (default gate, ~13 s each): the running
     engine's LoadMgr, read through `set_loader_period`, holds 10 ms in the
-    main menu, 5 ms in gameplay at a 120 target (10 ms at 60), and 10 ms
-    again after `goto_screen main_screen`.
+    main menu, 5 ms in gameplay at a 120 target (10 ms at 60, 10 ms
+    unpaced), and 10 ms again after `goto_screen main_screen`. The unpaced
+    run (`TheImagesShareUnpaced`) also requires every loader-budget line to
+    be the no-target line at 10 or 14 ms.
   - Sabotage, each red: gameplay not scaled; scaled everywhere (boot test,
     the 120 test's main-menu read); the applied value not restored on
     leaving gameplay; the slice scaled again every frame; the wrong screen
-    as "gameplay" (both gameplay tests).
+    as "gameplay" (both gameplay tests). Two unpaced leaks: no target scaled
+    as if 120 (`TheImagesShareUnpaced` reads 5 ms in gameplay, plus three
+    unit tests); the target setter storing 120 for "none"
+    (`TheImagesShareUnpaced` and the headless boot test).
 
 ### 41.2 Per-frame getenv (dc3 PLAN H-110 item 2)
 
 - **Count.** A `--wrap=getenv` build (temporary, not committed) counted
-  getenv calls by caller. Before: 931.6 a frame in a song, 192.8 in song
-  select, 555.7 on results. After: TBD-AFTER.
+  getenv calls by caller (one boot-to-results run each side):
+
+  | phase | before | after |
+  |---|---|---|
+  | main menu | 28.5 a frame | 2.0 |
+  | song select | 192.8 | 3.2 |
+  | song | 931.9 | 2.4 |
+  | results | 555.7 | 2.4 |
+
+  What is left in a song: `DC3_POSE_REACQUIRE_MS` and `DC3_POSE_HOLD_MS`
+  at 1 a frame each, `DC3_ROOT_DIAG`, `DC3_CAM_DIAG`, `DC3_IK_DIAG2` and
+  `DC3_KNEE_LOCAL` at 0.1, `DC3_NATIVE_SCORING` at 0.02.
 - **Cached (read once, `static const`, all `HX_NATIVE` or engine code):**
   - `DC3_IK_DIAG`: `CharBones::ScaleAdd` 473 a frame, `CharBonesMeshes::PoseMeshes`
     357, `Dc3KneeLog` 26, `HamIKEffector::Poll` 15, `CharIKFoot::DoFSM`,
@@ -9681,16 +9715,20 @@ every comparison is between two binaries built from the same tree.
     scoring logs (`DC3_REAL_MOVE_PASSED`, `MOVE_*_LOG`, `SCORING_DEBUG`),
     `DETECTFRAC_PROBE`, `PassiveMessenger`.
 - **Share of main-thread samples** (`perf record -e cpu-clock`, 30 s of the
-  song from 40 s, 2 runs each): TBD-PERF.
+  song from 40 s, 2 runs each, under the shared lock with another lane's
+  gate running): getenv and its callees were 0.62% and 0.62% of the main
+  thread's samples before (28K and 21K samples), 0.03% and 0.03% after (18K
+  and 21K).
 - **No behaviour change.** The registry census is unchanged (461 flags,
   same names and read modes). The 12 Xbox objects of the touched files are
   byte-identical before and after, and a negative control changed the hash.
 
 ### 41.3 Not done
 
-- The game → results cost of 41.1 (+0.07 s). The alternative that keeps
-  game → results as it is would leave the run-up's frames at 12–23 ms:
-  the slice could be the image's while a win or results screen is on top of
-  `game_screen`, so that only the song itself is scaled.
+- The game → results cost of 41.1 (+0.07 s, 6 of 6) stays, as the stated
+  trade. The variant that would keep results load time scales only while
+  `game_screen` is also the *top* screen (the image's value while a win or
+  results screen is pushed over it). It would leave the run-up to results
+  at 12–23 ms a frame, the hitch this round set out to remove.
 - First-draw textures, the 76 warmed-but-undrawn keys and the late rect
   warm are out of scope for this round.
