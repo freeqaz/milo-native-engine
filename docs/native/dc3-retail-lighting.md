@@ -108,7 +108,8 @@ light, and the retail path never read it.
 3. `dc3ProjLight` (standard_wgsl.inc) takes nine compare taps 1.5 texels of
    256 apart with (1 2 1)² weights. That approximates the two 5-tap passes
    (σ 1.06 vs 1.14 texels, INFERRED-equivalent), and the shader applies the
-   factor to the box term.
+   factor to the box term. (Item 11, §14: to the box term *and the point
+   lights*; with point lights the shipped permutation scales their sum.)
 4. The generic `ShadowPass::Render` pre-pass no longer runs for DC3
    (`rndshape::kGenericShadowPass`).
 5. (Round 3.) Every projected light with shadow objects gets a map, as on
@@ -166,8 +167,8 @@ coverage (`round2/shadows/proj_footprint_falsecolour.png`) shows the lead
 dancer's, the right dancer's and the boombox's footprints on the cardboard
 and the road. The integration tree's frame has them as well
 (`round2/shadows/shadow_int_vs_dbg.png`). On the dark road they are faint,
-because the factor scales only the box term (`1 − 0.75 s`), never the
-ambient, as in retail.
+because the factor scales the diffuse light (`1 − 0.75 s`), never the
+ambient, as in retail. (Before item 11 native scaled only the box term; §14.)
 
 **Not done.**
 
@@ -1848,3 +1849,145 @@ came out of it. They apply to any native-vs-Xenia census, lighting included:
    the term's formula on both sides. Contrast matched k·x + off to 0.03
    levels on both, and saturation and the full grade matched to ≤ 0.3. Tool:
    `p3c/tools/xfer3c.py`.
+
+## 14. Item 11: dancer floor shadows against Xenia (np-shadow)
+
+Lane archive: dc3-decomp `archive/np-gfx-2026-11-14/lanes/sharp/item11/`
+(`step2/` the first measurement, `step3/` this section). Method, both sides
+paused at song second 20 of omg, the same forced shot, post off
+(`rnd toggle_all_postprocs`), native at `DC3_DISPLAY_GAMMA=off`. The shadow
+is the frame with casters minus the frame after `clear (shadow_objects)` on
+the shadow light, in luma. Mask = pixels darkened by more than 8.7 (the 3.4%
+floor). Ratio = mean luma inside the mask with casters over without. Tool:
+`step3/tools/shcmp.py`.
+
+### 14.1 Casters: Character::DrawLod's occlusion rule
+
+Retail's `RenderShadows` draws each shadow object with `DrawShowing` in
+`kDrawOcclusion`. For a `Character` that is `DrawLod`'s occlusion branch.
+It draws nothing unless `floor_shadow` is set and the draw mode has the opaque
+bit. Otherwise it calls `DrawLodOrShadow(lod, 4)`: the character's `shadow`
+group if it holds anything, else `DrawOpaque`, which is the character's own
+drawables plus the current LOD's opaque group. Native used to expand every
+mesh under the character: all LODs, the shadow meshes on top of the body,
+hidden props and translucent groups. Native now follows retail
+(`DC3SceneLighting.cpp` `AddOcclusionDraw`, behind the rndshape seam). Two
+exceptions:
+
+- rb3-xenon's character has a different shape, so the rule compiles out
+  there (`kDC3RetailModelFor`).
+- The draw's own camera-frustum cull is not reproduced.
+
+Test: `RetailLightingTest.CharacterCastsWhatDrawLodDraws`.
+
+### 14.2 Caster skinning: the wedges
+
+The map was read back on the GPU (an experiment hook, not committed). On
+throneroom the dancers' legs were in place, but every upper body was
+smeared into a wedge reaching toward one point. That point is where the
+world origin projects. The cause was `ShadowPass`'s skinned caster shader.
+It summed `bone * p * w` without normalizing the weights, while the main
+pass divides by their sum (`normalizeBoneWeights`). The `*_lod` shadow-group
+meshes, which item 14.1 made the casters, are drawn by no other pass. Their
+weights do not sum to one, so their vertices were pulled toward the origin.
+`RenderCasters` now uses `vs_caster_skinned`, which normalizes and binds an
+all-zero set to the first bone. rb3-xenon's generic `vs_shadow_skinned` is
+unchanged. Tests: `ProjShadowCasterPassTest.SkinnedCasterWeightsAreNormalized`
+and `ProjShadowCasterPassTest.SkinnedCasterWithNoWeightsFollowsItsFirstBone`.
+
+The throneroom cone is the longest of the venues: range 1000, top/bottom
+100/300, so a slope of 0.2. Its virtual apex sits at yL = −500, behind the
+light. The cone was *not* the problem. At the dancers (yL ≈ 205) the cone
+is ~282 units across. That is 0.9 retail texels per unit (1.8 on native's
+512 tile). The blur's 1.5/256 step is ~1.65 units. The map is a coverage
+map, so depth precision does not enter. After the fix the tile shows four
+clean silhouettes (`step3/tile_tr_before_after.png`). With 14.1 alone, the
+wedges were still there.
+
+### 14.3 The shadow scales the point lights too
+
+Even with a clean map, the throneroom floor shadow drew at about a third of
+retail's depth. The relative darkening per channel in the dancers' shadow
+was Xenia 0.175 / 0.174 / 0.232 against native 0.053 / 0.078 / 0.114. The
+floor's colour without the shadow matched within 1 level on both. The
+floor is lit mostly by point lights: hiding the type-0 lights takes the
+red channel from 80 to 27. standard.ps `0000110010030011` is the multiply
+form with one point light (`scripts/gpu/xenos_ucode/dis.sh`). It puts the
+point term into the same register as the six box faces (lines 22-33), then
+multiplies the sum by `c0 (1 − 0.75 s c69 sat(c65 · N))` (lines 15-25, 34),
+and only then adds `c1 c0`. Native scaled the box term only.
+`retailPixelShade` now scales `retailDiffuseLight` (box and points). The
+vertex-lit fallback already did. No shipped skin or hair permutation has a
+projected light (385 projected permutations, 0 with a custom variation), so
+`dc3SkinLight`/`dc3HairLight` were left alone. Test:
+`RetailCharShadingTest.ProjectedShadowScalesTheWholeDiffuseLight`.
+
+### 14.4 Against Xenia, after the three fixes
+
+Mask px native/Xenia, and ratio (Xenia / native). Rows marked *boombox* have
+the dancers hidden; that is the clean comparison, because the dancers' poses
+differ between the two runs (native's performer is not Xenia's input).
+
+| venue / shot | before (step 2) | after | ratio after |
+|---|---|---|---|
+| rollerrink far | 1.25 | 1.01 | 0.729 / 0.713 |
+| rollerrink near | 1.46 | 1.04 | 0.748 / 0.739 |
+| rollerrink cu02 | 1.36 | 1.02 | 0.772 / 0.741 |
+| rollerrink cu02, boombox | 1.32 | 1.32 | 0.838 / 0.821 |
+| streetside far | 1.11 | 1.07 | 0.614 / 0.579 |
+| streetside near | | 0.88 | 0.613 / 0.565 |
+| streetside, boombox | 0.88 | 0.95 | 0.591 / 0.587 |
+| throneroom far | 0.00 | 0.88 | 0.749 / 0.757 |
+| throneroom near | 0.00 | 0.87 | 0.773 / 0.815 |
+| throneroom, boombox | none | 0.84 | 0.825 / 0.835 |
+| houseparty far / near | | 1.01 / 0.78 | 0.626 / 0.618, 0.624 / 0.617 |
+| glitterati far / near | | 0.96 / 0.88 | 0.664 / 0.678, 0.644 / 0.675 |
+| dclive far / near | | 1.69 / 1.33 | 0.884 / 0.867, 0.873 / 0.855 |
+| dci far / near | | no shadow on either side | |
+
+**Open.**
+
+- Streetside's *dancer* shadows now read darker than Xenia's (0.579 vs
+  0.614). The boombox alone matches (0.587 vs 0.591), and the poses differ
+  (the native dancers have their arms out). So this is not a darkness
+  error that can be measured with this protocol.
+- Rollerrink's boombox is still 1.32× Xenia's area. That venue's light is
+  the additive gobo form (blend 0), which 14.3 does not touch.
+- dclive's shadows sit under the same feet in the same shape. They are
+  larger and darker, and in the Xenia frame the dancers' arm shadows are
+  cut where the gobo pool ends (`step3/dclive_far_crop.png`). This is a
+  lead, not a finding: §10.1 matched dclive's shadow depth within 2.4 luma
+  on a matched pose.
+
+### 14.5 A larger shadow map does not draw a cleaner edge (not shipped)
+
+Item 11 (c) asked whether a map sized to the output looks cleaner in the
+enhanced look. It was measured on rollerrink cu02 (the dancers' shadows and
+the boombox) at 1920x1080 and 3840x2160. Atlas sizes 512, 1024 (the
+shipped size), 2048 and 4096 give tiles of 256 (retail's size), 512, 1024
+and 2048. The binary was an experiment build (`SHX_MAPSIZE`; the tap
+clamp taken from the texture's size). It is not committed. Mask px and
+edge width are per 720p-equivalent pixel. Edge = pixels darkened by
+10–90% of the full depth, divided by the mask's border length.
+
+| output | tile | mask px | ratio | edge px |
+|---|---|---|---|---|
+| 1080 | 256 | 30375 | 0.762 | 9.39 |
+| 1080 | 512 | 29285 | 0.743 | 9.35 |
+| 1080 | 1024 | 29626 | 0.741 | 8.95 |
+| 1080 | 2048 | 28826 | 0.738 | 8.67 |
+| 2160 | 256 | 28615 | 0.740 | 8.71 |
+| 2160 | 512 | 29153 | 0.741 | 8.28 |
+| 2160 | 1024 | 28359 | 0.737 | 8.13 |
+| 2160 | 2048 | 28589 | 0.738 | 7.73 |
+
+The dancers' poses differ by a few frames from run to run (the pause lands
+within ±50 ms), so mask px varies by up to 5% between runs (28359–30375 over all eight, with no trend in size).
+Shape and darkness stay within that. The edge narrows by at most 0.8 px at
+720p scale. In the 3× zoomed crops of a shoe's shadow and of the boombox
+(lane archive `step3/mapsize/`), the four sizes cannot be told apart.
+Taps and blur are fixed in light space (1.5/256 of the tile, as retail's
+two 5-tap passes over a 256 map). So a finer map samples the same penumbra
+more finely; it does not narrow it. Narrowing it would go past the
+original's edge, which item 11 rules out. The map stays at 1024 (512
+tiles) in both looks.

@@ -1367,8 +1367,14 @@ fn retailPixelShade(p: RetailPixel, base: vec3f, ambientTerm: vec3f, proj: Dc3Pr
         }
         return base * c.diffuse + c.spec;
     }
-    var diffuse = base * (ao.x * ambientTerm + retailDiffuseLight(worldPos, N, ao) +
-                          (proj.mult - vec3f(1.0)) * ao.x * boxLightSample(N) + proj.add);
+    // A projected_blend 1 light scales the whole diffuse light, point lights
+    // included, never the ambient: standard.ps 0000110010030011 (one point
+    // light) accumulates the point term and the six box faces into one
+    // register and multiplies that by c0 (1 - 0.75 s c69 sat(c65 . N)), then
+    // adds c1 c0. Throneroom's floor is lit mostly by point lights, so scaling
+    // only the box term left its dancer shadows at a third of their depth.
+    var diffuse = base * (ao.x * ambientTerm + retailDiffuseLight(worldPos, N, ao) * proj.mult +
+                          proj.add);
 
     var spec = vec3f(0.0);
     if (retailHasSpecular()) {
