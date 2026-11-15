@@ -153,7 +153,7 @@ bool GpuDevice::Init(const GpuDeviceDesc& desc) {
                         mWebRowCap = WebOutputRowCap(mSizeDesc, mHasBCCompression);
                         mRowCap = mWebRowCap.rows;
                         char capText[96];
-                        printf("[look] web output follows the canvas, cap %s\n",
+                        printf("[look] web output follows the canvas, %s\n",
                                DescribeRowCap(mWebRowCap, capText, sizeof(capText)));
                         int tw = 0, th = 0;
                         if (!CanvasTargetSize(tw, th)) {
