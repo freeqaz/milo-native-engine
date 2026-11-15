@@ -12,6 +12,7 @@
 #include "gfx/PresentScale.h"
 
 #ifndef __EMSCRIPTEN__
+#include "gfx/PipelineDiskCache.h"
 struct GLFWwindow;
 #endif
 
@@ -359,6 +360,11 @@ public:
     // The adapter reported itself a discrete GPU (render scale's default).
     bool IsDiscreteGpu() const { return mDiscreteGpu; }
     bool IsHeadless() const { return mHeadless; }
+#ifndef __EMSCRIPTEN__
+    // Dawn's persistent blob cache (gfx/PipelineDiskCache.h); IsOpen() false
+    // when it is off. The web build has none: the browser caches.
+    const PipelineDiskCache& PipelineCache() const { return mPipelineCache; }
+#endif
 #ifdef __EMSCRIPTEN__
     // The backing-store size of the consumer's canvas (MILO_WEB_CANVAS_SELECTOR,
     // which only TUs compiled into the consumer's web target see, so callers in
@@ -394,6 +400,10 @@ private:
     bool mNullBackend = false;
     bool mDiscreteGpu = false;
 #ifndef __EMSCRIPTEN__
+    PipelineDiskCache mPipelineCache;
+    std::string mPipelineCacheIsolation;  // Dawn keeps a view of it
+    uint32_t mAdapterVendorId = 0, mAdapterDeviceId = 0;
+    std::string mAdapterDescription;
     GLFWwindow* mWindow = nullptr;
     void (*mPrevKeyCallback)(GLFWwindow*, int, int, int, int) = nullptr;
     bool mFullscreenToggleRequested = false;

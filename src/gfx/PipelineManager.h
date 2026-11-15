@@ -2,6 +2,7 @@
 
 #include <webgpu/webgpu_cpp.h>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <cstdint>
 
@@ -102,6 +103,12 @@ bool BlendSkipsFringeFade(int blend);
 
 class PipelineManager {
 public:
+    PipelineManager() = default;
+    PipelineManager(const PipelineManager&) = delete;
+    PipelineManager& operator=(const PipelineManager&) = delete;
+    ~PipelineManager() {
+        for (auto& entry : mWarmPending) ReleasePending(entry.second);
+    }
     void Init(GpuDevice* device);
 
     // Get or create pipeline for the given state combination
@@ -138,6 +145,39 @@ public:
                     int maxThisCall, float budgetMs = 0.f);
     bool PreWarmDone() const { return mPreWarmStarted && mPreWarmCursor >= (int)mPreWarmKeys.size(); }
 
+    // Load-time warm (dc3 PLAN H-104; engine doc section 39). WarmAsync queues
+    // `key` to be compiled before anything draws with it; PollWarms (WgpuRnd
+    // calls it once a frame) issues at most kWarmIssuePerFrame of the queue
+    // and takes in the ones that finished. Each is a CreateRenderPipelineAsync,
+    // so the frame -- a loading screen -- keeps moving: natively compiled on
+    // Dawn's worker threads, on the web by the browser's GPU process off its
+    // present path (a plain create there is cheap on the page's thread but
+    // compiled before the GPU process presents again: 8 a frame held a web
+    // loading frame for 416 ms). A draw that asks for a key still in flight
+    // waits for it in GetPipeline natively; the web cannot wait, so it creates
+    // that same key there and the late async result is dropped. Either way it
+    // never skips, and never draws with another pipeline; one still queued is
+    // created there as before. False when the key already exists, or is
+    // queued or in flight.
+    static constexpr int kWarmIssuePerFrame = 8;
+    bool WarmAsync(const PipelineKey& key);
+    void PollWarms();
+    size_t WarmsOutstanding() const { return mWarmQueue.size() + mWarmPending.size(); }
+    struct WarmStats {
+        uint64_t queued = 0;      // WarmAsync calls that queued a key
+        uint64_t finished = 0;    // compiled and in the cache
+        uint64_t failed = 0;      // async create reported an error (then made at draw)
+        uint64_t waited = 0;      // draws that waited for one in flight
+        double waitMs = 0.0;      // ... for this long, on the drawing thread
+        uint64_t takenEarly = 0;  // draws that found theirs still queued (created there)
+        uint64_t drawn = 0;       // warmed keys a draw has asked for since
+    };
+    const WarmStats& GetWarmStats() const { return mWarmStats; }
+    // Async creates whose entry has not yet been deleted, across every
+    // PipelineManager: in flight, done but not yet taken in, or abandoned and
+    // waiting for their callback. For the lifetime tests.
+    static int LivePendingWarms() { return LiveCount(); }
+
     // Bind group layouts (shared across all pipelines)
     wgpu::BindGroupLayout& SceneLayout() { return mLayouts[0]; }    // Group 0
     wgpu::BindGroupLayout& MaterialLayout() { return mLayouts[1]; } // Group 1
@@ -154,6 +194,7 @@ public:
 
     // Release all GPU objects (call before device shutdown)
     void Terminate() {
+        DrainWarms();
         mPipelineCache.clear();
         mShaderCache.clear();
         mPipelineLayout = nullptr;
@@ -216,7 +257,41 @@ public:
     }
 
 private:
+    struct DescStorage;
+    void BuildDescriptor(const PipelineKey& key, DescStorage& st);
     wgpu::RenderPipeline CreatePipeline(const PipelineKey& key);
+    // One async create in flight. mWarmPending owns it until its entry goes;
+    // ReleasePending then deletes it if the callback has run, or marks it
+    // abandoned and the callback deletes it when it runs (a web drain cannot
+    // wait). Callbacks run only in this thread's ProcessEvents / WaitAny
+    // (CallbackMode::AllowProcessEvents), so the two never race. Not a
+    // shared_ptr: make_shared's control block calls type_info::operator==,
+    // which libstdc++ declares out of line under -fms-compatibility and does
+    // not export, so rb3-xenon (which builds the engine that way) cannot link.
+    struct PendingWarm {
+        PendingWarm() { ++LiveCount(); }
+        ~PendingWarm() { --LiveCount(); }
+        PendingWarm(const PendingWarm&) = delete;
+        PendingWarm& operator=(const PendingWarm&) = delete;
+        wgpu::Future future{};
+        wgpu::RenderPipeline result;
+        bool done = false;
+        bool ok = false;
+        bool abandoned = false;
+    };
+    // Same thread as the callbacks (see above), so a plain count.
+    static int& LiveCount() {
+        static int n = 0;
+        return n;
+    }
+    static void ReleasePending(PendingWarm* pw);
+    void FinishWarm(const PipelineKey& key, PendingWarm& pw);
+    void DrainWarms();  // natively waits out every async create first
+    std::vector<PipelineKey> mWarmQueue;
+    std::unordered_set<PipelineKey, PipelineKeyHash> mWarmQueued;  // mWarmQueue's members
+    std::unordered_map<PipelineKey, PendingWarm*, PipelineKeyHash> mWarmPending;
+    std::unordered_set<PipelineKey, PipelineKeyHash> mWarmedUndrawn;  // made by a warm, not yet asked for
+    WarmStats mWarmStats;
     wgpu::ShaderModule GetOrCreateShader(uint32_t shaderType);
     wgpu::DepthStencilState MapDepthStencil(WgpuZMode z, WgpuStencil s);
     wgpu::CullMode MapCull(WgpuCull cull);

@@ -18,6 +18,7 @@
 #include "gfx/UniformRingBuffer.h"
 #include "gfx/BindGroupCache.h"
 #include "platform/rndshape/RndShape.h"
+#include "platform/MeshPipelineKey.h"
 #include "platform/PointTestHook.h"
 #include "platform/SpotBeamHook.h"
 #include "platform/TexBlendHook.h"
@@ -145,6 +146,25 @@ public:
     wgpu::TextureFormat CurrentTargetFormat() const { return mCurrentTargetFormat; }
     uint32_t CurrentSampleCount() const { return mCurrentSampleCount; }
     bool CurrentPassHasDepth() const { return mCurrentPassHasDepth; }
+    // The pass states a mesh can be drawn in, for a warm that runs outside any
+    // pass (MeshPipelineKey.h): the world (BeginFramePass), the HUD overlay
+    // (BeginOverlayPass), and a render target (the TexturePass) with or
+    // without depth.
+    MeshPassContext WorldPassContext(bool reflection) const;
+    MeshPassContext OverlayPassContext() const;
+    MeshPassContext TexturePassContext(bool depth) const;
+    // Compile now the pipeline DrawRect asks for with `mat` in `ctx` (a
+    // load-time warm, DrawRect2D::Warm). Returns the pipelines created.
+    int WarmRectPipelines(RndMat* mat, const MeshPassContext& ctx) {
+        return mDrawRect2D.Warm(mGpu, mPipelines, mat, ctx.targetFormat, ctx.hasDepth,
+                                ctx.toTexture, ctx.sampleCount);
+    }
+    // ... for a rect drawn with scratch material state (`blend`, textured or
+    // not) into a target with no depth (DrawRect2D::Warm's second form).
+    int WarmRectPipelines(WgpuBlend blend, bool hasTex, const MeshPassContext& ctx) {
+        return mDrawRect2D.Warm(mGpu, mPipelines, blend, hasTex, ctx.targetFormat, ctx.toTexture,
+                                ctx.sampleCount);
+    }
     // GetViewport() in the current frame target's pixels (render scale).
     Viewport FrameViewport(const Viewport& v) const;
     // The frame has left its world (FlushPostProcessingForOverlay ran): what
@@ -546,11 +566,15 @@ public:
     // test answers; `pt_age` is how many frames after its tests were recorded
     // the oldest answer delivered this frame arrived; `pt_end_wait` and
     // `pt_after_submit` are the time and answers of FinishPointTestReadback.
+    // `pipe_ms`, `tex_ms`, `mesh_ms`: time this frame spent creating render
+    // pipelines, creating bitmap textures and uploading meshes
+    // (gfx/FrameCost.h), all threads.
     void WriteFrameTimes();
     FILE* mFrameTimes = nullptr;
     double mFrameTimesBegin = 0.0;    // wall s, BeginDrawing
     double mFrameTimesLastEnd = 0.0;  // wall s, previous EndDrawing
     double mFrameTimesLastCpu = 0.0;  // thread CPU s, previous EndDrawing
+    uint64_t mFrameTimesLastCostNs[3] = {0, 0, 0}; // framecost::Nanos at the previous row
     double mPointTestWaitMs = 0.0;
     double mPointTestEndWaitMs = 0.0;  // in FinishPointTestReadback
     int mPointTestAfterSubmit = 0;     // answers it delivered

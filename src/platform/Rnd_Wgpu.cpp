@@ -12,6 +12,7 @@
 #include "audio/AudioDevice.h"
 #include "gfx/GpuDevice.h"
 #include "gfx/PipelineCount.h"
+#include "gfx/FrameCost.h"
 #include "gfx/PipelineManager.h"
 #include "platform/LookProfile.h"
 #include "gfx/Screenshot.h"
@@ -452,7 +453,7 @@ void WgpuRnd::InitGpuResources() {
         if (mFrameTimes)
             fprintf(mFrameTimes,
                     "frame,period_ms,cpu_ms,draw_ms,pt_wait_ms,pt_recorded,pt_answers,pt_age,"
-                    "pt_end_wait_ms,pt_after_submit,pt_standin\n");
+                    "pt_end_wait_ms,pt_after_submit,pt_standin,pipe_ms,tex_ms,mesh_ms\n");
     }
 
     // Compose RndTexBlender outputs (TexBlendHook.h).
@@ -775,6 +776,32 @@ void WgpuRnd::ClearDepthForOverlay() {
 // the flush. The DC3 attract movie (MoviePanel draws after the flush; the
 // blacklight panel's EndWorld then ran SavePreBuffer) was drawn and then wiped
 // every frame on web, and the whole frame went black on desktop.
+MeshPassContext WgpuRnd::WorldPassContext(bool reflection) const {
+    MeshPassContext c;  // as BeginFramePass sets the pass state
+    c.targetFormat = mGpu.SurfaceFormat();
+    c.sampleCount = kMSAASamples;
+    c.hasDepth = true;
+    c.reflection = reflection;
+    return c;
+}
+
+MeshPassContext WgpuRnd::OverlayPassContext() const {
+    MeshPassContext c;  // as BeginOverlayPass does
+    c.targetFormat = mGpu.SurfaceFormat();
+    c.sampleCount = 1;
+    c.hasDepth = false;
+    return c;
+}
+
+MeshPassContext WgpuRnd::TexturePassContext(bool depth) const {
+    MeshPassContext c;  // as the TexturePass does, for a colour target
+    c.targetFormat = ChooseRenderTargetFormat(nullptr);
+    c.sampleCount = 1;
+    c.hasDepth = depth;
+    c.toTexture = true;
+    return c;
+}
+
 void WgpuRnd::BeginOverlayPass() {
     int curW = mGpu.WindowWidth();
     int curH = mGpu.WindowHeight();
@@ -1747,6 +1774,9 @@ void WgpuRnd::BeginDrawing() {
     mFrameInOverlay = false;
     mWorldPostDone = false;
     mPreSavedThisFrame = false;
+    // Load-time pipeline warm (PipelineManager::WarmAsync): take in what
+    // finished, issue the next few. Nothing queued: one empty check.
+    if (mPipelines.WarmsOutstanding()) mPipelines.PollWarms();
 
     // Frame capture: set target frame via MILO_CAPTURE_FRAME env var
     {
@@ -2148,11 +2178,17 @@ void WgpuRnd::WriteFrameTimes() {
     if (!mFrameTimes) return;
     const double now = PerfNow(), cpu = ThreadCpuNow();
     if (mFrameTimesLastEnd > 0.0) {
-        fprintf(mFrameTimes, "%d,%.3f,%.3f,%.3f,%.3f,%d,%d,%d,%.3f,%d,%d\n", (int)mFrameID,
+        double costMs[3];
+        for (int k = 0; k < 3; k++) {
+            const uint64_t n = framecost::Nanos((framecost::Kind)k).load();
+            costMs[k] = (double)(n - mFrameTimesLastCostNs[k]) / 1e6;
+            mFrameTimesLastCostNs[k] = n;
+        }
+        fprintf(mFrameTimes, "%d,%.3f,%.3f,%.3f,%.3f,%d,%d,%d,%.3f,%d,%d,%.3f,%.3f,%.3f\n", (int)mFrameID,
                 (now - mFrameTimesLastEnd) * 1000.0, (cpu - mFrameTimesLastCpu) * 1000.0,
                 (now - mFrameTimesBegin) * 1000.0, mPointTestWaitMs, mPointTestsRecorded,
                 mPointTestAnswers, mPointTestAgeMax, mPointTestEndWaitMs, mPointTestAfterSubmit,
-                mPointTestStandInsFrame);
+                mPointTestStandInsFrame, costMs[0], costMs[1], costMs[2]);
         fflush(mFrameTimes);
     }
     mFrameTimesLastEnd = now;
@@ -2902,7 +2938,7 @@ void WgpuRnd::LogGpuCounters() {
     fprintf(stderr,
             "[GPUCOUNT] frame=%d bindGroupsLive=%zu bgCreated=%llu bgHits=%llu bgEvicted=%llu "
             "bgUncached=%llu ringBuffers=4 ringBytes=%u ringGrows=%u/%u/%u/%u "
-            "ringQueueWrites=%llu ringQueueBytes=%llu pipelines=%d pipelineCreates=%llu gpuMeshes=%zu meshUploads=%llu "
+            "ringQueueWrites=%llu ringQueueBytes=%llu pipelines=%d pipelineCreates=%llu pipelineLoadCreates=%llu pipelineWarms=%llu warmsDrawn=%llu pipelineWaits=%llu gpuMeshes=%zu meshUploads=%llu "
             "gpuTextures=%zu texHolders=%zu texCreates=%llu texShares=%llu "
             "postBgLive=%zu postBgCreated=%llu postBgHits=%llu postBgEvicted=%llu postBgUncached=%llu "
             "ptBatches=%d ptCreated=%llu ptInFlight=%d\n",
@@ -2914,7 +2950,12 @@ void WgpuRnd::LogGpuCounters() {
             mMaterialRing.Grows(), mObjectRing.Grows(), mBoneRing.Grows(),
             (unsigned long long)writes, (unsigned long long)bytes,
             mPipelines.CachedPipelineCount(),
-            (unsigned long long)GpuPipelineCreateCount(), GpuMeshCount(),
+            (unsigned long long)GpuPipelineCreateCount(),
+            (unsigned long long)GpuPipelineLoadCreateCount(),
+            (unsigned long long)GpuPipelineWarmCount(),
+            (unsigned long long)mPipelines.GetWarmStats().drawn,
+            (unsigned long long)GpuPipelineWaitCount(),
+            GpuMeshCount(),
             (unsigned long long)GpuMeshUploadCount(), GpuTexCount(), GpuTexHolderCount(),
             (unsigned long long)GetGpuTexDebugInfo(nullptr).createCount,
             (unsigned long long)GpuTexShareCount(),
@@ -2935,6 +2976,18 @@ void WgpuRnd::LogGpuCounters() {
         fprintf(stderr, "[GPUPIPE] frame=%d created=%zu: %s\n", (int)mFrameID, created.size(),
                 names.c_str());
     }
+#ifndef __EMSCRIPTEN__
+    if (mGpu.PipelineCache().IsOpen()) {
+        const PipelineDiskCache::Stats c = mGpu.PipelineCache().GetStats();
+        fprintf(stderr,
+                "[PIPECACHE] frame=%d hits=%llu misses=%llu rejected=%llu stores=%llu "
+                "storeSkipped=%llu bytesRead=%llu bytesWritten=%llu evicted=%llu\n",
+                (int)mFrameID, (unsigned long long)c.hits, (unsigned long long)c.misses,
+                (unsigned long long)c.rejected, (unsigned long long)c.stores,
+                (unsigned long long)c.storeSkipped, (unsigned long long)c.bytesRead,
+                (unsigned long long)c.bytesWritten, (unsigned long long)c.evicted);
+    }
+#endif
 }
 
 #ifdef HX_IMGUI
