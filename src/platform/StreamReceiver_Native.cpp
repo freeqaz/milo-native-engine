@@ -2,6 +2,7 @@
 // Bridges engine's StreamReceiver protocol to AudioDevice output.
 
 #include "platform/StreamReceiver_Native.h"
+#include "platform/ImagePan_Native.h"
 
 #include <cstring>
 #include <algorithm>
@@ -246,8 +247,10 @@ int StreamReceiverNative::RenderAudio(float *output, int frameCount) {
     int bufSamples = kPCMBufSize / 2;
     int readPos = (pc / 2) % bufSamples;
 
-    float volL = mVolume * std::max(0.0f, 1.0f - mPan);
-    float volR = mVolume * std::max(0.0f, 1.0f + mPan);
+    // The image's pan law (one mono voice per stream channel), folded to
+    // stereo with the game's downmix: see ImagePan_Native.h.
+    float volL, volR;
+    ImagePan::Mono(mVolume, mPan, volL, volR);
 #ifdef HX_WEB
     mLastPeak = 0.0f;
 #endif
