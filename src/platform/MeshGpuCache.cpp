@@ -82,6 +82,9 @@ void ClearMeshGpuCache() {
 
 size_t GpuMeshCount() { return sMeshGpuData.size(); }
 
+static uint64_t sMeshUploads = 0;
+uint64_t GpuMeshUploadCount() { return sMeshUploads; }
+
 void SetMeshDebugLabel(RndMesh* mesh, const char* label) {
     sMeshGpuData[mesh].debugLabel = label;
 }
@@ -246,10 +249,13 @@ static void ComputeMikkTangents(void* verts, const uint16_t* indices,
 // Helper: Upload mesh vertex/index data to GPU
 // ============================================================================
 
-bool EnsureMeshUploaded(RndMesh* mesh) {
+// reuploadUnnamed: an unnamed mesh is taken for an RndText glyph page and
+// re-read on every call (EnsureMeshUploaded); EnsureSyncedMeshUploaded's
+// callers know theirs is not one, so only a sync invalidates it.
+static bool UploadMesh(RndMesh* mesh, bool reuploadUnnamed) {
     if (!gWgpuRnd) return false;
 
-    bool isTextMesh = !mesh->Name()[0];
+    bool isTextMesh = reuploadUnnamed && !mesh->Name()[0];
     auto it = sMeshGpuData.find(mesh);
     if (it != sMeshGpuData.end() && it->second.uploaded && !isTextMesh) {
         return true;
@@ -387,5 +393,10 @@ bool EnsureMeshUploaded(RndMesh* mesh) {
     data.numVertices = unpacked;
     data.skinned = skinned;
     data.uploaded = true;
+    sMeshUploads++;
     return true;
 }
+
+bool EnsureMeshUploaded(RndMesh* mesh) { return UploadMesh(mesh, true); }
+
+bool EnsureSyncedMeshUploaded(RndMesh* mesh) { return UploadMesh(mesh, false); }
