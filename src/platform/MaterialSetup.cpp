@@ -520,9 +520,16 @@ MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh, const UiDraw
         break;
     }
 
-    // Map sampler -- always repeat for tiled texture maps
+    // Map sampler -- always repeat for tiled texture maps, except where the
+    // shape's material clamps its maps with its tex_wrap as it does its
+    // diffuse (rndshape::kMapsFollowTexWrap; a detail normal or rim map,
+    // which share this sampler, keeps it repeating).
     result.mapSamplerDesc.addressU = wgpu::AddressMode::Repeat;
     result.mapSamplerDesc.addressV = wgpu::AddressMode::Repeat;
+    if (rndshape::kMapsFollowTexWrap && !mat->GetNormDetailMap() && !mat->GetRimMap()) {
+        result.mapSamplerDesc.addressU = sampDesc.addressU;
+        result.mapSamplerDesc.addressV = sampDesc.addressV;
+    }
 
     // Look profile, per texture class (ApplyLookSampling).
     const bool uiClass = isTextMesh || isOverlayPass;

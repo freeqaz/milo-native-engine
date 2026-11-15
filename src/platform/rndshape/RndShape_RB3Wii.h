@@ -636,6 +636,9 @@ constexpr bool kAlphaBlendMax = true;
 // The standard shader's alpha fringe fade (PipelineManager::SetAlphaFringeFade):
 // kept for RB3, which renders as it did.
 constexpr bool kAlphaFringeFade = true;
+// The material's tex_wrap reaches the diffuse sampler only; the other maps
+// repeat (MaterialSetup's mapSamplerDesc). Kept for RB3, which renders as it did.
+constexpr bool kMapsFollowTexWrap = false;
 // The pseudo-HDR bloom mask (ShaderOptions bit 22): retail's standard.ps writes
 // a = dot(rgb, c7.rgb) for a material whose NgMat::AllowHDR() holds, drawn into
 // the main frame (CalcShaderOpts: !fadeOut && !offscreen && AllowHDR()); every

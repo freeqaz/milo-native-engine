@@ -735,6 +735,20 @@ constexpr bool kAlphaBlendMax = !kDC3RetailPost;
 // colour-mod band texels (H-6). dc3-decomp (kDC3RetailModel), both looks;
 // rb3-xenon keeps it.
 constexpr bool kAlphaFringeFade = !kDC3RetailModel;
+// The material's tex_wrap clamps its normal, specular and emissive maps as it
+// does its diffuse: NgMat::SetBasicState (Mat_NG.cpp) sets the same
+// sTexWrapClampModes[mTexWrap] on samplers 0 (diffuse), 6 (diffuse2),
+// 1 (normal), 2 (specular) and 3 (emissive); only the detail normal map
+// (sampler 14, SetRegularShaderConst) is set to wrap. Native sampled every map
+// but the diffuse through one always-repeat sampler (MaterialSetup's
+// mapSamplerDesc), so a clamped strip's emissive wrapped: streetside's peak
+// stage edge (streetside_peek_blue.mat, kTexWrapClamp, emissive stripe10.tex)
+// drew thin bright copies of its stripe above and below it that Xenia does not
+// have, which the alpha fringe fade above had been hiding (the clamped
+// diffuse's alpha is 0 there). A material with a detail normal or rim map
+// keeps the repeating map sampler (one sampler serves them all).
+// dc3-decomp (kDC3RetailModel) only; rb3-xenon keeps the repeating sampler.
+constexpr bool kMapsFollowTexWrap = kDC3RetailModel;
 // ---- end np-gfx-post ----
 // DC3 shades in gamma space, as the image does: no bitmap format DxRnd uses
 // carries a gamma sign (rnddx9/Rnd.cpp D3DFormatForBitmap: DXT1/3/5, DXN,
