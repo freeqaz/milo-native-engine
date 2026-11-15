@@ -8396,6 +8396,22 @@ absolute plain-arm bounds (wobble < 0.02 px, energy CV < 0.001); the relative
 bounds alone passed them. The target-position sabotage survived a 4 px
 letterbox (a multiple of the pattern's period); the test letterboxes 3 px.
 
+#### Web
+
+- **Formats and features.** The enhanced chain uses RGBA16Float colour targets:
+  rendered to, blended One+One (the combine) and sampled with linear filtering.
+  All three are core WebGPU for `rgba16float` (unlike `float32-filterable`), so
+  no optional feature or raised limit is needed. The fields stay on on web,
+  including under `?gpu_profile=mobile`/`bare`. The box dither writes only
+  RGBA8/BGRA8Unorm.
+- **Present dither on web.** The web build has no present-side `PresentScale`
+  (`mPresentScale` is a desktop member), so `GpuDevice::SetPresentDither` sets
+  only the readback's box filter there.
+- **Web build.** `scripts/web/build.sh --release` against this branch: exit 0.
+- **Sabotage.** The same call without the `__EMSCRIPTEN__` guard fails the web
+  compile: `use of undeclared identifier 'mPresentScale'`, exit 1. The desktop
+  gate cannot see this, because it does not build the web target.
+
 #### (d) Candidates not done, with costs
 
 Costs are INFERRED (bytes moved, and the per-pass cost measured above),
