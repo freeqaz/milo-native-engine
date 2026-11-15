@@ -183,6 +183,22 @@ bool ProjShadowCasterClip(L *l, float out[16]) {
         out[c * 4 + 2] = 0.0f;
         out[c * 4 + 3] = slope * yr[c] + (c == 3 ? top : 0.0f);
     }
+    // The image rasterises the casters with D3D9's pixel centres: the device
+    // leaves D3DRS_HALFPIXELOFFSET at 0 for every draw except DxRnd::DrawRect
+    // (and DrawRectDepth / the point test), which set it to 1 for the rect and
+    // back to 0. So texel i of the 256x256 target holds the caster at x = i,
+    // where the receivers' bilinear read puts texel i at i + 0.5: the map the
+    // receivers see is half a texel (+u, +v) from the geometry. BlurShadowRT's
+    // two passes are DrawRects, so they add nothing. WebGPU samples coverage
+    // at pixel centres, so the same map needs the geometry moved by half a
+    // 256-texel: +1/256 of w in x and -1/256 in y (clip y is up, v is down).
+    // MEASURED against Xenia (§15): streetside's boombox shadow centroid is
+    // 12 px off without it and 1 px with it.
+    const float halfTexel = 1.0f / 256.0f;   // 0.5 texel of 256, in clip units
+    for (int c = 0; c < 4; c++) {
+        out[c * 4 + 0] += halfTexel * out[c * 4 + 3];
+        out[c * 4 + 1] -= halfTexel * out[c * 4 + 3];
+    }
     return true;
 }
 
