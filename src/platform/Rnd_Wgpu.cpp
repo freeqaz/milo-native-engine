@@ -2,6 +2,8 @@
 // Replaces Rnd_Stub.cpp with real WebGPU rendering via Dawn
 
 #include "platform/Rnd_Wgpu.h"
+#include "gfx/BindGroupCount.h"
+#include "gfx/WgpuCallCount.h"
 #include "gfx/GpuTimers.h"
 #include "platform/MeshGpuCache.h"
 #include "platform/NativeSettings.h"
@@ -52,6 +54,9 @@
 #include <emscripten/html5.h>
 #endif
 
+#if defined(__linux__)
+#include <sys/resource.h>
+#endif
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -84,6 +89,20 @@ static double ThreadCpuNow() {
     if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) == 0) return ts.tv_sec + ts.tv_nsec * 1e-9;
 #endif
     return 0.0;
+}
+
+// This thread's voluntary and involuntary context switches so far (-1 where
+// the platform cannot say per thread).
+static void ThreadCtxSwitches(long out[2]) {
+#if defined(__linux__)
+    rusage ru;
+    if (getrusage(RUSAGE_THREAD, &ru) == 0) {
+        out[0] = ru.ru_nvcsw;
+        out[1] = ru.ru_nivcsw;
+        return;
+    }
+#endif
+    out[0] = out[1] = -1;
 }
 
 #ifdef MILO_RNDOBJ_SHAPE_HAS_NGRND
@@ -460,7 +479,11 @@ void WgpuRnd::InitGpuResources() {
         if (mFrameTimes)
             fprintf(mFrameTimes,
                     "frame,period_ms,cpu_ms,draw_ms,pt_wait_ms,pt_recorded,pt_answers,pt_age,"
-                    "pt_end_wait_ms,pt_after_submit,pt_standin,pipe_ms,tex_ms,mesh_ms\n");
+                    "pt_end_wait_ms,pt_after_submit,pt_standin,pipe_ms,tex_ms,mesh_ms,"
+                    "pipe_n,tex_n,mesh_n,bg_n,bg_ms,buf_n,buf_ms,gtex_n,gtex_ms,view_n,view_ms,"
+                    "acquire_ms,present_ms,file_n,file_ms,game_ms,game_cpu_ms,"
+                    "scene_bg_writes,scene_bg_creates,gpu_wait_ms,pace_ms,"
+                    "game_vcs,game_ivcs,draw_vcs,draw_ivcs\n");
     }
 
     // Compose RndTexBlender outputs (TexBlendHook.h).
@@ -1840,7 +1863,11 @@ void WgpuRnd::BeginDrawing() {
     if (mPerfEnabled) {
         mFrameStartTime = PerfNow();
     }
-    if (mFrameTimes) mFrameTimesBegin = PerfNow();
+    if (mFrameTimes) {
+        mFrameTimesBegin = PerfNow();
+        mFrameTimesBeginCpu = ThreadCpuNow();
+        ThreadCtxSwitches(mFrameTimesBeginCs);
+    }
 
     FrameCapture::Get().BeginFrame(mFrameID);
 
@@ -2189,22 +2216,51 @@ void WgpuRnd::EndDrawing() {
 void WgpuRnd::WriteFrameTimes() {
     if (!mFrameTimes) return;
     const double now = PerfNow(), cpu = ThreadCpuNow();
+    long cs[2];
+    ThreadCtxSwitches(cs);
     if (mFrameTimesLastEnd > 0.0) {
-        double costMs[3];
-        for (int k = 0; k < 3; k++) {
-            const uint64_t n = framecost::Nanos((framecost::Kind)k).load();
-            costMs[k] = (double)(n - mFrameTimesLastCostNs[k]) / 1e6;
-            mFrameTimesLastCostNs[k] = n;
+        double costMs[framecost::kKinds];
+        long long n[framecost::kKinds];
+        for (int k = 0; k < framecost::kKinds; k++) {
+            const uint64_t ns = framecost::Nanos((framecost::Kind)k).load();
+            const uint64_t c = framecost::Count((framecost::Kind)k).load();
+            costMs[k] = (double)(ns - mFrameTimesLastCostNs[k]) / 1e6;
+            n[k] = (long long)(c - mFrameTimesLastCount[k]);
+            mFrameTimesLastCostNs[k] = ns;
+            mFrameTimesLastCount[k] = c;
         }
-        fprintf(mFrameTimes, "%d,%.3f,%.3f,%.3f,%.3f,%d,%d,%d,%.3f,%d,%d,%.3f,%.3f,%.3f\n", (int)mFrameID,
-                (now - mFrameTimesLastEnd) * 1000.0, (cpu - mFrameTimesLastCpu) * 1000.0,
-                (now - mFrameTimesBegin) * 1000.0, mPointTestWaitMs, mPointTestsRecorded,
-                mPointTestAnswers, mPointTestAgeMax, mPointTestEndWaitMs, mPointTestAfterSubmit,
-                mPointTestStandInsFrame, costMs[0], costMs[1], costMs[2]);
+        if (!framecost::RawCallsCounted())
+            n[framecost::kBuffer] = n[framecost::kGpuTexture] = n[framecost::kView] = -1;
+        using namespace framecost;
+        fprintf(mFrameTimes,
+                "%d,%.3f,%.3f,%.3f,%.3f,%d,%d,%d,%.3f,%d,%d,%.3f,%.3f,%.3f,"
+                "%lld,%lld,%lld,%lld,%.3f,%lld,%.3f,%lld,%.3f,%lld,%.3f,"
+                "%.3f,%.3f,%lld,%.3f,%.3f,%.3f,%llu,%llu,%.3f,%.3f,%ld,%ld,%ld,%ld\n",
+                (int)mFrameID, (now - mFrameTimesLastEnd) * 1000.0,
+                (cpu - mFrameTimesLastCpu) * 1000.0, (now - mFrameTimesBegin) * 1000.0,
+                mPointTestWaitMs, mPointTestsRecorded, mPointTestAnswers, mPointTestAgeMax,
+                mPointTestEndWaitMs, mPointTestAfterSubmit, mPointTestStandInsFrame,
+                costMs[kPipeline], costMs[kTexture], costMs[kMesh], n[kPipeline], n[kTexture],
+                n[kMesh], n[kBindGroup], costMs[kBindGroup], n[kBuffer], costMs[kBuffer],
+                n[kGpuTexture], costMs[kGpuTexture], n[kView], costMs[kView], costMs[kAcquire],
+                costMs[kPresent], n[kFileRead], costMs[kFileRead],
+                (mFrameTimesBegin - mFrameTimesLastEnd) * 1000.0,
+                (mFrameTimesBeginCpu - mFrameTimesLastCpu) * 1000.0,
+                (unsigned long long)(mSceneBgWrites - mFrameTimesLastSceneWrites),
+                (unsigned long long)(mSceneBgCreates - mFrameTimesLastSceneCreates),
+                costMs[kGpuWait], costMs[kPace],
+                cs[0] < 0 ? -1L : mFrameTimesBeginCs[0] - mFrameTimesLastCs[0],
+                cs[1] < 0 ? -1L : mFrameTimesBeginCs[1] - mFrameTimesLastCs[1],
+                cs[0] < 0 ? -1L : cs[0] - mFrameTimesBeginCs[0],
+                cs[1] < 0 ? -1L : cs[1] - mFrameTimesBeginCs[1]);
         fflush(mFrameTimes);
     }
+    mFrameTimesLastSceneWrites = mSceneBgWrites;
+    mFrameTimesLastSceneCreates = mSceneBgCreates;
     mFrameTimesLastEnd = now;
     mFrameTimesLastCpu = cpu;
+    mFrameTimesLastCs[0] = cs[0];
+    mFrameTimesLastCs[1] = cs[1];
     mPointTestWaitMs = 0.0;
     mPointTestEndWaitMs = 0.0;
     mPointTestAfterSubmit = 0;
@@ -2814,7 +2870,17 @@ void WgpuRnd::WriteSceneUniforms() {
     bgDesc.layout = mPipelines.SceneLayout();
     bgDesc.entryCount = 5;
     bgDesc.entries = entries;
-    mSceneBindGroup = mGpu.Device().CreateBindGroup(&bgDesc);
+    // From the mesh path's cache, keyed by every field above: the ring is
+    // reset each frame, so a frame that writes its scene blocks in the same
+    // order as the last one lands them at the same offsets, and gets back the
+    // groups it made then. A new offset, shadow view or projected-light view
+    // is a new key and a new group, exactly what an uncached create would
+    // have made (docs section 40: one group per write was ~55 creates a frame
+    // in a DC3 song, each a call into the browser on the web).
+    mSceneBgWrites++;
+    const uint64_t created0 = GpuBindGroupCreateCount();
+    mSceneBindGroup = mBindGroupCache.GetOrCreate(mGpu.Device(), bgDesc);
+    mSceneBgCreates += GpuBindGroupCreateCount() - created0;
 }
 
 wgpu::BindGroup WgpuRnd::MaterialBindGroup(
@@ -2939,6 +3005,9 @@ uint64_t WgpuRnd::PrewarmFixedKeyPipelines() {
 // MILO_GPU_COUNTERS=N: one line every N frames (default 600) with the live
 // cached bind groups and the uniform rings, so growth across songs shows.
 void WgpuRnd::LogGpuCounters() {
+    char rawBg[24] = "n/a";  // where the build cannot see every create (gfx/WgpuCallCount.cpp)
+    if (framecost::RawCallsCounted())
+        snprintf(rawBg, sizeof(rawBg), "%llu", (unsigned long long)RawBindGroupCreateCount());
     const UniformRingBuffer* rings[4] = {&mSceneRing, &mMaterialRing, &mObjectRing, &mBoneRing};
     uint64_t writes = 0, bytes = 0;
     uint32_t capacity = 0;
@@ -2953,7 +3022,8 @@ void WgpuRnd::LogGpuCounters() {
             "ringQueueWrites=%llu ringQueueBytes=%llu pipelines=%d pipelineCreates=%llu pipelineLoadCreates=%llu pipelineWarms=%llu warmsDrawn=%llu pipelineWaits=%llu gpuMeshes=%zu meshUploads=%llu "
             "gpuTextures=%zu texHolders=%zu texCreates=%llu texShares=%llu "
             "postBgLive=%zu postBgCreated=%llu postBgHits=%llu postBgEvicted=%llu postBgUncached=%llu "
-            "ptBatches=%d ptCreated=%llu ptInFlight=%d\n",
+            "ptBatches=%d ptCreated=%llu ptInFlight=%d "
+            "bgCreatesAll=%llu bgCreatesRaw=%s sceneBgWrites=%llu sceneBgCreates=%llu\n",
             (int)mFrameID, mBindGroupCache.Size(),
             (unsigned long long)mBindGroupCache.Creates(),
             (unsigned long long)mBindGroupCache.Hits(),
@@ -2975,7 +3045,25 @@ void WgpuRnd::LogGpuCounters() {
             (unsigned long long)mPostBindGroupCache.Hits(),
             (unsigned long long)mPostBindGroupCache.Evictions(),
             (unsigned long long)mPostBindGroupCache.Uncached(), mPointTestPass.Batches(),
-            (unsigned long long)mPointTestPass.ResourceCreates(), mPointTestPass.InFlight());
+            (unsigned long long)mPointTestPass.ResourceCreates(), mPointTestPass.InFlight(),
+            (unsigned long long)GpuBindGroupCreateCount(), rawBg,
+            (unsigned long long)mSceneBgWrites, (unsigned long long)mSceneBgCreates);
+    // The bind groups created since the last line, by label.
+    const std::vector<bindgroupcount::LabelCount> bgs = TakeRecentBindGroupLabels();
+    if (!bgs.empty()) {
+        std::string names;
+        uint64_t total = 0;
+        for (const bindgroupcount::LabelCount& b : bgs) {
+            char t[160];
+            snprintf(t, sizeof(t), "%s%s x%llu (%.2f ms)", names.empty() ? "" : ", ",
+                     b.label.empty() ? "(unlabelled)" : b.label.c_str(),
+                     (unsigned long long)b.count, b.ms);
+            names += t;
+            total += b.count;
+        }
+        fprintf(stderr, "[GPUBG] frame=%d created=%llu: %s\n", (int)mFrameID,
+                (unsigned long long)total, names.c_str());
+    }
     // The pipelines created since the last line, by label: a compile mid-song is
     // a hitch, and this says which one it was.
     const std::vector<std::string> created = TakeRecentPipelineLabels();

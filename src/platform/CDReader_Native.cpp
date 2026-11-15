@@ -6,6 +6,7 @@
 #include "os/Debug.h"
 #include "os/File.h"
 #include "os/System.h"
+#include "gfx/FrameCost.h"
 
 #include <cstdio>
 #include <cstring>
@@ -60,7 +61,11 @@ int CDRead(int arkFile, int offset, int size, void *buffer) {
         return 1;
     }
 
-    size_t bytesRead = fread(buffer, 1, byteSize, fp);
+    size_t bytesRead;
+    {
+        framecost::Scope cost(framecost::kFileRead);
+        bytesRead = fread(buffer, 1, byteSize, fp);
+    }
     if ((int)bytesRead != byteSize) {
         MILO_LOG("CDRead: short read %zu/%d at offset %lld\n",
                  bytesRead, byteSize, byteOffset);
@@ -79,6 +84,7 @@ bool NativeArkRead(int arkFile, long long byteOffset, void *buffer, int bytes) {
     FILE *fp = gArkFiles[arkFile];
     if (fseeko(fp, byteOffset, SEEK_SET) != 0)
         return false;
+    framecost::Scope cost(framecost::kFileRead);
     size_t got = fread(buffer, 1, bytes, fp);
     return (int)got == bytes;
 }

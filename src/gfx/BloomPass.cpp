@@ -1,4 +1,5 @@
 #include "gfx/BloomPass.h"
+#include "gfx/BindGroupCount.h"
 #include "gfx/GpuTimers.h"
 #include "gfx/GpuDevice.h"
 
@@ -249,7 +250,7 @@ void BloomPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& inte
         bgDesc.layout = mBloomBGL;
         bgDesc.entryCount = 3;
         bgDesc.entries = bgEntries;
-        wgpu::BindGroup bg = mBindGroups ? mBindGroups->GetOrCreate(dev, bgDesc) : dev.CreateBindGroup(&bgDesc);
+        wgpu::BindGroup bg = mBindGroups ? mBindGroups->GetOrCreate(dev, bgDesc) : CreateCountedBindGroup(dev, &bgDesc);
 
         wgpu::RenderPassColorAttachment colorAtt{};
         colorAtt.view = dstView;
@@ -294,7 +295,7 @@ void BloomPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& inte
         bgDesc.layout = mBloomBGL;
         bgDesc.entryCount = 3;
         bgDesc.entries = bgEntries;
-        wgpu::BindGroup bg = mBindGroups ? mBindGroups->GetOrCreate(dev, bgDesc) : dev.CreateBindGroup(&bgDesc);
+        wgpu::BindGroup bg = mBindGroups ? mBindGroups->GetOrCreate(dev, bgDesc) : CreateCountedBindGroup(dev, &bgDesc);
 
         wgpu::RenderPassColorAttachment colorAtt{};
         colorAtt.view = dstView;
@@ -347,7 +348,7 @@ void BloomPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& inte
             bgDesc.layout = mBloomBGL;
             bgDesc.entryCount = 3;
             bgDesc.entries = bgEntries;
-            wgpu::BindGroup bg = mBindGroups ? mBindGroups->GetOrCreate(dev, bgDesc) : dev.CreateBindGroup(&bgDesc);
+            wgpu::BindGroup bg = mBindGroups ? mBindGroups->GetOrCreate(dev, bgDesc) : CreateCountedBindGroup(dev, &bgDesc);
 
             wgpu::RenderPassColorAttachment colorAtt{};
             colorAtt.view = mBloomView[i + 1];

@@ -8,6 +8,7 @@
 
 #include "gfx/GpuDevice.h"
 #include "gfx/GpuTimers.h"
+#include "gfx/FrameCost.h"
 
 #include <emscripten/emscripten.h>
 #include <emscripten/em_asm.h>
@@ -282,7 +283,10 @@ wgpu::TextureView GpuDevice::AcquireNextFrame() {
     if (!mSurface || !mDevice) return nullptr;
 
     wgpu::SurfaceTexture surfTex;
-    mSurface.GetCurrentTexture(&surfTex);
+    {
+        framecost::Scope cost(framecost::kAcquire);
+        mSurface.GetCurrentTexture(&surfTex);
+    }
     if (surfTex.status != wgpu::SurfaceGetCurrentTextureStatus::SuccessOptimal &&
         surfTex.status != wgpu::SurfaceGetCurrentTextureStatus::SuccessSuboptimal) {
         return nullptr;

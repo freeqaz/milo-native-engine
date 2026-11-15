@@ -9368,3 +9368,184 @@ uploads are 1–3% of the attributed time and were left alone (39.6).
   An exclusive-GPU-lock quiet run to see whether they survive could not be
   had: a 30-minute wait for the exclusive lock timed out with other lanes
   holding it.
+
+## 40. Per-frame costs, round 4: the scene bind group, and what the slow song frames are (lane np-gfx spotperf, branch np-framecost4, 2026-11-15)
+
+Measured on Linux desktop (headless, Dawn/Vulkan, NVIDIA) with rollerrink/ymca
+from boot to results, both looks, and on the web in headless Chromium. Every
+GPU run took the shared GPU lock, so other lanes were running on the box.
+
+### 40.1 Counting every create
+
+- **The counters (`e14e052`).** `gfx/WgpuCallCount.cpp` wraps four Dawn
+  entry points at link time on Linux
+  (`-Wl,--wrap=wgpuDeviceCreateBuffer`, `…CreateTexture`,
+  `wgpuTextureCreateView`, `wgpuDeviceCreateBindGroup`; `milo-engine`'s
+  INTERFACE link options). Every create in the linked program goes through
+  them, including imgui's and rb3's, so a new call site cannot hide from the
+  count. On macOS and the web nothing is wrapped and
+  `framecost::RawCallsCounted()` is false.
+- Bind groups are also counted at their sites (`CreateCountedBindGroup`),
+  which every build has, the web included. The wrapped count is the check
+  that no site bypasses it.
+- **`[GPUCOUNT]` gains** `bgCreatesAll`, `bgCreatesRaw`, `sceneBgWrites` and
+  `sceneBgCreates`. `[GPUBG]` lists each frame window's creates by label,
+  with their time.
+- **The frame-times CSV gains** `bg_ms`, `buf_ms`, `gtex_ms`, `view_ms`,
+  `acquire_ms`, `present_ms`, `file_n` and `file_ms` (file reads). `3a97586`
+  adds:
+  - `gpu_wait_ms`: the headless frames-in-flight wait in
+    `GpuDevice::EndHeadlessFrame`;
+  - `pace_ms`: the consumer's frame pacer sleeping out the period
+    (`framecost::kPace`, timed by dc3's `FramePacer_Native.cpp`);
+  - `game_vcs`, `game_ivcs`, `draw_vcs` and `draw_ivcs`: the main thread's
+    voluntary and involuntary context switches in the game window and in the
+    draw (`getrusage(RUSAGE_THREAD)`, Linux only; -1 elsewhere). An
+    involuntary switch means the box preempted us.
+
+### 40.2 The scene bind group was made again on every write
+
+- **Before (MEASURED).** `WriteSceneUniforms` runs at `BeginDrawing` and
+  again whenever a draw finds a different camera, environ or camera position
+  current. DC3's UI moves one camera per panel, so a frame writes the scene
+  block about 52 times. Each write lands at a new offset of the scene ring.
+  The scene bind group binds the ring at that offset, so each write created
+  a new group.
+
+  | phase | scene creates a frame | ms a frame (desktop) |
+  |---|---|---|
+  | menus | 51.7 | 0.04–0.09 |
+  | song select | 55.7 | 0.04–0.09 |
+  | song | 53.0 | 0.04–0.09 |
+  | results | 94 | 0.09 |
+
+  - Over a song (enhanced), that was 1,022,671 scene creates and 1165 ms;
+    retail made 1,021,603. The worst single song frame spent 8.13 ms
+    (enhanced) and 3.35 ms (retail) creating.
+  - On the web each create is a call out of wasm into the browser. Song:
+    52.5 a frame, 0.221 ms a frame, 2112 ms a song. Song select 67.7 a
+    frame (0.277 ms), results 90.5 a frame (0.325 ms), boot 38.1 a frame.
+- **Fix (`8f56282`).** The group comes from the renderer's bind-group cache
+  (`mBindGroupCache.GetOrCreate`). The key is the layout plus every field of
+  every entry, so the offset, the shadow view and the projected-light view
+  are all in it. The ring is reset every frame, so a frame that writes its
+  scene blocks in the same order as the last one lands them at the same
+  offsets and gets back the groups it made then. A hit is exactly what a
+  create would have made.
+  - A group that binds a ring buffer the ring has since outgrown keeps that
+    buffer alive until the cache evicts it (1200 frames). The ring grew 4
+    times in a song run, so this is a few small buffers.
+  - The cache held about 170–270 live groups in the runs.
+- **After (MEASURED).**
+
+  | phase | scene creates a frame, desktop | web |
+  |---|---|---|
+  | menus / boot | 0.1 | 0.2 |
+  | song select | 0.3 (0.4 all groups) | 0.2 |
+  | song | 0.0 | 0.0 |
+  | results | 0 | 0.1 |
+
+  - Over a song: 117 scene creates in 23 frames, 1.8 ms (enhanced); 110
+    creates, 1.8 ms (retail). The worst single frame is 0.10 ms. On the web
+    the song's scene creates took 2.4 ms in all.
+  - Scene writes are unchanged (about 52 a frame); only creates fell.
+  - Web song frame intervals, one run each, so box noise is in both:
+    p99 33.3 → 16.7 ms; frames over 50 ms 25 → 2.
+- **Rendering identical (MEASURED, in one process).** A flag file switched
+  between the old path (a create per write) and the cache.
+  - Points: song select ×2, the first venue frame, gameplay ×3, the first
+    results frame, results ×1. Both looks, 5 comparisons each.
+  - **0 differing pixels** at every one of those points. The old side really
+    did create: 54/58/94/98 scene creates a frame there, against 0 on the
+    new side.
+  - The main menu point is inconclusive: the frozen control (new against new)
+    already differs there by 67k–88k pixels, because the main menu's moving
+    background does not wait on the poll.
+- **Guards.**
+  - `SceneBindGroupCostTest.CameraSwitchesReuseTheirSceneBindGroupsFrameToFrame`
+    (dc3 `native/tests/test_scene_bind_group_cost.cpp`, default gate):
+    - a frame that switches cameras K times writes the scene block K+1
+      times and, after the first such frame, creates none;
+    - one more switch (a new offset) creates exactly one group;
+    - on Linux, the wrapped create count equals the counted one.
+    - Sabotages, each red: a create per write; the key without the offset
+      (the extra switch then reuses a group bound at another offset); the
+      scene site on a bare `CreateBindGroup` (the wrapped count is higher
+      than the counted one).
+  - `PerformCrowdTest` (default gate), from the engine's
+    `Screen 'game_screen' Enter` line to the end of the run: more than 300
+    frames, at least 10 writes a frame (so the check is not vacuous), and
+    fewer creates than frames.
+    - Green: alley 8 creates over 2860 frames with 137,336 writes; rink 41
+      over 2020 frames with 100,781 writes.
+    - Sabotage (a create per write): both venues fail, alley 121,760 creates
+      in 2550 frames (47.7 a frame), rink 168,104 in 3470 frames (48.4).
+
+### 40.3 What the slow song frames are (MEASURED, three runs)
+
+- **Method.** The same song (rollerrink, enhanced, `DC3_FPS_CAP=120`), run 3
+  times in a row under the shared GPU lock. Each song frame of 20 ms or more
+  is matched across the runs by song time (within 0.15 s). A frame that
+  recurs in every run is ours; one that does not is the box. Each frame is
+  classed by its largest part: game CPU, draw CPU, the pacer's sleep, the GPU
+  wait, or off-CPU (wall time not spent on the CPU and in no known wait).
+- **Counts.** Median frame 8.29 ms in all three runs. Frames of 20 ms or
+  more: 5, 2 and 13; none of 34 ms or more. Earlier runs taken while other
+  lanes were building had 174–186, nearly all off-CPU.
+- **The one that is ours: the end of the song.** At song time 151.6 s
+  (gameover and the outro, the `perform_endgame_screen` transition), about
+  10 consecutive frames take 12–23 ms in every run. Game CPU is 12–19 ms,
+  file reads 0.1 ms, nothing is created and nothing is preempted. A second
+  run of 12–18 ms frames, game CPU about 11 ms, comes just before results
+  (song time 159.6 s and 161.9–162.1 s). With a 12 ms threshold, 42 of
+  run 1's 198 slow frames recur; 28 of those are game CPU.
+- **Cause: the image's loader time slice (timer evidence).** With temporary
+  per-part timers in `Dc3NativeFramePoll` (not committed), `SystemPoll` takes
+  10–14 ms of each of those frames: 14 frames at the end of the song and
+  about 30 before results. `SystemPoll` runs `LoadMgr::Poll`, which gives
+  loading up to `mPeriod` ms a frame while anything loads. `mPeriod` is
+  10 ms (the image's default, `src/system/utl/Loader.cpp:239`;
+  `PreloadPanel` sets 14 ms while it is up). The endgame and results dirs
+  load in that slice.
+  - This is game-thread work by design: on the Xbox a 10 ms slice fits a
+    16.7 ms frame. Under a 120 fps cap the frame is 8.3 ms, so those frames
+    run 12–22 ms; under 60 fps they would mostly fit.
+  - Per the brief, it is reported, not changed.
+- **The ones that are the box.**
+  - **Off-CPU:** the wall time is far above the thread's CPU time, with
+    involuntary context switches; the box preempted us.
+  - **Draw CPU:** the draw's CPU time is 10–18 ms against a usual ~3 ms, with
+    nothing created, almost no preemption and nothing known in the frame.
+    None of them recurs at the same song time. This fits a slower CPU (a
+    shared core or a lower clock) rather than more work. That is INFERRED,
+    not proven: a call-graph profile cannot be taken on this box (below).
+  - The results phase (10 s, frames of 12 ms or more): none recurs across
+    the runs.
+- **Profile (IP samples only).** `perf_event_paranoid` is 2 and
+  `ptrace_scope` is 1, so hardware events and call graphs fail; only
+  `perf record -e cpu-clock` works. Over 20 s from the song's end on the main
+  thread, the top symbol is the bind-group cache's hash lookup at 2.4%.
+  `getenv` takes 0.58% (per-frame `getenv` calls), and `GpuTexCount` 0.94%
+  (this one is an instrumentation cost, present only with
+  `MILO_GPU_COUNTERS=1`). These are observations only; nothing was changed
+  for them.
+
+### 40.4 The rect warm after game_screen Enter, and the keys warmed but never drawn (not done, measured)
+
+- **The late warm.** In the three rink runs no dir finished loading after
+  `game_screen` Enter: no `[PIPEWARM]` line after it. In the alley,
+  `PerformCrowdTest` counts 1 pipeline created by a load's warm after Enter
+  (the ~1.5 ms frame). That warm is a synchronous `RenderPipelineCache`
+  create in `DrawRect2D`. Making it async needs a pending-warm path like
+  `PipelineManager`'s for the 2D cache. That is not worth its risk for one
+  pipeline a song, below the 20 ms threshold, so it is not done.
+- **The 76 keys warmed and never drawn (ESTIMATE).**
+  - Load time: they compile asynchronously, behind the loading screen.
+    Adding the whole warm added about 0.3 s of load wall time for all 134
+    keys (39.2), so these 76 are at most about 0.17 s of it.
+  - Disk cache: a full run leaves 229 blobs and 26 MB in
+    `dawn-pipelines` for 144 pipelines plus their shaders. 76 of 144 is at
+    most about 14 MB of the 64 MiB limit.
+  - Memory: not measured.
+  - Trimming them would mean predicting which panels a song shows. Not
+    worth doing on desktop; on the GPD the load number would decide it.
