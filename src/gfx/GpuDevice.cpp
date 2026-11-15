@@ -83,6 +83,23 @@ const char* GlfwPlatformName(int platform) {
 
 }  // namespace
 
+float ResolveRenderScale(const GpuDeviceDesc& desc, bool discreteGpu, bool presentsToSurface,
+                         int outputW, int outputH) {
+    const float explicitScale = desc.renderScaleExplicit;
+    const float defaultScale = discreteGpu ? desc.renderScale : desc.renderScaleIntegrated;
+    if (explicitScale > 0.0f)
+        return explicitScale < 1.0f ? 1.0f
+             : explicitScale > kRenderScaleMax ? kRenderScaleMax : explicitScale;
+    if (!presentsToSurface || !(defaultScale > 1.0f)) return 1.0f;
+    float s = defaultScale > kRenderScaleMax ? kRenderScaleMax : defaultScale;
+    if (outputW > 0 && s * (float)outputW > (float)kRenderScaleCapWidth)
+        s = (float)kRenderScaleCapWidth / (float)outputW;
+    if (outputH > 0 && s * (float)outputH > (float)kRenderScaleCapHeight)
+        s = (float)kRenderScaleCapHeight / (float)outputH;
+    s = (float)(int)s;  // whole numbers only (see GpuDevice.h)
+    return s < 1.0f ? 1.0f : s;
+}
+
 GpuDevice::~GpuDevice() {
     Shutdown();
 }
@@ -120,7 +137,7 @@ bool GpuDevice::Init(const GpuDeviceDesc& desc) {
     // Render scale: the drawn frame is the adapter class's scale times the
     // output size.
     auto applyRenderScale = [&]() {
-        const float scale = mDiscreteGpu ? desc.renderScale : desc.renderScaleIntegrated;
+        const float scale = ResolveRenderScale(desc, mDiscreteGpu, !mHeadless, mWidth, mHeight);
         if (!(scale > 1.0f)) return;
         mOutputWidth = mWidth;
         mOutputHeight = mHeight;
@@ -128,7 +145,8 @@ bool GpuDevice::Init(const GpuDeviceDesc& desc) {
         mHeight = (int)(mOutputHeight * scale + 0.5f);
         mPresentScale.SetBoxFilter(true);
         mReadbackScale.SetBoxFilter(true);
-        printf("GpuDevice: render scale %.2f on a %s GPU (%dx%d drawn, %dx%d out)\n", scale,
+        printf("GpuDevice: render scale %.2f%s on a %s GPU (%dx%d drawn, %dx%d out)\n", scale,
+               desc.renderScaleExplicit > 0.0f ? " (asked for)" : "",
                mDiscreteGpu ? "discrete" : "non-discrete", mWidth, mHeight, mOutputWidth,
                mOutputHeight);
     };

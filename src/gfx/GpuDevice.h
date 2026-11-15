@@ -34,18 +34,44 @@ struct GpuDeviceDesc {
     // MILO_FULLSCREEN=1 does the same. F11 or Alt+Enter toggles at run time.
     bool fullscreen = false;
     // Internal render scale (supersampling). > 1: the frame -- headless, or the
-    // windowed fixed-size frame -- is drawn at renderScale times its size and
+    // windowed fixed-size frame -- is drawn at the scale times its size and
     // box-filtered back down where it leaves the renderer: PresentFrame into
     // the window, ReadbackFrame/ReadbackHeadlessFrame into the size a caller
     // reads (OutputWidth/Height). WindowWidth/Height are the DRAWN size, so
     // every render target and viewport follows. 1 (the default): off, nothing
     // changes. Ignored windowed without a fixed-size frame, and on the web.
-    // renderScale applies on a discrete GPU, renderScaleIntegrated on any
-    // other adapter (integrated, CPU, unknown): the scale multiplies the main
-    // pass's fill cost by its square, which a handheld's iGPU cannot carry.
+    // The scale actually used is ResolveRenderScale (below):
+    //   renderScale / renderScaleIntegrated  the DEFAULT, by adapter class
+    //       (discrete / anything else: integrated, CPU, unknown -- the scale
+    //       multiplies the main pass's fill by its square, which a handheld's
+    //       iGPU cannot carry). Applies only to a frame presented to a real
+    //       surface; capped so the drawn frame stays within 3840x2160.
+    //   renderScaleExplicit  asked for (0 = not): clamped to [1, 2], used
+    //       headless too, on any adapter, and not capped.
     float renderScale = 1.0f;
     float renderScaleIntegrated = 1.0f;
+    float renderScaleExplicit = 0.0f;
 };
+
+// The render scale rule (pure; GpuDevice::Init applies it).
+//   renderScaleExplicit > 0  that, clamped to [1, kRenderScaleMax]
+//   headless (no surface)  1: many headless engines run at once on a test box
+//                          (gates, flow tests with a wall-clock limit), and a
+//                          4x main-pass fill on each is a fleet-wide slowdown
+//   otherwise              the default for the adapter class (renderScale
+//                          on a discrete GPU, renderScaleIntegrated on any
+//                          other), capped so the drawn frame fits
+//                          kRenderScaleCapWidth x kRenderScaleCapHeight, and
+//                          rounded DOWN to a whole number (a fractional box
+//                          filter softens everything: 1.5x measured blurrier
+//                          than 1x on world textures, 0.53 vs 0.77 of Xenia's
+//                          Laplacian energy, at 2.4x the GPU time); floor 1.
+// outputW/H: the size the frame leaves the renderer at (0 = unknown, no cap).
+constexpr float kRenderScaleMax = 2.0f;
+constexpr int kRenderScaleCapWidth = 3840;
+constexpr int kRenderScaleCapHeight = 2160;
+float ResolveRenderScale(const GpuDeviceDesc& desc, bool discreteGpu, bool presentsToSurface,
+                         int outputW, int outputH);
 
 // Why GpuDevice::Init failed.
 enum class GpuInitFailure {

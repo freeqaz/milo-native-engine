@@ -331,8 +331,11 @@ void WgpuRnd::Init() {
         desc.title = "DC3 Native — WebGPU";
         // Look profile: internal render scale (supersampling), box-filtered
         // back to this size where the frame leaves the renderer (1 = off).
+        // The profile's default applies windowed only (headless runs draw at
+        // 1x unless MILO_RENDER_SCALE asks); ResolveRenderScale in GpuDevice.
         desc.renderScale = milo::Look().renderScale;
         desc.renderScaleIntegrated = milo::Look().renderScaleIntegrated;
+        desc.renderScaleExplicit = milo::Look().renderScaleExplicit;
         // Windowed, the frame is the Rnd virtual resolution (what viewports and
         // UI layout are computed in), scaled into whatever size the window has
         // (dc3 PLAN H-18; gfx/PresentScale.h). MILO_WIDTH/HEIGHT size the

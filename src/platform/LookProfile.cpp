@@ -43,8 +43,19 @@ LookSettings Resolve() {
             else if (strcmp(e, "enhanced") != 0)
                 fprintf(stderr, "[look] DC3_LOOK=%s is not retail|enhanced; using enhanced\n", e);
         }
-        fprintf(stderr, "[look] profile %s\n", LookProfileName(p));
-        return SettingsFor(p);
+        LookSettings s = SettingsFor(p);
+        const char *rs = getenv("MILO_RENDER_SCALE");
+        bool bad = false;
+        s.renderScaleExplicit = ParseRenderScaleKnob(rs, &bad);
+        if (bad)
+            fprintf(stderr, "[look] MILO_RENDER_SCALE=%s is not a number > 0; using the "
+                    "profile default\n", rs);
+        if (s.renderScaleExplicit > 0.0f)
+            fprintf(stderr, "[look] profile %s, render scale %.2f (MILO_RENDER_SCALE)\n",
+                    LookProfileName(p), s.renderScaleExplicit);
+        else
+            fprintf(stderr, "[look] profile %s\n", LookProfileName(p));
+        return s;
     }
 }
 
@@ -56,6 +67,18 @@ LookSettings &Mutable() {
 }  // namespace
 
 const LookSettings &Look() { return Mutable(); }
+
+float ParseRenderScaleKnob(const char *value, bool *bad) {
+    if (bad) *bad = false;
+    if (!value || !*value) return 0.0f;
+    char *end = nullptr;
+    const float v = strtof(value, &end);
+    if (end == value || *end != '\0' || !(v > 0.0f)) {  // also rejects NaN
+        if (bad) *bad = true;
+        return 0.0f;
+    }
+    return v < 1.0f ? 1.0f : v > 2.0f ? 2.0f : v;
+}
 
 const char *LookProfileName(LookProfile p) {
     switch (p) {
