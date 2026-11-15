@@ -444,6 +444,16 @@ void WgpuRnd::InitGpuResources() {
         SetNativeSpotBeamRenderer(&mSpotBeamRenderer);
     }
 
+    // DC3: the passes whose pipelines have fixed keys compile them now
+    // (PrewarmFixedKeyPipelines), not on the first venue frame.
+    if constexpr (rndshape::kDC3RetailPost) {
+        const auto t0 = std::chrono::steady_clock::now();
+        const uint64_t n = PrewarmFixedKeyPipelines();
+        printf("WgpuRnd: prewarmed %llu fixed-key pipelines in %.1f ms\n", (unsigned long long)n,
+               std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0)
+                   .count());
+    }
+
     // Native port: disable Xbox 360 safe area shrink (TVs need overscan
     // compensation, but PC/Mac monitors don't).
     SetShrinkToSafeArea(false);
@@ -2785,6 +2795,22 @@ void WgpuRnd::FlushUniformRings() {
     mMaterialRing.Flush(mGpu.Queue());
     mObjectRing.Flush(mGpu.Queue());
     mBoneRing.Flush(mGpu.Queue());
+}
+
+// The depth of field, spot beam, point-test and shadow caster pipelines: their
+// keys are fixed once the device is up -- the post intermediate is the surface
+// format, the scene depth Depth24PlusStencil8 x kMSAASamples, the caster map
+// Depth32Float, and the beams have none. Left to first use, all of them
+// compiled on DC3's first venue frame (docs/native/dc3-backend-for-rb3-wii.md
+// section 38.2). Returns the pipelines it created: 0 once they exist with the
+// keys the frame will ask for.
+uint64_t WgpuRnd::PrewarmFixedKeyPipelines() {
+    const uint64_t before = GpuPipelineCreateCount();
+    mShadowPass.PrewarmCasters(mGpu);
+    if (kMSAASamples >= 2) mPostProcPass.PrewarmDof(mGpu.SurfaceFormat(), mGpu);
+    mSpotBeamPass.Prewarm(mGpu);
+    mPointTestPass.Prewarm(wgpu::TextureFormat::Depth24PlusStencil8, kMSAASamples, mGpu);
+    return GpuPipelineCreateCount() - before;
 }
 
 // MILO_GPU_COUNTERS=N: one line every N frames (default 600) with the live

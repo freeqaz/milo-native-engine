@@ -23,6 +23,8 @@ public:
              const wgpu::TextureView& depthView, uint32_t depthSamples,
              wgpu::TextureView& frameView, wgpu::TextureView& blackTexView, GpuDevice& gpu);
     void Terminate();
+    // The depth of field's pipelines for a `format` intermediate (DofPass::Prewarm).
+    void PrewarmDof(wgpu::TextureFormat format, GpuDevice& gpu) { mDof.Prewarm(format, gpu); }
     // The post chain's bind groups (this pass, bloom, depth of field, the
     // retail chains) come from `cache` -- WgpuRnd's post cache, aged and swept
     // once per frame -- so a steady frame creates none (dc3 PLAN H-66). Null

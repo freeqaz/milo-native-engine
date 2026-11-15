@@ -284,6 +284,12 @@ public:
     bool SubmitSpotBeams(const NativeSpotBeamFrame& frame, const NativeSpotBeam* beams, int count);
     int SpotBeamsDrawn() const { return mSpotBeamsDrawn; }
 
+    // Compiles the pipelines whose keys are fixed once the device is up (depth
+    // of field, spot beams, point tests, shadow casters); DC3 calls it at init.
+    // Returns how many it created: 0 when they all exist with the keys a frame
+    // will ask for.
+    uint64_t PrewarmFixedKeyPipelines();
+
     // RndDrawable::mClipPlanes (Rnd::PushClipPlanes/PopClipPlanes around a
     // drawable's DrawShowing). Retail DxRnd::PushClipPlanesInternal turns each
     // plane transform into a D3D user clip plane: the plane through the
