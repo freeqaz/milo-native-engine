@@ -600,6 +600,9 @@ inline bool PostProcNoiseMap(const RndPostProc *, PostProcNoise &) { return fals
 constexpr bool kRetailPostChain = true;
 // DC3's retail chain (RndShape_DC3.h, np-gfx-post) is the DC3 shape's only.
 constexpr bool kDC3RetailPost = false;
+// The frame at the output's own resolution (np-outres, RndShape_DC3.h) is
+// dc3-decomp's only: rb3 keeps its frame at the target's size.
+constexpr bool kOutputFollowsTarget = false;
 // DC3's retail material model (RndShape_DC3.h) is the DC3 shape's only; the
 // look profile (platform/LookProfile.cpp) keys DC3_LOOK on it, so rb3 resolves
 // LookProfile::Native and never reads the variable.

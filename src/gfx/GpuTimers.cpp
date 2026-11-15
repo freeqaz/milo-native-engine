@@ -28,6 +28,21 @@ bool GpuTimers::Requested() {
     return sRequested;
 }
 
+void GpuTimers::NoteTarget(const wgpu::TextureDescriptor& desc) {
+    if (!(desc.usage & wgpu::TextureUsage::RenderAttachment)) return;
+    const char* label = desc.label.data && desc.label.length ? desc.label.data : "(unlabelled)";
+    const size_t labelLen = desc.label.data && desc.label.length != WGPU_STRLEN
+        ? desc.label.length : strlen(label);
+    char line[256];
+    snprintf(line, sizeof(line), "[GPUTARGET] %.*s %ux%u samples=%u", (int)labelLen, label,
+             desc.size.width, desc.size.height, desc.sampleCount);
+    std::lock_guard<std::mutex> lock(mTargetMutex);
+    for (const std::string& seen : mTargetsSeen)
+        if (seen == line) return;
+    mTargetsSeen.push_back(line);
+    fprintf(stderr, "%s\n", line);
+}
+
 static double NowSeconds() {
     using namespace std::chrono;
     return duration<double>(steady_clock::now().time_since_epoch()).count();

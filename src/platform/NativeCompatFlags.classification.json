@@ -2171,7 +2171,7 @@
   "MILO_GPU_TIMERS": {
     "class": "perf",
     "owner": "render/perf",
-    "faithfulStatus": "n/a: log-only. MILO_GPU_TIMERS=1 (truthy) requests WebGPU timestamp-query when the adapter offers it, disables Dawn's timestamp_quantization toggle, and times every render pass (begin/end timestamps, resolved and read back asynchronously, never waited on); one [GPUTIME] window line + one [GPUTIME] pass= line per pass name every ~1 s (per-frame mean/max ms, passes per frame, frame pass sum and span), latest window via GpuTimers::LatestJson (dc3 GET /api/gputime). Unset = no query set, no buffer, no line. Adapter without the feature / web build: one 'GPU timers unavailable: <reason>' line. No draw change [GpuTimers.cpp, GpuDevice.cpp]",
+    "faithfulStatus": "n/a: log-only. MILO_GPU_TIMERS=1 (truthy) requests WebGPU timestamp-query when the adapter offers it, disables Dawn's timestamp_quantization toggle, and times every render pass (begin/end timestamps, resolved and read back asynchronously, never waited on); one [GPUTIME] window line + one [GPUTIME] pass= line per pass name every ~1 s (per-frame mean/max ms, passes per frame, frame pass sum and span), latest window via GpuTimers::LatestJson (dc3 GET /api/gputime). Unset = no query set, no buffer, no line. Adapter without the feature / web build: one 'GPU timers unavailable: <reason>' line. Also a render-target census: one '[GPUTARGET] <label> <w>x<h> samples=<n>' line per distinct RenderAttachment texture GpuDevice::CreateTexture makes (GpuTimers::NoteTarget; what sizes each pass draws at, e.g. at a 1080p output). No draw change [GpuTimers.cpp, GpuDevice.cpp]",
     "default": "off",
     "read": "truthy"
   },
@@ -2263,6 +2263,13 @@
     "class": "perf",
     "owner": "render",
     "faithfulStatus": "live: an explicit internal render scale (supersampling) for the DC3 look (platform/LookProfile.h, LookSettings::renderScaleExplicit), read once with DC3_LOOK. Unset = the profile default (enhanced: 2 on a discrete GPU when presenting to a window, 1 integrated and headless; retail: 1). A number is clamped to [1, 2] and honoured under either DC3 profile, headless included, on any adapter class, and not held to the default's 3840x2160 cap: 1 = the enhanced look without supersampling, 1.5 / 2 to try supersampling on a handheld. Not a number > 0: warns, profile default. DC3 retail model only (rndshape::kDC3RetailModel); rb3 and rb3-xenon never read it [platform/LookProfile.cpp; gfx/GpuDevice.cpp ResolveRenderScale]",
+    "default": "off",
+    "read": "value"
+  },
+  "MILO_OUTPUT_MAX_ROWS": {
+    "class": "perf",
+    "owner": "render",
+    "faithfulStatus": "live: the cap, in rows, on the enhanced look's output resolution (the frame drawn at the window's fitted 16:9 size; platform/LookProfile.h, LookSettings::outputMaxRowsExplicit), read once with DC3_LOOK. Unset = the profile default (enhanced: 1080 rows on a non-discrete adapter presenting to a window, so a handheld's 2560x1600 panel gets a 1920x1080 frame scaled up into it; no cap on a discrete adapter or headless). A whole number overrides that in both directions on any adapter, headless included: 0 = no cap, 1440 = try 1440p on a handheld, 720 = a 1280x720 frame anywhere; the output keeps its 16:9 shape and the present path scales it into the window. Not a whole number >= 0: warns, profile default. No effect under DC3_LOOK=retail (its frame is the original's 1280x720). DC3 retail model only (rndshape::kDC3RetailModel); rb3 and rb3-xenon never read it [platform/LookProfile.cpp; gfx/GpuDevice.cpp OutputRowCap, ResolveFrameSizes]",
     "default": "off",
     "read": "value"
   },

@@ -22,9 +22,10 @@
 // Hanging an enhancement here: add a bool to LookSettings, set it in
 // LookProfile.cpp from the profile (Enhanced -> on), document it below with the
 // original behaviour it departs from, and read it at the draw site. One switch,
-// many enhancements; do not add a per-feature env var. The one exception is a
-// COST knob, not a look: MILO_RENDER_SCALE (renderScaleExplicit below), so a
-// device that cannot carry supersampling keeps the rest of the look.
+// many enhancements; do not add a per-feature env var. The exceptions are COST
+// knobs, not looks: MILO_RENDER_SCALE (renderScaleExplicit below), so a device
+// that cannot carry supersampling keeps the rest of the look, and
+// MILO_OUTPUT_MAX_ROWS (outputMaxRowsExplicit), the output resolution's cap.
 // ─────────────────────────────────────────────────────────────────────────────
 
 namespace milo {
@@ -86,6 +87,27 @@ struct LookSettings {
     // with DC3_LOOK; DC3 retail model only -- rb3 / rb3-xenon never read it.
     float renderScaleExplicit = 0.0f;
 
+    // ---- output resolution -------------------------------------------------------
+    // The frame is drawn at its output's own resolution: the window's size (or
+    // headless MILO_WIDTH x MILO_HEIGHT) fitted to 16:9, with UI, viewports and
+    // the post chain's measures laid out in the 1280x720 virtual resolution
+    // (GpuDeviceDesc::outputFollowsTarget; also needs the shape's
+    // rndshape::kOutputFollowsTarget). The original drew a 1280x720 frame and
+    // the scaler stretched it to the display; Retail keeps that frame, scaled
+    // into the window by the present path. Enhanced: on.
+    bool outputFollowsTarget = false;
+    // Output height cap, in rows, on a non-discrete adapter presenting to a
+    // window (GpuDeviceDesc::outputMaxRowsIntegrated; 0 = none): a handheld's
+    // iGPU draws at most 1920x1080 and the present path scales that into a
+    // larger panel. Enhanced: 1080. Discrete adapters are not capped.
+    int outputMaxRowsIntegrated = 0;
+    // The second COST knob: MILO_OUTPUT_MAX_ROWS=<rows> overrides the cap in
+    // both directions, on any adapter, headless included: 0 = no cap (try
+    // 1440 on the handheld with 1440), 720 = a 1280x720 frame anywhere.
+    // -1 = unset (the default above). Read once with DC3_LOOK; DC3 retail
+    // model only. Meaningless under Retail, whose frame is 1280x720 anyway.
+    int outputMaxRowsExplicit = -1;
+
     // ---- post chain (np-gfx-post) ----------------------------------------------
     // np-gfx-post round 10: the post chain's world grade only, i.e. the post
     // run before the HUD and UI draw (WgpuRnd::FlushPostProcessingForOverlay,
@@ -120,6 +142,11 @@ struct LookSettings {
 // empty or not a positive number; else clamped to [1, 2]. *bad is set when a
 // non-empty value was not understood (the caller warns).
 float ParseRenderScaleKnob(const char *value, bool *bad = nullptr);
+
+// MILO_OUTPUT_MAX_ROWS's value -> LookSettings::outputMaxRowsExplicit: -1 for
+// unset, empty or not a whole number >= 0; else the number (0 = no cap).
+// *bad is set when a non-empty value was not understood (the caller warns).
+int ParseOutputRowsKnob(const char *value, bool *bad = nullptr);
 
 // The process-wide settings, resolved once.
 const LookSettings &Look();

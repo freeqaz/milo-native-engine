@@ -204,7 +204,7 @@ void DofPass::RetailBlurOffsets(bool vertical, int blurW, int blurH, float blurW
 // them from its output size's quarter; at 1 this is RetailBlurOffsets(qw, qh).
 void DofPass::SceneBlurOffsets(bool vertical, int sceneW, int sceneH, float renderScale,
                                float blurWidthScale, float out[8][2]) {
-    const float rs = renderScale > 1.0f ? renderScale : 1.0f;
+    const float rs = renderScale > 0.0f ? renderScale : 1.0f;
     const int qw = std::max(1, sceneW >> 2), qh = std::max(1, sceneH >> 2);
     const int offW = std::max(1, (int)((float)qw / rs + 0.5f));
     const int offH = std::max(1, (int)((float)qh / rs + 0.5f));
@@ -356,7 +356,7 @@ void DofPass::EnsureTextures(int w, int h, wgpu::TextureFormat format, GpuDevice
         td.size = {qw, qh, 1};
         td.format = format;
         td.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding;
-        mQuarter[k] = dev.CreateTexture(&td);
+        mQuarter[k] = gpu.CreateTexture(td);
         mQuarterView[k] = mQuarter[k].CreateView();
     }
     wgpu::TextureDescriptor od{};
@@ -365,7 +365,7 @@ void DofPass::EnsureTextures(int w, int h, wgpu::TextureFormat format, GpuDevice
     od.format = format;
     od.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding |
                wgpu::TextureUsage::CopySrc;  // CopySrc: readback in tests
-    mOutTex = dev.CreateTexture(&od);
+    mOutTex = gpu.CreateTexture(od);
     mOutView = mOutTex.CreateView();
     mW = w;
     mH = h;
