@@ -22,6 +22,7 @@
 #include <vector>
 #include <cstdio>
 #include <cstring>
+#include "gfx/PipelineCount.h"
 
 static const char* kShadowShaderSource = R"WGSL(
 struct LightVP {
@@ -240,7 +241,7 @@ void ShadowPass::EnsurePipelines(GpuDevice& gpu) {
         pipeDesc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
         pipeDesc.primitive.frontFace = wgpu::FrontFace::CCW;
         pipeDesc.primitive.cullMode = wgpu::CullMode::Back;
-        mShadowStaticPipeline = dev.CreateRenderPipeline(&pipeDesc);
+        mShadowStaticPipeline = CreateCountedRenderPipeline(dev, &pipeDesc);
     }
 
     // Skinned shadow pipeline
@@ -257,7 +258,7 @@ void ShadowPass::EnsurePipelines(GpuDevice& gpu) {
         pipeDesc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
         pipeDesc.primitive.frontFace = wgpu::FrontFace::CCW;
         pipeDesc.primitive.cullMode = wgpu::CullMode::Back;
-        mShadowSkinnedPipeline = dev.CreateRenderPipeline(&pipeDesc);
+        mShadowSkinnedPipeline = CreateCountedRenderPipeline(dev, &pipeDesc);
     }
 
     printf("ShadowPass: pipelines initialized (%dx%d depth texture)\n",
@@ -450,7 +451,7 @@ void ShadowPass::EnsureCasterPipelines(GpuDevice& gpu) {
         pd.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
         pd.primitive.frontFace = wgpu::FrontFace::CCW;
         pd.primitive.cullMode = wgpu::CullMode::Back;
-        (skinned ? mCasterSkinnedPipeline : mCasterStaticPipeline) = dev.CreateRenderPipeline(&pd);
+        (skinned ? mCasterSkinnedPipeline : mCasterStaticPipeline) = CreateCountedRenderPipeline(dev, &pd);
     }
 
     wgpu::BufferDescriptor clipDesc{};

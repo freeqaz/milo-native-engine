@@ -1,6 +1,7 @@
 // PresentScale -- see PresentScale.h.
 #include "gfx/PresentScale.h"
 #include "gfx/GpuTimers.h"
+#include "gfx/PipelineCount.h"
 
 namespace {
 
@@ -131,10 +132,10 @@ PresentRect PresentScale::Encode(wgpu::Device& device, wgpu::CommandEncoder& enc
         pd.vertex.entryPoint = "vs_full";
         pd.fragment = &frag;
         pd.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
-        mPipe = device.CreateRenderPipeline(&pd);
+        mPipe = CreateCountedRenderPipeline(device, &pd);
         frag.entryPoint = "fs_box";
         pd.label = "PresentScaleBox";
-        mBoxPipe = device.CreateRenderPipeline(&pd);
+        mBoxPipe = CreateCountedRenderPipeline(device, &pd);
         mFormat = targetFormat;
     }
     const bool nearest = PresentRectIsIntegerScale(rect, fw, fh);

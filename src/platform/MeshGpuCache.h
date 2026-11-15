@@ -24,19 +24,13 @@ struct GpuMeshData {
 
 // Upload mesh vertex/index data to GPU (creates or re-uploads as needed).
 // Returns true if mesh data is ready for drawing.
-// A mesh is re-read once RndMesh::OnSync / InvalidateGpuMesh has marked it
-// stale -- and, when it has no name, on EVERY call: an unnamed mesh is taken
-// for an RndText glyph page (each re-upload unpacks the geometry and creates a
-// new vertex and index buffer).
+// A mesh is uploaded once, and re-read (unpacked, a new vertex and index
+// buffer) only after RndMesh::OnSync / InvalidateGpuMesh has marked it stale,
+// named or not. RndText glyph pages and the spotlight beam shafts are unnamed
+// and change only through Sync; until 2026-11-15 every unnamed mesh was
+// re-read on every call, which re-uploaded each glyph page and each beam every
+// frame (docs/native/dc3-backend-for-rb3-wii.md sections 36.6 and 38).
 bool EnsureMeshUploaded(RndMesh* mesh);
-
-// EnsureMeshUploaded for a mesh the caller knows is no glyph page, whose
-// geometry only changes through RndMesh::Sync: uploaded once, and again only
-// after a sync, named or not. The spotlight beam shafts (Spotlight::Generate's
-// BuildNG* meshes, unnamed, finished with Sync) go through this: under
-// EnsureMeshUploaded every frame re-uploaded every beam (milo-native-engine
-// docs/native/dc3-backend-for-rb3-wii.md section 36).
-bool EnsureSyncedMeshUploaded(RndMesh* mesh);
 
 // Release GPU resources for a mesh (called from RndMesh destructor).
 void CleanupGpuMesh(RndMesh* mesh);
@@ -63,7 +57,8 @@ size_t GpuMeshCount();
 
 // Monotonic count of mesh uploads EnsureMeshUploaded has performed (each one
 // unpacks the geometry and creates a vertex and an index buffer). A frame that
-// draws what the last one drew should add none; [GPUCOUNT] meshUploads=.
+// draws what the last one drew, with nothing synced, adds none;
+// [GPUCOUNT] meshUploads=.
 uint64_t GpuMeshUploadCount();
 
 // Set a debug label for GPU buffer names + frame capture.

@@ -26,6 +26,7 @@
 #include <cstdlib>
 #include <string>  // BOOTRNG A.S1: throttle key for the PPRESOLVED probe
 #include <cstring>
+#include "gfx/PipelineCount.h"
 
 // ===========================================================================
 // Tier 2 mid-frame layering — grade the VENUE, draw highway+HUD over it ungraded
@@ -497,7 +498,7 @@ void BandRnd::RunPostProcComposite(wgpu::TextureView dst, bool venueGrade) {
         pd.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
         pd.depthStencil = nullptr;   // composite has no depth attachment
         pd.multisample.count = 1;    // rb3 backend is single-sampled
-        mQuadPostPipeline = mGpu.Device().CreateRenderPipeline(&pd);
+        mQuadPostPipeline = CreateCountedRenderPipeline(mGpu.Device(), &pd);
     }
     if (!mQuadPostPipeline) return;
 

@@ -46,6 +46,13 @@ public:
         uint64_t lastUploadBytes = 0;
     };
     const CasterStats& GetCasterStats() const { return mCasterStats; }
+    // Compiles the caster pipelines now (their key is fixed: Depth32Float,
+    // static and skinned), so the first RenderCasters() does not
+    // (docs/native/dc3-backend-for-rb3-wii.md section 38.2).
+    void PrewarmCasters(GpuDevice& gpu) {
+        EnsurePipelines(gpu);
+        if (mShadowReady) EnsureCasterPipelines(gpu);
+    }
     // The caster map itself (Depth32Float, kShadowMapSize square; CopySrc).
     wgpu::Texture& DepthTexture() { return mShadowDepthTex; }
 
