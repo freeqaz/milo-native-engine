@@ -13,6 +13,12 @@ namespace {
 LookSettings SettingsFor(LookProfile p) {
     LookSettings s;
     s.profile = p;
+    // np-gfx-post round 10 (LookProfile.h): every platform, web and
+    // integrated GPUs included; the three cost 0.0x ms together (doc §37.11).
+    const bool enh = p == LookProfile::Enhanced;
+    s.postPrecision = enh;
+    s.postBloomFilter = enh;
+    s.postDofFilter = enh;
     return s;
 }
 
@@ -48,6 +54,13 @@ const char *LookProfileName(LookProfile p) {
     case LookProfile::Native: break;
     }
     return "native";
+}
+
+bool SetLookProfileForInspection(LookProfile p) {
+    if (Mutable().profile == LookProfile::Native || p == LookProfile::Native) return false;
+    Mutable() = SettingsFor(p);
+    fprintf(stderr, "[look] profile %s (inspection)\n", LookProfileName(p));
+    return true;
 }
 
 ScopedLookOverride::ScopedLookOverride(LookProfile p) : mPrev(Mutable()) {

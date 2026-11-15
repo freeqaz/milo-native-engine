@@ -92,6 +92,58 @@ struct VOut {
     return acc * 0.125;
 }
 
+// np-gfx-post round 10, the enhanced look (Run's `enhanced`): the downsample
+// as a tent over the 8x8 texels around each 4x4 block, (1 - |d| / 4) per axis.
+const kTent = array<f32, 8>(0.03125, 0.09375, 0.15625, 0.21875,
+                            0.21875, 0.15625, 0.09375, 0.03125);
+@fragment fn fs_down_tent(in: VOut) -> @location(0) vec4f {
+    let dims = vec2i(textureDimensions(srcTex));
+    let base = vec2i(in.pos.xy) * 4 - vec2i(2);
+    var acc = vec4f(0.0);
+    for (var j = 0; j < 8; j++) {
+        for (var i = 0; i < 8; i++) {
+            acc += (kTent[i] * kTent[j]) *
+                   textureLoad(srcTex, clamp(base + vec2i(i, j), vec2i(0), dims - 1), 0);
+        }
+    }
+    return acc;
+}
+
+// The quarter-size blur at uv through a cubic B-spline in four bilinear taps
+// (Sigg and Hadwiger 2005): C2-smooth across its texel boundaries, where the
+// bilinear read creases. A partition of unity.
+fn blur_bspline(uv: vec2f) -> vec4f {
+    let size = vec2f(textureDimensions(blurTex));
+    let p = uv * size - 0.5;
+    let i = floor(p);
+    let f = p - i;
+    let f2 = f * f;
+    let f3 = f2 * f;
+    let w0 = (1.0 - 3.0 * f + 3.0 * f2 - f3) * (1.0 / 6.0);
+    let w1 = (4.0 - 6.0 * f2 + 3.0 * f3) * (1.0 / 6.0);
+    let w2 = (1.0 + 3.0 * f + 3.0 * f2 - 3.0 * f3) * (1.0 / 6.0);
+    let w3 = f3 * (1.0 / 6.0);
+    let g0 = w0 + w1;
+    let g1 = w2 + w3;
+    let p0 = (i - 0.5 + w1 / g0) / size;
+    let p1 = (i + 1.5 + w3 / g1) / size;
+    return g0.x * g0.y * textureSampleLevel(blurTex, samp, p0, 0.0) +
+           g1.x * g0.y * textureSampleLevel(blurTex, samp, vec2f(p1.x, p0.y), 0.0) +
+           g0.x * g1.y * textureSampleLevel(blurTex, samp, vec2f(p0.x, p1.y), 0.0) +
+           g1.x * g1.y * textureSampleLevel(blurTex, samp, p1, 0.0);
+}
+
+fn dof_mix(p: vec2i, blurred: vec4f) -> vec4f {
+    let scene = textureLoad(sceneTex, p, 0);
+    let z = textureLoad(depthTex, min(p, vec2i(textureDimensions(depthTex)) - 1), 0);
+    let t = z * dof.c24.x + dof.c24.y;
+    let f = clamp(min(max(abs(t), dof.c24.z), dof.c24.w), 0.0, 1.0);
+    return clamp(mix(scene, blurred, f), vec4f(0.0), vec4f(1.0));
+}
+@fragment fn fs_composite_bspline(in: VOut) -> @location(0) vec4f {
+    return dof_mix(vec2i(in.pos.xy), blur_bspline(in.uv));
+}
+
 // postprocess.ps, depth-of-field bit: tf6 scene, tf8 blur (linear, clamp),
 // tf9 depth. Retail reads 1 - z because it runs reverse-Z.
 @fragment fn fs_composite(in: VOut) -> @location(0) vec4f {
@@ -224,28 +276,42 @@ void DofPass::EnsurePipelines(wgpu::TextureFormat format, GpuDevice& gpu) {
     }
 
     auto make = [&](const wgpu::PipelineLayout& layout, const char* fs, const char* label) {
-        wgpu::ColorTargetState ct{};
-        ct.format = format;
-        ct.writeMask = wgpu::ColorWriteMask::All;
-        wgpu::FragmentState frag{};
-        frag.module = mShader;
-        frag.entryPoint = fs;
-        frag.targetCount = 1;
-        frag.targets = &ct;
-        wgpu::RenderPipelineDescriptor pd{};
-        pd.label = label;
-        pd.layout = layout;
-        pd.vertex.module = mShader;
-        pd.vertex.entryPoint = "vs_full";
-        pd.fragment = &frag;
-        pd.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
-        return dev.CreateRenderPipeline(&pd);
+        return MakePipe(layout, fs, label, gpu);
     };
     mDownPipe = make(mPassPL, "fs_down4", "DofDownsample4x");
     mBlurPipe = make(mPassPL, "fs_blur", "DofBlur");
     mCompositePipe = make(mCompositePL, "fs_composite", "DofComposite");
+    mDownTentPipe = nullptr;           // Run's `enhanced`, on first use
+    mCompositeBSplinePipe = nullptr;
     // The quarter and output textures are in `format` too.
     mW = mH = 0;
+}
+
+wgpu::RenderPipeline DofPass::MakePipe(const wgpu::PipelineLayout& layout, const char* fs,
+                                   const char* label, GpuDevice& gpu) {
+    auto& dev = gpu.Device();
+    wgpu::ColorTargetState ct{};
+    ct.format = mFormat;
+    ct.writeMask = wgpu::ColorWriteMask::All;
+    wgpu::FragmentState frag{};
+    frag.module = mShader;
+    frag.entryPoint = fs;
+    frag.targetCount = 1;
+    frag.targets = &ct;
+    wgpu::RenderPipelineDescriptor pd{};
+    pd.label = label;
+    pd.layout = layout;
+    pd.vertex.module = mShader;
+    pd.vertex.entryPoint = "vs_full";
+    pd.fragment = &frag;
+    pd.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+    return dev.CreateRenderPipeline(&pd);
+}
+
+float DofPass::EnhancedTapScale(float v) {
+    if (!(v > 0.0f)) return 1.0f;
+    const float k2 = 1.0f - (3.0f / 32.0f + 1.0f / 6.0f) / v;
+    return std::clamp(std::sqrt(std::max(k2, 0.0f)), 0.5f, 1.0f);
 }
 
 void DofPass::EnsureTextures(int w, int h, wgpu::TextureFormat format, GpuDevice& gpu) {
@@ -301,7 +367,7 @@ void DofPass::Pass(wgpu::CommandEncoder& encoder, const wgpu::RenderPipeline& pi
 
 bool DofPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& sceneView,
                   wgpu::TextureFormat sceneFormat, const wgpu::TextureView& depthView,
-                  uint32_t depthSamples, int sceneW, int sceneH, GpuDevice& gpu) {
+                  uint32_t depthSamples, int sceneW, int sceneH, GpuDevice& gpu, bool enhanced) {
     extern DOFProc* TheDOFProc;
     if (!TheDOFProc || !TheDOFProc->Enabled()) return false;
     if (!sceneView || !depthView || sceneW <= 0 || sceneH <= 0) return false;
@@ -321,13 +387,36 @@ bool DofPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& sceneV
     const int qw = std::max(1, sceneW >> 2);
     const int qh = std::max(1, sceneH >> 2);
     const float widthScale = RndPostProc::DOFOverrides().mBlurWidthScale;
+    float off[2][8][2];
+    for (int k = 0; k < 2; k++) RetailBlurOffsets(k == 1, qw, qh, widthScale, off[k]);
+    float tapScale[2] = {1.0f, 1.0f};
+    if (enhanced) {
+        if (!mDownTentPipe) {
+            mDownTentPipe = MakePipe(mPassPL, "fs_down_tent", "DofDownsampleTent", gpu);
+            mCompositeBSplinePipe = MakePipe(mCompositePL, "fs_composite_bspline", "DofCompositeBSpline", gpu);
+        }
+        // The two passes' spread per axis, in quarter texels^2 (each pass the
+        // mean of its 8 taps, so its variance is E[o^2] - E[o]^2).
+        for (int a = 0; a < 2; a++) {
+            const float texels = (float)(a ? qh : qw);
+            float v = 0.0f;
+            for (int k = 0; k < 2; k++) {
+                float m = 0.0f, m2 = 0.0f;
+                for (int i = 0; i < 8; i++) {
+                    const float o = off[k][i][a] * texels;
+                    m += o / 8.0f;
+                    m2 += o * o / 8.0f;
+                }
+                v += m2 - m * m;
+            }
+            tapScale[a] = EnhancedTapScale(v);
+        }
+    }
     for (int k = 0; k < 2; k++) {
-        float off[8][2];
-        RetailBlurOffsets(k == 1, qw, qh, widthScale, off);
         BlurUniforms bu{};
         for (int i = 0; i < 8; i++) {
-            bu.taps[i][0] = off[i][0];
-            bu.taps[i][1] = off[i][1];
+            bu.taps[i][0] = off[k][i][0] * tapScale[0];
+            bu.taps[i][1] = off[k][i][1] * tapScale[1];
             bu.taps[i][2] = 1.0f;
             bu.taps[i][3] = 1.0f;
         }
@@ -361,7 +450,11 @@ bool DofPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& sceneV
 
     // 1. downsample_4x: scene -> A.  2. blur, horizontal taps: A -> B.
     // 3. blur, vertical taps: B -> A.
-    Pass(encoder, mDownPipe, passBG(sceneView, mBlurUB[0]), mQuarterView[0], "DofDownsample4x");
+    if (enhanced) {
+        Pass(encoder, mDownTentPipe, passBG(sceneView, mBlurUB[0]), mQuarterView[0], "DofDownsampleTent");
+    } else {
+        Pass(encoder, mDownPipe, passBG(sceneView, mBlurUB[0]), mQuarterView[0], "DofDownsample4x");
+    }
     Pass(encoder, mBlurPipe, passBG(mQuarterView[0], mBlurUB[0]), mQuarterView[1], "DofBlurH");
     Pass(encoder, mBlurPipe, passBG(mQuarterView[1], mBlurUB[1]), mQuarterView[0], "DofBlurV");
 
@@ -383,7 +476,11 @@ bool DofPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& sceneV
         d.layout = mCompositeBGL;
         d.entryCount = 5;
         d.entries = e;
-        Pass(encoder, mCompositePipe, Group(dev, d), mOutView, "DofComposite");
+        if (enhanced) {
+            Pass(encoder, mCompositeBSplinePipe, Group(dev, d), mOutView, "DofCompositeBSpline");
+        } else {
+            Pass(encoder, mCompositePipe, Group(dev, d), mOutView, "DofComposite");
+        }
     }
     return true;
 }
@@ -397,6 +494,8 @@ void DofPass::Terminate() {
     mDownPipe = nullptr;
     mBlurPipe = nullptr;
     mCompositePipe = nullptr;
+    mDownTentPipe = nullptr;
+    mCompositeBSplinePipe = nullptr;
     mSampler = nullptr;
     mBlurUB[0] = mBlurUB[1] = nullptr;
     mCompositeUB = nullptr;

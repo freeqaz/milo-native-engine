@@ -56,6 +56,12 @@ public:
     void SetVelocity(bool ready, float scale, const float viewProj[16]);
     const RB3RetailPost& Retail() const { return mRetail; }
 
+    // np-gfx-post round 10: the next Runs grade the world before the HUD/UI
+    // draws (WgpuRnd::FlushPostProcessingForOverlay sets it around its Run).
+    // Only then do the enhanced look's post fields (LookSettings::post*)
+    // apply; a post over the UI (EndDrawing) stays retail.
+    void SetWorldGrade(bool world) { mWorldGrade = world; }
+
     BloomPass& Bloom() { return mBloom; }
     DofPass& Dof() { return mDof; }
 
@@ -76,6 +82,7 @@ private:
                       wgpu::TextureView& frameView, const wgpu::TextureView& spotBeams,
                       const wgpu::TextureView& spotFog, GpuDevice& gpu);
     const RndPostProc* mLoggedPostProc = nullptr;   // the last post-process logged
+    bool mWorldGrade = false;                        // SetWorldGrade
 
     BloomPass mBloom;
     DofPass mDof;

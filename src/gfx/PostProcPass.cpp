@@ -7,6 +7,7 @@
 #include "platform/rndshape/RndShape.h"
 #include "gfx/RB3RetailPost.h"
 #include "platform/TexGpu.h"
+#include "platform/LookProfile.h"
 #include <cstdio>
 #include <cmath>
 #include <utility>
@@ -452,7 +453,25 @@ void PostProcPass::RunDC3Retail(wgpu::CommandEncoder& encoder, P* pp, int mode,
                      (int)rp.hueConverge, rp.hueParams[0], rp.hueParams[1], rp.hueParams[2],
                      rp.hueParams[3], (int)pp->GetMotionBlurVelocity());
         }
+        // Round 10, DC3_LOOK=enhanced: the world grade only (SetWorldGrade),
+        // never the identity copy (mode 2) nor a post over the UI.
+        if (mWorldGrade && mode != 2) {
+            rp.enhPrecision = milo::Look().postPrecision;
+            rp.enhFilter = milo::Look().postBloomFilter;
+        }
         mRetail.Run(encoder, sceneView, intermediateView, w, h, frameView, rp, gpu);
+    }
+}
+
+// Round 10: whether this Run's depth of field takes the enhanced look
+// (LookSettings::postDofFilter, the world grade only). A template for the same
+// reason as RunDC3Retail: the RB3-Wii flavour links no LookProfile.
+template <class P>
+static bool EnhancedDof(const P*, bool worldGrade) {
+    if constexpr (rndshape::kDC3RetailPost && sizeof(P) > 0) {
+        return worldGrade && milo::Look().postDofFilter;
+    } else {
+        return false;
     }
 }
 
@@ -485,7 +504,7 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& i
     bool dofRuns = true;
     if constexpr (rndshape::kDC3RetailPost) dofRuns = !rndshape::PostProcDisabled();
     if (dofRuns && mDof.Run(encoder, intermediateView, intermediateTex.GetFormat(), depthView,
-                            depthSamples, intermediateW, intermediateH, gpu)) {
+                            depthSamples, intermediateW, intermediateH, gpu, EnhancedDof(pp, mWorldGrade))) {
         sceneView = mDof.OutputView();
     }
 

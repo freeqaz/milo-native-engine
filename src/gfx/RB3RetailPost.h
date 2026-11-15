@@ -148,6 +148,20 @@ struct RetailPostParams {
     float velocityReproj[16] = {};
     wgpu::TextureView velocityDepth;  // the world depth, multisampled
     uint32_t velocityDepthSamples = 0;
+    // np-gfx-post round 10, DC3_LOOK=enhanced (milo::LookSettings; PostProcPass
+    // sets them for the world grade only). Both off: today's retail chain.
+    //   enhPrecision  the bloom sets in RGBA16Float, each pass saturated as the
+    //                 8-bit sets saturate (only the quantisation changes), and a
+    //                 static +-1 LSB triangular dither on the composite's frame
+    //                 write (not on the motion-blur feedback target)
+    //   enhFilter     bloom.ps and downsample_4x as an 8x8 tent instead of the
+    //                 4x4 box; the streak set1 from set0's bloom output (every
+    //                 texel of each 16x16 block, where retail's 4 bilinear taps
+    //                 read 16 of 256); the plain and glare sets upsampled with a
+    //                 cubic B-spline instead of bilinear
+    // Same energy and extent as retail (MEASURED, engine doc §37.11).
+    bool enhPrecision = false;
+    bool enhFilter = false;
     // ---- end np-gfx-post ----
 };
 
@@ -186,7 +200,22 @@ private:
                          const RetailPostParams& p, GpuDevice& gpu);
     void PassDC3(wgpu::CommandEncoder& encoder, const wgpu::RenderPipeline& pipe,
                  const wgpu::TextureView& dst, const wgpu::TextureView& src,
-                 const float* uni, size_t uniBytes, GpuDevice& gpu);
+                 const float* uni, size_t uniBytes, GpuDevice& gpu,
+                 const char* label = "DC3RetailBloom");
+    // np-gfx-post round 10 (RetailPostParams::enhPrecision / enhFilter): the
+    // DC3 bloom passes as one family per set format, all in the DC3 module on
+    // mDC3PassBGL; [0] RGBA8Unorm (enhFilter alone), [1] RGBA16Float with the
+    // per-pass saturate (kSat). Created on first use, so the retail look builds
+    // none of them.
+    struct DC3Family {
+        wgpu::RenderPipeline bloomBox, bloomTent, bloomTaps, down4, downTent, streak, glare, blur;
+    };
+    void EnsureDC3Family(int idx, GpuDevice& gpu);
+    void EnsureHiTextures(GpuDevice& gpu);
+    DC3Family mDC3Fam[2];
+    wgpu::Texture mHTex[kSets][2];     // enhPrecision's sets (mW x mH, RGBA16Float)
+    wgpu::TextureView mHView[kSets][2];
+    int mHW[kSets] = {}, mHH[kSets] = {};
     void EnsureTextures(int sceneW, int sceneH, GpuDevice& gpu);
     void Pass(wgpu::CommandEncoder& encoder, const wgpu::RenderPipeline& pipe,
               const wgpu::TextureView& dst, const wgpu::TextureView& src,

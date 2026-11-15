@@ -51,8 +51,11 @@ struct DC3CompositeUniforms {
     float hue[4];          // c222 (CheckHueConverge); z (blend_amount) 0 = off
     float velocity[4];     // x: c122 (DoVelocity); y: 1 = bit 42 on
     float spot[4];         // bit 51: c91.x, c127.x, c127.y; w = 1 when beams are bound
+    float enh[4];          // round 10, the enhanced look: x = 1 B-spline set upsample
+                           // (enhFilter, plain and glare arms), y = dither amplitude
+                           // (enhPrecision: 1 / 255; 0 off)
 };
-static_assert(sizeof(DC3CompositeUniforms) == 224, "DC3CompositeUniforms layout");
+static_assert(sizeof(DC3CompositeUniforms) == 240, "DC3CompositeUniforms layout");
 
 // velocity_camera.ps: last frame's clip space from this frame's NDC, and the
 // target sizes (full depth w, h; velocity w, h).
@@ -81,6 +84,7 @@ struct DC3UB {
     hue: vec4f,
     velocity: vec4f,
     spot: vec4f,
+    enh: vec4f,
 };
 struct VelUB {
     m0: vec4f,
@@ -123,6 +127,141 @@ struct VOut {
     return out;
 }
 
+// ---- np-gfx-post round 10: the enhanced look (LookSettings::postPrecision,
+// postBloomFilter; the world grade only). kSat is true for the RGBA16Float
+// family: those sets saturate after every pass, as retail's 8-bit EDRAM
+// resolve does, so only the quantisation changes. The retail pipelines
+// compile with the default (false).
+override kSat: bool = false;
+fn sat_set(c: vec4f) -> vec4f {
+    if (kSat) {
+        return clamp(c, vec4f(0.0), vec4f(1.0));
+    }
+    return c;
+}
+
+// bloom.ps as RB3RetailPost's fs_bloom_down (the exact 4x4 box), here so the
+// RGBA16Float family can saturate it.
+@fragment fn fs_bloom_box(in: VOut) -> @location(0) vec4f {
+    let dims = vec2i(textureDimensions(srcTex));
+    let base = vec2i(in.pos.xy) * 4;
+    var acc = vec3f(0.0);
+    for (var j = 0; j < 4; j++) {
+        for (var i = 0; i < 4; i++) {
+            let c = textureLoad(srcTex, min(base + vec2i(i, j), dims - 1), 0);
+            acc += c.rgb * c.a;
+        }
+    }
+    return sat_set(vec4f(acc / 16.0, 1.0));
+}
+
+// The enhanced downsample: a tent over the 8x8 texels around the target
+// texel's 4x4 block, (1 - |d| / 4) per axis at d = -3.5 .. 3.5, normalised.
+// Same mean as the box (energy), slightly wider (2.75 vs 1.25 texel^2 per
+// axis), and a feature moving across a block boundary hands its energy over
+// gradually instead of in one step (the box's shimmer).
+const kTent = array<f32, 8>(0.03125, 0.09375, 0.15625, 0.21875,
+                            0.21875, 0.15625, 0.09375, 0.03125);
+@fragment fn fs_bloom_tent(in: VOut) -> @location(0) vec4f {
+    let dims = vec2i(textureDimensions(srcTex));
+    let base = vec2i(in.pos.xy) * 4 - vec2i(2);
+    var acc = vec3f(0.0);
+    for (var j = 0; j < 8; j++) {
+        for (var i = 0; i < 8; i++) {
+            let c = textureLoad(srcTex, clamp(base + vec2i(i, j), vec2i(0), dims - 1), 0);
+            acc += (kTent[i] * kTent[j]) * c.rgb * c.a;
+        }
+    }
+    return sat_set(vec4f(acc, 1.0));
+}
+
+// downsample_4x.ps (the 4x4 box), and its tent.
+@fragment fn fs_down4_e(in: VOut) -> @location(0) vec4f {
+    let dims = vec2i(textureDimensions(srcTex));
+    let base = vec2i(in.pos.xy) * 4;
+    var acc = vec4f(0.0);
+    for (var j = 0; j < 4; j++) {
+        for (var i = 0; i < 4; i++) {
+            acc += textureLoad(srcTex, min(base + vec2i(i, j), dims - 1), 0);
+        }
+    }
+    return sat_set(acc / 16.0);
+}
+@fragment fn fs_down_tent(in: VOut) -> @location(0) vec4f {
+    let dims = vec2i(textureDimensions(srcTex));
+    let base = vec2i(in.pos.xy) * 4 - vec2i(2);
+    var acc = vec4f(0.0);
+    for (var j = 0; j < 8; j++) {
+        for (var i = 0; i < 8; i++) {
+            acc += (kTent[i] * kTent[j]) *
+                   textureLoad(srcTex, clamp(base + vec2i(i, j), vec2i(0), dims - 1), 0);
+        }
+    }
+    return sat_set(acc);
+}
+
+// blur.ps, the plain arm's 15 taps (RB3RetailPost's fs_blur: the same
+// weights, centred). tap[0] = (1 / w, 1 / h, direction).
+const kBlurW = array<f32, 15>(0.0159283932, 0.0270778369, 0.0424231887, 0.0612547919,
+                              0.0815124959, 0.0999667868, 0.1129886061, 0.1176957935,
+                              0.1129886061, 0.0999667868, 0.0815124959, 0.0612547919,
+                              0.0424231887, 0.0270778369, 0.0159283932);
+@fragment fn fs_blur_e(in: VOut) -> @location(0) vec4f {
+    var acc = vec4f(0.0);
+    for (var i = 0; i < 15; i++) {
+        let o = f32(i - 7) * tu.tap[0].zw * tu.tap[0].xy;
+        acc += kBlurW[i] * textureSampleLevel(srcTex, samp, in.uv + o, 0.0);
+    }
+    return sat_set(acc);
+}
+
+// A bloom set at uv: bilinear (retail), or the cubic B-spline in four
+// bilinear taps (Sigg and Hadwiger 2005): C2-smooth, so the w/16 and w/64
+// sets lose the bilinear's creases at their texel boundaries. A partition of
+// unity (same energy); it widens a set by 1/6 texel^2 per axis.
+fn bloom_set(t: texture_2d<f32>, uv: vec2f, bspline: bool) -> vec3f {
+    if (!bspline) {
+        return textureSampleLevel(t, samp, uv, 0.0).rgb;
+    }
+    let size = vec2f(textureDimensions(t));
+    let p = uv * size - 0.5;
+    let i = floor(p);
+    let f = p - i;
+    let f2 = f * f;
+    let f3 = f2 * f;
+    let w0 = (1.0 - 3.0 * f + 3.0 * f2 - f3) * (1.0 / 6.0);
+    let w1 = (4.0 - 6.0 * f2 + 3.0 * f3) * (1.0 / 6.0);
+    let w2 = (1.0 + 3.0 * f + 3.0 * f2 - 3.0 * f3) * (1.0 / 6.0);
+    let w3 = f3 * (1.0 / 6.0);
+    let g0 = w0 + w1;
+    let g1 = w2 + w3;
+    let p0 = (i - 0.5 + w1 / g0) / size;
+    let p1 = (i + 1.5 + w3 / g1) / size;
+    return g0.x * g0.y * textureSampleLevel(t, samp, p0, 0.0).rgb +
+           g1.x * g0.y * textureSampleLevel(t, samp, vec2f(p1.x, p0.y), 0.0).rgb +
+           g0.x * g1.y * textureSampleLevel(t, samp, vec2f(p0.x, p1.y), 0.0).rgb +
+           g1.x * g1.y * textureSampleLevel(t, samp, p1, 0.0).rgb;
+}
+
+// A static triangular dither of +-1 LSB at the 8-bit write (two draws of
+// interleaved gradient noise, Jimenez 2014): the same on every frame, so it
+// adds no frame-to-frame change, and the same on all three channels.
+fn dither(p: vec2f) -> f32 {
+    let k = vec2f(0.06711056, 0.00583715);
+    let a = fract(52.9829189 * fract(dot(p, k)));
+    let b = fract(52.9829189 * fract(dot(p + vec2f(57.0, 113.0), k)));
+    return a + b - 1.0;
+}
+// The frame write's dither (cu.enh.y; 0 = off, the colour untouched). It fades
+// out within one level of 0 and 1, so black and white stay exact.
+fn dithered(c: vec3f, p: vec2f) -> vec3f {
+    if (cu.enh.y <= 0.0) {
+        return c;
+    }
+    let room = clamp(min(c, vec3f(1.0) - c) * 255.0, vec3f(0.0), vec3f(1.0));
+    return c + room * (dither(floor(p)) * cu.enh.y);
+}
+
 // bloom.ps with bilinear taps (tap[0..3].xy, weight 0.25 each): the scene
 // weighted by its alpha, the pseudo-HDR mask.
 @fragment fn fs_bloom_taps(in: VOut) -> @location(0) vec4f {
@@ -131,7 +270,7 @@ struct VOut {
         let c = textureSampleLevel(srcTex, samp, in.uv + tu.tap[i].xy, 0.0);
         acc += c.rgb * c.a;
     }
-    return vec4f(acc * 0.25, 1.0);
+    return sat_set(vec4f(acc * 0.25, 1.0));
 }
 
 // bloom_glare.ps (kBloomGlareShader, DoBloom's glare arm), decoded: ten taps
@@ -153,7 +292,7 @@ struct VOut {
         acc += 1.0 / max(vec3f(1.0) - w * t, vec3f(1e-6));
         p += stepUv;
     }
-    return vec4f(2.0 - 20.0 / acc, 1.0);
+    return sat_set(vec4f(2.0 - 20.0 / acc, 1.0));
 }
 
 // blur.ps with SetBloomBlurWeightsStreak's seven taps.
@@ -162,7 +301,7 @@ struct VOut {
     for (var i = 0; i < 7; i++) {
         acc += tu.tap[i].z * textureSampleLevel(srcTex, samp, in.uv + tu.tap[i].xy, 0.0);
     }
-    return acc;
+    return sat_set(acc);
 }
 
 // velocity_camera.ps (RndVelocityBuffer::Draw's DrawRectDepth, decoded): the
@@ -243,12 +382,11 @@ fn grade_dc3(uv: vec2f, scene: vec3f) -> vec3f {
     // bloom colour, c = scene + 0.5 * c6 * tf7 (postprocess_0000002001200000).
     // Bit 4: screen blend with the three bloom sets (unclamped).
     var c = scene;
+    let bs = cu.enh.x > 0.5;
     if (cu.motionMode.y > 0.5) {
-        c = scene + 0.5 * cu.bloomColor.rgb * textureSampleLevel(bloom0, samp, uv, 0.0).rgb;
+        c = scene + 0.5 * cu.bloomColor.rgb * bloom_set(bloom0, uv, bs);
     } else if (cu.bloomColor.w > 0.5) {
-        let b = textureSampleLevel(bloom0, samp, uv, 0.0).rgb
-              + textureSampleLevel(bloom1, samp, uv, 0.0).rgb
-              + textureSampleLevel(bloom2, samp, uv, 0.0).rgb;
+        let b = bloom_set(bloom0, uv, bs) + bloom_set(bloom1, uv, bs) + bloom_set(bloom2, uv, bs);
         c = 1.0 - (1.0 - b * cu.bloomColor.rgb) * (1.0 - c);
     }
 
@@ -377,9 +515,8 @@ fn hue_converge(c: vec3f) -> vec3f {
         return vec4f(0.5, 0.5, 0.0, 1.0);
     }
     if (cu.bloomColor.w > 2.5) {
-        let b = textureSampleLevel(bloom0, samp, in.uv, 0.0).rgb
-              + textureSampleLevel(bloom1, samp, in.uv, 0.0).rgb
-              + textureSampleLevel(bloom2, samp, in.uv, 0.0).rgb;
+        let bs = cu.enh.x > 0.5;
+        let b = bloom_set(bloom0, in.uv, bs) + bloom_set(bloom1, in.uv, bs) + bloom_set(bloom2, in.uv, bs);
         return vec4f(clamp(b * cu.bloomColor.rgb, vec3f(0.0), vec3f(1.0)), 1.0);
     }
     if (cu.bloomColor.w > 1.5) {
@@ -390,7 +527,7 @@ fn hue_converge(c: vec3f) -> vec3f {
     if (cu.hue.z > 0.0) {
         c = hue_converge(c);
     }
-    return vec4f(clamp(c, vec3f(0.0), vec3f(1.0)), 1.0);
+    return vec4f(dithered(clamp(c, vec3f(0.0), vec3f(1.0)), in.pos.xy), 1.0);
 }
 
 // Bit 24, NgPostProc::CheckMotionBlur (postprocess_0000000001000010 and its
@@ -426,7 +563,7 @@ struct MBOut {
     }
     o = clamp(o, vec3f(0.0), vec3f(1.0));
     var out: MBOut;
-    out.frame = vec4f(o, 1.0);
+    out.frame = vec4f(dithered(o, in.pos.xy), 1.0);
     out.next = vec4f(o, a);
     return out;
 }
@@ -455,6 +592,7 @@ void RB3RetailPost::EnsureDC3Pipelines(GpuDevice& gpu) {
     if (mDC3Ready && mDC3FrameFormat == gpu.SurfaceFormat()) return;
     auto& dev = gpu.Device();
     mDC3FrameFormat = gpu.SurfaceFormat();
+    for (DC3Family& f : mDC3Fam) f = DC3Family{};   // built on mDC3Shader / mDC3PassPL
 
     wgpu::ShaderSourceWGSL src;
     src.code = kDC3Shader;
@@ -586,9 +724,67 @@ void RB3RetailPost::EnsureDC3Pipelines(GpuDevice& gpu) {
     mDC3Ready = true;
 }
 
+// np-gfx-post round 10: the enhanced look's bloom passes (RetailPostParams::
+// enhPrecision / enhFilter), one family per set format. [1] (RGBA16Float)
+// compiles with kSat, so each pass saturates where the 8-bit sets would.
+void RB3RetailPost::EnsureDC3Family(int idx, GpuDevice& gpu) {
+    DC3Family& f = mDC3Fam[idx];
+    if (f.blur) return;
+    const wgpu::TextureFormat fmt = idx ? wgpu::TextureFormat::RGBA16Float : wgpu::TextureFormat::RGBA8Unorm;
+    wgpu::ConstantEntry sat{};
+    sat.key = "kSat";
+    sat.value = idx ? 1.0 : 0.0;
+    auto make = [&](const char* fs, const char* label) {
+        wgpu::ColorTargetState ct{};
+        ct.format = fmt;
+        ct.writeMask = wgpu::ColorWriteMask::All;
+        wgpu::FragmentState frag{};
+        frag.module = mDC3Shader;
+        frag.entryPoint = fs;
+        frag.constantCount = 1;
+        frag.constants = &sat;
+        frag.targetCount = 1;
+        frag.targets = &ct;
+        wgpu::RenderPipelineDescriptor pd{};
+        pd.label = label;
+        pd.layout = mDC3PassPL;
+        pd.vertex.module = mDC3Shader;
+        pd.vertex.entryPoint = "vs_full";
+        pd.fragment = &frag;
+        pd.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+        return gpu.Device().CreateRenderPipeline(&pd);
+    };
+    f.bloomBox = make("fs_bloom_box", "DC3LookBloomBox");
+    f.bloomTent = make("fs_bloom_tent", "DC3LookBloomTent");
+    f.bloomTaps = make("fs_bloom_taps", "DC3LookBloomTaps");
+    f.down4 = make("fs_down4_e", "DC3LookDown4");
+    f.downTent = make("fs_down_tent", "DC3LookDownTent");
+    f.streak = make("fs_streak", "DC3LookStreak");
+    f.glare = make("fs_glare", "DC3LookGlare");
+    f.blur = make("fs_blur_e", "DC3LookBlur");
+}
+
+void RB3RetailPost::EnsureHiTextures(GpuDevice& gpu) {
+    for (int s = 0; s < kSets; s++) {
+        if (mHW[s] == mW[s] && mHH[s] == mH[s] && mHTex[s][0]) continue;
+        for (int k = 0; k < 2; k++) {
+            Forget(mHView[s][k]);
+            wgpu::TextureDescriptor td{};
+            td.label = "DC3LookBloom";
+            td.size = {(uint32_t)mW[s], (uint32_t)mH[s], 1};
+            td.format = wgpu::TextureFormat::RGBA16Float;
+            td.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding;
+            mHTex[s][k] = gpu.Device().CreateTexture(&td);
+            mHView[s][k] = mHTex[s][k].CreateView();
+        }
+        mHW[s] = mW[s];
+        mHH[s] = mH[s];
+    }
+}
+
 void RB3RetailPost::PassDC3(wgpu::CommandEncoder& encoder, const wgpu::RenderPipeline& pipe,
                             const wgpu::TextureView& dst, const wgpu::TextureView& src,
-                            const float* uni, size_t uniBytes, GpuDevice& gpu) {
+                            const float* uni, size_t uniBytes, GpuDevice& gpu, const char* label) {
     const uint32_t off = NextSlot();
     gpu.Queue().WriteBuffer(mUniforms, off, uni, uniBytes);
 
@@ -612,7 +808,7 @@ void RB3RetailPost::PassDC3(wgpu::CommandEncoder& encoder, const wgpu::RenderPip
     ca.storeOp = wgpu::StoreOp::Store;
     ca.clearValue = {0, 0, 0, 0};
     wgpu::RenderPassDescriptor rp{};
-    rp.label = "DC3RetailBloom";
+    rp.label = label;
     rp.colorAttachmentCount = 1;
     rp.colorAttachments = &ca;
     MILO_GPU_TIME_PASS(rp);
@@ -666,75 +862,113 @@ static TapUniforms StreakTaps(bool horizontal, float w, float h, float attenuati
 void RB3RetailPost::RunDC3Bloom(wgpu::CommandEncoder& encoder, const wgpu::TextureView& bloomSrc,
                                 int sceneW, int sceneH, const RetailPostParams& p, GpuDevice& gpu) {
     EnsureTextures(sceneW, sceneH, gpu);
+    // The enhanced look (round 10) runs the same passes in the same order on
+    // its own family and, with enhPrecision, its own RGBA16Float sets; both
+    // off, every pass below is retail's.
+    const bool enh = p.enhPrecision || p.enhFilter;
+    DC3Family* f = nullptr;
+    if (enh) {
+        EnsureDC3Family(p.enhPrecision ? 1 : 0, gpu);
+        f = &mDC3Fam[p.enhPrecision ? 1 : 0];
+        if (p.enhPrecision) EnsureHiTextures(gpu);
+    }
+    wgpu::TextureView (*V)[2] = p.enhPrecision ? mHView : mView;
+    struct PU { float srcTexel[2], dir[2], lumaScale, pad[3]; };
+    // bloom.ps: retail's exact 4x4 box, or the tent.
+    auto bloomPass = [&](const wgpu::TextureView& dst) {
+        if (!enh) {
+            PU u{};
+            u.srcTexel[0] = 1.0f / sceneW;
+            u.srcTexel[1] = 1.0f / sceneH;
+            u.lumaScale = 1.0f;
+            Pass(encoder, mBloomDownPipe, dst, bloomSrc, &u.srcTexel[0], sizeof(u), gpu);
+            return;
+        }
+        TapUniforms t{};
+        PassDC3(encoder, p.enhFilter ? f->bloomTent : f->bloomBox, dst, bloomSrc, &t.tap[0][0], sizeof(t),
+                gpu, "DC3LookBloom");
+    };
+    // downsample_4x from set s - 1 into set s (`tent`: the tent, when enhFilter).
+    auto downPass = [&](const wgpu::TextureView& dst, const wgpu::TextureView& src, int s, bool tent) {
+        if (!enh) {
+            PU d{};
+            d.srcTexel[0] = 1.0f / mW[s - 1];
+            d.srcTexel[1] = 1.0f / mH[s - 1];
+            Pass(encoder, mDown4Pipe, dst, src, &d.srcTexel[0], sizeof(d), gpu);
+            return;
+        }
+        TapUniforms t{};
+        PassDC3(encoder, tent && p.enhFilter ? f->downTent : f->down4, dst, src, &t.tap[0][0], sizeof(t), gpu,
+                "DC3LookBloom");
+    };
+    // blur.ps, the plain 15 taps on set s.
+    auto blurPass = [&](const wgpu::TextureView& dst, const wgpu::TextureView& src, int s, bool horizontal) {
+        if (!enh) {
+            PU b{};
+            b.srcTexel[0] = 1.0f / mW[s];
+            b.srcTexel[1] = 1.0f / mH[s];
+            b.dir[horizontal ? 0 : 1] = 1.0f;
+            Pass(encoder, mBlurPipe, dst, src, &b.srcTexel[0], sizeof(b), gpu);
+            return;
+        }
+        TapUniforms t{};
+        t.tap[0][0] = 1.0f / mW[s];
+        t.tap[0][1] = 1.0f / mH[s];
+        t.tap[0][horizontal ? 2 : 3] = 1.0f;
+        PassDC3(encoder, f->blur, dst, src, &t.tap[0][0], sizeof(t), gpu, "DC3LookBloom");
+    };
+    // The DC3 module's own passes (bloom taps, streak, glare).
+    auto tapPass = [&](const wgpu::RenderPipeline& retail, const wgpu::RenderPipeline DC3Family::*fam,
+                       const wgpu::TextureView& dst, const wgpu::TextureView& src, const TapUniforms& t) {
+        if (!enh) {
+            PassDC3(encoder, retail, dst, src, &t.tap[0][0], sizeof(t), gpu);
+            return;
+        }
+        PassDC3(encoder, f->*fam, dst, src, &t.tap[0][0], sizeof(t), gpu, "DC3LookBloom");
+    };
     if (p.glare) {
         // DoBloom's glare arm (mBloomGlare, not the hi-res screen): bloom.ps
         // into set0, the plain 15-tap blur across and down, then one
         // bloom_glare.ps pass; set0 alone feeds the composite (tf7), whose
         // bit 37 adds it. Retail ping-pongs on one texture (tex[1] == tex[0]);
         // ordered here to end in [0][0].
-        struct { float srcTexel[2], dir[2], lumaScale, pad[3]; } u{};
-        u.srcTexel[0] = 1.0f / sceneW;
-        u.srcTexel[1] = 1.0f / sceneH;
-        u.lumaScale = 1.0f;
-        Pass(encoder, mBloomDownPipe, mView[0][1], bloomSrc, &u.srcTexel[0], sizeof(u), gpu);
-        decltype(u) b{};
-        b.srcTexel[0] = 1.0f / mW[0];
-        b.srcTexel[1] = 1.0f / mH[0];
-        b.dir[0] = 1.0f;
-        Pass(encoder, mBlurPipe, mView[0][0], mView[0][1], &b.srcTexel[0], sizeof(b), gpu);
-        b.dir[0] = 0.0f;
-        b.dir[1] = 1.0f;
-        Pass(encoder, mBlurPipe, mView[0][1], mView[0][0], &b.srcTexel[0], sizeof(b), gpu);
+        bloomPass(V[0][1]);
+        blurPass(V[0][0], V[0][1], 0, true);
+        blurPass(V[0][1], V[0][0], 0, false);
         TapUniforms t{};
-        PassDC3(encoder, mDC3GlarePipe, mView[0][0], mView[0][1], &t.tap[0][0], sizeof(t), gpu);
+        tapPass(mDC3GlarePipe, &DC3Family::glare, V[0][0], V[0][1], t);
         return;
     }
     if (!p.streak) {
         // The plain arm is RB3's: bloom.ps into set0, then 15-tap blurs and
         // downsample_4x into set1 and set2 (identical in DC3's DoBloom).
-        struct { float srcTexel[2], dir[2], lumaScale, pad[3]; } u{};
-        u.srcTexel[0] = 1.0f / sceneW;
-        u.srcTexel[1] = 1.0f / sceneH;
-        u.lumaScale = 1.0f;
-        Pass(encoder, mBloomDownPipe, mView[0][0], bloomSrc, &u.srcTexel[0], sizeof(u), gpu);
+        bloomPass(V[0][0]);
         for (int s = 0; s < kSets; s++) {
-            if (s > 0) {
-                decltype(u) d{};
-                d.srcTexel[0] = 1.0f / mW[s - 1];
-                d.srcTexel[1] = 1.0f / mH[s - 1];
-                Pass(encoder, mDown4Pipe, mView[s][0], mView[s - 1][0], &d.srcTexel[0], sizeof(d), gpu);
-            }
-            decltype(u) b{};
-            b.srcTexel[0] = 1.0f / mW[s];
-            b.srcTexel[1] = 1.0f / mH[s];
-            b.dir[0] = 1.0f;
-            Pass(encoder, mBlurPipe, mView[s][1], mView[s][0], &b.srcTexel[0], sizeof(b), gpu);
-            b.dir[0] = 0.0f;
-            b.dir[1] = 1.0f;
-            Pass(encoder, mBlurPipe, mView[s][0], mView[s][1], &b.srcTexel[0], sizeof(b), gpu);
+            if (s > 0) downPass(V[s][0], V[s - 1][0], s, true);
+            blurPass(V[s][1], V[s][0], s, true);
+            blurPass(V[s][0], V[s][1], s, false);
         }
         return;
     }
     // The streak arm. set0: bloom.ps into w/4 (exact 4x4 box), three streak
     // passes along the rotated horizontal, ping-ponging to end in [0][0].
-    {
-        struct { float srcTexel[2], dir[2], lumaScale, pad[3]; } u{};
-        u.srcTexel[0] = 1.0f / sceneW;
-        u.srcTexel[1] = 1.0f / sceneH;
-        u.lumaScale = 1.0f;
-        Pass(encoder, mBloomDownPipe, mView[0][1], bloomSrc, &u.srcTexel[0], sizeof(u), gpu);
+    bloomPass(V[0][1]);
+    if (enh && p.enhFilter) {
+        // enhFilter: set1 is the 4x4 box of set0's bloom output, before its
+        // streak passes, so every scene texel of the 16x16 block counts.
+        downPass(V[1][1], V[0][1], 1, false);
     }
-    const wgpu::TextureView* ping[3][2] = {{&mView[0][1], &mView[0][0]},
-                                           {&mView[0][0], &mView[0][1]},
-                                           {&mView[0][1], &mView[0][0]}};
+    const wgpu::TextureView* ping[3][2] = {{&V[0][1], &V[0][0]},
+                                           {&V[0][0], &V[0][1]},
+                                           {&V[0][1], &V[0][0]}};
     for (int pass = 0; pass < 3; pass++) {
         TapUniforms t = StreakTaps(true, (float)mW[0], (float)mH[0], p.streakAttenuation, pass,
                                    p.streakAngle, p.screenAspect);
-        PassDC3(encoder, mDC3StreakPipe, *ping[pass][1], *ping[pass][0], &t.tap[0][0], sizeof(t), gpu);
+        tapPass(mDC3StreakPipe, &DC3Family::streak, *ping[pass][1], *ping[pass][0], t);
     }
     // set1: bloom.ps straight from the scene into w/16, then three passes
     // along the rotated vertical.
-    {
+    if (!(enh && p.enhFilter)) {
         TapUniforms t{};
         const float tx = 2.0f / sceneW, ty = 2.0f / sceneH;
         const float o[4][2] = {{-tx, -ty}, {tx, ty}, {tx, -ty}, {-tx, ty}};
@@ -743,15 +977,15 @@ void RB3RetailPost::RunDC3Bloom(wgpu::CommandEncoder& encoder, const wgpu::Textu
             t.tap[i][1] = o[i][1];
             t.tap[i][2] = 0.25f;
         }
-        PassDC3(encoder, mDC3BloomTapsPipe, mView[1][1], bloomSrc, &t.tap[0][0], sizeof(t), gpu);
+        tapPass(mDC3BloomTapsPipe, &DC3Family::bloomTaps, V[1][1], bloomSrc, t);
     }
-    const wgpu::TextureView* ping1[3][2] = {{&mView[1][1], &mView[1][0]},
-                                            {&mView[1][0], &mView[1][1]},
-                                            {&mView[1][1], &mView[1][0]}};
+    const wgpu::TextureView* ping1[3][2] = {{&V[1][1], &V[1][0]},
+                                            {&V[1][0], &V[1][1]},
+                                            {&V[1][1], &V[1][0]}};
     for (int pass = 0; pass < 3; pass++) {
         TapUniforms t = StreakTaps(false, (float)mW[1], (float)mH[1], p.streakAttenuation, pass,
                                    p.streakAngle, p.screenAspect);
-        PassDC3(encoder, mDC3StreakPipe, *ping1[pass][1], *ping1[pass][0], &t.tap[0][0], sizeof(t), gpu);
+        tapPass(mDC3StreakPipe, &DC3Family::streak, *ping1[pass][1], *ping1[pass][0], t);
     }
 }
 
@@ -834,11 +1068,17 @@ void RB3RetailPost::RunDC3Composite(wgpu::CommandEncoder& encoder, const wgpu::T
         cu.spot[2] = p.spotSmoke;
         cu.spot[3] = 1.0f;
     }
+    // Round 10, the enhanced look: the B-spline upsample (not the streak
+    // arm's sets, whose thin perpendicular extent it would widen) and the
+    // frame write's dither.
+    if (p.enhFilter && !p.streak) cu.enh[0] = 1.0f;
+    if (p.enhPrecision) cu.enh[1] = 1.0f / 255.0f;
     const uint32_t off = NextSlot();
     gpu.Queue().WriteBuffer(mUniforms, off, &cu, sizeof(cu));
 
     // The plain arm fills all three sets; the streak arm two (tf15 black).
-    const bool haveBloom = (p.bloom || p.debugView == 2) && mView[0][0];
+    const wgpu::TextureView (*V)[2] = p.enhPrecision ? mHView : mView;
+    const bool haveBloom = (p.bloom || p.debugView == 2) && V[0][0];
     const int setsUsed = p.glare ? 1 : p.streak ? 2 : 3;
     wgpu::BindGroupEntry e[12] = {};
     e[0].binding = 0;
@@ -850,7 +1090,7 @@ void RB3RetailPost::RunDC3Composite(wgpu::CommandEncoder& encoder, const wgpu::T
     e[2].size = sizeof(cu);
     for (int s = 0; s < kSets; s++) {
         e[3 + s].binding = 3 + s;
-        e[3 + s].textureView = (haveBloom && s < setsUsed) ? mView[s][0] : mBlackView;
+        e[3 + s].textureView = (haveBloom && s < setsUsed) ? V[s][0] : mBlackView;
     }
     e[6].binding = 7;
     e[6].textureView = haveNoise ? p.noiseMap : mBlackView;

@@ -784,9 +784,13 @@ void WgpuRnd::FlushPostProcessingForOverlay() {
     if (mIntermediateView && FramePostProc() && !mPostProcFlushed) {
         FeedVelocity(mPostProcPass);
         RunDC3SpotBeams();
+        // The world grade, before the HUD/UI draws: the only post the
+        // enhanced look (LookSettings::post*) touches (np-gfx-post round 10).
+        mPostProcPass.SetWorldGrade(true);
         mPostProcPass.Run(mEncoder, mIntermediateView, mIntermediateTex,
                           mIntermediateWidth, mIntermediateHeight,
                           mDepthSampleView, kMSAASamples, FrameTarget(), mBlackTexView, mGpu);
+        mPostProcPass.SetWorldGrade(false);
     }
 
     BeginOverlayPass();

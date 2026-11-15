@@ -42,12 +42,40 @@ struct LookSettings {
     // ---- enhancements (each true only under Enhanced) ----------------------
     // (none yet: the menu-text lane adds alpha-cut coverage, the sharpness
     // lane texture filtering / supersampling)
+
+    // np-gfx-post round 10: the post chain's world grade only, i.e. the post
+    // run before the HUD and UI draw (WgpuRnd::FlushPostProcessingForOverlay,
+    // PostProcPass::SetWorldGrade). A post that runs over the UI (menus graded
+    // at EndDrawing) stays retail, so UI, HUD and text never change. Engine
+    // doc §37.11 has the measurements and costs.
+    //   postPrecision    the bloom sets in RGBA16Float, still saturated at 1
+    //                    after every pass as retail's 8-bit EDRAM resolve
+    //                    saturates them (A8R8G8B8, NgPostProc::
+    //                    BloomTextureSet), and a static sub-LSB dither on the
+    //                    composite's 8-bit write. Retail: 8-bit sets, no dither.
+    //   postBloomFilter  tent (not box) downsample into the bloom sets; the
+    //                    streak arm's w/16 set from all 256 texels of its block
+    //                    (retail's bloom.ps reads 16 of them, 4 bilinear taps
+    //                    at +-2 texels); a cubic B-spline (not bilinear)
+    //                    upsample of the plain arm's sets in the composite.
+    //   postDofFilter    depth of field: tent downsample, B-spline upsample of
+    //                    the blur in the full-resolution composite, the 8 blur
+    //                    taps scaled so the total blur radius (second moment)
+    //                    stays retail's. Retail: box, bilinear.
+    bool postPrecision = false;
+    bool postBloomFilter = false;
+    bool postDofFilter = false;
 };
 
 // The process-wide settings, resolved once.
 const LookSettings &Look();
 
 const char *LookProfileName(LookProfile p);
+
+// Inspection (dc3's `{rnd native_look retail|enhanced}`): switch between the
+// two DC3 profiles at run time, so an A/B takes the same frozen frame. Ignored
+// (returns false) for a consumer whose profile is Native.
+bool SetLookProfileForInspection(LookProfile p);
 
 // Tests only: replace the resolved settings for the lifetime of the object
 // (nests; restores the previous settings on destruction). Not thread-safe.
