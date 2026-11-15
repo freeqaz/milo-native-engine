@@ -123,6 +123,7 @@ bool GpuDevice::Init(const GpuDeviceDesc& desc) {
     mFollowsTarget = desc.outputFollowsTarget && desc.logicalWidth > 0 && desc.logicalHeight > 0;
     mLogicalWidth = mFollowsTarget ? desc.logicalWidth : 0;
     mLogicalHeight = mFollowsTarget ? desc.logicalHeight : 0;
+    mRowCap = mFollowsTarget ? OutputRowCap(desc, mDiscreteGpu, !mHeadless) : 0;
     if (mHeadless)
         ApplyFrameSizes(ResolveFrameSizes(desc, mDiscreteGpu, false, desc.width, desc.height), true);
     if (!mHeadless) {

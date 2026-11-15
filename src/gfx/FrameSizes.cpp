@@ -31,16 +31,31 @@ int OutputRowCap(const GpuDeviceDesc& desc, bool discreteGpu, bool presentsToSur
 
 FrameSizes ResolveFrameSizes(const GpuDeviceDesc& desc, bool discreteGpu, bool presentsToSurface,
                              int targetW, int targetH) {
+    return ResolveFrameSizesWithCap(desc, discreteGpu, presentsToSurface, targetW, targetH,
+                                    OutputRowCap(desc, discreteGpu, presentsToSurface));
+}
+
+FrameSizes ResolveFrameSizesWithCap(const GpuDeviceDesc& desc, bool discreteGpu,
+                                    bool presentsToSurface, int targetW, int targetH, int rowCap) {
     FrameSizes s;
     if (desc.outputFollowsTarget && desc.logicalWidth > 0 && desc.logicalHeight > 0) {
         const PresentRect r = FitPresentRect(desc.logicalWidth, desc.logicalHeight, targetW, targetH);
         s.outputW = r.w;
         s.outputH = r.h;
-        const int cap = OutputRowCap(desc, discreteGpu, presentsToSurface);
+        const int cap = rowCap;
         if (cap > 0 && s.outputH > cap) {
-            // The same shape, cap rows tall (1920x1080 for 16:9 at 1080).
-            s.outputW = (int)((double)r.w * cap / r.h + 0.5);
+            // The logical shape, cap rows tall (1920x1080 for 16:9 at 1080).
+            // From the logical size, not the fitted rectangle, whose own
+            // rounding (2079x1169 for a dpr-3 phone's box) would carry into
+            // the capped width (1921).
+            s.outputW = (int)((double)desc.logicalWidth * cap / desc.logicalHeight + 0.5);
             s.outputH = cap;
+        }
+        if (presentsToSurface && s.outputH < kOutputMinRows) {
+            // The floor (kOutputMinRows), at the logical shape: 640x360 for
+            // 16:9, whatever the box (an empty one included).
+            s.outputW = (int)((double)desc.logicalWidth * kOutputMinRows / desc.logicalHeight + 0.5);
+            s.outputH = kOutputMinRows;
         }
     } else if (presentsToSurface && desc.frameWidth > 0 && desc.frameHeight > 0) {
         s.outputW = desc.frameWidth;
@@ -72,7 +87,7 @@ void GpuDevice::ApplyFrameSizes(const FrameSizes& s, bool atInit) {
     if (!atInit && s.drawnW == prevW && s.drawnH == prevH && OutputWidth() == prevOutW &&
         OutputHeight() == prevOutH)
         return;
-    const int rowCap = mFollowsTarget ? OutputRowCap(mSizeDesc, mDiscreteGpu, !mHeadless) : 0;
+    const int rowCap = mFollowsTarget ? mRowCap : 0;
     char capText[48] = "";
     if (rowCap > 0)
         snprintf(capText, sizeof(capText), ", output capped at %d rows%s", rowCap,
@@ -83,4 +98,53 @@ void GpuDevice::ApplyFrameSizes(const FrameSizes& s, bool atInit) {
            mSizeDesc.renderScaleExplicit > 0.0f ? " (asked for)" : "",
            mDiscreteGpu ? "discrete" : "non-discrete", mWidth, mHeight, LogicalWidth(),
            LogicalHeight(), capText);
+}
+
+RowCapChoice WebOutputRowCap(const GpuDeviceDesc& desc, bool adapterHasBc) {
+    RowCapChoice c;
+    if (desc.outputMaxRowsExplicit >= 0) {
+        c.rows = desc.outputMaxRowsExplicit;
+        c.source = RowCapSource::Knob;
+    } else if (!adapterHasBc && desc.outputMaxRowsNoBc > 0) {
+        c.rows = desc.outputMaxRowsNoBc;
+        c.source = RowCapSource::NoBcAdapter;
+    } else if (desc.outputMaxRowsIntegrated > 0) {
+        c.rows = desc.outputMaxRowsIntegrated;
+        c.source = RowCapSource::WebDefault;
+    }
+    return c;
+}
+
+GpuDeviceDesc WebFrameDesc(const GpuDeviceDesc& desc) {
+    GpuDeviceDesc d = desc;
+    d.title = nullptr;
+    d.renderScale = 1.0f;
+    d.renderScaleIntegrated = 1.0f;
+    d.renderScaleExplicit = 0.0f;
+    return d;
+}
+
+const char* DescribeRowCap(const RowCapChoice& c, char* buf, int bufSize) {
+    const char* why = c.source == RowCapSource::Knob          ? "knob (MILO_OUTPUT_MAX_ROWS)"
+                    : c.source == RowCapSource::NoBcAdapter   ? "adapter lacks texture-compression-bc"
+                    : c.source == RowCapSource::WebDefault    ? "web default"
+                                                              : "none set";
+    if (c.rows > 0)
+        snprintf(buf, bufSize, "%d rows: %s", c.rows, why);
+    else
+        snprintf(buf, bufSize, "no cap: %s", why);
+    return buf;
+}
+
+bool SettledSize::Offer(int w, int h, double nowMs) {
+    if (w != mSeenW || h != mSeenH) {
+        mSeenW = w;
+        mSeenH = h;
+        mSeenSince = nowMs;
+    }
+    if (mSeenW == mTakenW && mSeenH == mTakenH) return false;
+    if (nowMs - mSeenSince < mSettleMs) return false;
+    mTakenW = mSeenW;
+    mTakenH = mSeenH;
+    return true;
 }
