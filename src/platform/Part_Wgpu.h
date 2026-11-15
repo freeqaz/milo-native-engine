@@ -10,6 +10,15 @@ class RndEnviron;
 // Draw a particle system's active particles as camera-facing quads.
 void DrawParticlesBillboard(RndParticleSys* sys);
 
+// Compile now the pipeline a particle system with material `mat` asks for
+// when drawn in `ctx`, with the material's blend and with each of `blends`
+// (states a property animation keys; dc3's load-time warm,
+// native/src/platform/PipelineWarm.cpp). Particle pipelines compile in 1-2 ms,
+// so this creates them synchronously. Returns the pipelines created.
+struct MeshPassContext;
+int WarmParticlePipelines(RndMat* mat, const MeshPassContext& ctx, const int* blends = nullptr,
+                          int numBlends = 0);
+
 // One particle's quad: corner = centre +- right +- up (TL = centre - right + up).
 // camRight/camUp are the camera's world X and Z axes; halfSize is size / 2.
 // retailXbox selects the shipped Xbox particle shader's billboard

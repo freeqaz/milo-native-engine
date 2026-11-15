@@ -10,7 +10,9 @@
 #include "rndobj/Mat.h"
 #include "platform/rndshape/RndShape.h"
 
+#include "gfx/PipelineCount.h"
 #include "gfx/RenderPipelineCache.h"
+#include "platform/MeshPipelineKey.h"
 
 #include <cmath>
 #include <cstring>
@@ -133,6 +135,81 @@ static void EnsureParticlePipeline() {
     sParticlePipelineLayout = dev.CreatePipelineLayout(&plDesc);
 
     sParticlePipelineReady = true;
+}
+
+// The pipeline a particle system with material `mat` drawn with `blend` asks
+// for in a pass (the draw's, or the load-time warm's: WarmParticlePipelines).
+static wgpu::RenderPipeline ParticlePipeline(RndMat* mat, WgpuBlend blend,
+                                             wgpu::TextureFormat format, bool hasDepth,
+                                             bool toTexture, uint32_t samples) {
+    EnsureParticlePipeline();
+    wgpu::BlendState bs = gWgpuRnd->Pipelines().MapBlend(blend);
+
+    wgpu::ColorTargetState ct{};
+    ct.format = format;
+    ct.blend = &bs;
+    ct.writeMask = wgpu::ColorWriteMask::All;
+    // RB3's retail post chain reads the frame's alpha as its bloom mask: in the
+    // main frame a particle writes the mask (AllowHDR material) or leaves alpha
+    // alone. Both are no-ops for DC3 (rndshape::RetailBloomMaskActive false).
+    float maskScale = 0.0f;
+    if (rndshape::RetailBloomMaskActive() && hasDepth && !toTexture) {
+        // DC3's scale is negative (pre-clamp luma in the mesh shader); a
+        // particle's colour is unlit, so its magnitude is applied as is.
+        maskScale = std::fabs(rndshape::BloomMaskScale(rndshape::Mat(mat)));
+        if (maskScale <= 0.0f)
+            ct.writeMask = wgpu::ColorWriteMask::Red | wgpu::ColorWriteMask::Green |
+                           wgpu::ColorWriteMask::Blue;
+    }
+    wgpu::ConstantEntry consts[1] = {};
+    consts[0].key = "kMaskScale";
+    consts[0].value = maskScale;
+
+    wgpu::FragmentState frag{};
+    frag.module = sParticleShader;
+    frag.entryPoint = "fs_particle";
+    frag.constantCount = 1;
+    frag.constants = consts;
+    frag.targetCount = 1;
+    frag.targets = &ct;
+
+    wgpu::VertexAttribute attrs[3] = {};
+    attrs[0].format = wgpu::VertexFormat::Float32x3; attrs[0].offset = 0; attrs[0].shaderLocation = 0;
+    attrs[1].format = wgpu::VertexFormat::Float32x2; attrs[1].offset = 12; attrs[1].shaderLocation = 1;
+    attrs[2].format = wgpu::VertexFormat::Float32x4; attrs[2].offset = 20; attrs[2].shaderLocation = 2;
+
+    wgpu::VertexBufferLayout vbl{};
+    vbl.arrayStride = sizeof(ParticleVertex);
+    vbl.stepMode = wgpu::VertexStepMode::Vertex;
+    vbl.attributeCount = 3;
+    vbl.attributes = attrs;
+
+    wgpu::DepthStencilState ds{};
+    if (hasDepth) {
+        ds.format = wgpu::TextureFormat::Depth24PlusStencil8;
+        ds.depthWriteEnabled = wgpu::OptionalBool::False;
+        ds.depthCompare = wgpu::CompareFunction::LessEqual;
+    }
+
+    wgpu::RenderPipelineDescriptor pipeDesc{};
+    pipeDesc.layout = sParticlePipelineLayout;
+    pipeDesc.vertex.module = sParticleShader;
+    pipeDesc.vertex.entryPoint = "vs_particle";
+    pipeDesc.vertex.bufferCount = 1;
+    pipeDesc.vertex.buffers = &vbl;
+    pipeDesc.fragment = &frag;
+    pipeDesc.depthStencil = hasDepth ? &ds : nullptr;
+    pipeDesc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+    pipeDesc.primitive.cullMode = wgpu::CullMode::None;
+    pipeDesc.multisample.count = samples;
+
+    // Cached (gfx/RenderPipelineCache.h): a per-draw CreateRenderPipeline
+    // recompiled the particle shader for every system, every frame.
+    return sParticlePipelines.GetOrCreate(
+        gWgpuRnd->Gpu().Device(),
+        RenderPipelineCache::MakeKey(bs, ct.format, ct.writeMask, hasDepth,
+                                     pipeDesc.multisample.count, maskScale, 0u),
+        pipeDesc);
 }
 
 // Reserve room for maxParticles quads in this frame's vertex arena and return
@@ -485,76 +562,10 @@ void DrawParticlesBillboard(RndParticleSys* sys) {
     uint64_t vbOffset = (uint64_t)firstVert * sizeof(ParticleVertex);
     queue.WriteBuffer(sParticleVB, vbOffset, verts.data(), verts.size() * sizeof(ParticleVertex));
 
-    // Create pipeline for this blend mode
-    wgpu::BlendState bs = gWgpuRnd->Pipelines().MapBlend((WgpuBlend)mat->GetBlend());
-
-    wgpu::ColorTargetState ct{};
-    ct.format = gWgpuRnd->CurrentTargetFormat();
-    ct.blend = &bs;
-    ct.writeMask = wgpu::ColorWriteMask::All;
-    // RB3's retail post chain reads the frame's alpha as its bloom mask: in the
-    // main frame a particle writes the mask (AllowHDR material) or leaves alpha
-    // alone. Both are no-ops for DC3 (rndshape::RetailBloomMaskActive false).
-    float maskScale = 0.0f;
-    if (rndshape::RetailBloomMaskActive() && gWgpuRnd->CurrentPassHasDepth() &&
-        !gWgpuRnd->ActiveTargetTex()) {
-        // DC3's scale is negative (pre-clamp luma in the mesh shader); a
-        // particle's colour is unlit, so its magnitude is applied as is.
-        maskScale = std::fabs(rndshape::BloomMaskScale(rndshape::Mat(mat)));
-        if (maskScale <= 0.0f)
-            ct.writeMask = wgpu::ColorWriteMask::Red | wgpu::ColorWriteMask::Green |
-                           wgpu::ColorWriteMask::Blue;
-    }
-    wgpu::ConstantEntry consts[1] = {};
-    consts[0].key = "kMaskScale";
-    consts[0].value = maskScale;
-
-    wgpu::FragmentState frag{};
-    frag.module = sParticleShader;
-    frag.entryPoint = "fs_particle";
-    frag.constantCount = 1;
-    frag.constants = consts;
-    frag.targetCount = 1;
-    frag.targets = &ct;
-
-    wgpu::VertexAttribute attrs[3] = {};
-    attrs[0].format = wgpu::VertexFormat::Float32x3; attrs[0].offset = 0; attrs[0].shaderLocation = 0;
-    attrs[1].format = wgpu::VertexFormat::Float32x2; attrs[1].offset = 12; attrs[1].shaderLocation = 1;
-    attrs[2].format = wgpu::VertexFormat::Float32x4; attrs[2].offset = 20; attrs[2].shaderLocation = 2;
-
-    wgpu::VertexBufferLayout vbl{};
-    vbl.arrayStride = sizeof(ParticleVertex);
-    vbl.stepMode = wgpu::VertexStepMode::Vertex;
-    vbl.attributeCount = 3;
-    vbl.attributes = attrs;
-
-    wgpu::DepthStencilState ds{};
-    if (gWgpuRnd->CurrentPassHasDepth()) {
-        ds.format = wgpu::TextureFormat::Depth24PlusStencil8;
-        ds.depthWriteEnabled = wgpu::OptionalBool::False;
-        ds.depthCompare = wgpu::CompareFunction::LessEqual;
-    }
-
-    wgpu::RenderPipelineDescriptor pipeDesc{};
-    pipeDesc.layout = sParticlePipelineLayout;
-    pipeDesc.vertex.module = sParticleShader;
-    pipeDesc.vertex.entryPoint = "vs_particle";
-    pipeDesc.vertex.bufferCount = 1;
-    pipeDesc.vertex.buffers = &vbl;
-    pipeDesc.fragment = &frag;
-    pipeDesc.depthStencil = gWgpuRnd->CurrentPassHasDepth() ? &ds : nullptr;
-    pipeDesc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
-    pipeDesc.primitive.cullMode = wgpu::CullMode::None;
-    pipeDesc.multisample.count = gWgpuRnd->CurrentSampleCount();
-
-    // Cached (gfx/RenderPipelineCache.h): a per-draw CreateRenderPipeline
-    // recompiled the particle shader for every system, every frame.
-    wgpu::RenderPipeline pipe = sParticlePipelines.GetOrCreate(
-        dev,
-        RenderPipelineCache::MakeKey(bs, ct.format, ct.writeMask,
-                                     gWgpuRnd->CurrentPassHasDepth(),
-                                     pipeDesc.multisample.count, maskScale, 0u),
-        pipeDesc);
+    wgpu::RenderPipeline pipe = ParticlePipeline(
+        mat, (WgpuBlend)mat->GetBlend(), gWgpuRnd->CurrentTargetFormat(),
+        gWgpuRnd->CurrentPassHasDepth(), gWgpuRnd->ActiveTargetTex() != nullptr,
+        gWgpuRnd->CurrentSampleCount());
 
     // Bind group 0: reuse the main renderer's scene bind group (same SceneBGL)
     wgpu::BindGroup& sceneBG = gWgpuRnd->SceneBindGroup();
@@ -591,6 +602,18 @@ void DrawParticlesBillboard(RndParticleSys* sys) {
     pass.SetIndexBuffer(sParticleIB, wgpu::IndexFormat::Uint16, 0,
                         numParticles * 6 * sizeof(uint16_t));
     pass.DrawIndexed(numParticles * 6);
+}
+
+int WarmParticlePipelines(RndMat* mat, const MeshPassContext& ctx, const int* blends,
+                          int numBlends) {
+    if (!gWgpuRnd || !mat) return 0;
+    const uint64_t before = GpuPipelineCreateCount();
+    ParticlePipeline(mat, (WgpuBlend)mat->GetBlend(), ctx.targetFormat, ctx.hasDepth,
+                     ctx.toTexture, ctx.sampleCount);
+    for (int i = 0; i < numBlends; ++i)
+        ParticlePipeline(mat, (WgpuBlend)blends[i], ctx.targetFormat, ctx.hasDepth, ctx.toTexture,
+                         ctx.sampleCount);
+    return (int)(GpuPipelineCreateCount() - before);
 }
 
 void PartTerminate() {

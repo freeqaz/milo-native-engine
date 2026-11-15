@@ -25,9 +25,17 @@ public:
               GpuDevice& gpu, PipelineManager& pipelines,
               wgpu::TextureView& whiteTexView, wgpu::Sampler& defaultSampler);
     void Terminate();
+    // Compile now the pipelines a rect drawn with `mat` asks for in a pass of
+    // `format` / `hasDepth` / `toTexture` / `samples` (dc3's load-time warm of
+    // a RndFlare's or RndScreenMask's material). Returns the pipelines created.
+    int Warm(GpuDevice& gpu, PipelineManager& pipelines, RndMat* mat, wgpu::TextureFormat format,
+             bool hasDepth, bool toTexture, uint32_t samples);
 
 private:
     void EnsurePipeline(GpuDevice& gpu);
+    wgpu::RenderPipeline PipelineFor(GpuDevice& gpu, PipelineManager& pipelines, RndMat* mat,
+                                     bool hasTex, wgpu::TextureFormat format, bool hasDepth,
+                                     bool toTexture, uint32_t samples);
 
     wgpu::ShaderModule m2dShader;
     wgpu::BindGroupLayout m2dBindGroupLayout;

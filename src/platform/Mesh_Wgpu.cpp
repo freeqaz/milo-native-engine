@@ -347,6 +347,17 @@ int WarmMeshPipelines(RndMesh* mesh, const MeshPassContext& ctx, const MatKeyVar
     return queued;
 }
 
+int WarmMaterialPipelines(RndMat* rawMat, bool skinned, const MeshPassContext& ctx,
+                          const MatKeyVariant* variants, int numVariants) {
+    if (!gWgpuRnd || !rawMat) return 0;
+    auto mat = rndshape::Mat(rawMat);
+    if (!mat || ShouldSkipMesh("", mat)) return 0;  // a runtime mesh: named at its first draw
+    const PipelineKey key = MaterialPipelineKey(rawMat, skinned, false, false, 0, ctx);
+    int queued = WarmVariant(key, rawMat, false, ctx, MatKeyVariant{});
+    for (int i = 0; i < numVariants; ++i) queued += WarmVariant(key, rawMat, false, ctx, variants[i]);
+    return queued;
+}
+
 int WarmTextPagePipelines(RndMat* fontMat, const MeshPassContext& ctx) {
     if (!gWgpuRnd || !fontMat) return 0;
     auto mat = rndshape::Mat(fontMat);

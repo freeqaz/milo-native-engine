@@ -1,5 +1,6 @@
 #include "gfx/DrawRect2D.h"
 #include "gfx/GpuDevice.h"
+#include "gfx/PipelineCount.h"
 #include "gfx/PipelineManager.h"
 #include "platform/Rnd_Wgpu.h"
 #include "platform/TexGpu.h"
@@ -116,6 +117,102 @@ void DrawRect2D::EnsurePipeline(GpuDevice& gpu) {
     m2dPipelineReady = true;
 }
 
+// The pipeline a rect drawn with `mat` (null: DrawRectMat's SrcAlpha) asks for
+// in a pass: the draw's, or the load-time warm's (Warm).
+wgpu::RenderPipeline DrawRect2D::PipelineFor(GpuDevice& gpu, PipelineManager& pipelines,
+                                             RndMat* mat, bool hasTex,
+                                             wgpu::TextureFormat format, bool hasDepth,
+                                             bool toTexture, uint32_t samples) {
+    EnsurePipeline(gpu);
+    WgpuBlend blend = WgpuBlend::SrcAlpha;
+    if (mat) blend = (WgpuBlend)mat->GetBlend();
+
+    wgpu::BlendState bs = pipelines.MapBlend(blend);
+
+    wgpu::ColorTargetState ct{};
+    ct.format = format;
+    ct.blend = &bs;
+    ct.writeMask = wgpu::ColorWriteMask::All;
+    // RB3's retail post chain reads the main frame's alpha as its bloom mask.
+    // Retail draws a rect through RndShaderDrawRect (rb3-xenon Shader.cpp):
+    // CalcShaderOpts sets pseudo-HDR when !Offscreen() && mat->AllowHDR(), and
+    // SetColorWriteMask (0x824A5AF8) writes alpha only under pseudo-HDR,
+    // Offscreen() or mat->mAlphaWrite. A null material is DrawRectMat
+    // (SrcAlpha, so not AllowHDR). So in the main frame an AllowHDR material
+    // writes the luma mask, an alpha-write one its alpha, and every other rect
+    // leaves alpha alone, as meshes (Mesh_Wgpu) and particles (Part_Wgpu) do.
+    // No-ops for DC3 (rndshape::RetailBloomMaskActive false).
+    float maskScale = 0.0f;
+    if (rndshape::RetailBloomMaskActive() && hasDepth && !toTexture) {
+        // DC3's scale is negative (luma of the pre-clamp colour, which a rect
+        // does not have: its colour is the clamped one, so the magnitude is used).
+        // RndShaderDrawRect::CalcShaderOpts ignores the environ's fade-out.
+        if (mat) maskScale = std::fabs(rndshape::BloomMaskScale(rndshape::Mat(mat), false));
+        if (maskScale <= 0.0f && !(mat && rndshape::Mat(mat)->GetAlphaWrite()))
+            ct.writeMask = wgpu::ColorWriteMask::Red | wgpu::ColorWriteMask::Green |
+                           wgpu::ColorWriteMask::Blue;
+    }
+    wgpu::ConstantEntry consts[1] = {};
+    consts[0].key = "kMaskScale";
+    consts[0].value = maskScale;
+
+    wgpu::FragmentState frag{};
+    frag.module = m2dShader;
+    frag.entryPoint = hasTex ? "fs_2d" : "fs_2d_notex";
+    frag.constantCount = 1;
+    frag.constants = consts;
+    frag.targetCount = 1;
+    frag.targets = &ct;
+
+    wgpu::VertexAttribute attrs[3] = {};
+    attrs[0].format = wgpu::VertexFormat::Float32x2; attrs[0].offset = 0; attrs[0].shaderLocation = 0;
+    attrs[1].format = wgpu::VertexFormat::Float32x2; attrs[1].offset = 8; attrs[1].shaderLocation = 1;
+    attrs[2].format = wgpu::VertexFormat::Float32x4; attrs[2].offset = 16; attrs[2].shaderLocation = 2;
+
+    wgpu::VertexBufferLayout vbl{};
+    vbl.arrayStride = sizeof(Vertex2D);
+    vbl.stepMode = wgpu::VertexStepMode::Vertex;
+    vbl.attributeCount = 3;
+    vbl.attributes = attrs;
+
+    wgpu::DepthStencilState ds{};
+    if (hasDepth) {
+        ds.format = wgpu::TextureFormat::Depth24PlusStencil8;
+        ds.depthWriteEnabled = wgpu::OptionalBool::False;
+        ds.depthCompare = wgpu::CompareFunction::Always;
+    }
+
+    wgpu::RenderPipelineDescriptor pipeDesc{};
+    pipeDesc.layout = m2dPipelineLayout;
+    pipeDesc.vertex.module = m2dShader;
+    pipeDesc.vertex.entryPoint = "vs_2d";
+    pipeDesc.vertex.bufferCount = 1;
+    pipeDesc.vertex.buffers = &vbl;
+    pipeDesc.fragment = &frag;
+    pipeDesc.depthStencil = hasDepth ? &ds : nullptr;
+    pipeDesc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+    pipeDesc.multisample.count = samples;
+
+    // Cached: see gfx/RenderPipelineCache.h (a per-rect CreateRenderPipeline
+    // recompiled the shader every frame).
+    return m2dPipelines.GetOrCreate(
+        gpu.Device(),
+        RenderPipelineCache::MakeKey(bs, ct.format, ct.writeMask, hasDepth,
+                                     pipeDesc.multisample.count, maskScale, hasTex ? 1u : 0u),
+        pipeDesc);
+}
+
+int DrawRect2D::Warm(GpuDevice& gpu, PipelineManager& pipelines, RndMat* mat,
+                     wgpu::TextureFormat format, bool hasDepth, bool toTexture,
+                     uint32_t samples) {
+    const uint64_t before = GpuPipelineCreateCount();
+    // A rect samples its material's diffuse texture when it has one (Draw; one
+    // whose bitmap never uploads draws untextured and compiles at the draw).
+    PipelineFor(gpu, pipelines, mat, mat && mat->GetDiffuseTex(), format, hasDepth, toTexture,
+                samples);
+    return (int)(GpuPipelineCreateCount() - before);
+}
+
 void DrawRect2D::Draw(wgpu::RenderPassEncoder& pass, const Hmx::Rect& rect, RndMat* mat,
                       const Hmx::Color& color, const Hmx::Color* topRight, const Hmx::Color* botLeft,
                       GpuDevice& gpu, PipelineManager& pipelines,
@@ -205,85 +302,12 @@ void DrawRect2D::Draw(wgpu::RenderPassEncoder& pass, const Hmx::Rect& rect, RndM
     }
     if (!hasTex) texView = whiteTexView;
 
-    WgpuBlend blend = WgpuBlend::SrcAlpha;
-    if (mat) blend = (WgpuBlend)mat->GetBlend();
-
-    wgpu::BlendState bs = pipelines.MapBlend(blend);
     WgpuRnd* rnd = gWgpuRnd;
     if (!rnd) return;
-
-    wgpu::ColorTargetState ct{};
-    ct.format = rnd->CurrentTargetFormat();
-    ct.blend = &bs;
-    ct.writeMask = wgpu::ColorWriteMask::All;
-    // RB3's retail post chain reads the main frame's alpha as its bloom mask.
-    // Retail draws a rect through RndShaderDrawRect (rb3-xenon Shader.cpp):
-    // CalcShaderOpts sets pseudo-HDR when !Offscreen() && mat->AllowHDR(), and
-    // SetColorWriteMask (0x824A5AF8) writes alpha only under pseudo-HDR,
-    // Offscreen() or mat->mAlphaWrite. A null material is DrawRectMat
-    // (SrcAlpha, so not AllowHDR). So in the main frame an AllowHDR material
-    // writes the luma mask, an alpha-write one its alpha, and every other rect
-    // leaves alpha alone, as meshes (Mesh_Wgpu) and particles (Part_Wgpu) do.
-    // No-ops for DC3 (rndshape::RetailBloomMaskActive false).
-    float maskScale = 0.0f;
-    if (rndshape::RetailBloomMaskActive() && rnd->CurrentPassHasDepth() &&
-        !rnd->ActiveTargetTex()) {
-        // DC3's scale is negative (luma of the pre-clamp colour, which a rect
-        // does not have: its colour is the clamped one, so the magnitude is used).
-        // RndShaderDrawRect::CalcShaderOpts ignores the environ's fade-out.
-        if (mat) maskScale = std::fabs(rndshape::BloomMaskScale(rndshape::Mat(mat), false));
-        if (maskScale <= 0.0f && !(mat && rndshape::Mat(mat)->GetAlphaWrite()))
-            ct.writeMask = wgpu::ColorWriteMask::Red | wgpu::ColorWriteMask::Green |
-                           wgpu::ColorWriteMask::Blue;
-    }
-    wgpu::ConstantEntry consts[1] = {};
-    consts[0].key = "kMaskScale";
-    consts[0].value = maskScale;
-
-    wgpu::FragmentState frag{};
-    frag.module = m2dShader;
-    frag.entryPoint = hasTex ? "fs_2d" : "fs_2d_notex";
-    frag.constantCount = 1;
-    frag.constants = consts;
-    frag.targetCount = 1;
-    frag.targets = &ct;
-
-    wgpu::VertexAttribute attrs[3] = {};
-    attrs[0].format = wgpu::VertexFormat::Float32x2; attrs[0].offset = 0; attrs[0].shaderLocation = 0;
-    attrs[1].format = wgpu::VertexFormat::Float32x2; attrs[1].offset = 8; attrs[1].shaderLocation = 1;
-    attrs[2].format = wgpu::VertexFormat::Float32x4; attrs[2].offset = 16; attrs[2].shaderLocation = 2;
-
-    wgpu::VertexBufferLayout vbl{};
-    vbl.arrayStride = sizeof(Vertex2D);
-    vbl.stepMode = wgpu::VertexStepMode::Vertex;
-    vbl.attributeCount = 3;
-    vbl.attributes = attrs;
-
-    wgpu::DepthStencilState ds{};
-    if (rnd->CurrentPassHasDepth()) {
-        ds.format = wgpu::TextureFormat::Depth24PlusStencil8;
-        ds.depthWriteEnabled = wgpu::OptionalBool::False;
-        ds.depthCompare = wgpu::CompareFunction::Always;
-    }
-
-    wgpu::RenderPipelineDescriptor pipeDesc{};
-    pipeDesc.layout = m2dPipelineLayout;
-    pipeDesc.vertex.module = m2dShader;
-    pipeDesc.vertex.entryPoint = "vs_2d";
-    pipeDesc.vertex.bufferCount = 1;
-    pipeDesc.vertex.buffers = &vbl;
-    pipeDesc.fragment = &frag;
-    pipeDesc.depthStencil = rnd->CurrentPassHasDepth() ? &ds : nullptr;
-    pipeDesc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
-    pipeDesc.multisample.count = rnd->CurrentSampleCount();
-
-    // Cached: see gfx/RenderPipelineCache.h (a per-rect CreateRenderPipeline
-    // recompiled the shader every frame).
-    wgpu::RenderPipeline pipe = m2dPipelines.GetOrCreate(
-        dev,
-        RenderPipelineCache::MakeKey(bs, ct.format, ct.writeMask, rnd->CurrentPassHasDepth(),
-                                     pipeDesc.multisample.count, maskScale, hasTex ? 1u : 0u),
-        pipeDesc);
+    wgpu::RenderPipeline pipe =
+        PipelineFor(gpu, pipelines, mat, hasTex, rnd->CurrentTargetFormat(),
+                    rnd->CurrentPassHasDepth(), rnd->ActiveTargetTex() != nullptr,
+                    rnd->CurrentSampleCount());
 
     wgpu::BindGroupEntry bgEntries[2] = {};
     bgEntries[0].binding = 0;

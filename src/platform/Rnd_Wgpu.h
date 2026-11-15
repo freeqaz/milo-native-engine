@@ -153,6 +153,12 @@ public:
     MeshPassContext WorldPassContext(bool reflection) const;
     MeshPassContext OverlayPassContext() const;
     MeshPassContext TexturePassContext(bool depth) const;
+    // Compile now the pipeline DrawRect asks for with `mat` in `ctx` (a
+    // load-time warm, DrawRect2D::Warm). Returns the pipelines created.
+    int WarmRectPipelines(RndMat* mat, const MeshPassContext& ctx) {
+        return mDrawRect2D.Warm(mGpu, mPipelines, mat, ctx.targetFormat, ctx.hasDepth,
+                                ctx.toTexture, ctx.sampleCount);
+    }
     // GetViewport() in the current frame target's pixels (render scale).
     Viewport FrameViewport(const Viewport& v) const;
     // The frame has left its world (FlushPostProcessingForOverlay ran): what

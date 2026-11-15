@@ -2941,6 +2941,18 @@ void WgpuRnd::LogGpuCounters() {
         fprintf(stderr, "[GPUPIPE] frame=%d created=%zu: %s\n", (int)mFrameID, created.size(),
                 names.c_str());
     }
+#ifndef __EMSCRIPTEN__
+    if (mGpu.PipelineCache().IsOpen()) {
+        const PipelineDiskCache::Stats c = mGpu.PipelineCache().GetStats();
+        fprintf(stderr,
+                "[PIPECACHE] frame=%d hits=%llu misses=%llu rejected=%llu stores=%llu "
+                "storeSkipped=%llu bytesRead=%llu bytesWritten=%llu evicted=%llu\n",
+                (int)mFrameID, (unsigned long long)c.hits, (unsigned long long)c.misses,
+                (unsigned long long)c.rejected, (unsigned long long)c.stores,
+                (unsigned long long)c.storeSkipped, (unsigned long long)c.bytesRead,
+                (unsigned long long)c.bytesWritten, (unsigned long long)c.evicted);
+    }
+#endif
 }
 
 #ifdef HX_IMGUI

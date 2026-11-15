@@ -52,6 +52,12 @@ struct MatKeyVariant {
 int WarmMeshPipelines(RndMesh* mesh, const MeshPassContext& ctx,
                       const MatKeyVariant* variants = nullptr, int numVariants = 0);
 
+// The same for a mesh that is not in any dir until its first draw, made by an
+// object that is (a ribbon builds its own mesh, skinned or not, from its
+// material): the keys a plain mesh of `skinned` drawn with `rawMat` asks for.
+int WarmMaterialPipelines(RndMat* rawMat, bool skinned, const MeshPassContext& ctx,
+                          const MatKeyVariant* variants = nullptr, int numVariants = 0);
+
 // Queue the keys a text page drawn with font material `fontMat` asks for in
 // `ctx`. A text builds its pages when its string is set, so a page that only
 // a later string needs (an icon font's, say) is in no loaded dir; its font
