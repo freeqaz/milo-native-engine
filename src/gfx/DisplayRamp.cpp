@@ -4,6 +4,7 @@
 #include "gfx/GpuDevice.h"
 
 #include <cstdio>
+#include "gfx/PipelineCount.h"
 
 namespace {
 
@@ -90,7 +91,7 @@ bool DisplayRamp::Apply(wgpu::CommandEncoder& encoder, const wgpu::Texture& fram
         pd.vertex.entryPoint = "vs_full";
         pd.fragment = &frag;
         pd.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
-        mPipe = dev.CreateRenderPipeline(&pd);
+        mPipe = CreateCountedRenderPipeline(dev, &pd);
         mFormat = fmt;
         mGamma = gamma;
         mScratch = nullptr;

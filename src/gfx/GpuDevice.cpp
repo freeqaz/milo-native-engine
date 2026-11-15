@@ -201,6 +201,11 @@ bool GpuDevice::Init(const GpuDeviceDesc& desc) {
                mHeight, WindowSystemName(), mSurfaceWidth, mSurfaceHeight,
                mFrameTex ? ", frame scaled to fit" : "");
     } else {
+        // The headless target (AcquireHeadlessFrame) is RGBA8Unorm. Say so from
+        // the start: anything keyed on SurfaceFormat() before the first frame --
+        // the pipelines WgpuRnd compiles at init -- would otherwise be built for
+        // the BGRA8Unorm default and compiled again on first use.
+        mSurfaceFormat = wgpu::TextureFormat::RGBA8Unorm;
         printf("GpuDevice: initialized (%dx%d, headless)\n", mWidth, mHeight);
     }
     return true;

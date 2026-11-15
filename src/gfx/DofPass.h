@@ -50,6 +50,11 @@ public:
     const wgpu::TextureView& OutputView() const { return mOutView; }
     const wgpu::Texture& OutputTexture() const { return mOutTex; }
     void Terminate();
+    // Compiles the three pipelines for a `format` scene now, so the first
+    // Run() that finds the depth of field on does not (they used to compile on
+    // the first song frame, with the spot beam and point-test pipelines:
+    // docs/native/dc3-backend-for-rb3-wii.md section 38.2).
+    void Prewarm(wgpu::TextureFormat format, GpuDevice& gpu) { EnsurePipelines(format, gpu); }
     // Bind groups from `cache` (null: four created per run); dc3 PLAN H-66.
     void SetBindGroupCache(BindGroupCache* cache) { mBindGroups = cache; }
 

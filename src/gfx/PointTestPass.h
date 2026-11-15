@@ -81,6 +81,11 @@ public:
     int InFlight() const;
     // The sequence number of the last batch Record() accepted (0: none yet).
     uint64_t LastSeq() const { return mNextSeq - 1; }
+    // Compiles the point and area pipelines for a `depthFormat` depth of
+    // `sampleCount` samples now, so the first Record() does not (section 38.2).
+    bool Prewarm(wgpu::TextureFormat depthFormat, uint32_t sampleCount, GpuDevice& gpu) {
+        return EnsurePipelines(depthFormat, sampleCount, gpu);
+    }
     void Terminate(GpuDevice* gpu);
 
     static constexpr int kMaxBatches = 3;

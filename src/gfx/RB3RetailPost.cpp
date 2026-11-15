@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include "gfx/PipelineCount.h"
 
 namespace {
 
@@ -287,7 +288,7 @@ void RB3RetailPost::EnsurePipelines(GpuDevice& gpu) {
         pd.vertex.entryPoint = "vs_full";
         pd.fragment = &frag;
         pd.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
-        return dev.CreateRenderPipeline(&pd);
+        return CreateCountedRenderPipeline(dev, &pd);
     };
     const wgpu::TextureFormat kBloomFmt = wgpu::TextureFormat::RGBA16Float;
     // RB3: half float. DC3 (np-gfx-post): 8-bit, see mBloomFormat.
@@ -526,7 +527,7 @@ void RB3RetailPost::Blit(wgpu::RenderPassEncoder& pass, const wgpu::TextureView&
         pd.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
         pd.depthStencil = depthFmt == wgpu::TextureFormat::Undefined ? nullptr : &ds;
         pd.multisample.count = samples;
-        mBlitPipe = dev.CreateRenderPipeline(&pd);
+        mBlitPipe = CreateCountedRenderPipeline(dev, &pd);
         mBlitSamples = samples;
         mBlitDepth = depthFmt;
     }

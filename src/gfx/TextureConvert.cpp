@@ -406,6 +406,9 @@ static bool DecodeGx(const RndBitmap& bmp, std::vector<uint8_t>& rgba) {
     return false;
 }
 
+static bool sBitmapCopySrcForTests = false;
+void SetBitmapTexturesCopyableForTests(bool on) { sBitmapCopySrcForTests = on; }
+
 // A GX bitmap decoded to RGBA8 with a box-filtered mip chain. RB3 drops the
 // stored mips at load (RndBitmap::LoadHeader zeroes the count) because the Wii
 // rebuilt them at runtime, so they are rebuilt here as well.
@@ -420,6 +423,7 @@ static wgpu::Texture CreateFromGxBitmap(GpuDevice& gpu, const RndBitmap& bmp) {
     texDesc.size = {(uint32_t)w, (uint32_t)h, 1};
     texDesc.format = wgpu::TextureFormat::RGBA8Unorm;
     texDesc.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
+    if (sBitmapCopySrcForTests) texDesc.usage |= wgpu::TextureUsage::CopySrc;
     texDesc.mipLevelCount = mipCount;
     wgpu::Texture tex = gpu.CreateTexture(texDesc);
     if (!tex) return nullptr;
@@ -508,6 +512,7 @@ wgpu::Texture CreateFromBitmap(GpuDevice& gpu, const RndBitmap& bmp, int numMips
     texDesc.size = {(uint32_t)w, (uint32_t)h, 1};
     texDesc.format = fmt;
     texDesc.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
+    if (sBitmapCopySrcForTests) texDesc.usage |= wgpu::TextureUsage::CopySrc;
     texDesc.mipLevelCount = mipCount;
     wgpu::Texture tex = gpu.CreateTexture(texDesc);
     if (!tex) return nullptr;

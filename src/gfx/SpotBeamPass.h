@@ -110,6 +110,9 @@ public:
     const wgpu::TextureView& OutputView() const { return mView[0]; }
     const wgpu::Texture& OutputTexture() const { return mTex[0]; }  // RGBA8Unorm, readable
     void Terminate();
+    // Compiles the beam and blur pipelines now (they have no key), so the first
+    // Run() with a beam does not (section 38.2). False if they failed.
+    bool Prewarm(GpuDevice& gpu) { return EnsurePipelines(gpu); }
 
     // Bind groups come from `cache` when one is set (gfx/BindGroupCache.h):
     // the uniform buffer is persistent and each slot's offset is fixed, so a

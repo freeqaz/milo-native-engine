@@ -41,6 +41,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include "gfx/PipelineCount.h"
 
 // The single global renderer. TheRnd (declared extern in rndobj/Rnd.h) is a
 // WEAK no-op alias in rndobj_synth_link_stubs.s; this strong definition wins.
@@ -943,9 +944,10 @@ void BandRnd::InitGpuResources() {
     // (AcquireNextFrame) is in that format, so the pipeline targetFormat must
     // match or we hit "attachment format != pipeline" validation + swapped
     // colors. On native HEADLESS the readback target is forced RGBA8Unorm
-    // (GpuDevice::AcquireHeadlessFrame), and mGpu.SurfaceFormat() is still the
-    // BGRA8 default at this point (headless never calls ConfigureSurface), so
-    // keep RGBA8 for headless to preserve the unchanged native PNG output.
+    // (GpuDevice::AcquireHeadlessFrame); SurfaceFormat() has reported that
+    // since GpuDevice::Init (it used to be the BGRA8 default until the first
+    // frame, headless never calling ConfigureSurface), and RGBA8 stays explicit
+    // here for headless to preserve the unchanged native PNG output.
     mTargetFmt = mGpu.IsHeadless() ? wgpu::TextureFormat::RGBA8Unorm
                                    : mGpu.SurfaceFormat();
 
@@ -6536,7 +6538,7 @@ void BandRnd::DrawParticles(RndParticleSys* sys) {
             pd.primitive.cullMode = wgpu::CullMode::None;
             pd.multisample.count = 1;   // rb3 backend is single-sampled
 
-            pipe = mGpu.Device().CreateRenderPipeline(&pd);
+            pipe = CreateCountedRenderPipeline(mGpu.Device(), &pd);
             mPartPipelines[pkey] = pipe;
         }
     }

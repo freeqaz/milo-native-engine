@@ -5,6 +5,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include "gfx/PipelineCount.h"
 
 namespace {
 
@@ -87,10 +88,10 @@ bool PointTestPass::EnsurePipelines(wgpu::TextureFormat depthFormat, uint32_t sa
 
     pd.label = "PointTestPoint";
     pd.primitive.topology = wgpu::PrimitiveTopology::PointList;
-    mPointPipe = dev.CreateRenderPipeline(&pd);
+    mPointPipe = CreateCountedRenderPipeline(dev, &pd);
     pd.label = "PointTestArea";
     pd.primitive.topology = wgpu::PrimitiveTopology::TriangleStrip;
-    mAreaPipe = dev.CreateRenderPipeline(&pd);
+    mAreaPipe = CreateCountedRenderPipeline(dev, &pd);
     mDepthFormat = depthFormat;
     mSampleCount = sampleCount;
     return mPointPipe && mAreaPipe;
