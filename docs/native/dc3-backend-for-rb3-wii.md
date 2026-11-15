@@ -7144,7 +7144,7 @@ rollerrink rising to ~4.1 ms with the beams and ~2.9 ms with
   - Sabotage, `SubmitSpotBeams` back on `EnsureMeshUploaded`: `3 3 3 …`, so it fails.
   - Sabotage, the synced path ignoring invalidation: the sync half fails.
 - **Not fixed, a lead.** DC3's text meshes are unnamed glyph pages and are
-  still re-uploaded every frame, 4–6 at rollerrink. `UploadMesh` is ~1.3% of
+  still re-uploaded every frame, ~5.7 per frame in rollerrink gameplay. `UploadMesh` is ~1.3% of
   main-thread cycles here.
 
 ## 37. DC3 post chain, round 6: throneroom against Xenia, and depth of field (lane np-gfx-post, 2026-11-14)
