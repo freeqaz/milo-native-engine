@@ -99,8 +99,14 @@ struct LookSettings {
     // Output height cap, in rows, on a non-discrete adapter presenting to a
     // window (GpuDeviceDesc::outputMaxRowsIntegrated; 0 = none): a handheld's
     // iGPU draws at most 1920x1080 and the present path scales that into a
-    // larger panel. Enhanced: 1080. Discrete adapters are not capped.
+    // larger panel. Enhanced: 1080. Discrete adapters are not capped. The web
+    // build, which cannot tell a discrete adapter, uses it as its default.
     int outputMaxRowsIntegrated = 0;
+    // The web build's cap on an adapter without texture-compression-bc
+    // (GpuDeviceDesc::outputMaxRowsNoBc, WebOutputRowCap): every phone and
+    // tablet GPU, and what ?gpu_profile=mobile|bare mask. Enhanced: 720 until
+    // a phone is measured. The knob beats it.
+    int outputMaxRowsNoBc = 0;
     // The second COST knob: MILO_OUTPUT_MAX_ROWS=<rows> overrides the cap in
     // both directions, on any adapter, headless included: 0 = no cap (try
     // 1440 on the handheld with 1440), 720 = a 1280x720 frame anywhere.

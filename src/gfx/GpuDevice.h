@@ -82,6 +82,9 @@ struct GpuDeviceDesc {
     //       cap, on any adapter, headless included
     int outputMaxRowsIntegrated = 0;
     int outputMaxRowsExplicit = -1;
+    // The web build's cap on an adapter without texture-compression-bc
+    // (WebOutputRowCap; 0 = none).
+    int outputMaxRowsNoBc = 0;
 };
 
 // The render scale rule (pure; GpuDevice::Init applies it).
@@ -128,6 +131,61 @@ struct FrameSizes {
 };
 FrameSizes ResolveFrameSizes(const GpuDeviceDesc& desc, bool discreteGpu, bool presentsToSurface,
                              int targetW, int targetH);
+// The same with the row cap given (rowCap rows, 0 = none) instead of
+// OutputRowCap's: the web build, whose cap is WebOutputRowCap's.
+FrameSizes ResolveFrameSizesWithCap(const GpuDeviceDesc& desc, bool discreteGpu,
+                                    bool presentsToSurface, int targetW, int targetH, int rowCap);
+// The smallest following output presented to a window or canvas, in rows
+// (the logical shape kept): a collapsed panel or a tiny embedded page must not
+// make a 40x22 frame (the post chain's quarter- and bloom-size targets would
+// be a few texels, or none). The frame is then larger than its box and is
+// scaled down into it. Headless frames are the size asked for.
+constexpr int kOutputMinRows = 360;
+
+// The web build's row cap and why (printed at boot: it is a heuristic). A
+// browser cannot say whether its adapter is discrete, so:
+//   knob     outputMaxRowsExplicit >= 0 (MILO_OUTPUT_MAX_ROWS through ?env=):
+//            that, both directions, on any adapter
+//   no BC    an adapter without texture-compression-bc: outputMaxRowsNoBc
+//            (720). Every phone and tablet GPU lacks it, every desktop
+//            browser's adapter has it, and it is what ?gpu_profile=mobile|bare
+//            mask; until a phone is measured its frame stays at 720 rows
+//   default  otherwise outputMaxRowsIntegrated (1080), the cap an integrated
+//            desktop adapter gets
+enum class RowCapSource { None, Knob, NoBcAdapter, WebDefault };
+struct RowCapChoice {
+    int rows = 0;  // 0 = no cap
+    RowCapSource source = RowCapSource::None;
+};
+RowCapChoice WebOutputRowCap(const GpuDeviceDesc& desc, bool adapterHasBc);
+// The desc the web build resolves its frame's sizes from: the consumer's,
+// at render scale 1 whatever it asked for (the web never supersamples; the
+// browser's scaling of the canvas is the present).
+GpuDeviceDesc WebFrameDesc(const GpuDeviceDesc& desc);
+// "720 rows: adapter lacks texture-compression-bc", "1080 rows: web default",
+// "0 rows (no cap): knob", ... into buf.
+const char* DescribeRowCap(const RowCapChoice& c, char* buf, int bufSize);
+
+// A size that must hold for settleMs before it is taken: a browser's resize
+// and fullscreen events come in bursts, and each taken size re-creates every
+// size-keyed target. Offer() the size seen at nowMs (milliseconds, any
+// monotonic origin) each frame; it returns true, once, when a size other than
+// the last taken one has been seen unchanged for settleMs, and takes it.
+class SettledSize {
+public:
+    explicit SettledSize(double settleMs) : mSettleMs(settleMs) {}
+    void Take(int w, int h) { mTakenW = mSeenW = w; mTakenH = mSeenH = h; }
+    bool Offer(int w, int h, double nowMs);
+    int TakenWidth() const { return mTakenW; }
+    int TakenHeight() const { return mTakenH; }
+private:
+    double mSettleMs;
+    int mSeenW = 0, mSeenH = 0;
+    double mSeenSince = 0.0;
+    int mTakenW = 0, mTakenH = 0;
+};
+// The web build's settle interval for the canvas's size.
+constexpr double kWebResizeSettleMs = 250.0;
 
 // Why GpuDevice::Init failed.
 enum class GpuInitFailure {
@@ -371,7 +429,18 @@ public:
     // libmilo-engine.a ask here). False, with both sizes 0, when the page has no
     // such canvas.
     bool CanvasSize(int& width, int& height) const;
+    // A following frame (GpuDeviceDesc::outputFollowsTarget) on web: once a
+    // frame, the canvas's box in device pixels (the page's
+    // window.miloCanvasDevicePixels, else its CSS box times devicePixelRatio),
+    // taken once it has held kWebResizeSettleMs (SettledSize); the frame's
+    // sizes are then re-resolved, the canvas's buffer set to the output and
+    // the surface configured once. True when it reconfigured. No-op for a
+    // frame that does not follow (it keeps the canvas's own buffer size).
+    bool FollowCanvas();
+    int FrameReconfigures() const { return mFrameReconfigures; }
 #endif
+    // The frame follows its target (GpuDeviceDesc::outputFollowsTarget).
+    bool FollowsTarget() const { return mFollowsTarget; }
 
 private:
 #ifndef __EMSCRIPTEN__
@@ -432,6 +501,15 @@ private:
     int mLogicalHeight = 0;
     bool mFollowsTarget = false;
     GpuDeviceDesc mSizeDesc;
+    // The output's row cap in force (OutputRowCap; WebOutputRowCap on web).
+    int mRowCap = 0;
+#ifdef __EMSCRIPTEN__
+    RowCapChoice mWebRowCap;
+    SettledSize mCanvasSize{kWebResizeSettleMs};
+    int mFrameReconfigures = 0;
+    bool FollowTarget(int targetW, int targetH, bool atInit);
+    bool CanvasTargetSize(int& w, int& h) const;
+#endif
     void ApplyFrameSizes(const FrameSizes& s, bool atInit = false);
     PresentScale mReadbackScale;
     wgpu::Texture mReadbackTex;

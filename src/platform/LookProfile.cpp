@@ -32,6 +32,8 @@ LookSettings SettingsFor(LookProfile p) {
         // integrated GPU (a handheld's 2560x1600 panel is 4x a 720p frame).
         s.outputFollowsTarget = true;
         s.outputMaxRowsIntegrated = 1080;
+        // Web, on a phone-class adapter (no texture-compression-bc): 720.
+        s.outputMaxRowsNoBc = 720;
     }
     // np-gfx-post round 10 (LookProfile.h): every platform, web and
     // integrated GPUs included. Measured on a 3090 at 1x, the three together add

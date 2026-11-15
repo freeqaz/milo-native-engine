@@ -294,6 +294,28 @@ void WgpuRnd::Init() {
 
     // Create GPU device and window
     GpuDeviceDesc desc{};
+    // The shape's frame at the output's own resolution (np-outres;
+    // rndshape::kOutputFollowsTarget): the window's size, headless
+    // MILO_WIDTH x MILO_HEIGHT, or on the web the canvas's box in device
+    // pixels, is the frame -- the virtual resolution only defines the space
+    // viewports, UI and post measures are laid out in, scaled to the frame
+    // (GpuDeviceDesc::outputFollowsTarget). Under the look's switch
+    // (LookSettings::outputFollowsTarget): Retail keeps the original's
+    // 1280x720 frame, scaled into the window or the canvas's box.
+    auto FollowTheTarget = [this](GpuDeviceDesc& d) {
+        if (!rndshape::kOutputFollowsTarget || !milo::Look().outputFollowsTarget ||
+            mWidth <= 0 || mHeight <= 0)
+            return;
+        d.outputFollowsTarget = true;
+        d.logicalWidth = mWidth;
+        d.logicalHeight = mHeight;
+        // The output's row cap (an integrated adapter's default, a web adapter
+        // without BC's, or MILO_OUTPUT_MAX_ROWS anywhere): OutputRowCap and
+        // WebOutputRowCap, gfx/GpuDevice.h.
+        d.outputMaxRowsIntegrated = milo::Look().outputMaxRowsIntegrated;
+        d.outputMaxRowsExplicit = milo::Look().outputMaxRowsExplicit;
+        d.outputMaxRowsNoBc = milo::Look().outputMaxRowsNoBc;
+    };
 #ifdef __EMSCRIPTEN__
     if (mGpu.IsReady()) {
         // The consumer brought the device up before Init, as on desktop below.
@@ -311,6 +333,7 @@ void WgpuRnd::Init() {
         desc.headless = false;
         desc.width = 1280;
         desc.height = 720;
+        FollowTheTarget(desc);
         mGpu.Init(desc);
         printf("DC3 Web: WgpuRnd::Init() — GPU init started (async)\n");
     }
@@ -351,23 +374,7 @@ void WgpuRnd::Init() {
             desc.frameWidth = mWidth;
             desc.frameHeight = mHeight;
         }
-        // The shape's frame at the output's own resolution (np-outres;
-        // rndshape::kOutputFollowsTarget): the window's size, or headless
-        // MILO_WIDTH x MILO_HEIGHT, is the frame -- the virtual resolution
-        // only defines the space viewports, UI and post measures are laid out
-        // in, scaled to the frame (GpuDeviceDesc::outputFollowsTarget).
-        // Under the look's switch (LookSettings::outputFollowsTarget): Retail
-        // keeps the original's 1280x720 frame, scaled into the window.
-        if (rndshape::kOutputFollowsTarget && milo::Look().outputFollowsTarget && mWidth > 0 &&
-            mHeight > 0 && presentScale) {
-            desc.outputFollowsTarget = true;
-            desc.logicalWidth = mWidth;
-            desc.logicalHeight = mHeight;
-            // The output's row cap (an integrated adapter's default, or
-            // MILO_OUTPUT_MAX_ROWS anywhere): OutputRowCap, gfx/GpuDevice.h.
-            desc.outputMaxRowsIntegrated = milo::Look().outputMaxRowsIntegrated;
-            desc.outputMaxRowsExplicit = milo::Look().outputMaxRowsExplicit;
-        }
+        if (presentScale) FollowTheTarget(desc);
 
         if (!mGpu.Init(desc)) {
             if (!desc.headless && mGpu.InitFailure() == GpuInitFailure::SurfaceUnusable) {
@@ -1885,7 +1892,12 @@ void WgpuRnd::BeginDrawing() {
     // reads it. This used to name "#dc3-canvas" here and ignore the result;
     // on rb3-web ("#rb3-canvas") the lookup failed, left both ints unwritten,
     // and every frame resized the surface to stack garbage.
-    {
+    // A frame that follows the canvas (dc3's enhanced look) sizes the canvas's
+    // buffer itself, from the canvas's box, once per settled size
+    // (GpuDevice::FollowCanvas); the buffer then always equals the frame.
+    if (mGpu.FollowsTarget()) {
+        mGpu.FollowCanvas();
+    } else {
         int canvasW, canvasH;
         if (mGpu.CanvasSize(canvasW, canvasH) && canvasW > 0 && canvasH > 0 &&
             (canvasW != mGpu.WindowWidth() || canvasH != mGpu.WindowHeight())) {
