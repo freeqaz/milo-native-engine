@@ -9743,3 +9743,93 @@ every comparison is between two binaries built from the same tree.
   at 12–23 ms a frame, the hitch this round set out to remove.
 - First-draw textures, the 76 warmed-but-undrawn keys and the late rect
   warm are out of scope for this round.
+
+## 42. First-draw textures, round 6: created at load for the game, not at the first draw (lane np-gfx spotperf, branch np-texwarm, 2026-11-15)
+
+Measured on Linux desktop (headless, Dawn/Vulkan, NVIDIA) at
+`DC3_FPS_CAP=120`, rollerrink/ymca and streetside/iceicebaby from boot to
+results, and on the web build (Chromium, 60 Hz), under the shared GPU lock
+with other lanes running. Load-time pairs and the full numbers are in dc3
+PLAN H-116 and the lane notes (`archive/np-gfx-2026-11-14/lanes/spotperf/round6/`).
+
+### 42.1 What was left after sections 39–41
+
+- A texture is created from its bitmap at its first draw
+  (`RndTex::PresyncBitmap`). The image creates it as it loads
+  (`DxTex::SyncBitmap`).
+- In a song (base heads, desktop, 3 runs a venue) that left one recurring
+  frame of 12 ms or more that a texture explains: the
+  `perform_endgame_screen` Enter frame, 14.4–17.0 ms, with 22 creates
+  (17 `perform_endgame`, 5 `results_cluster_right`; 3.7–5.3 ms). The
+  endgame panel loads at boot, and its screen comes up with no transition.
+- The game screen's first frame carried 18–38 ms of creates (160–212
+  textures) in a 55–109 ms frame; on the web 24–26 ms in a 113–134 ms frame.
+- The rest of a song's creates (flashcards, HUD rings, `concentric*`) were
+  13.8–18.7 ms a song, none over 2.3 ms in one frame. The other recurring
+  slow song frames carry no texture cost (draw CPU, the endgame dir load's
+  game CPU, pacing under box load).
+
+### 42.2 The engine part: a warm queue
+
+- `QueueGpuTexWarm(tex)` (`platform/TexGpu.h`) queues a regular, non-render-
+  target texture that has no uploaded GPU texture yet. A texture is queued
+  once; `CleanupGpuTex` (from `~RndTex`) takes a deleted one out of the
+  queue, and `ClearGpuTexCaches` empties it.
+- `PumpGpuTexWarms()`, called from `BeginDrawing` after `PollWarms`, creates
+  queued textures in queue order through `PresyncBitmap` itself, at least
+  one a frame, until the frame's budget (`SetGpuTexWarmBudgetMs`, default
+  2 ms) is spent. What the draw does later is a share hit or nothing.
+- A create made by the pump is counted under its own frame-cost kind,
+  `kTexWarm` (frame-times columns `texwarm_n`, `texwarm_ms`), so `tex_ms`
+  stays the cost of creates at a draw. `[GPUCOUNT]` adds `texWarmCreates`
+  and `texWarmsPending`; a create at a draw is `texCreates` −
+  `texWarmCreates`.
+- Two measurement aids from the same round: `MILO_FRAME_TIMES=-` writes the
+  frame-times rows to stdout, prefixed `[FT] ` (on the web that is the
+  browser console), and `[GPUCOUNT]` reports `texBytes` / `texBytesPeak`,
+  the live bitmap-texture bytes (a shared texture once; render targets and
+  cube maps not counted) and their peak.
+- rb3 and rb3-xenon never queue anything: the pump is one empty-deque check
+  a frame for them.
+
+### 42.3 The DC3 part: what is queued, and when
+
+- `native/src/platform/PipelineWarm.cpp`, behind the H-104 walk:
+  - from `GamePanel::Load` to `GamePanel::Unload` (`HX_NATIVE`), each dir
+    `DirLoader::Cleanup` hands the walk also queues its textures;
+  - at `GamePanel::Load` it queues the textures of what the game draws that
+    loaded at boot: the loaded panels of the game screen and of the mode's
+    `win_screen` (config/modes.dta), and the fonts preloaded at boot
+    (`config/preload_subdirs`, read through an `HX_NATIVE` accessor in
+    `obj/Dir.cpp`; the HUD's score numbers are labels in one);
+  - `GamePanel::PollForLoading` holds the game screen until the queue is
+    empty, at most 5 s.
+- **Not the menus.** The first version queued every loaded dir. Every UI
+  panel loads at boot, and on the web that put 41.3 MB of bitmap textures
+  in GPU memory at the main menu (base 10.4 MB) and 63.2 MB at the peak
+  (base 43.5); 541 GPU textures against 322. Scoped to the game it is
+  13.3 MB at the desktop menu (full warm 48.5) and a 60.9 MB peak (full
+  68.0); the web numbers are in dc3 PLAN H-116.
+- **Result (desktop):** from `game_screen` Enter to the results screens no
+  texture is created at a draw except runtime-made, dir-less ones (album
+  art: 2 a song). The game screen's first frame and the endgame Enter frame
+  carry no texture cost (rollerrink 86 → 67 ms and 14.8 → 10.9 ms in a
+  first comparison; the pump drains during the loading screen, so the hold
+  has not fired).
+- **Guard:** dc3 `PerformCrowdTest` (alley, rink) fails if a texture is
+  created at a draw between the last `[GPUCOUNT]` before
+  `Screen 'game_screen' Enter` and the driver's end frame, if none was
+  warmed before it, if any was warmed before the game's load, or if the
+  game's load did not queue the win screen's panels. Unit tests:
+  `TexWarmTest.*` (4). Sabotages are listed with the tests.
+
+### 42.4 Not done
+
+- The 76 pipeline keys warmed and never drawn (section 39): 34 overlay
+  variants of objects under a panel that this flow draws only in the world
+  pass, 26–27 world keys of objects this flow never shows (dialog,
+  letterbox, photo display, freestyle card), 12–13 reflection keys and 3
+  texture-pass keys. They are compiled on Dawn's workers; their main-thread
+  issue cost is about 2–10 ms a load against a song select → game of
+  0.84–1.03 s that moves ±0.1 s between runs. Not measurable, so not cut;
+  other flows draw them (pause, dialogs, photos, freestyle).
