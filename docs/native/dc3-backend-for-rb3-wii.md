@@ -8874,3 +8874,224 @@ here would not transfer.
   - Sabotage, write-through (the re-synced holder copies its new pixels
     into the shared texture): the twin's read-back changes, red.
   - Sabotage, the type check and the type in the key removed: red.
+
+## 39. First-use hitches, round 3: pipelines compiled at load, a persistent pipeline cache (lane np-gfx spotperf, branch np-hitch, 2026-11-15)
+
+dc3 PLAN H-101. The brief was to move first-draw work into loading. The
+measurement below says that work is pipeline compiles. Texture and mesh
+uploads are 1–3% of the attributed time and were left alone (39.6).
+
+### 39.1 What the hitches were (MEASURED, before)
+
+- **Instrument.** `gfx/FrameCost.h` sums wall time per kind: pipeline
+  create (`CreateCountedRenderPipeline`), bitmap texture create
+  (`RndTex::PresyncBitmap`'s create/share path) and mesh upload
+  (`UploadMesh`). `MILO_FRAME_TIMES` appends `pipe_ms`, `tex_ms` and
+  `mesh_ms` to each frame's row. Nothing reads the sums but the CSV writer.
+  - Cost with `MILO_FRAME_TIMES` off: one null check per frame. A
+    `framecost::Scope` is about 39 ns and sits only on first-use paths. At
+    song rates (0.047 mesh uploads and 0.006 texture creates per frame)
+    that is about 2 ns a frame.
+- **Two full rollerrink runs.** Each ran boot → song select → load → song
+  (self-test pose) → results, at a load average of 18–32.
+  - Every song frame over 33 ms was a pipeline create (7 of 7 in both
+    runs), each 85–98% `pipe_ms`.
+  - The first results frame and the first song-select frames were one to
+    three pipelines.
+  - The venue frame (behind the loading screen) took 1296 / 403 ms: 15–16
+    pipelines, 125–129 textures, 325–338 meshes.
+- **Per event on this box.**
+  - Pipeline: 21–27 ms median, with 160–310 ms spikes.
+  - Texture create: 0.07–0.08 ms.
+  - Mesh upload: 0.015 ms.
+- **Song totals.** Pipelines 1100 / 502 ms; textures 15 / 16 ms; meshes
+  11 / 12 ms.
+- **The spikes are driver disk-cache misses, not override constants.** An
+  in-process bench timed about 30 keys, each changing one thing (fixed
+  state, vertex layout, a new override tuple, the `fs_cutout` entry).
+  - With NVIDIA's GL cache warm, every create took 20–40 ms.
+  - With `__GL_SHADER_DISK_CACHE=0`, every create took 30–90 ms, and no
+    spikes appeared.
+  - A new override tuple cost the same as a state-only change. Removing
+    overrides would remove no create, so the override set was not shrunk.
+  - About half of each create is Dawn/Tint and half the driver.
+
+### 39.2 Pipelines warmed at load (dc3 only)
+
+- **Hook.** dc3 `DirLoader::Cleanup` (under `HX_NATIVE`) calls
+  `NativeWarmLoadedDir` (dc3 `native/src/platform/PipelineWarm.cpp`) once
+  a loaded dir is synced.
+- **What the walk covers.**
+  - Sub dirs and proxies. A PanelDir is walked as the overlay pass, a
+    Character as the texture pass too.
+  - The `RndPropAnim` keys that change a material's blend, z mode or
+    alpha write.
+  - Fonts (their text pages are built when a string is set).
+  - Every live WorldReflection's draws in the reflection pass.
+  - What draws a mesh in no dir: HamRibbon, RndRibbon, and CharFeedback's
+    fail material.
+  - What draws without a mesh: RndParticleSys (its animated blends),
+    RndFlare and RndScreenMask (through the rect path).
+- **Keys.** A key comes from the same function the draw calls:
+  `MeshPipelineKey` / `MaterialPipelineKey` with `MeshPassContext`,
+  `DrawRect2D::PipelineFor` and `ParticlePipeline`. So a warm can only
+  warm a key some draw would ask for, and there is no recorded key list to
+  rot.
+- **Async.** Mesh keys go through `PipelineManager::WarmAsync` →
+  `CreateRenderPipelineAsync` on Dawn's workers, at most 8 issued per
+  frame, polled by `PollWarms`, so the loading screen keeps moving.
+  - A draw that reaches a key still compiling blocks on it (WaitAny,
+    counted as `pipelineWaits`). No draw is skipped and no other pipeline
+    is substituted.
+  - Rect and particle keys are compiled synchronously (1–10 ms each).
+- **Bloom-mask scale moved out of the rect and particle keys.** In DC3 the
+  retail chain is on, so `RetailBloomMaskActive()` is true. The comments
+  that called the mask a no-op for DC3 were stale.
+  - The mask scale is the frame's `BloomLumaScale(ActivePostProc())` times
+    the material's bloom multiplier. It was a pipeline override constant,
+    so each post-proc a camera shot switched to meant a new pipeline that
+    no load-time walk could know.
+  - On rollerrink these were discoBallFlare.mat at song frame ~1400 and
+    bid_stars.mat's a1_stars.part at ~10000.
+  - The scale now rides as a flat-interpolated vertex attribute, the same
+    on every vertex of a draw. The mesh path already carried it as a
+    uniform. The key keeps only the write mask, and the warm compiles both
+    write masks for a material that allows the mask.
+  - This code is shared, and rb3 (RB3-Wii shape) has the mask active, so
+    rb3 and rb3-xenon frames were re-checked (39.5).
+- **Result (MEASURED, rollerrink to results).** `pipelineCreates` does not
+  move after the song starts, through the song and results, in both looks:
+
+  | run | look | creates at playing → end | warmed | waits |
+  |---|---|---|---|---|
+  | warm-9e | enhanced | 62 → 62 | 134 | 6–10 |
+  | warm-9r | retail | 54 → 54 | 130 | 6–10 |
+  | outres-cold (1920x1080 drawn) | enhanced | 64 → 64 | 134 | 8 |
+
+  - Load-phase pipeline time fell from 378–1334 ms to 77–160 ms.
+  - Song plus results pipeline time fell from 502–1488 ms to **0**.
+  - The venue frame went from 1332 to 180–315 ms.
+  - Load wall time went from about 8.0–8.3 s to about 8.3–8.6 s.
+- **Warmed and never drawn.** Of 134 warmed (enhanced), 80 had not been
+  drawn by song frame 20000. Over the full run to results the counters
+  read 58 drawn, so **76 warmed and never drawn** (`warmsDrawn`, the
+  1920x1080 run; 73–77 on the others).
+  - By the dir that queued them (TMPDIAG, not shipped): 18 character dir
+    (`chars_base`), 11 song-specific (`uniq0`/`uniq1`), 4 `perform_endgame`,
+    and the rest one to four each across HUD and UI panels.
+  - Only 4 are the bloom-mask twins.
+  - 39 are MSAA world-pass keys, 38 single-sample overlay/texture-pass
+    keys, 3 single-sample with depth.
+  - They cost compile time behind the loading screen only.
+- **Rendering identical (MEASURED, in one process).** An alternating A/B:
+  a flag file switched the warm off and the rect and particle draws back to
+  the old shaders with their override-constant mask.
+  - Points: song select ×2, the first venue frame, gameplay ×3, the first
+    results frame, results ×1.
+  - Runs: retail (pix8), and enhanced and retail on the merged base (pix9).
+  - **0 differing pixels** at every point, 5 comparisons each. The old
+    side really did create (venue_first creates 100 → 113).
+
+### 39.3 Persistent pipeline cache
+
+- **What it is.** `gfx/PipelineDiskCache` backs Dawn's blob cache
+  (`DawnCacheDeviceDescriptor` load/store callbacks) with one file per
+  blob under a per-game directory.
+- **Directory.**
+  - The weak `MiloPipelineCacheDefaultDir()` returns null by default, so
+    the cache is off unless a game names a directory.
+  - dc3 (`Cache_Stub.cpp`) names `<cache root>/dawn-pipelines`. The cache
+    root is `$DC3_CACHE_DIR`, else `~/.local/share/dc3/cache`.
+  - rb3 and rb3-xenon name none, so they do not read each other's blobs,
+    or DC3's, because they have none.
+  - `MILO_PIPELINE_CACHE=0`/`off` turns it off; a path puts it there.
+    Registered in the classification sidecar, census **461**.
+- **Key.**
+  - Dawn's part: the device cache key, which covers the adapter, backend,
+    toggles and the isolation key we pass. Each blob is also keyed by the
+    WGSL source and the full pipeline description. On Vulkan the driver
+    validates its own pipeline-cache header (vendor, device, UUID).
+  - Ours: the isolation key
+    `"milo-pipeline-cache 1|<executable build id>|<vendor>:<device>|<adapter description>"`.
+    The description carries the driver version. A new build, a new GPU or
+    a new driver is a new key, and the old blobs age out under the bound.
+- **Damage.** Every blob stores its key bytes and a hash of its value. A
+  truncated, corrupt or foreign blob is a miss, is deleted, and the
+  pipeline compiles normally.
+  - MEASURED: every blob of a filled cache truncated → 137 rejected,
+    recompiled and stored again, frame identical, no crash.
+- **Bound.** 64 MiB, with least-recently-used eviction down to 3/4 at open.
+  One venue plus a song writes about 29–31 MB (231–267 blobs).
+- **Web.** Compiled out (`#ifndef __EMSCRIPTEN__`). The browser keeps its
+  own cache.
+- **Tests.** The gate does not depend on cache state: `milo-tests` run
+  with `MILO_PIPELINE_CACHE=0`, and the cache test uses a fresh temp dir.
+- **MEASURED, rollerrink to results, a fresh dir then the same dir.** These
+  ran at a load average of about 25, so single-run Init numbers are noisy;
+  the interleaved Init reps below are the better figure.
+
+  | look | run | Init fixed warm | boot pipe ms | load pipe ms | song+results pipe ms | cache |
+  |---|---|---|---|---|---|---|
+  | enhanced | cold | 915.6 ms | 3746 | 51 | 0 | 261 stores, 30.6 MB |
+  | enhanced | warm | 244.8 ms | 749 | 49 | 0 | 517 hits, 0 misses |
+  | retail | cold | 29.9 ms | 1032 | 57 | 0 | 231 stores, 29.0 MB |
+  | retail | warm | 19.8 ms | 139 | 5 | 0 | 463 hits, 0 misses |
+  | enhanced 1920x1080 | cold | — | 1725 | 350 | 0 | 267 stores, 30.8 MB |
+  | enhanced 1920x1080 | warm | — | 142 | 5 | 0 | 506 hits, 0 misses |
+
+  - Init's fixed-key warm, 5 interleaved reps each:
+    - enhanced (36 pipelines): cold median about 122 ms, warm about
+      29.6 ms;
+    - retail (14 pipelines): cold about 25 ms, warm about 10.7 ms.
+  - Hits count every lookup Dawn makes, shader modules included, so a cold
+    run also hits (about 270) and the hit totals of two runs are not a
+    pipeline count. The warm run's **0 misses** is the measure.
+- **Rendering identical (MEASURED, milo-viewer, paused rollerrink).** Six
+  runs: off, off, cold, warm, truncated, warm again. **0 differing pixels.**
+
+### 39.4 Guards
+
+- **Default gate (dc3 `PerformCrowdTest`, `DC3_DTA_FLOW_TESTS`, on by
+  default).** Its two Perform runs (alley/iceicebaby, rink/ymca) now read
+  `[GPUCOUNT]` at game_screen and at the end of the shots. `pipelineCreates`
+  must not move over those 3000–4400 frames.
+  - Clean: 64 → 64 and 63 → 63, three runs each.
+  - Sabotage, one key refused by `WarmAsync` (a key both venues draw about
+    1300 frames in): both fail.
+- **Full song (`GameplayTelemetryTest.NoPipelineCompiledAfterGameplayStarts`,
+  `DC3_GAMEPLAY_TESTS`).** Covers the song to results.
+  - Sabotage, the fail material's warm dropped: red at song frame 3440.
+  - Dropping the rink flare's warm passes the default gate, because no
+    flare is drawn in its window; this test catches it at song frame ~1400.
+- **`PipelineWarmTest`.** Score star + UI font: 0 creates and 0 waits over
+  5 frames after the warm drains. It is non-vacuous through
+  `WarmStats::drawn`.
+- **`PipelineDiskCacheTest`.** Exact read-back; a damaged blob is a miss
+  and is deleted; isolation; the bound; the switch.
+
+### 39.5 Which consumers this touches
+
+- **DC3 only.** The load warm (only dc3 calls `NativeWarmLoadedDir`, and
+  the engine's `Warm*` entry points are called only from it) and the
+  persistent cache (only dc3 names a directory).
+- **Every consumer.** The rect and particle mask moving from an override
+  constant into the vertices, and the rect/particle draws building their
+  pipeline through the shared `PipelineFor` / `ParticlePipeline`.
+  rb3-xenon `rb3-render` and rb3 ctest are the checks.
+
+### 39.6 Textures and the unattributed frames (not done, measured)
+
+- **Textures at load: left.** A song creates 76–79 textures for the first
+  time at draw, 15–26 ms in total. The worst single frame carries
+  4–12.5 ms, at 0.07–0.08 ms each.
+  - If a texture create costs about 25× on the GPD, as buffer creates do,
+    that is about 2 ms each: about 250 ms over about 80 frames, at most
+    about 50–65 ms in one frame.
+  - Creating them at load would also create the textures a song loads and
+    never draws, which is memory the web build and the handheld are short
+    of. This is the measurement for the GPD number to decide on.
+- **Unattributed 20–34 ms frames.** About 10 per song with pipe, tex and
+  mesh all 0, at song times that do not repeat between runs. Not profiled.
+  An exclusive-GPU-lock quiet run to see whether they survive could not be
+  had: a 30-minute wait for the exclusive lock timed out with other lanes
+  holding it.
