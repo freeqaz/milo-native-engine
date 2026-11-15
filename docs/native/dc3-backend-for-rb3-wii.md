@@ -9060,6 +9060,12 @@ uploads are 1–3% of the attributed time and were left alone (39.6).
     fail material.
   - What draws without a mesh: RndParticleSys (its animated blends),
     RndFlare and RndScreenMask (through the rect path).
+  - RndTexBlender's base-map rect: `DrawShowing` draws the base map as a
+    rect into the blender's output texture (no z) with the shader manager's
+    work material after `SetupMaterial`, so blend Src and textured.
+    `DrawRect2D::Warm(blend, hasTex, ...)` warms a rect with no material of
+    its own. Found by `PerformCrowdTest` (39.4): an outfit's normal-map
+    blender compiled `vs_2d/fs_2d` on gameplay's first frames.
 - **Keys.** A key comes from the same function the draw calls:
   `MeshPipelineKey` / `MaterialPipelineKey` with `MeshPassContext`,
   `DrawRect2D::PipelineFor` and `ParticlePipeline`. So a warm can only
@@ -9072,6 +9078,36 @@ uploads are 1–3% of the attributed time and were left alone (39.6).
     counted as `pipelineWaits`). No draw is skipped and no other pipeline
     is substituted.
   - Rect and particle keys are compiled synchronously (1–10 ms each).
+    The walk opens a `pipelinecount::LoadScope`, so these count as
+    `pipelineLoadCreates` in `[GPUCOUNT]` and as `load:...` in `[GPUPIPE]`:
+    a dir that finishes loading a few frames after its screen enters pays
+    its own creates there, and the guards (39.4) tell them from a create at
+    a draw.
+- **Who deletes an in-flight warm (`PipelineManager::PendingWarm`).**
+  `mWarmPending` owns each entry until the entry is removed. The callback
+  (`CallbackMode::AllowProcessEvents`) runs only inside this thread's
+  `ProcessEvents` or `WaitAny`, so it never races the owner.
+  - *Callback before removal.* The callback sets `done`. The owner then
+    removes the entry and deletes it: `PollWarms` after its `ProcessEvents`,
+    or a native draw in `GetPipeline` after its `WaitAny`.
+  - *Removal before callback.* `ReleasePending` marks the entry
+    `abandoned` instead of deleting it, and the callback deletes it when it
+    runs. This happens on the web (a draw that takes its key early; a drain,
+    which cannot wait) and when a `PipelineManager` is destroyed with warms
+    in flight.
+  - *Shutdown.* `Terminate` (WgpuRnd's shutdown, before the device goes)
+    calls `DrainWarms`: natively it `WaitAny`s every entry in flight, so all
+    are done, then deletes them and drops the unissued queue. On the web it
+    cannot wait, so the unfinished ones are abandoned to their callbacks.
+  - *Device loss.* Nothing special: the callbacks still run (on Dawn/Vulkan
+    the 6 in flight when the device was destroyed all reported success), the
+    frame's `PollWarms` still runs on a lost device and takes them in, and
+    `Terminate` then has nothing left.
+  - Covered by dc3 `PipelineWarmLifetimeTest` (four cases, one each, on a
+    headless device of its own), which checks
+    `PipelineManager::LivePendingWarms()` returns to where it began.
+    Sabotage, each red: `ReleasePending` deleting an unfinished entry; the
+    callback ignoring `abandoned`; `DrainWarms` not waiting. ASan: 39.4.
 - **Bloom-mask scale moved out of the rect and particle keys.** In DC3 the
   retail chain is on, so `RetailBloomMaskActive()` is true. The comments
   that called the mask a no-op for DC3 were stale.
@@ -9221,20 +9257,54 @@ uploads are 1–3% of the attributed time and were left alone (39.6).
 ### 39.4 Guards
 
 - **Default gate (dc3 `PerformCrowdTest`, `DC3_DTA_FLOW_TESTS`, on by
-  default).** Its two Perform runs (alley/iceicebaby, rink/ymca) now read
-  `[GPUCOUNT]` at game_screen and at the end of the shots. `pipelineCreates`
-  must not move over those 3000–4400 frames.
-  - Clean: 64 → 64 and 63 → 63, three runs each.
-  - Sabotage, one key refused by `WarmAsync` (a key both venues draw about
-    1300 frames in): both fail.
-- **Full song (`GameplayTelemetryTest.NoPipelineCompiledAfterGameplayStarts`,
-  `DC3_GAMEPLAY_TESTS`).** Covers the song to results.
+  default).** Its two Perform runs (alley/iceicebaby, rink/ymca) read
+  `[GPUCOUNT]` from the last line before the engine's
+  `Screen 'game_screen' Enter` log line to the end of the shots.
+  `pipelineCreates − pipelineLoadCreates` (a create at a draw) must not move
+  over those 2600–6700 frames.
+  - The first version started at the frame the driver first polled
+    game_screen over HTTP, up to ~100 frames late, which is exactly where
+    gameplay's first draws are. The TexBlender rect (39.2) escaped it in
+    four gate runs of five and failed the fifth (registered 1176, executed
+    1105, passed 1104, failed 1, skipped 71 against a budget of 70; the
+    71st was a new `DC3_GAMEPLAY_TESTS` case, since folded into an existing
+    one).
+  - The engine's printf log is stdout and its counters stderr, in one file,
+    so the test runs dc3-native under `stdbuf -oL`: a block-buffered stdout
+    put the Enter line kilobytes away from where it was written.
+  - Clean: 5 runs of both venues on the round's head, 2 more after the
+    np-gfx merge (np-fringe). Creates at a draw after Enter: 0 in all.
+  - Sabotage: the TexBlender warm removed → the alley fails 3 of 3 runs at
+    Enter + 10 frames (`vs:vs_2d/fs:fs_2d`); `WarmAsync` refusing the
+    MainSkinned blend-4/z-2/cull-1/4-sample/no-alpha-write key → both
+    venues fail at Enter + 10 frames, inside the driver's old lag; refusing
+    a key neither venue draws there passes.
+- **Full song (in `GameplayTelemetryTest.WorldPipelineConvergesDuringGameplay`,
+  `DC3_GAMEPLAY_TESTS`).** Covers the song to results, from the first
+  engine telemetry sample in the playing state, judging creates at a draw
+  as above.
   - Sabotage, the fail material's warm dropped: red at song frame 3440.
   - Dropping the rink flare's warm passes the default gate, because no
     flare is drawn in its window; this test catches it at song frame ~1400.
 - **`PipelineWarmTest`.** Score star + UI font: 0 creates and 0 waits over
   5 frames after the warm drains. It is non-vacuous through
   `WarmStats::drawn`.
+- **`PipelineWarmLifetimeTest`** (dc3; who deletes an in-flight warm,
+  39.2). One case per lifetime, on a headless device of its own, each
+  ending with `LivePendingWarms()` where it began. Sabotage red: deleting
+  an unfinished entry (0 of 4 left, callbacks still holding them),
+  ignoring `abandoned` (4 never deleted), `DrainWarms` not waiting (8 left
+  after `Terminate`).
+  - **ASan** (a separate `ENABLE_ASAN=ON` build of milo-tests, the round's
+    final head): all four cases, `PipelineWarmTest`, the fixed-key and
+    disk-cache tests pass with no report from our code. Armed: the
+    delete-unfinished sabotage gives `heap-use-after-free` in the
+    `PollWarms` callback, freed by `~PipelineManager`. LeakSanitizer never
+    reports in milo-tests (`EngineTeardown` `_exit`s past it), so the
+    leak case rests on the counter. Found in passing, not ours:
+    `RemoveTestScratchDir` (dc3 `native/tests/test_helpers.cpp`, an
+    `atexit` handler) reads `TestScratchDir()`'s function-local static
+    after its destructor has run, when a test used the scratch dir.
 - **`PipelineDiskCacheTest`.** Exact read-back; a damaged blob is a miss
   and is deleted; isolation; the bound; the switch.
 - **Web (dc3 `scripts/web/smoke-test.mjs`).** It now fails on any
@@ -9249,6 +9319,20 @@ uploads are 1–3% of the attributed time and were left alone (39.6).
 - **DC3 only.** The load warm (only dc3 calls `NativeWarmLoadedDir`, and
   the engine's `Warm*` entry points are called only from it) and the
   persistent cache (only dc3 names a directory).
+- **Generic engine code, inert in the others.** `pipelinecount::LoadScope`
+  and `pipelineLoadCreates` (0 unless a scope is opened; only dc3 opens
+  one); `PipelineManager::LivePendingWarms` (0 without warms);
+  `DrawRect2D::PipelineFor` delegating to `PipelineForBlend` with the
+  material's blend, as before.
+- **np-fringe (engine ae81ff1) does not reach the keys.** The sampler
+  address modes it changed are bind-group state (`MaterialSetup`'s
+  `mapSamplerDesc`), not pipeline state. `kSkipFringeFade` is an override
+  constant set from `SkipsFringeFade(blend)`, which depends on the key's
+  blend and on `SetAlphaFringeFade`, set once in `InitGpuResources` before
+  any pipeline; the warm and the draw build the same descriptor
+  (`BuildDescriptor`), and Dawn's blob key covers the constants. Re-checked
+  after the merge: 0 creates at a draw in both venues, `PipelineWarmTest`
+  0/0 with 6 of 10 warmed keys drawn.
 - **Every consumer.** The rect and particle mask moving from an override
   constant into the vertices, and the rect/particle draws building their
   pipeline through the shared `PipelineFor` / `ParticlePipeline`.
