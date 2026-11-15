@@ -129,13 +129,30 @@ struct VOut {
 
 // ---- np-gfx-post round 10: the enhanced look (LookSettings::postPrecision,
 // postBloomFilter; the world grade only). kSat is true for the RGBA16Float
-// family: those sets saturate after every pass, as retail's 8-bit EDRAM
+// families: those sets saturate after every pass, as retail's 8-bit EDRAM
 // resolve does, so only the quantisation changes. The retail pipelines
 // compile with the default (false).
+//
+// kDeadZone (the shipped 16-bit family): retail's 8-bit sets also round every
+// pass's output to the nearest level, so whatever a pass leaves under half a
+// level is gone -- a dim surface's own glow and the far tails of a halo. That
+// is a large part of the original's look: without it the 16-bit sets bloom
+// every dim surface, and the dark floor of dci rose 1.2 levels (engine doc
+// §37.11, MEASURED). The quantisation's STEPS are what this family removes,
+// not its dead zone, so each pass keeps the dead zone as a smooth knee:
+// x * smoothstep(0.25, 0.6 levels, x), 0 below a quarter level, x above 0.6,
+// C1 between (a hard cut would draw the halo's outer edge as one step).
+// Unshipped [2] family (kDeadZone false): the sets linear, for the tests that
+// measure the filters alone.
 override kSat: bool = false;
+override kDeadZone: bool = false;
 fn sat_set(c: vec4f) -> vec4f {
     if (kSat) {
-        return clamp(c, vec4f(0.0), vec4f(1.0));
+        let s = clamp(c, vec4f(0.0), vec4f(1.0));
+        if (kDeadZone) {
+            return s * smoothstep(vec4f(0.25 / 255.0), vec4f(0.6 / 255.0), s);
+        }
+        return s;
     }
     return c;
 }
@@ -187,14 +204,20 @@ const kTent = array<f32, 8>(0.03125, 0.09375, 0.15625, 0.21875,
     }
     return sat_set(acc / 16.0);
 }
+const kTentO = array<f32, 4>(-2.75, -0.9166667, 0.9166667, 2.75);
+const kTentW = array<f32, 4>(0.125, 0.375, 0.375, 0.125);
 @fragment fn fs_down_tent(in: VOut) -> @location(0) vec4f {
-    let dims = vec2i(textureDimensions(srcTex));
-    let base = vec2i(in.pos.xy) * 4 - vec2i(2);
+    // The same tent in 4 x 4 bilinear taps: per axis, texel pairs (-3.5,
+    // -2.5) and (-1.5, -0.5) from the block centre weigh 1/8 and 3/8 and
+    // their bilinear tap sits at -2.75 and -11/12 (and mirrored). Clamping
+    // the sampler at the edge clamps each texel as textureLoad did.
+    let size = vec2f(textureDimensions(srcTex));
+    let c = floor(in.pos.xy) * 4.0 + 2.0;
     var acc = vec4f(0.0);
-    for (var j = 0; j < 8; j++) {
-        for (var i = 0; i < 8; i++) {
-            acc += (kTent[i] * kTent[j]) *
-                   textureLoad(srcTex, clamp(base + vec2i(i, j), vec2i(0), dims - 1), 0);
+    for (var j = 0; j < 4; j++) {
+        for (var i = 0; i < 4; i++) {
+            acc += (kTentW[i] * kTentW[j]) *
+                   textureSampleLevel(srcTex, samp, (c + vec2f(kTentO[i], kTentO[j])) / size, 0.0);
         }
     }
     return sat_set(acc);
@@ -241,6 +264,21 @@ fn bloom_set(t: texture_2d<f32>, uv: vec2f, bspline: bool) -> vec3f {
            g1.x * g0.y * textureSampleLevel(t, samp, vec2f(p1.x, p0.y), 0.0).rgb +
            g0.x * g1.y * textureSampleLevel(t, samp, vec2f(p0.x, p1.y), 0.0).rgb +
            g1.x * g1.y * textureSampleLevel(t, samp, p1, 0.0).rgb;
+}
+
+// The plain arm's three sets combined once, at set0's size, for the enhanced
+// composite (postBloomFilter): set0 as it is, plus set1 and set2 B-spline
+// upsampled to set0's texels, ADDED (the combine target blends One + One and
+// is RGBA16Float, so the sum is not clamped, as the composite's own sum of
+// the three sets is not). The composite then reads that one texture
+// bilinearly, as it reads set0 in retail: one tap per pixel, not twelve. The
+// coarse sets keep the B-spline's smoothness (a w/4 bilinear on top adds
+// (4 px)^2 / 6 to their variance, under 1 % of it).
+@fragment fn fs_comb_copy(in: VOut) -> @location(0) vec4f {
+    return vec4f(textureLoad(srcTex, vec2i(in.pos.xy), 0).rgb, 1.0);
+}
+@fragment fn fs_comb_bspline(in: VOut) -> @location(0) vec4f {
+    return vec4f(bloom_set(srcTex, in.uv, true), 0.0);
 }
 
 // A static triangular dither of +-1 LSB at the 8-bit write (two draws of
@@ -734,6 +772,9 @@ void RB3RetailPost::EnsureDC3Family(int idx, GpuDevice& gpu) {
     wgpu::ConstantEntry sat{};
     sat.key = "kSat";
     sat.value = idx ? 1.0 : 0.0;
+    wgpu::ConstantEntry kc[2] = {sat, {}};
+    kc[1].key = "kDeadZone";
+    kc[1].value = idx == 1 ? 1.0 : 0.0;
     auto make = [&](const char* fs, const char* label) {
         wgpu::ColorTargetState ct{};
         ct.format = fmt;
@@ -741,8 +782,8 @@ void RB3RetailPost::EnsureDC3Family(int idx, GpuDevice& gpu) {
         wgpu::FragmentState frag{};
         frag.module = mDC3Shader;
         frag.entryPoint = fs;
-        frag.constantCount = 1;
-        frag.constants = &sat;
+        frag.constantCount = 2;
+        frag.constants = kc;
         frag.targetCount = 1;
         frag.targets = &ct;
         wgpu::RenderPipelineDescriptor pd{};
@@ -762,6 +803,30 @@ void RB3RetailPost::EnsureDC3Family(int idx, GpuDevice& gpu) {
     f.streak = make("fs_streak", "DC3LookStreak");
     f.glare = make("fs_glare", "DC3LookGlare");
     f.blur = make("fs_blur_e", "DC3LookBlur");
+    auto makeComb = [&](const char* fs, const char* label, bool add) {
+        wgpu::BlendState blend{};
+        blend.color = {wgpu::BlendOperation::Add, wgpu::BlendFactor::One, wgpu::BlendFactor::One};
+        blend.alpha = blend.color;
+        wgpu::ColorTargetState ct{};
+        ct.format = wgpu::TextureFormat::RGBA16Float;
+        ct.writeMask = wgpu::ColorWriteMask::All;
+        if (add) ct.blend = &blend;
+        wgpu::FragmentState frag{};
+        frag.module = mDC3Shader;
+        frag.entryPoint = fs;
+        frag.targetCount = 1;
+        frag.targets = &ct;
+        wgpu::RenderPipelineDescriptor pd{};
+        pd.label = label;
+        pd.layout = mDC3PassPL;
+        pd.vertex.module = mDC3Shader;
+        pd.vertex.entryPoint = "vs_full";
+        pd.fragment = &frag;
+        pd.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+        return gpu.Device().CreateRenderPipeline(&pd);
+    };
+    f.combCopy = makeComb("fs_comb_copy", "DC3LookCombCopy", false);
+    f.combAdd = makeComb("fs_comb_bspline", "DC3LookCombAdd", true);
 }
 
 void RB3RetailPost::EnsureHiTextures(GpuDevice& gpu) {
@@ -782,9 +847,24 @@ void RB3RetailPost::EnsureHiTextures(GpuDevice& gpu) {
     }
 }
 
+void RB3RetailPost::EnsureCombTexture(GpuDevice& gpu) {
+    if (mCombTex && mCombW == mW[0] && mCombH == mH[0]) return;
+    Forget(mCombView);
+    wgpu::TextureDescriptor td{};
+    td.label = "DC3LookBloomComb";
+    td.size = {(uint32_t)mW[0], (uint32_t)mH[0], 1};
+    td.format = wgpu::TextureFormat::RGBA16Float;
+    td.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding;
+    mCombTex = gpu.Device().CreateTexture(&td);
+    mCombView = mCombTex.CreateView();
+    mCombW = mW[0];
+    mCombH = mH[0];
+}
+
 void RB3RetailPost::PassDC3(wgpu::CommandEncoder& encoder, const wgpu::RenderPipeline& pipe,
                             const wgpu::TextureView& dst, const wgpu::TextureView& src,
-                            const float* uni, size_t uniBytes, GpuDevice& gpu, const char* label) {
+                            const float* uni, size_t uniBytes, GpuDevice& gpu, const char* label,
+                            bool load) {
     const uint32_t off = NextSlot();
     gpu.Queue().WriteBuffer(mUniforms, off, uni, uniBytes);
 
@@ -804,7 +884,7 @@ void RB3RetailPost::PassDC3(wgpu::CommandEncoder& encoder, const wgpu::RenderPip
 
     wgpu::RenderPassColorAttachment ca{};
     ca.view = dst;
-    ca.loadOp = wgpu::LoadOp::Clear;
+    ca.loadOp = load ? wgpu::LoadOp::Load : wgpu::LoadOp::Clear;
     ca.storeOp = wgpu::StoreOp::Store;
     ca.clearValue = {0, 0, 0, 0};
     wgpu::RenderPassDescriptor rp{};
@@ -868,8 +948,9 @@ void RB3RetailPost::RunDC3Bloom(wgpu::CommandEncoder& encoder, const wgpu::Textu
     const bool enh = p.enhPrecision || p.enhFilter;
     DC3Family* f = nullptr;
     if (enh) {
-        EnsureDC3Family(p.enhPrecision ? 1 : 0, gpu);
-        f = &mDC3Fam[p.enhPrecision ? 1 : 0];
+        const int fam = !p.enhPrecision ? 0 : p.enhLinear ? 2 : 1;
+        EnsureDC3Family(fam, gpu);
+        f = &mDC3Fam[fam];
         if (p.enhPrecision) EnsureHiTextures(gpu);
     }
     wgpu::TextureView (*V)[2] = p.enhPrecision ? mHView : mView;
@@ -947,6 +1028,15 @@ void RB3RetailPost::RunDC3Bloom(wgpu::CommandEncoder& encoder, const wgpu::Textu
             if (s > 0) downPass(V[s][0], V[s - 1][0], s, true);
             blurPass(V[s][1], V[s][0], s, true);
             blurPass(V[s][0], V[s][1], s, false);
+        }
+        if (enh && p.enhFilter) {
+            // The combine (fs_comb_*): the composite reads one texture.
+            EnsureCombTexture(gpu);
+            TapUniforms t{};
+            PassDC3(encoder, f->combCopy, mCombView, V[0][0], &t.tap[0][0], sizeof(t), gpu, "DC3LookBloom");
+            for (int s = 1; s < kSets; s++)
+                PassDC3(encoder, f->combAdd, mCombView, V[s][0], &t.tap[0][0], sizeof(t), gpu, "DC3LookBloom",
+                        true);
         }
         return;
     }
@@ -1070,8 +1160,11 @@ void RB3RetailPost::RunDC3Composite(wgpu::CommandEncoder& encoder, const wgpu::T
     }
     // Round 10, the enhanced look: the B-spline upsample (not the streak
     // arm's sets, whose thin perpendicular extent it would widen) and the
-    // frame write's dither.
-    if (p.enhFilter && !p.streak) cu.enh[0] = 1.0f;
+    // frame write's dither. The plain arm's sets come combined (RunDC3Bloom,
+    // fs_comb_*), already B-spline upsampled, so only the glare arm's set0
+    // is B-splined here.
+    const bool comb = p.enhFilter && !p.streak && !p.glare && mCombView;
+    if (p.enhFilter && p.glare) cu.enh[0] = 1.0f;
     if (p.enhPrecision) cu.enh[1] = 1.0f / 255.0f;
     const uint32_t off = NextSlot();
     gpu.Queue().WriteBuffer(mUniforms, off, &cu, sizeof(cu));
@@ -1090,7 +1183,9 @@ void RB3RetailPost::RunDC3Composite(wgpu::CommandEncoder& encoder, const wgpu::T
     e[2].size = sizeof(cu);
     for (int s = 0; s < kSets; s++) {
         e[3 + s].binding = 3 + s;
-        e[3 + s].textureView = (haveBloom && s < setsUsed) ? V[s][0] : mBlackView;
+        e[3 + s].textureView = !(haveBloom && s < setsUsed) ? mBlackView
+                             : comb ? (s == 0 ? mCombView : mBlackView)
+                                    : V[s][0];
     }
     e[6].binding = 7;
     e[6].textureView = haveNoise ? p.noiseMap : mBlackView;

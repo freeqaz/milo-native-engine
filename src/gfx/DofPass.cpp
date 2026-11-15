@@ -96,14 +96,20 @@ struct VOut {
 // as a tent over the 8x8 texels around each 4x4 block, (1 - |d| / 4) per axis.
 const kTent = array<f32, 8>(0.03125, 0.09375, 0.15625, 0.21875,
                             0.21875, 0.15625, 0.09375, 0.03125);
+const kTentO = array<f32, 4>(-2.75, -0.9166667, 0.9166667, 2.75);
+const kTentW = array<f32, 4>(0.125, 0.375, 0.375, 0.125);
 @fragment fn fs_down_tent(in: VOut) -> @location(0) vec4f {
-    let dims = vec2i(textureDimensions(srcTex));
-    let base = vec2i(in.pos.xy) * 4 - vec2i(2);
+    // The same tent in 4 x 4 bilinear taps: per axis, texel pairs (-3.5,
+    // -2.5) and (-1.5, -0.5) from the block centre weigh 1/8 and 3/8 and
+    // their bilinear tap sits at -2.75 and -11/12 (and mirrored). Clamping
+    // the sampler at the edge clamps each texel as textureLoad did.
+    let size = vec2f(textureDimensions(srcTex));
+    let c = floor(in.pos.xy) * 4.0 + 2.0;
     var acc = vec4f(0.0);
-    for (var j = 0; j < 8; j++) {
-        for (var i = 0; i < 8; i++) {
-            acc += (kTent[i] * kTent[j]) *
-                   textureLoad(srcTex, clamp(base + vec2i(i, j), vec2i(0), dims - 1), 0);
+    for (var j = 0; j < 4; j++) {
+        for (var i = 0; i < 4; i++) {
+            acc += (kTentW[i] * kTentW[j]) *
+                   textureSampleLevel(srcTex, samp, (c + vec2f(kTentO[i], kTentO[j])) / size, 0.0);
         }
     }
     return acc;

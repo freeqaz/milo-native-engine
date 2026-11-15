@@ -51,13 +51,18 @@ struct LookSettings {
     //   postPrecision    the bloom sets in RGBA16Float, still saturated at 1
     //                    after every pass as retail's 8-bit EDRAM resolve
     //                    saturates them (A8R8G8B8, NgPostProc::
-    //                    BloomTextureSet), and a static sub-LSB dither on the
-    //                    composite's 8-bit write. Retail: 8-bit sets, no dither.
+    //                    BloomTextureSet), and keeping that resolve's dead zone
+    //                    (8-bit rounding drops whatever a pass leaves under half
+    //                    a level: a dim surface's own glow) as a smooth knee,
+    //                    so the steps go and the energy stays; a static sub-LSB
+    //                    dither on the composite's 8-bit write. Retail: 8-bit
+    //                    sets, no dither.
     //   postBloomFilter  tent (not box) downsample into the bloom sets; the
     //                    streak arm's w/16 set from all 256 texels of its block
     //                    (retail's bloom.ps reads 16 of them, 4 bilinear taps
     //                    at +-2 texels); a cubic B-spline (not bilinear)
-    //                    upsample of the plain arm's sets in the composite.
+    //                    upsample of the plain arm's coarse sets (combined once
+    //                    at w/4) and of the glare arm's set.
     //   postDofFilter    depth of field: tent downsample, B-spline upsample of
     //                    the blur in the full-resolution composite, the 8 blur
     //                    taps scaled so the total blur radius (second moment)

@@ -604,6 +604,10 @@ void RB3RetailPost::Terminate() {
         }
         mHW[s] = mHH[s] = 0;
     }
+    Forget(mCombView);
+    mCombTex = nullptr;
+    mCombView = nullptr;
+    mCombW = mCombH = 0;
 }
 
 // Shipped WGSL accessor (gfx/ShippedWgsl.h): lets the validation test compile

@@ -151,17 +151,24 @@ struct RetailPostParams {
     // np-gfx-post round 10, DC3_LOOK=enhanced (milo::LookSettings; PostProcPass
     // sets them for the world grade only). Both off: today's retail chain.
     //   enhPrecision  the bloom sets in RGBA16Float, each pass saturated as the
-    //                 8-bit sets saturate (only the quantisation changes), and a
-    //                 static +-1 LSB triangular dither on the composite's frame
-    //                 write (not on the motion-blur feedback target)
+    //                 8-bit sets saturate and keeping their dead zone as a
+    //                 smooth knee (under a quarter level gone, as 8-bit rounding
+    //                 drops anything under half a level), so only the
+    //                 quantisation's steps change; and a static +-1 LSB
+    //                 triangular dither on the composite's frame write (not on
+    //                 the motion-blur feedback target)
     //   enhFilter     bloom.ps and downsample_4x as an 8x8 tent instead of the
     //                 4x4 box; the streak set1 from set0's bloom output (every
     //                 texel of each 16x16 block, where retail's 4 bilinear taps
-    //                 read 16 of 256); the plain and glare sets upsampled with a
-    //                 cubic B-spline instead of bilinear
+    //                 read 16 of 256); the plain arm's coarse sets and the glare
+    //                 set upsampled with a cubic B-spline instead of bilinear
+    //                 (the plain arm's combined once at set0's size)
+    //   enhLinear     TESTS ONLY (with enhPrecision): no dead zone, so a test
+    //                 can measure the filters as linear operators
     // Same energy and extent as retail (MEASURED, engine doc §37.11).
     bool enhPrecision = false;
     bool enhFilter = false;
+    bool enhLinear = false;
     // ---- end np-gfx-post ----
 };
 
@@ -201,21 +208,30 @@ private:
     void PassDC3(wgpu::CommandEncoder& encoder, const wgpu::RenderPipeline& pipe,
                  const wgpu::TextureView& dst, const wgpu::TextureView& src,
                  const float* uni, size_t uniBytes, GpuDevice& gpu,
-                 const char* label = "DC3RetailBloom");
+                 const char* label = "DC3RetailBloom", bool load = false);
     // np-gfx-post round 10 (RetailPostParams::enhPrecision / enhFilter): the
     // DC3 bloom passes as one family per set format, all in the DC3 module on
     // mDC3PassBGL; [0] RGBA8Unorm (enhFilter alone), [1] RGBA16Float with the
-    // per-pass saturate (kSat). Created on first use, so the retail look builds
-    // none of them.
+    // per-pass saturate (kSat) and dead zone (kDeadZone), [2] RGBA16Float
+    // without the dead zone (enhLinear, tests). Created on first use, so the
+    // retail look builds none of them.
     struct DC3Family {
         wgpu::RenderPipeline bloomBox, bloomTent, bloomTaps, down4, downTent, streak, glare, blur;
+        // The plain arm's combine (fs_comb_*), into mCombView (RGBA16Float,
+        // additive), whatever the family's format.
+        wgpu::RenderPipeline combCopy, combAdd;
     };
     void EnsureDC3Family(int idx, GpuDevice& gpu);
     void EnsureHiTextures(GpuDevice& gpu);
-    DC3Family mDC3Fam[2];
+    void EnsureCombTexture(GpuDevice& gpu);
+    DC3Family mDC3Fam[3];
     wgpu::Texture mHTex[kSets][2];     // enhPrecision's sets (mW x mH, RGBA16Float)
     wgpu::TextureView mHView[kSets][2];
     int mHW[kSets] = {}, mHH[kSets] = {};
+    // postBloomFilter's plain-arm combine target (set0's size, RGBA16Float).
+    wgpu::Texture mCombTex;
+    wgpu::TextureView mCombView;
+    int mCombW = 0, mCombH = 0;
     void EnsureTextures(int sceneW, int sceneH, GpuDevice& gpu);
     void Pass(wgpu::CommandEncoder& encoder, const wgpu::RenderPipeline& pipe,
               const wgpu::TextureView& dst, const wgpu::TextureView& src,
