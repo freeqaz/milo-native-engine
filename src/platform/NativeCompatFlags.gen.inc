@@ -74,6 +74,7 @@
 { "MESH_DUMP", "unknown", FlagClass::Unknown, FlagRead::Truthy, "unclassified", "n/a", "MESH_DUMP" },
 { "MILO_AUDIO", "unknown", FlagClass::Unknown, FlagRead::Presence, "unclassified", "n/a", "MILO_AUDIO" },
 { "MILO_AUDIO_BACKEND", "unknown", FlagClass::Unknown, FlagRead::Truthy, "unclassified", "n/a", "MILO_AUDIO_BACKEND" },
+{ "MILO_BACKGROUND_AUDIO", "off", FlagClass::Feature, FlagRead::Truthy, "audio", "live: =1 keeps the desktop output playing when the game window is in the background and starved. Unset = mute: when the window has no focus and no frame has finished for 500 ms the mix is ramped to silence, and it comes back when the window has focus or 30 frames in a row each took under 100 ms (audio/BackgroundMute.h). A compositor that stops presenting a hidden window drops the main loop to about one frame a second, and the streams it decodes then play in bursts. Never applies headless or on the web [audio/AudioDevice.cpp]", "MILO_BACKGROUND_AUDIO" },
 { "MILO_CAM_ASPECT", "unknown", FlagClass::Unknown, FlagRead::Value, "unclassified", "n/a", "MILO_CAM_ASPECT" },
 { "MILO_CAM_DEBUG", "unknown", FlagClass::Unknown, FlagRead::Value, "unclassified", "n/a", "MILO_CAM_DEBUG" },
 { "MILO_CAM_FAR", "unknown", FlagClass::Unknown, FlagRead::Value, "unclassified", "n/a", "MILO_CAM_FAR" },

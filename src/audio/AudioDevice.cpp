@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -285,6 +286,10 @@ bool AudioDevice::Init(int sampleRate) {
     sLimBypass = (getenv("RB3_LIM_BYPASS") != nullptr && getenv("RB3_LIM_BYPASS")[0] == '1');
     const char *atkEnv = getenv("RB3_LIM_ATTACK_MS");
     if (atkEnv) sLimAttackMs = (float)atof(atkEnv);
+    // MILO_BACKGROUND_AUDIO=1 keeps the output playing when the window is in
+    // the background and starved (audio/BackgroundMute.h); default is to mute.
+    const char *bgEnv = getenv("MILO_BACKGROUND_AUDIO");
+    mBackgroundMute.SetEnabled(!(bgEnv && bgEnv[0] == '1'));
     printf("AudioDevice: initialized — %d Hz, %d channels, period %d frames, pregain %.2f (backend=%s)\n",
            mSampleRate, 2, 512, sPreGain,
            mContextInited ? ma_get_backend_name(mContext->backend) : "default");
@@ -362,6 +367,39 @@ void AudioDevice::Suspend() {
 void AudioDevice::Resume() {
     mLimiterEnv = 1.0f;   // reset gain-reduction envelope across a suspend gap
     mSuspended.store(false, std::memory_order_release);
+}
+
+static int64_t SteadyNowMs() {
+    using namespace std::chrono;
+    return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
+void AudioDevice::NoteMainLoopFrame(bool windowFocused) {
+    mBackgroundMute.OnFrame(SteadyNowMs(), windowFocused);
+    // Report from here, not from the audio thread: one line per change.
+    const bool muted = mBackgroundMute.IsMuted();
+    if (muted != mBackgroundMuteReported) {
+        mBackgroundMuteReported = muted;
+        printf(muted ? "AudioDevice: window in the background and not drawing, audio muted "
+                       "(MILO_BACKGROUND_AUDIO=1 keeps it playing)\n"
+                     : "AudioDevice: window is drawing again, audio back on\n");
+    }
+}
+
+// Ramp the finished mix to silence (or back) over about 15 ms, so muting and
+// resuming do not click. Audio thread only.
+void AudioDevice::ApplyBackgroundMute(float *output, int frameCount) {
+    const float target = mBackgroundMute.ShouldMute(SteadyNowMs()) ? 0.0f : 1.0f;
+    if (target == 1.0f && mBackgroundGain == 1.0f) return;
+    const float step = 1.0f / (0.015f * (float)(mSampleRate > 0 ? mSampleRate : 48000));
+    float gain = mBackgroundGain;
+    for (int f = 0; f < frameCount; f++) {
+        if (gain < target) gain = std::min(target, gain + step);
+        else if (gain > target) gain = std::max(target, gain - step);
+        output[f * 2 + 0] *= gain;
+        output[f * 2 + 1] *= gain;
+    }
+    mBackgroundGain = gain;
 }
 
 void AudioDevice::MixSources(float *output, int frameCount) {
@@ -443,6 +481,10 @@ void AudioDevice::MixSources(float *output, int frameCount) {
             mLimiterEnv = env;
         }
     }
+
+#ifndef __EMSCRIPTEN__
+    ApplyBackgroundMute(output, frameCount);
+#endif
 
 wav_dump:
     // WAV dump: capture post-mix output (including silence)
