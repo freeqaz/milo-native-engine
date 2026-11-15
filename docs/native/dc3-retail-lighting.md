@@ -176,7 +176,8 @@ ambient, as in retail. (Before item 11 native scaled only the box term; §14.)
   INFERRED, and it does not matter in practice: the census above has no
   vertex-lit receiver, so it is a native-only fallback.
 - `SphereConeTest` culling of casters is skipped. It only removes casters that
-  cannot land in the map.
+  cannot land in the map. (The other cull, nested draws against the
+  camera's frustum, is reproduced since item 12: §15.5.)
 - (Done in round 3.) The casters were drawn twice per frame: DC3's own
   `NgLight::RenderShadows` drew them into a 256x256 target plus two blur
   passes, and nothing sampled it (its only reader, `SetPConstant(PShaderConstant,
@@ -1876,7 +1877,8 @@ exceptions:
 
 - rb3-xenon's character has a different shape, so the rule compiles out
   there (`kDC3RetailModelFor`).
-- The draw's own camera-frustum cull is not reproduced.
+- The draw's own camera-frustum cull was not reproduced in item 11; item
+  12 added it (§15.5).
 
 Test: `RetailLightingTest.CharacterCastsWhatDrawLodDraws`.
 
@@ -1952,12 +1954,14 @@ differ between the two runs (native's performer is not Xenia's input).
   (the native dancers have their arms out). So this is not a darkness
   error that can be measured with this protocol.
 - Rollerrink's boombox is still 1.32× Xenia's area. That venue's light is
-  the additive gobo form (blend 0), which 14.3 does not touch.
+  the additive gobo form (blend 0), which 14.3 does not touch. (Item 12:
+  1.12 after the half-texel raster offset, §15.2.)
 - dclive's shadows sit under the same feet in the same shape. They are
   larger and darker, and in the Xenia frame the dancers' arm shadows are
   cut where the gobo pool ends (`step3/dclive_far_crop.png`). This is a
   lead, not a finding: §10.1 matched dclive's shadow depth within 2.4 luma
-  on a matched pose.
+  on a matched pose. (Item 12: the cause was the scaled light's caster
+  transform, §15.1; dclive now reads 0.95–0.98 / 0.97.)
 
 ### 14.5 A larger shadow map does not draw a cleaner edge (not shipped)
 
@@ -1991,3 +1995,184 @@ two 5-tap passes over a 256 map). So a finer map samples the same penumbra
 more finely; it does not narrow it. Narrowing it would go past the
 original's edge, which item 11 rules out. The map stays at 1024 (512
 tiles) in both looks.
+
+## 15. Item 12: the gobo-form shadow, and the caster cull (np-shadow2)
+
+Lane archive: dc3-decomp `archive/np-gfx-2026-11-14/lanes/sharp/item12/`.
+Protocol as §14 (omg, paused near song second 20, forced shot, post off,
+`DC3_DISPLAY_GAMMA=off`). Shadow = the frame after `clear (shadow_objects)`
+minus the frame with casters, in luma; mask = darkened by more than 8.7.
+n/x = native mask px over Xenia's. Rows marked *boombox* have the dancers
+hidden and are exactly reproducible run to run (the same binary gave the
+same count twice). Dancer rows move by up to ±5% between runs because the
+pause lands on one of three frames (20.009 to 20.042) while Xenia's is at
+20.025; read them as a range.
+
+### 15.1 dclive: a scaled light, drawn through its inverse
+
+dclive's `a2_spotlight.lit` (projected_blend 0, the gobo form) has world
+scale (1, 0.86, 0.86) (MEASURED: `get (world_xfm y_scale)` on both sides;
+texture_xfm is identity). Retail draws the casters with
+`NgLight::SetShadowTransforms` (100%): `Invert(WorldXfm)`, y and z swapped,
+the cone projection, so clip = (xL, zL, yL/range, top + slope·yL). The
+receivers read the map with `RndLight::Projection()`, which uses the raw
+rows of `WorldXfm` times `mTextureXfm`. For an orthonormal light the two
+are the same map. For a scaled one they are not, and the Xbox draws the
+shadow where that mismatch puts it. Native drew the casters with the
+receivers' `Projection()` clip, so its map agreed with its receivers and
+its shadow sat under the geometry: about 25 px (720p) lower on the floor
+than Xenia's, and larger.
+
+Native now builds the caster clip as `SetShadowTransforms` does
+(`ProjShadowCasterClip`, DC3SceneLighting.cpp, behind the rndshape seam),
+and keeps `Projection()` for the receivers. Test:
+`RetailLightingTest.ScaledLightDrawsItsCastersThroughTheInverse` (a light
+scaled 0.86 in y and z; the expected local coordinates are worked by hand;
+it also checks that the receivers' uv differs, so the two transforms cannot
+silently collapse into one). Sabotage: drawing the casters with the
+receivers' clip turns it red.
+
+The three questions asked of the gobo form, each a measurement that could
+have come out the other way (`tools/gobocmp.py`, dclive far and near):
+
+| question | Xenia | native | answer |
+|---|---|---|---|
+| shadow where the gobo is ~0 (G = noShadow − noLight < 8.7)? | 0 px | 0 px | no: the factor scales the gobo term only |
+| S/G inside the mask (must be ≤ 1 for gobo·(1 − s)) | p50 0.76, p90 1.00, >1.2: 0 | p50 0.78, p90 1.00, >1.2: 0 | same form |
+| the gobo pool itself (G mask px, bbox) | 176712, x0-1268 y505-719 | 176592, x0-1260 y505-719 | same pool, same clamp and falloff |
+
+So the factor, the gobo's border and the cone falloff are right. The
+caster set was not the cause either: the shadows have the same shapes under
+the same feet on both sides. What differed was where the casters land in
+the map. The arm shadows that ended at the pool edge in Xenia's frame
+(§14.4) were that: Xenia's shadow sits further up the floor, where the pool
+ends sooner. dclive mask n/x: far 1.69 → **0.95–0.98**, near 1.33 →
+**0.97** (item 11's figures were at a different pause; at the item-12 base
+the same shots read 1.37 / 1.05). dclive's boombox casts no shadow on
+either side.
+
+### 15.2 Half a texel: D3D9 pixel centres in the caster pass
+
+`DxRnd` leaves `D3DRS_HALFPIXELOFFSET` at 0 for every draw, including the
+caster pass. Only `DxRnd::DrawRect` (rnddx9/Rnd.cpp ~525/537),
+`DrawRectDepth` (589/592) and a point test (Rnd_Xbox.cpp 1207/1306) set it
+to 1 and back. So texel *i* of the 256x256 map holds the caster at x = *i*,
+while the receivers' bilinear read (FilterMode 1) puts texel *i* at *i* +
+0.5: retail's map is half a texel (+u, +v) from the geometry.
+`BlurShadowRT`'s two passes are DrawRects and add nothing (MEASURED from
+source). WebGPU rasterises at pixel centres, so native moves the caster
+geometry by half a 256-texel: +1/256·w in clip x, −1/256·w in clip y (clip
+y is up, v is down). Native's tile is 512, but the offset is retail's
+half-texel of 256, in light space.
+
+Measured before shipping it, in one paused session with a test-only hook
+switching the offset (`REG_*`, 0 → +0.5 texel): every changed pixel lies
+inside the shadow region (0 px outside, for every shot; the same session's
+frame-to-frame noise is 800–1370 px, the HUD). Boombox-only, against
+Xenia:
+
+| boombox | n/x before → after | IoU before → after | other |
+|---|---|---|---|
+| streetside | 0.951 → **0.981** | 0.812 → 0.851 | weighted centroid 285.1 → 274.1, Xenia 272.9 (12 px → 1 px); bbox equal to Xenia's |
+| rollerrink cu02 | 1.318 → **1.120** | 0.674 → 0.731 | centroid 226 → 198, Xenia 205 |
+| throneroom | 0.842 → **0.658** | | moves the other way; see 15.4 |
+
+Test: `ProjectedShadowLightDrawsItsCastersWhereTheReceiversLook` and the
+scaled-light test expect the half texel (sabotage: without it both fail).
+
+### 15.3 The receivers' kernel is not the residual
+
+Native filters with 9 compare taps (1 2 1)²/16, 1.5/256 apart; retail
+blurs the map with two 5-tap passes (0.1/0.25/0.3/0.25/0.1, one texel
+apart) and reads it bilinearly. Two experiment builds (not committed):
+e1 = taps 1.69/256 apart, e2 = retail's exact 5x5 at 1/256.
+
+| n/x | shipped | e1 | e2 |
+|---|---|---|---|
+| rollerrink cu02 boombox | 1.12 | 1.20 | 1.14 |
+| streetside boombox | 0.98 | 1.01 | 1.00 |
+| throneroom boombox | 0.66 | 0.64 | 0.64 |
+
+No kernel closes rollerrink, and none moves throneroom. The map size does
+not either: item 11's tile 256–2048 builds read 2776–2916 px on
+rollerrink's boombox (Xenia 2127, before the half texel), with no trend.
+The kernel stays as shipped.
+
+### 15.4 After, and what is left
+
+| venue / shot | item 11 | item 12 (two runs) |
+|---|---|---|
+| dclive far / near | 1.69 / 1.33 | **0.95–0.98 / 0.97** |
+| rollerrink cu02, boombox | 1.32 | **1.12** |
+| rollerrink far / near / cu02 | 1.01 / 1.04 / 1.02 | 0.98–1.04 / 0.99–1.00 / 1.02–1.03 |
+| streetside far / near | 1.07 / 0.88 | 0.95–0.99 / 0.92–0.98 |
+| streetside boombox | 0.95 | 0.98 |
+| throneroom far / near | 0.88 / 0.87 | 0.87–0.88 / 0.85–0.87 |
+| throneroom boombox | 0.84 | 0.66 |
+
+**Open.**
+
+- Rollerrink's boombox reads 1.12, just outside 0.9–1.1. The coverage
+  S/G along the band matches Xenia's column by column, the gobo under it
+  is within 4% (G mean 21.2 vs 20.4), and the peak S/G is the same
+  (~0.75 = `1 − 0.75 s`). The extra is a fringe about 1 px wide on both
+  edges of a band ~20 px tall (`rr_bb_ht_xor.png`): the low-coverage band
+  0.15–0.3 holds more pixels on native. Not explained by kernel or map size.
+- Throneroom's boombox is a grazing tip of 438 px (Xenia) on the gold
+  carpet edge. Native was already short there (mass 0.73 of Xenia's), and
+  the half texel shortens it further (0.57). The light is orthonormal with
+  an identity texture_xfm (range 1000, radii 100/300), and the venue's
+  dancer shadows do not move with the change. A tip at grazing angle turns
+  a sub-texel difference into tens of pixels, so this is the least
+  reliable of the three boombox measurements; the cause is not known.
+
+### 15.5 The caster cull
+
+Retail's `RndDrawable::Draw` skips a nested draw when
+`MakeWorldSphere(s, false) && s > RndCam::Current()->WorldFrustum()`
+(Draw.cpp). `RenderShadows` calls `DrawShowing` on the shadow objects
+themselves, which are not culled; what they draw beneath them is, against
+the *camera's* frustum (the shadow pass does not change `RndCam::Current`).
+Groups have no authored sphere and are never culled; a mesh uses its
+`mSphere` when its radius is non-zero.
+
+Native now does the same (`AddOcclusionDraw`, depth > 0 only, against the
+frustum `WriteDC3ProjShadow` records from the frame's camera; DC3 only,
+behind the rndshape seam). Test:
+`RetailLightingTest.NestedCastersOutOfTheCamerasViewAreCulled` (a group
+holding an in-view mesh, one behind the camera and one with no sphere, plus
+a top-level shadow object out of view: the cull keeps the three it should;
+with no camera all four draw). Sabotages: no cull, and culling the shadow
+objects themselves, each turn it red.
+
+What it saves (a TMPDIAG count of caster meshes per frame, with and
+without the cull, over a whole omg session with the director picking the
+shots; not committed):
+
+| venue | casters/frame | frames with a cull | where | most saved in a frame |
+|---|---|---|---|---|
+| rollerrink | 34.1 → 34.1 | 0.4% | the win close-up | 23 of 33 |
+| streetside | 34.1 → 34.0 | 2.1% | the opening venue shot, the win close-up | 23 of 33 |
+| throneroom | 34.1 → 33.8 | 1.3% | the opening venue shot, the win close-up | 23 of 37 |
+| dclive | 34.1 → 34.1 | 0.4% | the win close-up | 23 of 33 |
+
+In the gameplay shots (`area1_far/near/movement`) every dancer is in view
+and nothing is culled. Where it does cull, a dancer's whole caster set
+(7, or 11–12 meshes) goes at once.
+
+**What it changes on screen: nothing that could be found.** In one paused
+session per venue the cull was switched off and on in place (a TMPDIAG file
+flag) at 27 shots: cu01–cu04, intro_quick01 and win_angel_P1_high_dlg in
+all four venues, plus the shot rollerrink, streetside and throneroom open
+on. Four of them culled:
+streetside's opening venue06 (23 of 37), and dclive's cu01 (7),
+intro_quick01 (23) and win dialogue (23). In none of the four does the
+frame change beyond its own noise. The metric: pixels moving by more than 8
+levels between cull on and off, minus those that also move between two
+cull-on shots (HUD animation under the pause). The four read 165, 162, 70
+and 7 px, and a shot where nothing was culled (dclive cu02) reads 351 px.
+The dancers that are dropped stand off-screen, and so do their shadows
+(`ci_ss_intro1.png`: the only changed pixels are the HUD corner). So this is
+parity by construction and a small saving, not a visible fix. No frame was
+found where an off-screen dancer's shadow lands in view, so there is no
+Xenia comparison to make.
