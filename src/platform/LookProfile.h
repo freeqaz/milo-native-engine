@@ -76,6 +76,10 @@ const char *LookProfileName(LookProfile p);
 // two DC3 profiles at run time, so an A/B takes the same frozen frame. Ignored
 // (returns false) for a consumer whose profile is Native.
 bool SetLookProfileForInspection(LookProfile p);
+// The same for the post chain's fields only (postPrecision, postBloomFilter,
+// postDofFilter), the rest of the profile untouched: an A/B of the post look
+// without the other enhancements (alpha-cut coverage) changing too.
+bool SetLookPostForInspection(bool enhanced);
 
 // Tests only: replace the resolved settings for the lifetime of the object
 // (nests; restores the previous settings on destruction). Not thread-safe.
