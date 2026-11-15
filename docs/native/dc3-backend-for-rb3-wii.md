@@ -8706,6 +8706,48 @@ here would not transfer.
     (`SpotBeamFrameCostTest`'s frames draw 0 beams, because the DC3
     composite does not run there). So the beam half is checked by asking,
     not by drawing.
+- **The enhanced look's post pipelines (np-gfx-post round 10, merged after
+  this section was written).** §37.11 added 12 more pipelines of the same
+  kind: the DC3 chain's bloom family for the look's precision setting (10:
+  `DC3Look*`, the RGBA16Float family with `postPrecision`, else the RGBA8
+  one) and the depth of field's tent downsample and B-spline composite (2).
+  All go through `CreateCountedRenderPipeline`.
+  - `PrewarmFixedKeyPipelines` reads `milo::Look()`. With `postPrecision` or
+    `postBloomFilter` on, it builds the DC3 chain (`EnsureDC3Pipelines`, 10
+    pipelines that otherwise compiled on the first post frame at boot) and
+    the family `RunDC3Bloom` selects. With `postDofFilter` on,
+    `DofPass::Prewarm` also builds the two DOF pipelines, through the same
+    `EnsureEnhancedPipelines` that `Run` calls. Retail warms the same 14 as
+    before. The enhanced look warms 36.
+  - A runtime `native_look` switch to a combination Init did not warm (for
+    example `post_bloom_filter` alone, the RGBA8 family) compiles it on its
+    first world-graded frame, once.
+  - `PresentScaleBoxDither` stays lazy. It is created on the first dithered
+    box frame, which is the session's first present (or readback) under a
+    render scale, next to `PresentScale` and `PresentScaleBox`. Those two
+    are lazy on np-gfx too. All three are sub-millisecond: 1.0 and 0.8 ms
+    measured for the two; the dither variant is the same shader module.
+  - MEASURED (full rollerrink song, headless, same driver as above, base =
+    np-gfx `bb0a754`): pipelines created playing → results were 26 base vs
+    25 lane (enhanced) and 23 vs 23 (retail). In the lane, all 12 enhanced
+    pipelines were created at frame 1 (Init) and none later. Init cost
+    (four headless boots per arm, interleaved, load average ~22): the
+    14-pipeline warm took 22–59 ms (base and lane, both looks); the lane's
+    enhanced 36-pipeline warm took 106–173 ms, so about +100 ms under that
+    load. The two DOF pipelines are the dearest (21.6 + 7.8 ms in one boot);
+    the 20 bloom pipelines take 2–8 ms each. Before the warm, the DC3 chain's
+    10 compiled on the first post frame at boot, and the family and DOF
+    pairs on the first world-graded and DOF frames (INFERRED: venue frames).
+  - Guards (dc3 `test_fixed_key_pipelines.cpp`):
+    - `EnhancedPostJoinsTheWarmForTheLookThatUsesIt` asks for four
+      `LookSettings` combinations. Sabotage: drop the `PrewarmDC3Enhanced`
+      call, and all three bloom rows go red. Call `PrewarmDof` without
+      `postDofFilter`, and both DOF rows go red.
+    - `WarmedEnhancedBloomFramesCompileNothing` takes a fresh chain, warmed
+      for each combination, runs the plain, streak and glare arms, and
+      checks that nothing compiles. Sabotage: invert the family index. The
+      ready assert goes red, and with that assert removed, each
+      combination's frames compile the ten `DC3Look*`.
 - **rb3 and rb3-xenon.** `PrewarmFixedKeyPipelines` is called only under
   `rndshape::kDC3RetailPost`, so neither consumer runs it. The headless
   `SurfaceFormat()` change does reach them: `BandRnd` already forced RGBA8
