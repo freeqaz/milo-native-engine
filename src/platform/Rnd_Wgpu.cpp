@@ -9,6 +9,7 @@
 #include "platform/TransparentQueue.h"
 
 #include "gfx/FrameCapture.h"
+#include "audio/AudioDevice.h"
 #include "gfx/GpuDevice.h"
 #include "gfx/PipelineManager.h"
 #include "platform/LookProfile.h"
@@ -1746,6 +1747,10 @@ void WgpuRnd::BeginDrawing() {
     // Poll GLFW events
     if (!mGpu.IsHeadless()) {
         mGpu.PollEvents();
+#ifndef __EMSCRIPTEN__
+        // The frame clock and focus the background mute decides from.
+        AudioDevice::GetInstance().NoteMainLoopFrame(mGpu.IsWindowFocused());
+#endif
         if (mGpu.ShouldClose()) {
             // Window closed — request shutdown
             // For now, just skip drawing
