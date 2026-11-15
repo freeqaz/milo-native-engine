@@ -11,6 +11,10 @@ wgpu::TextureView GetGpuTexView(RndTex* tex);
 wgpu::TextureView GetGpuTexDepthView(RndTex* tex);
 wgpu::TextureView GetGpuCubeTexView(RndCubeTex* cubeTex);
 
+// The GPU texture behind a texture's view (null when it has none), for tests
+// that read one back. Byte-identical bitmaps share one (Tex_Wgpu.cpp).
+wgpu::Texture GetGpuTexTexture(RndTex* tex);
+
 // Upload raw RGBA pixel data to a render-target RndTex's GPU texture
 void UploadRGBAToRndTex(RndTex* tex, const uint8_t* rgba, int w, int h);
 
@@ -27,8 +31,13 @@ bool IsGpuTexRenderable(RndTex* tex);
 // has started tearing down (RB3-Wii's Debug::Exit takes that path).
 void ClearGpuTexCaches();
 
-// Live GPU texture entries (2D + cube), for the [GPUCOUNT] log line.
+// For the [GPUCOUNT] log line. GpuTexCount: distinct live GPU textures (2D +
+// cube; a texture shared by byte-identical bitmaps counts once).
+// GpuTexHolderCount: RndTexes holding one. GpuTexShareCount: monotonic count of
+// uploads that shared a live texture instead of creating one.
 size_t GpuTexCount();
+size_t GpuTexHolderCount();
+unsigned long long GpuTexShareCount();
 
 // The content fingerprint RndTex::PresyncBitmap keys re-creation on (with the
 // pixel pointer): 8 evenly spaced bytes folded as h = h*31 + byte; 0 for a null
@@ -47,5 +56,9 @@ struct GpuTexDebugInfo {
     const void* view = nullptr;    // wgpu::TextureView handle (identity only)
     const void* texture = nullptr; // wgpu::Texture handle (identity only)
     unsigned long long createCount = 0;
+    // Uploads that found a live texture with a byte-identical bitmap and
+    // shared it instead of creating one (Tex_Wgpu.cpp sSharedTex).
+    unsigned long long shareCount = 0;
+    bool shared = false;           // this texture's GPU texture is shared
 };
 GpuTexDebugInfo GetGpuTexDebugInfo(RndTex* tex);

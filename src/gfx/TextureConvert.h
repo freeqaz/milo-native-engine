@@ -26,6 +26,11 @@ namespace TextureConvert {
 wgpu::Texture CreateFromBitmap(GpuDevice& gpu, const RndBitmap& bmp, int numMips = 0,
                                int maxLevels = 0);
 
+// Tests only: textures CreateFromBitmap makes from now on also carry
+// TextureUsage::CopySrc, so a test can read one back (GpuDevice::ReadbackTexture)
+// to check what a sampler would see. No shipping path calls it.
+void SetBitmapTexturesCopyableForTests(bool on);
+
 // Create cube texture from 6 face bitmaps (for environment maps)
 wgpu::Texture CreateCubeFromBitmaps(GpuDevice& gpu, const RndBitmap* const* faces, int numFaces = 6);
 
