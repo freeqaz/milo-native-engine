@@ -44,9 +44,20 @@ public:
     // `sceneFormat`) by `depthView` (a depth-only view of the scene depth,
     // `depthSamples` samples, same size) into OutputView() and returns true.
     // Otherwise returns false and records nothing. The scene is not modified.
+    // `enhanced` (np-gfx-post round 10, DC3_LOOK=enhanced's LookSettings::
+    // postDofFilter, the world grade only): the downsample as an 8x8 tent and
+    // the composite's blur read through a cubic B-spline instead of bilinear,
+    // so the quarter-size blur shows no texel creases; the Poisson taps are
+    // scaled by EnhancedTapScale so the blur's spread stays retail's.
     bool Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& sceneView,
              wgpu::TextureFormat sceneFormat, const wgpu::TextureView& depthView,
-             uint32_t depthSamples, int sceneW, int sceneH, GpuDevice& gpu);
+             uint32_t depthSamples, int sceneW, int sceneH, GpuDevice& gpu,
+             bool enhanced = false);
+    // The enhanced path's tap scale per axis: the tent adds 1.5 scene texel^2
+    // (3/32 quarter texel^2) and the B-spline 1/6 quarter texel^2 of variance
+    // over the box and bilinear, taken back out of the two Poisson passes'
+    // variance `v` (quarter texel^2): sqrt(1 - (3/32 + 1/6) / v), in [0.5, 1].
+    static float EnhancedTapScale(float v);
     const wgpu::TextureView& OutputView() const { return mOutView; }
     const wgpu::Texture& OutputTexture() const { return mOutTex; }
     void Terminate();
@@ -54,12 +65,21 @@ public:
     // Run() that finds the depth of field on does not (they used to compile on
     // the first song frame, with the spot beam and point-test pipelines:
     // docs/native/dc3-backend-for-rb3-wii.md section 38.2).
-    void Prewarm(wgpu::TextureFormat format, GpuDevice& gpu) { EnsurePipelines(format, gpu); }
+    // `enhanced` (LookSettings::postDofFilter at Init) also compiles the tent
+    // downsample and B-spline composite.
+    void Prewarm(wgpu::TextureFormat format, GpuDevice& gpu, bool enhanced = false) {
+        EnsurePipelines(format, gpu);
+        if (enhanced) EnsureEnhancedPipelines(gpu);
+    }
+    bool EnhancedReady() const { return (bool)mDownTentPipe && (bool)mCompositeBSplinePipe; }
     // Bind groups from `cache` (null: four created per run); dc3 PLAN H-66.
     void SetBindGroupCache(BindGroupCache* cache) { mBindGroups = cache; }
 
 private:
     void EnsurePipelines(wgpu::TextureFormat format, GpuDevice& gpu);
+    void EnsureEnhancedPipelines(GpuDevice& gpu);
+    wgpu::RenderPipeline MakePipe(const wgpu::PipelineLayout& layout, const char* fs, const char* label,
+                                  GpuDevice& gpu);
     void EnsureTextures(int w, int h, wgpu::TextureFormat format, GpuDevice& gpu);
     void Pass(wgpu::CommandEncoder& encoder, const wgpu::RenderPipeline& pipe,
               const wgpu::BindGroup& bg, const wgpu::TextureView& dst, const char* label);
@@ -74,6 +94,7 @@ private:
     wgpu::BindGroupLayout mCompositeBGL;  // scene, blur, depth (MS), sampler, params
     wgpu::PipelineLayout mPassPL, mCompositePL;
     wgpu::RenderPipeline mDownPipe, mBlurPipe, mCompositePipe;
+    wgpu::RenderPipeline mDownTentPipe, mCompositeBSplinePipe;   // `enhanced`: Prewarm or first use
     wgpu::Sampler mSampler;               // linear, clamp
     // One buffer per pass: Queue::WriteBuffer lands at Submit, ahead of every
     // pass in the frame, so passes sharing a buffer would read the same data.

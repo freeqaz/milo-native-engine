@@ -600,6 +600,20 @@ void RB3RetailPost::Terminate() {
     mPrevRun = ~0ull;
     mNoiseSampler = nullptr;
     mDC3Ready = false;
+    // Round 10: the enhanced look's family and sets.
+    for (DC3Family& f : mDC3Fam) f = DC3Family{};
+    for (int s = 0; s < kSets; s++) {
+        for (int k = 0; k < 2; k++) {
+            Forget(mHView[s][k]);
+            mHTex[s][k] = nullptr;
+            mHView[s][k] = nullptr;
+        }
+        mHW[s] = mHH[s] = 0;
+    }
+    Forget(mCombView);
+    mCombTex = nullptr;
+    mCombView = nullptr;
+    mCombW = mCombH = 0;
 }
 
 // Shipped WGSL accessor (gfx/ShippedWgsl.h): lets the validation test compile

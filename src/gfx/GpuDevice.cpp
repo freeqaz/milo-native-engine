@@ -1096,6 +1096,10 @@ bool GpuDevice::ShouldClose() const {
     return mWindow && glfwWindowShouldClose(mWindow);
 }
 
+bool GpuDevice::IsWindowFocused() const {
+    return !mWindow || glfwGetWindowAttrib(mWindow, GLFW_FOCUSED) == GLFW_TRUE;
+}
+
 void GpuDevice::PollEvents() {
     glfwPollEvents();
     ApplyPendingFullscreenToggle();

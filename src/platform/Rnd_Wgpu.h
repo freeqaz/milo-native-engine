@@ -291,6 +291,7 @@ public:
     // Returns how many it created: 0 when they all exist with the keys a frame
     // will ask for.
     uint64_t PrewarmFixedKeyPipelines();
+    const PostProcPass& PostProc() const { return mPostProcPass; }
 
     // RndDrawable::mClipPlanes (Rnd::PushClipPlanes/PopClipPlanes around a
     // drawable's DrawShowing). Retail DxRnd::PushClipPlanesInternal turns each

@@ -107,6 +107,35 @@ struct LookSettings {
     // -1 = unset (the default above). Read once with DC3_LOOK; DC3 retail
     // model only. Meaningless under Retail, whose frame is 1280x720 anyway.
     int outputMaxRowsExplicit = -1;
+
+    // ---- post chain (np-gfx-post) ----------------------------------------------
+    // np-gfx-post round 10: the post chain's world grade only, i.e. the post
+    // run before the HUD and UI draw (WgpuRnd::FlushPostProcessingForOverlay,
+    // PostProcPass::SetWorldGrade). A post that runs over the UI (menus graded
+    // at EndDrawing) stays retail, so UI, HUD and text never change. Engine
+    // doc §37.11 has the measurements and costs.
+    //   postPrecision    the bloom sets in RGBA16Float, still saturated at 1
+    //                    after every pass as retail's 8-bit EDRAM resolve
+    //                    saturates them (A8R8G8B8, NgPostProc::
+    //                    BloomTextureSet), and keeping that resolve's dead zone
+    //                    (8-bit rounding drops whatever a pass leaves under half
+    //                    a level: a dim surface's own glow) as a smooth knee,
+    //                    so the steps go and the energy stays; a static sub-LSB
+    //                    dither on the composite's 8-bit write. Retail: 8-bit
+    //                    sets, no dither.
+    //   postBloomFilter  tent (not box) downsample into the bloom sets; the
+    //                    streak arm's w/16 set from all 256 texels of its block
+    //                    (retail's bloom.ps reads 16 of them, 4 bilinear taps
+    //                    at +-2 texels); a cubic B-spline (not bilinear)
+    //                    upsample of the plain arm's coarse sets (combined once
+    //                    at w/4) and of the glare arm's set.
+    //   postDofFilter    depth of field: tent downsample, B-spline upsample of
+    //                    the blur in the full-resolution composite, the 8 blur
+    //                    taps scaled so the total blur radius (second moment)
+    //                    stays retail's. Retail: box, bilinear.
+    bool postPrecision = false;
+    bool postBloomFilter = false;
+    bool postDofFilter = false;
 };
 
 // MILO_RENDER_SCALE's value -> LookSettings::renderScaleExplicit: 0 for unset,
@@ -123,6 +152,18 @@ int ParseOutputRowsKnob(const char *value, bool *bad = nullptr);
 const LookSettings &Look();
 
 const char *LookProfileName(LookProfile p);
+
+// Inspection (dc3's `{rnd native_look retail|enhanced}`): switch between the
+// two DC3 profiles at run time, so an A/B takes the same frozen frame. Ignored
+// (returns false) for a consumer whose profile is Native.
+bool SetLookProfileForInspection(LookProfile p);
+// The same for the post chain's fields only (postPrecision, postBloomFilter,
+// postDofFilter), the rest of the profile untouched: an A/B of the post look
+// without the other enhancements (alpha-cut coverage) changing too.
+bool SetLookPostForInspection(bool enhanced);
+// One post field at a time (the per-item cost A/B: each enhancement against
+// retail in the same run); the fields not named are set retail.
+bool SetLookPostFieldsForInspection(bool precision, bool bloomFilter, bool dofFilter);
 
 // Tests only: replace the resolved settings for the lifetime of the object
 // (nests; restores the previous settings on destruction). Not thread-safe.
