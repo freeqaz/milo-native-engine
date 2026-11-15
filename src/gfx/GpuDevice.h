@@ -5,6 +5,8 @@
 #include <string>
 #include <unordered_map>
 
+#include "gfx/GpuTimers.h"
+
 // Unconditional: mReadbackScale (a scaled frame's readback) is a member on
 // every platform, web included, even though only desktop presents through one.
 #include "gfx/PresentScale.h"
@@ -51,6 +53,34 @@ struct GpuDeviceDesc {
     float renderScale = 1.0f;
     float renderScaleIntegrated = 1.0f;
     float renderScaleExplicit = 0.0f;
+    // The frame at the output's own resolution (dc3 np-outres). Set (with a
+    // logical size): the frame's OUTPUT size is the largest logicalWidth x
+    // logicalHeight-shaped rectangle that fits the target -- the window's
+    // surface, or headless the width x height frame -- so a 1920x1080 window
+    // or headless frame is a 1920x1080 frame, and a 21:9 window is pillarboxed
+    // instead of stretched. The frame is DRAWN at that times the render scale,
+    // and windowed it follows every resize (frameWidth is then not used). The
+    // logical size is the consumer's virtual resolution (the Rnd's 1280x720),
+    // which viewports, UI layout and the post chain's pixel measures are
+    // defined in: LogicalWidth/Height, and the frame's scale from it is
+    // drawn / logical (FrameScaleX/Y), which need not be whole. Unset: the
+    // frame is the target (headless) or frameWidth x frameHeight (windowed),
+    // as before, and the logical size is the output size.
+    bool outputFollowsTarget = false;
+    int logicalWidth = 0;
+    int logicalHeight = 0;
+    // A following frame's OUTPUT height cap, in rows (0 = no cap), applied
+    // after the fit (ResolveFrameSizes); the output keeps the logical shape,
+    // and the present path scales it up into the window as it scaled the
+    // fixed frame before:
+    //   outputMaxRowsIntegrated  the DEFAULT, on a non-discrete adapter
+    //       presenting to a window (a handheld's iGPU, measured at 2.7-3.0 ms
+    //       per 720p frame, would otherwise draw its whole 2560x1600 panel);
+    //       discrete adapters and headless frames are not capped by default
+    //   outputMaxRowsExplicit  asked for (< 0 = not): 0 = no cap, > 0 = that
+    //       cap, on any adapter, headless included
+    int outputMaxRowsIntegrated = 0;
+    int outputMaxRowsExplicit = -1;
 };
 
 // The render scale rule (pure; GpuDevice::Init applies it).
@@ -72,6 +102,31 @@ constexpr int kRenderScaleCapWidth = 3840;
 constexpr int kRenderScaleCapHeight = 2160;
 float ResolveRenderScale(const GpuDeviceDesc& desc, bool discreteGpu, bool presentsToSurface,
                          int outputW, int outputH);
+
+// The frame's three sizes for a target (the window's surface, or the headless
+// frame) of targetW x targetH -- the one rule for every window size (pure;
+// GpuDevice applies it at Init and at every resize):
+//   output  outputFollowsTarget with a logical size: the logical shape fitted
+//           into the target (FitPresentRect), then held to the row cap
+//           (OutputRowCap: outputMaxRowsExplicit when asked, else
+//           outputMaxRowsIntegrated on a non-discrete adapter presenting
+//           to a window, else none) at the same shape; else windowed
+//           frameWidth x frameHeight when set; else the target
+//   scale   ResolveRenderScale(output)
+//   drawn   output * scale
+// So a 1280x720 window draws 2560x1440 and boxes it down 2x (the enhanced
+// look's desktop default), 1920x1080 draws 3840x2160 and boxes 2x, 2560x1440
+// and 3840x2160 draw 1x at their own size; headless draws 1x at its size.
+// On an integrated adapter (enhanced: cap 1080) a 2560x1600 panel's frame is
+// 1920x1080, scaled up into the window.
+int OutputRowCap(const GpuDeviceDesc& desc, bool discreteGpu, bool presentsToSurface);
+struct FrameSizes {
+    int outputW = 0, outputH = 0;
+    float scale = 1.0f;
+    int drawnW = 0, drawnH = 0;
+};
+FrameSizes ResolveFrameSizes(const GpuDeviceDesc& desc, bool discreteGpu, bool presentsToSurface,
+                             int targetW, int targetH);
 
 // Why GpuDevice::Init failed.
 enum class GpuInitFailure {
@@ -206,6 +261,13 @@ public:
     const char* WindowSystemName() const;
 #endif
 
+    // Every texture the renderer makes (MILO_GPU_TIMERS lists its render
+    // targets: GpuTimers::NoteTarget).
+    wgpu::Texture CreateTexture(const wgpu::TextureDescriptor& desc) {
+        if (GpuTimers::Requested()) GpuTimers::Get().NoteTarget(desc);
+        return mDevice.CreateTexture(&desc);
+    }
+
     // Feature queries
     bool HasBCCompression() const { return mHasBCCompression; }
 
@@ -254,11 +316,26 @@ public:
     // larger. Size a readback buffer from these.
     int OutputWidth() const { return mOutputWidth > 0 ? mOutputWidth : mWidth; }
     int OutputHeight() const { return mOutputHeight > 0 ? mOutputHeight : mHeight; }
+    // Supersampled: drawn larger than the output, box-filtered down to it.
     bool RenderScaled() const { return mOutputWidth > 0 && (mOutputWidth != mWidth || mOutputHeight != mHeight); }
-    // Drawn width over output width for a target `w` pixels wide: the render
-    // scale when `w` is the frame's drawn width, else 1 (an offscreen target).
+    // Drawn over output: the whole-number supersampling factor (1 if none).
+    float SupersampleScale() const { return (float)mHeight / (float)OutputHeight(); }
+    // The consumer's virtual resolution (GpuDeviceDesc::logicalWidth), which
+    // viewports, UI layout and post-chain pixel measures are defined in; the
+    // output size when it gave none.
+    int LogicalWidth() const { return mLogicalWidth > 0 ? mLogicalWidth : OutputWidth(); }
+    int LogicalHeight() const { return mLogicalHeight > 0 ? mLogicalHeight : OutputHeight(); }
+    // Drawn over logical: what a viewport or a pixel measure in the logical
+    // resolution is multiplied by for the drawn frame (1.5 for a 1920x1080
+    // frame at 1x, 3 at 2x; 2 for round 3's 1280x720 at 2x).
+    float FrameScaleX() const { return (float)mWidth / (float)LogicalWidth(); }
+    float FrameScaleY() const { return (float)mHeight / (float)LogicalHeight(); }
+    bool FrameScaled() const { return mWidth != LogicalWidth() || mHeight != LogicalHeight(); }
+    // The frame's scale (FrameScaleY: post measures follow the output's
+    // height) for a target `w` pixels wide when `w` is the frame's drawn
+    // width, else 1 (an offscreen target keeps its own pixels).
     float RenderScaleFor(int w) const {
-        return RenderScaled() && w == mWidth ? (float)mWidth / (float)OutputWidth() : 1.0f;
+        return FrameScaled() && w == mWidth ? FrameScaleY() : 1.0f;
     }
     // A render-scaled frame's box filter dithered to 8 bits, in the present
     // AND the readback alike (PresentScale::SetDither), so a screenshot is the
@@ -339,6 +416,13 @@ private:
     // and the box-filtered copy a scaled frame is read back through.
     int mOutputWidth = 0;
     int mOutputHeight = 0;
+    // GpuDeviceDesc::logicalWidth (0 = the output size) and the desc the
+    // frame's sizes are re-resolved from at a resize (outputFollowsTarget).
+    int mLogicalWidth = 0;
+    int mLogicalHeight = 0;
+    bool mFollowsTarget = false;
+    GpuDeviceDesc mSizeDesc;
+    void ApplyFrameSizes(const FrameSizes& s, bool atInit = false);
     PresentScale mReadbackScale;
     wgpu::Texture mReadbackTex;
     bool ReadbackScaled(const wgpu::Texture& src, wgpu::TextureFormat fmt, uint8_t* outPixels,

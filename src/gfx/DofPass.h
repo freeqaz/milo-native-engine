@@ -32,9 +32,11 @@ public:
     static void RetailBlurOffsets(bool vertical, int blurW, int blurH, float blurWidthScale,
                                   float out[8][2]);
     // The offsets Run uses for a sceneW x sceneH scene: RetailBlurOffsets for
-    // its quarter-size blur target -- the quarter of the OUTPUT size when the
-    // scene is a render-scaled frame (renderScale > 1, GpuDevice::
-    // RenderScaleFor), so the blur spans the part of the screen it does at 1x.
+    // its quarter-size blur target -- the quarter of the LOGICAL 1280x720 frame
+    // when the scene is drawn at another size (renderScale = drawn / logical,
+    // GpuDevice::RenderScaleFor: a render scale, the output's own resolution,
+    // or both; below 1 for an output smaller than 720p), so the blur spans the
+    // part of the screen it does on the original.
     static void SceneBlurOffsets(bool vertical, int sceneW, int sceneH, float renderScale,
                                  float blurWidthScale, float out[8][2]);
 

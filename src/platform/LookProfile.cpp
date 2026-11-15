@@ -28,6 +28,10 @@ LookSettings SettingsFor(LookProfile p) {
         // none on an integrated one, where the main pass alone is ~2 ms.
         s.renderScale = 2.0f;
         s.renderScaleIntegrated = 1.0f;
+        // The frame at the window's resolution, at most 1080 rows on an
+        // integrated GPU (a handheld's 2560x1600 panel is 4x a 720p frame).
+        s.outputFollowsTarget = true;
+        s.outputMaxRowsIntegrated = 1080;
     }
     // np-gfx-post round 10 (LookProfile.h): every platform, web and
     // integrated GPUs included. Measured on a 3090 at 1x, the three together add
@@ -58,11 +62,20 @@ LookSettings Resolve() {
         if (bad)
             fprintf(stderr, "[look] MILO_RENDER_SCALE=%s is not a number > 0; using the "
                     "profile default\n", rs);
+        const char *rows = getenv("MILO_OUTPUT_MAX_ROWS");
+        s.outputMaxRowsExplicit = ParseOutputRowsKnob(rows, &bad);
+        if (bad)
+            fprintf(stderr, "[look] MILO_OUTPUT_MAX_ROWS=%s is not a whole number >= 0; using "
+                    "the profile default\n", rows);
+        char knobs[96] = "";
+        int n = 0;
         if (s.renderScaleExplicit > 0.0f)
-            fprintf(stderr, "[look] profile %s, render scale %.2f (MILO_RENDER_SCALE)\n",
-                    LookProfileName(p), s.renderScaleExplicit);
-        else
-            fprintf(stderr, "[look] profile %s\n", LookProfileName(p));
+            n += snprintf(knobs + n, sizeof(knobs) - n, ", render scale %.2f (MILO_RENDER_SCALE)",
+                          s.renderScaleExplicit);
+        if (s.outputMaxRowsExplicit >= 0)
+            snprintf(knobs + n, sizeof(knobs) - n, ", output rows %s (MILO_OUTPUT_MAX_ROWS)",
+                     s.outputMaxRowsExplicit ? rows : "not capped");
+        fprintf(stderr, "[look] profile %s%s\n", LookProfileName(p), knobs);
         return s;
     }
 }
@@ -86,6 +99,18 @@ float ParseRenderScaleKnob(const char *value, bool *bad) {
         return 0.0f;
     }
     return v < 1.0f ? 1.0f : v > 2.0f ? 2.0f : v;
+}
+
+int ParseOutputRowsKnob(const char *value, bool *bad) {
+    if (bad) *bad = false;
+    if (!value || !*value) return -1;
+    char *end = nullptr;
+    const long v = strtol(value, &end, 10);
+    if (end == value || *end != '\0' || v < 0 || v > 16384) {
+        if (bad) *bad = true;
+        return -1;
+    }
+    return (int)v;
 }
 
 const char *LookProfileName(LookProfile p) {

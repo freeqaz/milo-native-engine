@@ -344,12 +344,28 @@ void WgpuRnd::Init() {
         // window. Before, the frame was the window, and anything larger than
         // the virtual resolution got the picture in its top-left corner.
         // MILO_PRESENT_SCALE=0 restores that.
-        if (!desc.headless && mWidth > 0 && mHeight > 0) {
-            const char* ps = getenv("MILO_PRESENT_SCALE");
-            if (!(ps && ps[0] == '0' && ps[1] == '\0')) {
-                desc.frameWidth = mWidth;
-                desc.frameHeight = mHeight;
-            }
+        const char* ps = getenv("MILO_PRESENT_SCALE");
+        const bool presentScale = !(ps && ps[0] == '0' && ps[1] == '\0');
+        if (!desc.headless && mWidth > 0 && mHeight > 0 && presentScale) {
+            desc.frameWidth = mWidth;
+            desc.frameHeight = mHeight;
+        }
+        // The shape's frame at the output's own resolution (np-outres;
+        // rndshape::kOutputFollowsTarget): the window's size, or headless
+        // MILO_WIDTH x MILO_HEIGHT, is the frame -- the virtual resolution
+        // only defines the space viewports, UI and post measures are laid out
+        // in, scaled to the frame (GpuDeviceDesc::outputFollowsTarget).
+        // Under the look's switch (LookSettings::outputFollowsTarget): Retail
+        // keeps the original's 1280x720 frame, scaled into the window.
+        if (rndshape::kOutputFollowsTarget && milo::Look().outputFollowsTarget && mWidth > 0 &&
+            mHeight > 0 && presentScale) {
+            desc.outputFollowsTarget = true;
+            desc.logicalWidth = mWidth;
+            desc.logicalHeight = mHeight;
+            // The output's row cap (an integrated adapter's default, or
+            // MILO_OUTPUT_MAX_ROWS anywhere): OutputRowCap, gfx/GpuDevice.h.
+            desc.outputMaxRowsIntegrated = milo::Look().outputMaxRowsIntegrated;
+            desc.outputMaxRowsExplicit = milo::Look().outputMaxRowsExplicit;
         }
 
         if (!mGpu.Init(desc)) {
@@ -388,9 +404,9 @@ void WgpuRnd::InitGpuResources() {
     mPipelines.SetDynamicUniformOffsets(true);
     // Look profile: material texture LOD bias (0 unless the profile sets one).
     mPipelines.SetMaterialLodBias(milo::Look().lodBias);
-    // A render-scaled frame's text and HUD sample at output-pixel centres.
-    mPipelines.SetOutputPixelScale(mGpu.RenderScaled()
-        ? (float)mGpu.WindowWidth() / (float)mGpu.OutputWidth() : 1.0f);
+    // A render-scaled frame's text and HUD sample at output-pixel centres
+    // (again each frame, BeginDrawing: a resize can change the scale).
+    mPipelines.SetOutputPixelScale(mGpu.SupersampleScale());
     mPipelines.Init(&mGpu);
     mPipelines.SetAlphaBlendMax(rndshape::kAlphaBlendMax);
     // Create per-draw ring buffers (64KB each — enough for ~250 draws/frame at 256-byte alignment)
@@ -873,7 +889,7 @@ void WgpuRnd::FlushWorldPost() {
             d.format = mGpu.SurfaceFormat();
             d.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding;
             d.mipLevelCount = 1;
-            mPostOutTex = mGpu.Device().CreateTexture(&d);
+            mPostOutTex = mGpu.CreateTexture(d);
             if (mPostOutView) mPostBindGroupCache.Forget(mPostOutView.Get());
             mPostOutView = mPostOutTex.CreateView();
             mPostOutWidth = w;
@@ -966,7 +982,7 @@ void WgpuRnd::CopyWorldToPreBuffer() {
         d.format = src.GetFormat();
         d.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
         d.mipLevelCount = 1;
-        mPreTex = mGpu.Device().CreateTexture(&d);
+        mPreTex = mGpu.CreateTexture(d);
         mPreView = mPreTex.CreateView();
         mPreWidth = w;
         mPreHeight = h;
@@ -1304,21 +1320,22 @@ void WgpuRnd::SetViewport(const Viewport& v) {
 void WgpuRnd::ApplyCameraViewport(RndCam* cam) {
     if (!cam) return;
     const Vector2& z = rndshape::CamZRange(cam);
-    // A frame pass's viewport is in output pixels (FrameViewport scales it to
-    // a render-scaled frame); a texture pass's in the texture's.
-    const int w = mActiveTargetTex ? (int)mCurrentTargetWidth : mGpu.OutputWidth();
-    const int h = mActiveTargetTex ? (int)mCurrentTargetHeight : mGpu.OutputHeight();
+    // A frame pass's viewport is in logical pixels (FrameViewport scales it to
+    // the drawn frame); a texture pass's in the texture's.
+    const int w = mActiveTargetTex ? (int)mCurrentTargetWidth : mGpu.LogicalWidth();
+    const int h = mActiveTargetTex ? (int)mCurrentTargetHeight : mGpu.LogicalHeight();
     SetViewport(BuildViewportForScreenRect(w, h, rndshape::CamScreenRect(cam), z.x, z.y));
 }
 
 // A viewport set in the virtual resolution's pixels (DC3's RndCam::Select
 // scales mScreenRect by TheRnd.Width/Height) in the pixels of the frame being
-// drawn. Only a render-scaled frame (GpuDeviceDesc::renderScale) differs;
-// texture passes take viewports in the texture's own pixels.
+// drawn: GpuDevice::FrameScaleX/Y, drawn over logical -- a render scale, a
+// frame at the output's own resolution (GpuDeviceDesc::outputFollowsTarget),
+// or both. Texture passes take viewports in the texture's own pixels.
 WgpuRndBase::Viewport WgpuRnd::FrameViewport(const Viewport& v) const {
-    if (mActiveTargetTex || !mGpu.RenderScaled()) return v;
-    const float sx = (float)mGpu.WindowWidth() / (float)mGpu.OutputWidth();
-    const float sy = (float)mGpu.WindowHeight() / (float)mGpu.OutputHeight();
+    if (mActiveTargetTex || !mGpu.FrameScaled()) return v;
+    const float sx = mGpu.FrameScaleX();
+    const float sy = mGpu.FrameScaleY();
     Viewport o = v;
     o.X = (unsigned int)((float)v.X * sx + 0.5f);
     o.Y = (unsigned int)((float)v.Y * sy + 0.5f);
@@ -1488,7 +1505,7 @@ void WgpuRnd::BeginFramePass(bool clear) {
                               wgpu::TextureUsage::CopySrc;  // SavePreBuffer
                 iDesc.mipLevelCount = 1;
                 if (mIntermediateView) mPostBindGroupCache.Forget(mIntermediateView.Get());
-                mIntermediateTex = mGpu.Device().CreateTexture(&iDesc);
+                mIntermediateTex = mGpu.CreateTexture(iDesc);
                 mIntermediateView = mIntermediateTex.CreateView();
                 mIntermediateWidth = curW;
                 mIntermediateHeight = curH;
@@ -1511,7 +1528,7 @@ void WgpuRnd::BeginFramePass(bool clear) {
                               wgpu::TextureUsage::CopySrc;  // SavePreBuffer
                 iDesc.mipLevelCount = 1;
                 if (mIntermediateView) mPostBindGroupCache.Forget(mIntermediateView.Get());
-                mIntermediateTex = mGpu.Device().CreateTexture(&iDesc);
+                mIntermediateTex = mGpu.CreateTexture(iDesc);
                 mIntermediateView = mIntermediateTex.CreateView();
                 mIntermediateWidth = curW;
                 mIntermediateHeight = curH;
@@ -1575,12 +1592,12 @@ void WgpuRnd::BeginFramePass(bool clear) {
     RndCam* cam = RndCam::Current();
     const Viewport& prevVp = GetViewport();
     if (cam && cam->TargetTex() == nullptr) {
-        // In output pixels, not the drawn frame's (curW x curH): ApplyViewport's
-        // FrameViewport scales it to a render-scaled frame. Built from curW, a
-        // 2x frame got a viewport twice its size and showed its top-left
-        // quarter until the next RndCam::Select (milo-viewer never reselects).
+        // In logical pixels, not the drawn frame's (curW x curH): ApplyViewport's
+        // FrameViewport scales it to the drawn frame. Built from curW, a 2x
+        // frame got a viewport twice its size and showed its top-left quarter
+        // until the next RndCam::Select (milo-viewer never reselects).
         SetViewport(BuildViewportForScreenRect(
-            mGpu.OutputWidth(), mGpu.OutputHeight(), rndshape::CamScreenRect(cam), prevVp.MinZ,
+            mGpu.LogicalWidth(), mGpu.LogicalHeight(), rndshape::CamScreenRect(cam), prevVp.MinZ,
             prevVp.MaxZ
         ));
     } else {
@@ -1881,6 +1898,9 @@ void WgpuRnd::BeginDrawing() {
         CreateDepthTexture(curW, curH);
         // Do NOT update mWidth/mHeight — those are the Rnd virtual resolution for UI layout
     }
+    // A resize of a frame that follows the window can change its render scale
+    // (ResolveFrameSizes), and with it where text samples.
+    mPipelines.SetOutputPixelScale(mGpu.SupersampleScale());
     // Ensure MSAA color target exists (format may not be known until first frame)
     if (mMsaaWidth != curW || mMsaaHeight != curH || !mMsaaTex) {
         wgpu::TextureDescriptor desc{};
@@ -1892,7 +1912,7 @@ void WgpuRnd::BeginDrawing() {
         desc.usage = wgpu::TextureUsage::RenderAttachment;
         desc.mipLevelCount = 1;
         desc.sampleCount = kMSAASamples;
-        mMsaaTex = mGpu.Device().CreateTexture(&desc);
+        mMsaaTex = mGpu.CreateTexture(desc);
         mMsaaView = mMsaaTex.CreateView();
         mMsaaWidth = curW;
         mMsaaHeight = curH;
@@ -1909,7 +1929,7 @@ void WgpuRnd::BeginDrawing() {
         desc.format = mGpu.SurfaceFormat();
         desc.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::CopySrc;
         desc.mipLevelCount = 1;
-        mFrameResolvedTex = mGpu.Device().CreateTexture(&desc);
+        mFrameResolvedTex = mGpu.CreateTexture(desc);
         mFrameResolvedView = mFrameResolvedTex.CreateView();
         mFrameResolvedWidth = curW;
         mFrameResolvedHeight = curH;
@@ -2161,7 +2181,7 @@ void WgpuRnd::CreateDepthTexture(int w, int h) {
         desc.sampleCount = kMSAASamples;
 
         if (mDepthSampleView) mPostBindGroupCache.Forget(mDepthSampleView.Get());
-        mDepthTex = mGpu.Device().CreateTexture(&desc);
+        mDepthTex = mGpu.CreateTexture(desc);
         mDepthView = mDepthTex.CreateView();
         // A binding may select one aspect only; the attachment view keeps both.
         wgpu::TextureViewDescriptor dv{};
@@ -2183,7 +2203,7 @@ void WgpuRnd::CreateDefaultTextures() {
         desc.format = ChooseRenderTargetFormat(nullptr);
         desc.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
         desc.mipLevelCount = 1;
-        mWhiteTex = mGpu.Device().CreateTexture(&desc);
+        mWhiteTex = mGpu.CreateTexture(desc);
         mWhiteTexView = mWhiteTex.CreateView();
 
         uint8_t white[4] = {255, 255, 255, 255};
@@ -2204,7 +2224,7 @@ void WgpuRnd::CreateDefaultTextures() {
         desc.format = wgpu::TextureFormat::RGBA8Unorm; // linear, not sRGB
         desc.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
         desc.mipLevelCount = 1;
-        mFlatNormalTex = mGpu.Device().CreateTexture(&desc);
+        mFlatNormalTex = mGpu.CreateTexture(desc);
         mFlatNormalTexView = mFlatNormalTex.CreateView();
 
         uint8_t flatNormal[4] = {128, 128, 255, 255};
@@ -2225,7 +2245,7 @@ void WgpuRnd::CreateDefaultTextures() {
         desc.format = wgpu::TextureFormat::RGBA8Unorm;
         desc.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
         desc.mipLevelCount = 1;
-        mBlackTex = mGpu.Device().CreateTexture(&desc);
+        mBlackTex = mGpu.CreateTexture(desc);
         mBlackTexView = mBlackTex.CreateView();
 
         uint8_t black[4] = {0, 0, 0, 255};
@@ -2247,7 +2267,7 @@ void WgpuRnd::CreateDefaultTextures() {
         desc.format = wgpu::TextureFormat::RGBA8Unorm;
         desc.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
         desc.mipLevelCount = 1;
-        mBlackCubeTex = mGpu.Device().CreateTexture(&desc);
+        mBlackCubeTex = mGpu.CreateTexture(desc);
 
         uint8_t black[4] = {0, 0, 0, 255};
         for (uint32_t face = 0; face < 6; face++) {

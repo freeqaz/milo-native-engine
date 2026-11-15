@@ -207,9 +207,9 @@ void BloomPass::EnsureTextures(int sceneW, int sceneH, GpuDevice& gpu) {
             if (mBloomView[i]) mBindGroups->Forget(mBloomView[i].Get());
             if (mBloomTempView[i]) mBindGroups->Forget(mBloomTempView[i].Get());
         }
-        mBloomTex[i] = dev.CreateTexture(&desc);
+        mBloomTex[i] = gpu.CreateTexture(desc);
         mBloomView[i] = mBloomTex[i].CreateView();
-        mBloomTempTex[i] = dev.CreateTexture(&desc);
+        mBloomTempTex[i] = gpu.CreateTexture(desc);
         mBloomTempView[i] = mBloomTempTex[i].CreateView();
         mBloomWidth[i] = w;
         mBloomHeight[i] = h;

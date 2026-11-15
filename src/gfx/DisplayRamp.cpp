@@ -103,7 +103,7 @@ bool DisplayRamp::Apply(wgpu::CommandEncoder& encoder, const wgpu::Texture& fram
         td.size = {w, h, 1};
         td.format = fmt;
         td.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
-        mScratch = dev.CreateTexture(&td);
+        mScratch = gpu.CreateTexture(td);
         mScratchView = mScratch.CreateView();
         mW = w;
         mH = h;
