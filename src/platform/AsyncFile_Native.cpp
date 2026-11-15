@@ -8,6 +8,7 @@
 #include "utl/MemMgr.h"
 #include "gfx/FrameCost.h"
 
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <strings.h>  // strncasecmp
@@ -37,6 +38,7 @@ protected:
         // mFilename is already qualified by AsyncFile::Init()
         framecost::Scope cost(framecost::kFileRead);  // the open and size probe (web: the fetch)
         mFp = fopen(mFilename.c_str(), fmode);
+        const int openErr = mFp ? 0 : errno;  // before anything else can touch errno
 #ifdef __EMSCRIPTEN__
         // On-demand fetch: if file isn't in MEMFS, try fetching from server.
         // Not for the Xbox dev kit's HDD ("devkit:\\..."): games probe it for
@@ -51,7 +53,21 @@ protected:
         }
 #endif
         if (!mFp) {
-            MILO_LOG("AsyncFile: failed to open '%s'\n", mFilename.c_str());
+            // As the image's AsyncFileWin::_OpenAsync: a file or directory
+            // that is not there fails the open silently (it skips ReadError
+            // for ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND and
+            // ERROR_NOT_READY), because callers probe for optional files
+            // through it -- FileExists, Locale::Init's devkit:
+            // locale_keep.dta, HamPlayerData's devkit:dancers.dta,
+            // DataReadFile(file, false) -- and report a missing one
+            // themselves when it matters.  Any other failure (a permission
+            // error, a path that is not a file) is still logged.  On web a
+            // file the server does not have either is a not-found too: the
+            // fetch replaced nothing, so openErr from the MEMFS open stands.
+            if (openErr != ENOENT && openErr != ENOTDIR) {
+                MILO_LOG("AsyncFile: failed to open '%s' (%s)\n", mFilename.c_str(),
+                         strerror(openErr));
+            }
             mFail = true;
             return;
         }
