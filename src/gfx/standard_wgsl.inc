@@ -1115,6 +1115,10 @@ fn vs_skinned(vertex: SkinnedVertexInput) -> VertexOutput {
 //    the rim light. Normal map (bit 5): N = normalize(z N + k x B + k y T),
 //    x, y = 2 * texel.rg - 1, z = sat(1 - x^2 - y^2), k = 1 - deNormal (c14),
 //    red along the bitangent cross(N, T) * T.w and green along the tangent.
+//    DC3 normal detail (bit 24, retailHasNormDetail): the detail texel d,
+//    fetched at uv * tiling, adds s (dx, dy, sat(1 - dx^2 - dy^2)) to the
+//    normal map's (x, y, z) before k and the frame, s = norm_detail_strength
+//    (c106 = (s, tiling, 1, 1); standard.ps 0000030001030035 vs 0000030000030035).
 //    Specular map (bit 1): colour * texel.rgb, power max(power * texel.a, 0.5).
 //    Rim (bit 37): r = pow((1 - sat(N . V)) (0.5 N.z + 0.5), power) * colour
 //    * box(-V), the box map seen from behind; the diffuse product is scaled by
@@ -1322,9 +1326,19 @@ struct RetailPixel {
     tangent: vec3f,
     bitangent: vec3f,
     normalSample: vec4f,
+    detailSample: vec4f,  // the normal detail map (read under retailHasNormDetail)
     specSample: vec4f,
     rimSample: vec4f,
     ao: vec4f,            // retailAOFactors
+}
+
+// DC3's normal detail map: RndShaderStandard::CalcShaderOpts sets bit 24 for
+// a per-pixel material with a norm_detail_map and norm_detail_strength > 0,
+// and every shipped permutation with it also has the normal map. RB3's form
+// of the retail model (scene.retailLighting 1) is left as it was.
+fn retailHasNormDetail() -> bool {
+    return scene.retailLighting > 1.5 && isEnabled(material.hasNormDetailMap) &&
+        material.normDetailStrength > 0.0;
 }
 
 fn retailPixelShade(p: RetailPixel, base: vec3f, ambientTerm: vec3f, proj: Dc3Proj) -> vec3f {
@@ -1335,9 +1349,17 @@ fn retailPixelShade(p: RetailPixel, base: vec3f, ambientTerm: vec3f, proj: Dc3Pr
     var N = normalize(p.normal);
     var Nfull = N;   // the normal map at full strength (skin's specular)
     if (isEnabled(material.retailFlags.y)) {
-        let x = normalSample.r * 2.0 - 1.0;
-        let y = normalSample.g * 2.0 - 1.0;
-        let z = saturate(1.0 - x * x - y * y);
+        var x = normalSample.r * 2.0 - 1.0;
+        var y = normalSample.g * 2.0 - 1.0;
+        var z = saturate(1.0 - x * x - y * y);
+        if (retailHasNormDetail()) {
+            let s = material.normDetailStrength;
+            let dx = p.detailSample.r * 2.0 - 1.0;
+            let dy = p.detailSample.g * 2.0 - 1.0;
+            x += s * dx;
+            y += s * dy;
+            z += s * saturate(1.0 - dx * dx - dy * dy);
+        }
         let k = 1.0 - material.deNormal;
         N = normalize(z * p.normal + k * x * p.bitangent + k * y * p.tangent);
         Nfull = normalize(z * p.normal + x * p.bitangent + y * p.tangent);
@@ -1444,6 +1466,13 @@ fn retailShade(surfaceInput: VertexOutput, base: vec3f, ambientLight: vec3f, raw
     px.tangent = surfaceInput.worldTangent;
     px.bitangent = surfaceInput.worldBitangent;
     px.normalSample = textureSampleBias(normalMapTex, diffuseSampler, uv, kLodBias);
+    px.detailSample = vec4f(0.5, 0.5, 1.0, 1.0);
+    if (retailHasNormDetail()) {
+        // Repeating (MaterialSetup keeps mapSampler on Repeat for a material
+        // with a detail map; retail's tf14 clamp is 0, wrap).
+        px.detailSample = textureSampleBias(normDetailMapTex, mapSampler,
+                                            uv * material.normDetailTiling, kLodBias);
+    }
     px.specSample = textureSampleBias(specularMapTex, diffuseSampler, uv, kLodBias);
     px.rimSample = textureSampleBias(rimMapTex, diffuseSampler, uv, kLodBias);
     px.ao = ao;
