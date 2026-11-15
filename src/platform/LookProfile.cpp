@@ -13,6 +13,22 @@ namespace {
 LookSettings SettingsFor(LookProfile p) {
     LookSettings s;
     s.profile = p;
+    s.bitmapMipLevels = rndshape::kBitmapMaxMipLevels;
+    if (p == LookProfile::Retail || p == LookProfile::Enhanced) s.cubeMipChain = true;
+    if (p == LookProfile::Enhanced) {
+        s.bitmapMipLevels = 0;  // whole authored chain ...
+        s.maxAnisotropy = 16;   // ... filtered anisotropically
+        s.uiMipLevels = 2;      // text/HUD keep the original's two levels
+        // World textures one level sharper: with the whole chain under 16x
+        // aniso this is as sharp as the original's two-level texture (which
+        // stays at its base level, aliasing) and steadier frame to frame.
+        // Text and HUD stay unbiased (PipelineKey::lodBias).
+        s.lodBias = -1.0f;
+        // 2x2 supersampling on a discrete GPU (~4x the main pass's fill);
+        // none on an integrated one, where the main pass alone is ~2 ms.
+        s.renderScale = 2.0f;
+        s.renderScaleIntegrated = 1.0f;
+    }
     return s;
 }
 

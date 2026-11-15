@@ -340,6 +340,12 @@ struct GpuCubeTexData {
 
 static std::unordered_map<RndCubeTex*, GpuCubeTexData> sCubeTexGpuData;
 
+int GetGpuCubeTexMipLevels(RndCubeTex* cubeTex) {
+    auto it = sCubeTexGpuData.find(cubeTex);
+    if (it == sCubeTexGpuData.end() || !it->second.uploaded || !it->second.texture) return -1;
+    return (int)it->second.texture.GetMipLevelCount();
+}
+
 bool ReadbackGpuRenderTarget(RndTex* tex, std::vector<uint8_t>& texels, int& w, int& h) {
     if (!gWgpuRnd || !tex) return false;
     auto it = sTexGpuData.find(tex);

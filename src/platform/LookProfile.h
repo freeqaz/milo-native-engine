@@ -58,6 +58,18 @@ struct LookSettings {
     // DxCubeTex::Sync creates them (numMips = mNumMips + 1). Native's one
     // level was a port shortcut; both DC3 profiles fix it, Native keeps it.
     bool cubeMipChain = false;
+
+    // ---- supersampling ---------------------------------------------------------
+    // Internal render scale: the frame is drawn at this times its output size
+    // and box-filtered back down where it leaves the renderer (present,
+    // readback; GpuDeviceDesc::renderScale). 1 = off, the original's one
+    // sample per pixel (its world draws were not multisampled either; native
+    // keeps its 4x MSAA under every profile). Desktop only (the web build
+    // ignores it). Per adapter class, because the cost is the main pass's fill
+    // times scale^2: renderScale on a discrete GPU, renderScaleIntegrated on
+    // anything else (integrated: a handheld's main pass is ~2 ms at 1x).
+    float renderScale = 1.0f;
+    float renderScaleIntegrated = 1.0f;
 };
 
 // The process-wide settings, resolved once.

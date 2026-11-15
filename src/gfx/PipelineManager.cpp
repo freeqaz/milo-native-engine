@@ -515,8 +515,13 @@ wgpu::RenderPipeline PipelineManager::CreatePipeline(const PipelineKey& key) {
     wgpu::ConstantEntry skipFringeFade{};
     skipFringeFade.key = "kSkipFringeFade";
     skipFringeFade.value = BlendSkipsFringeFade((int)key.blend) ? 1.0 : 0.0;
-    fragment.constantCount = 1;
-    fragment.constants = &skipFringeFade;
+    wgpu::ConstantEntry constants[3] = {skipFringeFade, {}, {}};
+    constants[1].key = "kLodBias";
+    constants[1].value = LodBiasFor(key);
+    constants[2].key = "kOutputPixelScale";
+    constants[2].value = OutputPixelScaleFor(key);
+    fragment.constantCount = 3;
+    fragment.constants = constants;
 
     wgpu::DepthStencilState ds{};
     if (key.hasDepth) {
@@ -651,6 +656,9 @@ void PipelineManager::BuildPreWarmKeys(wgpu::TextureFormat mainFmt,
                     key.alphaWrite = pass.alphaWrite;
                     key.alphaToCoverage = false;
                     key.depthBias = 0;
+                    // World draws in the depth passes take the look's LOD
+                    // bias (Mesh_Wgpu); the RT pass's overlay-class draws do not.
+                    key.lodBias = pass.hasDepth && mMaterialLodBias != 0.0f;
                     mPreWarmKeys.push_back(key);
                 }
             }

@@ -11,6 +11,7 @@
 #include "gfx/FrameCapture.h"
 #include "gfx/GpuDevice.h"
 #include "gfx/PipelineManager.h"
+#include "platform/LookProfile.h"
 #include "gfx/Screenshot.h"
 #include "rndobj/Cam.h"
 #include "rndobj/Env.h"
@@ -328,6 +329,10 @@ void WgpuRnd::Init() {
         desc.width = getenv("MILO_WIDTH") ? atoi(getenv("MILO_WIDTH")) : 1280;
         desc.height = getenv("MILO_HEIGHT") ? atoi(getenv("MILO_HEIGHT")) : 720;
         desc.title = "DC3 Native — WebGPU";
+        // Look profile: internal render scale (supersampling), box-filtered
+        // back to this size where the frame leaves the renderer (1 = off).
+        desc.renderScale = milo::Look().renderScale;
+        desc.renderScaleIntegrated = milo::Look().renderScaleIntegrated;
         // Windowed, the frame is the Rnd virtual resolution (what viewports and
         // UI layout are computed in), scaled into whatever size the window has
         // (dc3 PLAN H-18; gfx/PresentScale.h). MILO_WIDTH/HEIGHT size the
@@ -376,6 +381,11 @@ void WgpuRnd::InitGpuResources() {
     // Initialize pipeline manager. The mesh path binds its material, object
     // and bone uniforms with dynamic offsets into cached bind groups (H-30).
     mPipelines.SetDynamicUniformOffsets(true);
+    // Look profile: material texture LOD bias (0 unless the profile sets one).
+    mPipelines.SetMaterialLodBias(milo::Look().lodBias);
+    // A render-scaled frame's text and HUD sample at output-pixel centres.
+    mPipelines.SetOutputPixelScale(mGpu.RenderScaled()
+        ? (float)mGpu.WindowWidth() / (float)mGpu.OutputWidth() : 1.0f);
     mPipelines.Init(&mGpu);
     mPipelines.SetAlphaBlendMax(rndshape::kAlphaBlendMax);
     // Create per-draw ring buffers (64KB each — enough for ~250 draws/frame at 256-byte alignment)
@@ -486,8 +496,8 @@ void WgpuRnd::InitGpuResources() {
     // Video recording setup (env-var controlled, native only)
     const char* videoPath = getenv("MILO_VIDEO");
     if (videoPath && videoPath[0]) {
-        int w = mGpu.WindowWidth();
-        int h = mGpu.WindowHeight();
+        int w = mGpu.OutputWidth();
+        int h = mGpu.OutputHeight();
         int fps = 30;
         const char* fpsEnv = getenv("MILO_VIDEO_FPS");
         if (fpsEnv && fpsEnv[0]) fps = atoi(fpsEnv);
@@ -1278,11 +1288,27 @@ void WgpuRnd::ApplyCameraViewport(RndCam* cam) {
     ));
 }
 
+// A viewport set in the virtual resolution's pixels (DC3's RndCam::Select
+// scales mScreenRect by TheRnd.Width/Height) in the pixels of the frame being
+// drawn. Only a render-scaled frame (GpuDeviceDesc::renderScale) differs;
+// texture passes take viewports in the texture's own pixels.
+WgpuRndBase::Viewport WgpuRnd::FrameViewport(const Viewport& v) const {
+    if (mActiveTargetTex || !mGpu.RenderScaled()) return v;
+    const float sx = (float)mGpu.WindowWidth() / (float)mGpu.OutputWidth();
+    const float sy = (float)mGpu.WindowHeight() / (float)mGpu.OutputHeight();
+    Viewport o = v;
+    o.X = (unsigned int)((float)v.X * sx + 0.5f);
+    o.Y = (unsigned int)((float)v.Y * sy + 0.5f);
+    o.Width = (unsigned int)((float)v.Width * sx + 0.5f);
+    o.Height = (unsigned int)((float)v.Height * sy + 0.5f);
+    return o;
+}
+
 void WgpuRnd::ApplyViewport() {
     if (!mInPass) {
         return;
     }
-    const Viewport& vp = GetViewport();
+    const Viewport vp = FrameViewport(GetViewport());
     uint32_t width = vp.Width ? vp.Width : mCurrentTargetWidth;
     uint32_t height = vp.Height ? vp.Height : mCurrentTargetHeight;
     mPass.SetViewport((float)vp.X, (float)vp.Y, (float)width, (float)height, vp.MinZ, vp.MaxZ);
@@ -1321,7 +1347,7 @@ void WgpuRnd::PushClipPlanesInternal(ObjPtrVec<RndTransformable>& planes) {
     if (cam) {
         float vp[16];
         CamSceneMatrices(cam, vp, nullptr);
-        const Viewport& v = GetViewport();
+        const Viewport v = FrameViewport(GetViewport());
         const float vx = (float)v.X, vy = (float)v.Y;
         const float vw = (float)(v.Width ? v.Width : tw), vh = (float)(v.Height ? v.Height : th);
         const Vector3& fwd = cam->WorldXfm().m.y; // Milo cameras look down +y
@@ -2845,8 +2871,8 @@ void WgpuRnd::MaybeCaptureFrame() {
     if (mCaptureIndex >= (int)mCaptureFrames.size()) return;
     if (mFrameID != mCaptureFrames[mCaptureIndex]) return;
 
-    int w = mGpu.WindowWidth();
-    int h = mGpu.WindowHeight();
+    int w = mGpu.OutputWidth();
+    int h = mGpu.OutputHeight();
     size_t pixelSize = (size_t)w * h * 4;
     uint8_t* pixels = (uint8_t*)malloc(pixelSize);
     if (!pixels) return;

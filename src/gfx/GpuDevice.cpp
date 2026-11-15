@@ -117,11 +117,28 @@ bool GpuDevice::Init(const GpuDeviceDesc& desc) {
         return false;
     }
 
+    // Render scale: the drawn frame is the adapter class's scale times the
+    // output size.
+    auto applyRenderScale = [&]() {
+        const float scale = mDiscreteGpu ? desc.renderScale : desc.renderScaleIntegrated;
+        if (!(scale > 1.0f)) return;
+        mOutputWidth = mWidth;
+        mOutputHeight = mHeight;
+        mWidth = (int)(mOutputWidth * scale + 0.5f);
+        mHeight = (int)(mOutputHeight * scale + 0.5f);
+        mPresentScale.SetBoxFilter(true);
+        mReadbackScale.SetBoxFilter(true);
+        printf("GpuDevice: render scale %.2f on a %s GPU (%dx%d drawn, %dx%d out)\n", scale,
+               mDiscreteGpu ? "discrete" : "non-discrete", mWidth, mHeight, mOutputWidth,
+               mOutputHeight);
+    };
+    if (mHeadless) applyRenderScale();
     if (!mHeadless) {
         ConfigureSurface();
         if (desc.frameWidth > 0 && desc.frameHeight > 0) {
             mWidth = desc.frameWidth;
             mHeight = desc.frameHeight;
+            applyRenderScale();
             CreateFrameTexture();
         } else {
             mWidth = mSurfaceWidth;
@@ -314,6 +331,7 @@ bool GpuDevice::InitAdapter() {
 
     // Detect null/fallback backend (renders produce empty frames)
     mNullBackend = (info.backendType == wgpu::BackendType::Null);
+    mDiscreteGpu = (info.adapterType == wgpu::AdapterType::DiscreteGPU);
     if (mNullBackend) {
         fprintf(stderr, "GpuDevice: WARNING — using Null backend (no real GPU). "
                 "Renders will be black/empty.\n");
@@ -822,6 +840,7 @@ wgpu::TextureView GpuDevice::AcquireHeadlessFrame() {
         texDesc.size = {(uint32_t)mWidth, (uint32_t)mHeight, 1};
         texDesc.format = wgpu::TextureFormat::RGBA8Unorm;
         texDesc.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::CopySrc;
+        if (RenderScaled()) texDesc.usage |= wgpu::TextureUsage::TextureBinding;
         mHeadlessTex = mDevice.CreateTexture(&texDesc);
         mHeadlessView = mHeadlessTex.CreateView();
         mSurfaceFormat = wgpu::TextureFormat::RGBA8Unorm;
@@ -831,7 +850,32 @@ wgpu::TextureView GpuDevice::AcquireHeadlessFrame() {
 
 bool GpuDevice::ReadbackHeadlessFrame(uint8_t* outPixels, size_t outSize) {
     if (!mHeadlessTex) return false;
+    if (RenderScaled())
+        return ReadbackScaled(mHeadlessTex, wgpu::TextureFormat::RGBA8Unorm, outPixels, outSize);
     return ReadbackTexture(mHeadlessTex, mWidth, mHeight, outPixels, outSize);
+}
+
+// A render-scaled frame read back at its output size: box-filtered into an
+// output-sized texture (the same filter PresentFrame uses), then copied out.
+bool GpuDevice::ReadbackScaled(const wgpu::Texture& src, wgpu::TextureFormat fmt,
+                               uint8_t* outPixels, size_t outSize) {
+    const int w = OutputWidth(), h = OutputHeight();
+    if (!mReadbackTex || (int)mReadbackTex.GetWidth() != w || (int)mReadbackTex.GetHeight() != h ||
+        mReadbackTex.GetFormat() != fmt) {
+        wgpu::TextureDescriptor td{};
+        td.label = "RenderScaleReadback";
+        td.size = {(uint32_t)w, (uint32_t)h, 1};
+        td.format = fmt;
+        td.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::CopySrc;
+        mReadbackTex = mDevice.CreateTexture(&td);
+    }
+    wgpu::CommandEncoderDescriptor ed{};
+    ed.label = "RenderScaleReadbackEncoder";
+    wgpu::CommandEncoder enc = mDevice.CreateCommandEncoder(&ed);
+    mReadbackScale.Encode(mDevice, enc, src, mReadbackTex.CreateView(), fmt, w, h);
+    wgpu::CommandBuffer cmd = enc.Finish();
+    mQueue.Submit(1, &cmd);
+    return ReadbackTexture(mReadbackTex, w, h, outPixels, outSize);
 }
 
 bool GpuDevice::ReadbackFrame(uint8_t* outPixels, size_t outSize) {
@@ -841,8 +885,15 @@ bool GpuDevice::ReadbackFrame(uint8_t* outPixels, size_t outSize) {
     wgpu::Texture& tex = mFrameTex ? mFrameTex : mSurfaceTex;
     if (!tex || (!mFrameTex && !mSurfaceCopySrc)) return false;
     int w = (int)tex.GetWidth(), h = (int)tex.GetHeight();
-    if ((size_t)w * h * 4 > outSize) return false;
-    if (!ReadbackTexture(tex, w, h, outPixels, outSize)) return false;
+    if (mFrameTex && RenderScaled()) {
+        w = OutputWidth();
+        h = OutputHeight();
+        if ((size_t)w * h * 4 > outSize) return false;
+        if (!ReadbackScaled(mFrameTex, mSurfaceFormat, outPixels, outSize)) return false;
+    } else {
+        if ((size_t)w * h * 4 > outSize) return false;
+        if (!ReadbackTexture(tex, w, h, outPixels, outSize)) return false;
+    }
     if (mSurfaceFormat == wgpu::TextureFormat::BGRA8Unorm ||
         mSurfaceFormat == wgpu::TextureFormat::BGRA8UnormSrgb) {
         for (size_t i = 0, n = (size_t)w * h * 4; i < n; i += 4) {

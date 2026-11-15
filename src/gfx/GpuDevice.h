@@ -33,6 +33,18 @@ struct GpuDeviceDesc {
     // Open fullscreen on the monitor (its desktop mode, no mode switch).
     // MILO_FULLSCREEN=1 does the same. F11 or Alt+Enter toggles at run time.
     bool fullscreen = false;
+    // Internal render scale (supersampling). > 1: the frame -- headless, or the
+    // windowed fixed-size frame -- is drawn at renderScale times its size and
+    // box-filtered back down where it leaves the renderer: PresentFrame into
+    // the window, ReadbackFrame/ReadbackHeadlessFrame into the size a caller
+    // reads (OutputWidth/Height). WindowWidth/Height are the DRAWN size, so
+    // every render target and viewport follows. 1 (the default): off, nothing
+    // changes. Ignored windowed without a fixed-size frame, and on the web.
+    // renderScale applies on a discrete GPU, renderScaleIntegrated on any
+    // other adapter (integrated, CPU, unknown): the scale multiplies the main
+    // pass's fill cost by its square, which a handheld's iGPU cannot carry.
+    float renderScale = 1.0f;
+    float renderScaleIntegrated = 1.0f;
 };
 
 // Why GpuDevice::Init failed.
@@ -209,6 +221,19 @@ public:
     void PollEvents();
     int WindowWidth() const { return mWidth; }
     int WindowHeight() const { return mHeight; }
+    // The size a frame leaves the renderer at (readback, presentation's
+    // source): WindowWidth/Height unless GpuDeviceDesc::renderScale draws it
+    // larger. Size a readback buffer from these.
+    int OutputWidth() const { return mOutputWidth > 0 ? mOutputWidth : mWidth; }
+    int OutputHeight() const { return mOutputHeight > 0 ? mOutputHeight : mHeight; }
+    bool RenderScaled() const { return mOutputWidth > 0 && (mOutputWidth != mWidth || mOutputHeight != mHeight); }
+    // Drawn width over output width for a target `w` pixels wide: the render
+    // scale when `w` is the frame's drawn width, else 1 (an offscreen target).
+    float RenderScaleFor(int w) const {
+        return RenderScaled() && w == mWidth ? (float)mWidth / (float)OutputWidth() : 1.0f;
+    }
+    // The adapter reported itself a discrete GPU (render scale's default).
+    bool IsDiscreteGpu() const { return mDiscreteGpu; }
     bool IsHeadless() const { return mHeadless; }
 #ifdef __EMSCRIPTEN__
     // The backing-store size of the consumer's canvas (MILO_WEB_CANVAS_SELECTOR,
@@ -243,6 +268,7 @@ private:
     wgpu::TextureFormat mSurfaceFormat = wgpu::TextureFormat::BGRA8Unorm;
 
     bool mNullBackend = false;
+    bool mDiscreteGpu = false;
 #ifndef __EMSCRIPTEN__
     GLFWwindow* mWindow = nullptr;
     void (*mPrevKeyCallback)(GLFWwindow*, int, int, int, int) = nullptr;
@@ -262,6 +288,14 @@ private:
     // The frame's size: WindowWidth/Height.
     int mWidth = 0;
     int mHeight = 0;
+    // GpuDeviceDesc::renderScale: the frame's output size (0 = not scaled),
+    // and the box-filtered copy a scaled frame is read back through.
+    int mOutputWidth = 0;
+    int mOutputHeight = 0;
+    PresentScale mReadbackScale;
+    wgpu::Texture mReadbackTex;
+    bool ReadbackScaled(const wgpu::Texture& src, wgpu::TextureFormat fmt, uint8_t* outPixels,
+                        size_t outSize);
     // The swapchain's configured size.
     int mSurfaceWidth = 0;
     int mSurfaceHeight = 0;

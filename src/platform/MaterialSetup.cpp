@@ -260,6 +260,22 @@ static UiDrawTerms CurrentUiDrawTerms() {
     return UiDrawTermsFor(gWgpuRnd && gWgpuRnd->FrameInOverlay());
 }
 
+void ApplyLookSampling(SamplerDesc& desc, bool uiClass, const milo::LookSettings& look) {
+    if (uiClass) {
+        if (look.uiMipLevels > 0) desc.lodMaxClamp = (float)(look.uiMipLevels - 1);
+    } else {
+        desc.maxAnisotropy = look.maxAnisotropy;
+    }
+}
+
+bool MaterialDrawTakesLodBias(bool uiClass, float materialLodBias) {
+    return !uiClass && materialLodBias != 0.0f;
+}
+
+bool MaterialDrawSamplesAtOutputPixels(bool uiClass, bool toTextureTarget, float outputPixelScale) {
+    return uiClass && !toTextureTarget && outputPixelScale > 1.0f;
+}
+
 MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh) {
     return BuildMaterialParams(rawMat, isTextMesh, CurrentUiDrawTerms());
 }
@@ -478,23 +494,10 @@ MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh, const UiDraw
     result.mapSamplerDesc.addressU = wgpu::AddressMode::Repeat;
     result.mapSamplerDesc.addressV = wgpu::AddressMode::Repeat;
 
-    // Look profile, per texture class. World and character materials take the
-    // profile's anisotropy (the original sets none; Retail/Native keep 1).
-    // Text and the depthless HUD overlay are drawn screen-aligned, where
-    // anisotropy buys nothing, and keep the original's two-level look by
-    // clamping the sample to mip 1 (uiMipLevels; 0 = no clamp): the glyph
-    // atlases are authored with six mips and drawn ~2.5x minified, and
-    // blending mips 2.. into a 1-px stroke halves its intensity.
-    const milo::LookSettings& look = milo::Look();
-    if (isTextMesh || isOverlayPass) {
-        if (look.uiMipLevels > 0) {
-            sampDesc.lodMaxClamp = (float)(look.uiMipLevels - 1);
-            result.mapSamplerDesc.lodMaxClamp = (float)(look.uiMipLevels - 1);
-        }
-    } else {
-        sampDesc.maxAnisotropy = look.maxAnisotropy;
-        result.mapSamplerDesc.maxAnisotropy = look.maxAnisotropy;
-    }
+    // Look profile, per texture class (ApplyLookSampling).
+    const bool uiClass = isTextMesh || isOverlayPass;
+    ApplyLookSampling(sampDesc, uiClass, milo::Look());
+    ApplyLookSampling(result.mapSamplerDesc, uiClass, milo::Look());
 
     result.heuristics = heuristics;
     return result;

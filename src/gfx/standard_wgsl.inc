@@ -28,6 +28,17 @@ const kAlphaFringeFadeStart = 0.1;
 // darken, which the image never draws (its NgMat Multiply is src Zero / dst
 // SrcColor and its Darken One/One Min, neither reads alpha).
 override kSkipFringeFade: bool = false;
+// LOD bias on the 2D material texture samples (PipelineManager::SetMaterialLodBias).
+override kLodBias: f32 = 0.0;
+// A text/HUD draw into a render-scaled frame (GpuDeviceDesc::renderScale):
+// the frame's pixels per output pixel, else 1. The diffuse sample is then
+// taken at the centre of the output pixel the fragment falls in, with that
+// pixel's footprint (diffuseSample), so the box filter that brings the frame
+// back to its output size averages identical texels and the glyphs come out
+// as a frame drawn at the output size would draw them; only the draw's
+// edges gain the extra samples. Bilinear samples at the sub-pixel positions
+// instead blur a 1:1 HUD texture by [1 6 1]/8 per axis.
+override kOutputPixelScale: f32 = 1.0;
 // Soft-clip ("GX saturate") of the per-channel LIGHTING SUM (ambient + Σ light
 // diffuse) before it modulates the base/texture colour. On Wii the rasterised
 // channel colour is clamped to [0,1] *before* the TEV texture multiply, so
@@ -328,7 +339,7 @@ fn srgbToLinear(color: vec3f) -> vec3f {
 // material uses them as stored, a linear one decodes them first.
 fn refractScreen(worldPos: vec3f, uv: vec2f, strength: f32, gammaShading: bool) -> vec3f {
     let c = scene.viewProj * vec4f(worldPos, 1.0);
-    let ns = textureSample(refractNormalTex, diffuseSampler, uv);
+    let ns = textureSampleBias(refractNormalTex, diffuseSampler, uv, kLodBias);
     let n = vec2f(ns.g * 2.0 - 1.0, ns.r * 2.0 - 1.0);
     let suv = (c.xy + n * strength) * vec2f(0.5, -0.5) / c.w + vec2f(0.5);
     let screen = textureSampleLevel(screenTex, screenSampler, suv, 0.0).rgb;
@@ -485,7 +496,7 @@ fn blendDetailNormal(baseNormal: vec3f, uv: vec2f) -> vec3f {
     }
 
     let detailUV = uv * material.normDetailTiling;
-    let detailSample = textureSample(normDetailMapTex, mapSampler, detailUV);
+    let detailSample = textureSampleBias(normDetailMapTex, mapSampler, detailUV, kLodBias);
     let detailNormal = detailSample.xyz * 2.0 - 1.0;
     return normalize(vec3f(
         baseNormal.x + detailNormal.x * material.normDetailStrength,
@@ -500,7 +511,7 @@ fn sampleSurfaceNormal(surfaceInput: VertexOutput) -> vec3f {
         return worldNormal;
     }
 
-    let normalSample = textureSample(normalMapTex, mapSampler, surfaceInput.uv);
+    let normalSample = textureSampleBias(normalMapTex, mapSampler, surfaceInput.uv, kLodBias);
     var tangentSpaceNormal = decodeTangentSpaceNormal(normalSample);
     tangentSpaceNormal = applyDeNormal(tangentSpaceNormal);
     tangentSpaceNormal = blendDetailNormal(tangentSpaceNormal, surfaceInput.uv);
@@ -737,7 +748,7 @@ fn computeRimLighting(surfaceNormal: vec3f, viewDir: vec3f, uv: vec2f) -> vec3f 
         return vec3f(0.0);
     }
 
-    let rimMapSample = textureSample(rimMapTex, mapSampler, uv);
+    let rimMapSample = textureSampleBias(rimMapTex, mapSampler, uv, kLodBias);
     let rimDot = 1.0 - max(dot(surfaceNormal, viewDir), 0.0);
     let rimExponent = max(rimPower * rimMapSample.a, 0.5);
     var rimColor =
@@ -1401,11 +1412,25 @@ fn retailShade(surfaceInput: VertexOutput, base: vec3f, ambientLight: vec3f, raw
     px.normal = surfaceInput.worldNormal;
     px.tangent = surfaceInput.worldTangent;
     px.bitangent = surfaceInput.worldBitangent;
-    px.normalSample = textureSample(normalMapTex, diffuseSampler, uv);
-    px.specSample = textureSample(specularMapTex, diffuseSampler, uv);
-    px.rimSample = textureSample(rimMapTex, diffuseSampler, uv);
+    px.normalSample = textureSampleBias(normalMapTex, diffuseSampler, uv, kLodBias);
+    px.specSample = textureSampleBias(specularMapTex, diffuseSampler, uv, kLodBias);
+    px.rimSample = textureSampleBias(rimMapTex, diffuseSampler, uv, kLodBias);
     px.ao = ao;
     return retailPixelShade(px, base, ambientTerm, proj);
+}
+
+// The diffuse texel of a fragment at framebuffer position fragPos (see
+// kOutputPixelScale).
+fn diffuseSample(uv: vec2f, fragPos: vec2f) -> vec4f {
+    if (kOutputPixelScale > 1.0) {
+        let dx = dpdx(uv);
+        let dy = dpdy(uv);
+        let centre = (floor(fragPos / kOutputPixelScale) + 0.5) * kOutputPixelScale;
+        let d = centre - fragPos;
+        return textureSampleGrad(diffuseTex, diffuseSampler, uv + dx * d.x + dy * d.y,
+                                 dx * kOutputPixelScale, dy * kOutputPixelScale);
+    }
+    return textureSampleBias(diffuseTex, diffuseSampler, uv, kLodBias);
 }
 
 // === Fragment Shader ===
@@ -1488,7 +1513,7 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
     // The texel alpha colour modulation reads (1 untextured: no band tint).
     var colorModTexA = 1.0;
     if (isEnabled(material.useTexture)) {
-        let diffuseSample = textureSample(diffuseTex, diffuseSampler, surfaceInput.uv);
+        let diffuseSample = diffuseSample(surfaceInput.uv, surfaceInput.clipPos.xy);
         if (isEnabled(material.useAlphaAsRGB)) {
             baseColor = vec4f(baseColor.rgb * diffuseSample.a, baseColor.a * diffuseSample.a);
         } else {
@@ -1520,7 +1545,7 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
             envWeight *= 1.0 - saturate(envNdotV);
         }
         if (isEnabled(material.environMapSpecMask)) {
-            envWeight *= textureSample(specularMapTex, mapSampler, surfaceInput.uv).a;
+            envWeight *= textureSampleBias(specularMapTex, mapSampler, surfaceInput.uv, kLodBias).a;
         }
         baseColor = vec4f(baseColor.rgb + matRgb * vertexTint * envSample.rgb * envWeight,
                           baseColor.a);
@@ -1544,7 +1569,7 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
 
     let surfaceNormal = sampleSurfaceNormal(surfaceInput);
     let viewDir = normalize(scene.cameraPos - surfaceInput.worldPos);
-    let specularSample = textureSample(specularMapTex, mapSampler, surfaceInput.uv);
+    let specularSample = textureSampleBias(specularMapTex, mapSampler, surfaceInput.uv, kLodBias);
     let isSkinMaterial = shaderVariationIs(material.shaderVariation, kShaderVariationSkin);
     let isHairMaterial = shaderVariationIs(material.shaderVariation, kShaderVariationHair);
     let isWorldProjection = shaderVariationIs(material.shaderVariation, kShaderVariationWorldProjection);
@@ -1635,7 +1660,7 @@ fn fs_main(surfaceInput: VertexOutput) -> @location(0) vec4f {
             totalLighting.specular * shadowFactor;
     }
 
-    let emissiveSample = textureSample(emissiveMapTex, mapSampler, surfaceInput.uv);
+    let emissiveSample = textureSampleBias(emissiveMapTex, mapSampler, surfaceInput.uv, kLodBias);
     // Emissive (self-illumination). The diffuse base color tints the emissive map
     // for materials that intend it (white-base buildings/signs stay neutral;
     // colour-base venue streaks/neons keep their hue). But a (near-)black base
