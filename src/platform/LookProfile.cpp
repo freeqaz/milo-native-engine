@@ -29,6 +29,14 @@ LookSettings SettingsFor(LookProfile p) {
         s.renderScale = 2.0f;
         s.renderScaleIntegrated = 1.0f;
     }
+    // np-gfx-post round 10 (LookProfile.h): every platform, web and
+    // integrated GPUs included. Measured on a 3090 at 1x, the three together add
+    // 0.017-0.027 ms to the post chain, +0.006 ms on DOF frames; the 890M estimate
+    // is 0.15-0.25 ms of a 0.36 ms budget (doc §37.11).
+    const bool enh = p == LookProfile::Enhanced;
+    s.postPrecision = enh;
+    s.postBloomFilter = enh;
+    s.postDofFilter = enh;
     return s;
 }
 
@@ -87,6 +95,28 @@ const char *LookProfileName(LookProfile p) {
     case LookProfile::Native: break;
     }
     return "native";
+}
+
+bool SetLookPostFieldsForInspection(bool precision, bool bloomFilter, bool dofFilter) {
+    LookSettings &s = Mutable();
+    if (s.profile == LookProfile::Native) return false;
+    s.postPrecision = precision;
+    s.postBloomFilter = bloomFilter;
+    s.postDofFilter = dofFilter;
+    fprintf(stderr, "[look] post fields precision %d bloom filter %d dof filter %d (inspection, profile %s)\n",
+            (int)precision, (int)bloomFilter, (int)dofFilter, LookProfileName(s.profile));
+    return true;
+}
+
+bool SetLookPostForInspection(bool enhanced) {
+    return SetLookPostFieldsForInspection(enhanced, enhanced, enhanced);
+}
+
+bool SetLookProfileForInspection(LookProfile p) {
+    if (Mutable().profile == LookProfile::Native || p == LookProfile::Native) return false;
+    Mutable() = SettingsFor(p);
+    fprintf(stderr, "[look] profile %s (inspection)\n", LookProfileName(p));
+    return true;
 }
 
 ScopedLookOverride::ScopedLookOverride(LookProfile p) : mPrev(Mutable()) {

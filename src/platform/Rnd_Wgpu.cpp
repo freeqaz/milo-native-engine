@@ -836,9 +836,13 @@ void WgpuRnd::FlushPostProcessingForOverlay() {
     if (mIntermediateView && FramePostProc() && !mPostProcFlushed) {
         FeedVelocity(mPostProcPass);
         RunDC3SpotBeams();
+        // The world grade, before the HUD/UI draws: the only post the
+        // enhanced look (LookSettings::post*) touches (np-gfx-post round 10).
+        mPostProcPass.SetWorldGrade(true);
         mPostProcPass.Run(mEncoder, mIntermediateView, mIntermediateTex,
                           mIntermediateWidth, mIntermediateHeight,
                           mDepthSampleView, kMSAASamples, FrameTarget(), mBlackTexView, mGpu);
+        mPostProcPass.SetWorldGrade(false);
     }
 
     BeginOverlayPass();
@@ -1871,6 +1875,10 @@ void WgpuRnd::BeginDrawing() {
     }
 #endif
 
+    // np-gfx-post: under a render scale the 16-bit post chain's fraction of a
+    // level survives the box filter down (PresentScale::SetDither); the look
+    // can change at runtime ({rnd native_look ...}), so every frame.
+    mGpu.SetPresentDither(milo::Look().postPrecision);
     // Acquire next frame
     if (mGpu.IsHeadless()) {
         mFrameView = mGpu.AcquireHeadlessFrame();
@@ -2884,7 +2892,11 @@ void WgpuRnd::FlushUniformRings() {
 uint64_t WgpuRnd::PrewarmFixedKeyPipelines() {
     const uint64_t before = GpuPipelineCreateCount();
     mShadowPass.PrewarmCasters(mGpu);
-    if (kMSAASamples >= 2) mPostProcPass.PrewarmDof(mGpu.SurfaceFormat(), mGpu);
+    // The enhanced look's post pipelines join the warm when the look starts
+    // with them on; Retail warms exactly what it did before.
+    const milo::LookSettings& look = milo::Look();
+    if (kMSAASamples >= 2) mPostProcPass.PrewarmDof(mGpu.SurfaceFormat(), mGpu, look.postDofFilter);
+    mPostProcPass.PrewarmDC3Enhanced(look.postPrecision, look.postBloomFilter, mGpu);
     mSpotBeamPass.Prewarm(mGpu);
     mPointTestPass.Prewarm(wgpu::TextureFormat::Depth24PlusStencil8, kMSAASamples, mGpu);
     return GpuPipelineCreateCount() - before;

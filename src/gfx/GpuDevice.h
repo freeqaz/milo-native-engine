@@ -261,6 +261,25 @@ public:
     float RenderScaleFor(int w) const {
         return RenderScaled() && w == mWidth ? (float)mWidth / (float)OutputWidth() : 1.0f;
     }
+    // A render-scaled frame's box filter dithered to 8 bits, in the present
+    // AND the readback alike (PresentScale::SetDither), so a screenshot is the
+    // frame the window shows. The enhanced look's 16-bit post chain
+    // (LookSettings::postPrecision) asks for it each frame; nothing changes at
+    // scale 1 (no box filter) or with it off.
+    // On web there is no present-side PresentScale (the canvas is the frame),
+    // so only the readback's box filter carries it.
+    void SetPresentDither(bool on) {
+#ifndef __EMSCRIPTEN__
+        mPresentScale.SetDither(on);
+#endif
+        mReadbackScale.SetDither(on);
+    }
+    bool PresentDither() const {
+#ifndef __EMSCRIPTEN__
+        if (!mPresentScale.Dither()) return false;
+#endif
+        return mReadbackScale.Dither();
+    }
     // The adapter reported itself a discrete GPU (render scale's default).
     bool IsDiscreteGpu() const { return mDiscreteGpu; }
     bool IsHeadless() const { return mHeadless; }
