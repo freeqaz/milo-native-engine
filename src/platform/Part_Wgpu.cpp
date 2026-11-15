@@ -616,7 +616,11 @@ void DrawParticlesBillboard(RndParticleSys* sys) {
 
 int WarmParticlePipelines(RndMat* mat, const MeshPassContext& ctx, const int* blends,
                           int numBlends) {
-    if (!gWgpuRnd || !mat) return 0;
+    // Not before the renderer's resources exist: EnsureParticlePipeline builds
+    // its layout once, from the scene layout, and a load that finishes first
+    // (the web brings its device up asynchronously) would latch a layout with
+    // no group 0 -- every particle pipeline invalid for the rest of the run.
+    if (!gWgpuRnd || !mat || !gWgpuRnd->GpuResourcesReady()) return 0;
     const uint64_t before = GpuPipelineCreateCount();
     // Whether the mask is written is the frame's (a current post-proc, no
     // environment fade), not the material's, so a blend that allows it is

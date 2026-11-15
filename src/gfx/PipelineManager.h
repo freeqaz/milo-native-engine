@@ -143,14 +143,17 @@ public:
     // Load-time warm (dc3 PLAN H-101; engine doc section 39). WarmAsync queues
     // `key` to be compiled before anything draws with it; PollWarms (WgpuRnd
     // calls it once a frame) issues at most kWarmIssuePerFrame of the queue
-    // and takes in the ones that finished. Natively each is a
-    // CreateRenderPipelineAsync, compiled on Dawn's worker threads, so the
-    // frame -- a loading screen -- keeps moving; on the web a plain create
-    // (the browser compiles off the page's thread already), a few a frame so
-    // one flush does not carry them all. A draw that asks for a key still in
-    // flight waits for it in GetPipeline -- it never skips, and never draws
-    // with another pipeline -- and one still queued is created there as
-    // before. False when the key already exists, or is queued or in flight.
+    // and takes in the ones that finished. Each is a CreateRenderPipelineAsync,
+    // so the frame -- a loading screen -- keeps moving: natively compiled on
+    // Dawn's worker threads, on the web by the browser's GPU process off its
+    // present path (a plain create there is cheap on the page's thread but
+    // compiled before the GPU process presents again: 8 a frame held a web
+    // loading frame for 416 ms). A draw that asks for a key still in flight
+    // waits for it in GetPipeline natively; the web cannot wait, so it creates
+    // that same key there and the late async result is dropped. Either way it
+    // never skips, and never draws with another pipeline; one still queued is
+    // created there as before. False when the key already exists, or is
+    // queued or in flight.
     static constexpr int kWarmIssuePerFrame = 8;
     bool WarmAsync(const PipelineKey& key);
     void PollWarms();
@@ -246,10 +249,10 @@ private:
         bool ok = false;
     };
     void FinishWarm(const PipelineKey& key, PendingWarm& pw);
-    void DrainWarms();  // waits out every async create (their callbacks hold pointers here)
+    void DrainWarms();  // natively waits out every async create; the callbacks own their PendingWarm
     std::vector<PipelineKey> mWarmQueue;
     std::unordered_set<PipelineKey, PipelineKeyHash> mWarmQueued;  // mWarmQueue's members
-    std::unordered_map<PipelineKey, std::unique_ptr<PendingWarm>, PipelineKeyHash> mWarmPending;
+    std::unordered_map<PipelineKey, std::shared_ptr<PendingWarm>, PipelineKeyHash> mWarmPending;
     std::unordered_set<PipelineKey, PipelineKeyHash> mWarmedUndrawn;  // made by a warm, not yet asked for
     WarmStats mWarmStats;
     wgpu::ShaderModule GetOrCreateShader(uint32_t shaderType);
