@@ -1094,10 +1094,12 @@ void RB3RetailPost::RunDC3Composite(wgpu::CommandEncoder& encoder, const wgpu::T
     cu.vignette[1] = p.vignetteColor[1];
     cu.vignette[2] = p.vignetteColor[2];
     cu.vignette[3] = p.vignetteIntensity;
-    // CheckChromaticAberration: c121 = offset / (TheRnd.Width(), Height()).
+    // CheckChromaticAberration: c121 = offset / (TheRnd.Width(), Height()) --
+    // output pixels, so a render-scaled scene divides by its output size.
     if (p.chromaticOffset != 0.0f) {
-        cu.chroma[0] = p.chromaticOffset / (float)sceneW;
-        cu.chroma[1] = p.chromaticOffset / (float)sceneH;
+        const float rs = p.renderScale > 0.0f ? p.renderScale : 1.0f;
+        cu.chroma[0] = p.chromaticOffset * rs / (float)sceneW;
+        cu.chroma[1] = p.chromaticOffset * rs / (float)sceneH;
         cu.chroma[2] = 1.0f;
         cu.chroma[3] = p.chromaticSharpen;
     }

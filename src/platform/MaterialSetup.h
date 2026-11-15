@@ -27,6 +27,8 @@ MaterialParams BuildMaterialParams(RndMat* mat, bool isTextMesh);
 // (UiUsesRetailMaterialTerms). frameInOverlay: the frame
 // has left its world (WgpuRnd::FrameInOverlay). Outside the overlay phase, or
 // with no hook, gammaShading is the shape's model and retailMaterialTerms false.
+namespace milo { struct LookSettings; }
+
 struct UiDrawTerms {
     bool gammaShading = false;        // material.gammaShading
     bool retailMaterialTerms = false; // keep the mat's lighting; intensify scales alpha
@@ -91,6 +93,26 @@ MaterialParams BuildPassMaterialParams(BaseMaterial* pass);
 // The same two builders with the overlay-phase terms given rather than read
 // from the frame (UiDrawTermsFor(FrameInOverlay())): the seam a test drives
 // to check the terms reach the uniforms.
+// The look profile's sampling for one material draw (platform/LookProfile.h).
+// World and character draws take look.maxAnisotropy (the original sets none;
+// Retail and Native keep 1). Text and depthless HUD-overlay draws (uiClass)
+// are screen-aligned, where anisotropy buys nothing, and clamp the sample to
+// look.uiMipLevels levels (0 = no clamp): the song-select glyph atlases carry
+// six mips and draw ~2.5x minified, and blending mips 2.. into a 1-px stroke
+// halves it, so they keep the original's min(NumMips()+1, 2) look even where
+// the whole chain is uploaded.
+void ApplyLookSampling(SamplerDesc& desc, bool uiClass, const milo::LookSettings& look);
+// Whether one material draw's pipeline takes the material LOD bias
+// (PipelineKey::lodBias, PipelineManager::MaterialLodBias): world draws do
+// when a bias is set; text and HUD-overlay draws (uiClass) never do -- a
+// negative bias would alias their minified glyph strokes.
+bool MaterialDrawTakesLodBias(bool uiClass, float materialLodBias);
+// Whether one material draw samples its diffuse texture at output-pixel
+// centres (PipelineKey::outputPixelSampling): a text or HUD-overlay draw
+// (uiClass) into the frame (not a texture target) when the frame is
+// render-scaled (outputPixelScale > 1). Keeps a scaled frame's glyphs and HUD
+// art as crisp as an unscaled frame draws them.
+bool MaterialDrawSamplesAtOutputPixels(bool uiClass, bool toTextureTarget, float outputPixelScale);
 MaterialParams BuildMaterialParams(RndMat* mat, bool isTextMesh, const UiDrawTerms& uiTerms);
 MaterialParams BuildPassMaterialParams(BaseMaterial* pass, const UiDrawTerms& uiTerms);
 

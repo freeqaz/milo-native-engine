@@ -49,6 +49,15 @@ struct PipelineKey {
     // (standard_wgsl.inc kCutoutCoverage). Only in a multisampled pass.
     bool cutoutCoverage = false;
     int32_t depthBias = 0;  // positive = push away from camera (loses z-test vs unbiased)
+    // The standard shader samples its 2D material textures with
+    // PipelineManager::MaterialLodBias (kLodBias); false: unbiased. Only a
+    // look that sets a bias (DC3's enhanced look) sets this, for world draws;
+    // text and HUD keep the original's unbiased samples.
+    bool lodBias = false;
+    // Text/HUD draw into a render-scaled frame: the standard shader samples
+    // its diffuse texture at output-pixel centres (kOutputPixelScale =
+    // PipelineManager::OutputPixelScale); false: at the fragment.
+    bool outputPixelSampling = false;
 
     bool operator==(const PipelineKey& o) const {
         return shaderType == o.shaderType && blend == o.blend && zMode == o.zMode &&
@@ -57,7 +66,8 @@ struct PipelineKey {
                hasDepth == o.hasDepth && alphaCut == o.alphaCut &&
                alphaWrite == o.alphaWrite && alphaToCoverage == o.alphaToCoverage &&
                cutoutCoverage == o.cutoutCoverage &&
-               depthBias == o.depthBias;
+               depthBias == o.depthBias && lodBias == o.lodBias &&
+               outputPixelSampling == o.outputPixelSampling;
     }
 };
 
@@ -76,6 +86,8 @@ struct PipelineKeyHash {
         h ^= std::hash<bool>{}(k.alphaToCoverage) + 0x9e3779b9 + (h << 6) + (h >> 2);
         h ^= std::hash<bool>{}(k.cutoutCoverage) + 0x9e3779b9 + (h << 6) + (h >> 2);
         h ^= std::hash<int32_t>{}(k.depthBias) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        h ^= std::hash<bool>{}(k.lodBias) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        h ^= std::hash<bool>{}(k.outputPixelSampling) + 0x9e3779b9 + (h << 6) + (h >> 2);
         return h;
     }
 };
@@ -169,6 +181,25 @@ public:
     void SetDynamicUniformOffsets(bool on) { mDynamicUniformOffsets = on; }
     bool DynamicUniformOffsets() const { return mDynamicUniformOffsets; }
 
+    // LOD bias added to the standard shader's 2D material texture samples
+    // (standard_wgsl.inc kLodBias; cube, projector and shadow samples are not
+    // biased) in pipelines whose key asks for it (PipelineKey::lodBias). 0 by
+    // default -- every consumer's original samples unbiased. Set once, before
+    // any pipeline exists; the caches key on PipelineKey::lodBias, not on the
+    // value.
+    void SetMaterialLodBias(float bias) { mMaterialLodBias = bias; }
+    float MaterialLodBias() const { return mMaterialLodBias; }
+    // The kLodBias a pipeline for `key` is created with.
+    float LodBiasFor(const PipelineKey& key) const { return key.lodBias ? mMaterialLodBias : 0.0f; }
+    // A render-scaled frame's pixels per output pixel (1 = not scaled; the
+    // renderer sets it from GpuDevice once), and the kOutputPixelScale a
+    // pipeline for `key` is created with.
+    void SetOutputPixelScale(float scale) { mOutputPixelScale = scale; }
+    float OutputPixelScale() const { return mOutputPixelScale; }
+    float OutputPixelScaleFor(const PipelineKey& key) const {
+        return key.outputPixelSampling ? mOutputPixelScale : 1.0f;
+    }
+
 private:
     wgpu::RenderPipeline CreatePipeline(const PipelineKey& key);
     wgpu::ShaderModule GetOrCreateShader(uint32_t shaderType);
@@ -188,5 +219,7 @@ private:
     bool mPreWarmStarted = false;
     bool mAlphaBlendMax = false;   // SetAlphaBlendMax
     bool mDynamicUniformOffsets = false;  // SetDynamicUniformOffsets
+    float mMaterialLodBias = 0.0f;        // SetMaterialLodBias
+    float mOutputPixelScale = 1.0f;       // SetOutputPixelScale
     void BuildPreWarmKeys(wgpu::TextureFormat mainFmt, wgpu::TextureFormat rtFmt);
 };

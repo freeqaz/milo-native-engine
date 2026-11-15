@@ -395,7 +395,12 @@ void RB3RetailPost::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& 
     // np-gfx-post: DC3's chain (RB3RetailPostDC3.cpp).
     if (p.dc3) {
         EnsureDC3Pipelines(gpu);
-        if (p.bloom) RunDC3Bloom(encoder, bloomSrcView ? bloomSrcView : sceneView, sceneW, sceneH, p, gpu);
+        // The bloom chain is sized from its source: the output-sized copy
+        // under a render scale (RetailPostParams::bloomSrcW), else the scene.
+        const bool ownSrc = bloomSrcView && p.bloomSrcW > 0 && p.bloomSrcH > 0;
+        if (p.bloom)
+            RunDC3Bloom(encoder, bloomSrcView ? bloomSrcView : sceneView,
+                        ownSrc ? p.bloomSrcW : sceneW, ownSrc ? p.bloomSrcH : sceneH, p, gpu);
         RunDC3Velocity(encoder, sceneW, sceneH, p, gpu);
         RunDC3Composite(encoder, sceneView, sceneW, sceneH, frameView, p, gpu);
         return;
