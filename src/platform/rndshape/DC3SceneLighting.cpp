@@ -42,7 +42,9 @@
 #include "platform/rndshape/RndShape.h"
 #include "gfx/UniformStructs.h"
 
+#include "char/Character.h"
 #include "obj/Dir.h"
+#include "rndobj/Dir.h"
 #include "rndobj/Group.h"
 #include "rndobj/Lit.h"
 #include "rndobj/Mat.h"
@@ -182,27 +184,72 @@ void WriteDC3ProjShadow(SceneUniforms &s, E *env) {
     }
 }
 
-// Every mesh a caster draws. A Character / RndDir is an ObjectDir; a group
-// draws its members. Templated so the names are checked only for dc3-decomp.
-template <class Mesh, class Group, class Dir>
-void AddCasterMeshes(Hmx::Object *o, std::vector<RndMesh *> &out, int depth) {
-    if (!o || depth > 8) return;
-    if (Mesh *m = dynamic_cast<Mesh *>(o)) {
-        if (m->Showing()) out.push_back(m);
+// T, spelled so that it depends on D: names used through it are looked up
+// only when the enclosing template is instantiated.
+template <class T, class D> struct DependentT { using type = T; };
+
+// Character's floor-shadow members are protected and have no accessor; member
+// pointers named through a derived class reach them without touching the decomp.
+template <class C>
+struct CharShadowMembers : C {
+    static auto Shadow() { return &CharShadowMembers::mShadow; }
+    static auto DrawMode() { return &CharShadowMembers::mDrawMode; }
+};
+
+// The meshes a caster draws in kDrawOcclusion, by the image's own draw calls
+// (NgLight::RenderShadows calls DrawShowing on each shadow object; everything
+// below it goes through RndDrawable::Draw, which skips a hidden drawable):
+//  * a mesh draws itself;
+//  * RndGroup::DrawShowing and RndDir::DrawShowing draw their draw list
+//    (mDraws), not every object they own;
+//  * Character::DrawLod, in kDrawOcclusion, draws only with mFloorShadow set
+//    and the opaque bit of its draw mode, and then DrawLodOrShadow(lod, 4)
+//    draws the `shadow` group when it has one, else DrawOpaque: the
+//    character's own draw list plus the current LOD's opaque list. Prop
+//    meshes nobody lists, the other LODs and the translucent lists are not
+//    casters. (All four DC3 dancers carry a shadow group of *_lod meshes.)
+// The image also culls each nested draw against the camera's frustum; that
+// is not reproduced (a caster out of view still shadows the floor in view).
+// Templated on the mesh type so the Character branch is instantiated only for
+// dc3-decomp: rb3-xenon compiles this TU with its own Character, whose shadow
+// is a single RndGroup.
+template <class Mesh>
+void AddOcclusionDraw(RndDrawable *d, std::vector<RndMesh *> &out, int depth) {
+    if (!d || depth > 8 || !d->Showing()) return;
+    if (Mesh *m = dynamic_cast<Mesh *>(d)) {
+        out.push_back(m);
         return;
     }
-    if (RndDrawable *d = dynamic_cast<RndDrawable *>(o)) {
-        if (!d->Showing()) return;
-    }
-    if (Group *g = dynamic_cast<Group *>(o)) {
-        for (auto it = g->Objects().begin(); it != g->Objects().end(); ++it)
-            AddCasterMeshes<Mesh, Group, Dir>(*it, out, depth + 1);
-        return;
-    }
-    if (Dir *dir = dynamic_cast<Dir *>(o)) {
-        for (ObjDirItr<Mesh> m(dir, true); m; ++m) {
-            if (m->Showing()) out.push_back(m);
+    if constexpr (rndshape::kDC3RetailModelFor<Mesh>) {
+        using CharT = typename DependentT<Character, Mesh>::type;
+        if (CharT *c = dynamic_cast<CharT *>(d)) {
+            const auto mode = c->*CharShadowMembers<CharT>::DrawMode();
+            if (!c->FloorShadow() || !(mode & CharT::kCharDrawOpaque)) return;
+            const auto &shadow = c->*CharShadowMembers<CharT>::Shadow();
+            if (shadow.size() != 0) {
+                for (auto it = shadow.begin(); it != shadow.end(); ++it)
+                    AddOcclusionDraw<Mesh>(it->Obj(), out, depth + 1);
+                return;
+            }
+            for (int i = 0; i < c->NumDraws(); i++)
+                AddOcclusionDraw<Mesh>(c->GetDraw(i), out, depth + 1);
+            if (c->NumLods() != 0) {
+                int lod = c->LastLod();
+                lod = lod < 0 ? 0 : (lod >= c->NumLods() ? c->NumLods() - 1 : lod);
+                const auto &opaque = c->GetLod(lod).mOpaque;
+                for (auto it = opaque.begin(); it != opaque.end(); ++it)
+                    AddOcclusionDraw<Mesh>(it->Obj(), out, depth + 1);
+            }
+            return;
         }
+    }
+    if (RndGroup *g = dynamic_cast<RndGroup *>(d)) {
+        for (RndDrawable *child : g->Draws()) AddOcclusionDraw<Mesh>(child, out, depth + 1);
+        return;
+    }
+    if (RndDir *dir = dynamic_cast<RndDir *>(d)) {
+        for (int i = 0; i < dir->NumDraws(); i++)
+            AddOcclusionDraw<Mesh>(dir->GetDraw(i), out, depth + 1);
     }
 }
 
@@ -211,7 +258,7 @@ bool CollectDC3Casters(rndshape::ProjShadowCasters &out, L *light) {
     auto *list = light->GetShadowOverride();
     if (!list || list->size() == 0) list = &(light->*LightShadowObjects<L>::Member());
     for (auto it = list->begin(); it != list->end(); ++it)
-        AddCasterMeshes<RndMesh, RndGroup, ObjectDir>(*it, out.meshes, 0);
+        AddOcclusionDraw<RndMesh>(*it, out.meshes, 0);
     return true;
 }
 
