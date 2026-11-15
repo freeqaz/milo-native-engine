@@ -2842,9 +2842,16 @@ void WgpuRnd::WriteSceneUniforms() {
     bgDesc.layout = mPipelines.SceneLayout();
     bgDesc.entryCount = 5;
     bgDesc.entries = entries;
+    // From the mesh path's cache, keyed by every field above: the ring is
+    // reset each frame, so a frame that writes its scene blocks in the same
+    // order as the last one lands them at the same offsets, and gets back the
+    // groups it made then. A new offset, shadow view or projected-light view
+    // is a new key and a new group, exactly what an uncached create would
+    // have made (docs section 40: one group per write was ~55 creates a frame
+    // in a DC3 song, each a call into the browser on the web).
     mSceneBgWrites++;
     const uint64_t created0 = GpuBindGroupCreateCount();
-    mSceneBindGroup = CreateCountedBindGroup(mGpu.Device(), &bgDesc);
+    mSceneBindGroup = mBindGroupCache.GetOrCreate(mGpu.Device(), bgDesc);
     mSceneBgCreates += GpuBindGroupCreateCount() - created0;
 }
 

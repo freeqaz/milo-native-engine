@@ -382,8 +382,8 @@ public:
     void WriteSceneUniforms();
     // WriteSceneUniforms calls, and the scene bind groups they created
     // ([GPUCOUNT] sceneBgWrites= / sceneBgCreates=).
-    uint64_t mSceneBgWrites = 0;
-    uint64_t mSceneBgCreates = 0;
+    uint64_t SceneBgWrites() const { return mSceneBgWrites; }
+    uint64_t SceneBgCreates() const { return mSceneBgCreates; }
     // Slot 3 of the scene bind group as WriteSceneUniforms last chose it
     // (null = the white fallback).
     wgpu::TextureView ProjLightTexView() const { return mProjLightTexView; }
@@ -486,6 +486,8 @@ public:
     BindGroupCache mBindGroupCache;  // mesh-path material/object/bone groups
     BindGroupCache mPostBindGroupCache;  // the post chain + display ramp (PLAN H-66)
     wgpu::BindGroup mSceneBindGroup;
+    uint64_t mSceneBgWrites = 0;   // WriteSceneUniforms calls
+    uint64_t mSceneBgCreates = 0;  // ... and the scene bind groups they created
     wgpu::TextureView mProjLightTexView;  // gobo texture for projected light (or white fallback)
 
     // Depth texture
