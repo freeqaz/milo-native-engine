@@ -7,9 +7,9 @@
 
 #include "gfx/GpuTimers.h"
 
-#ifndef __EMSCRIPTEN__
+// Unconditional: mReadbackScale (a scaled frame's readback) is a member on
+// every platform, web included, even though only desktop presents through one.
 #include "gfx/PresentScale.h"
-#endif
 
 #ifndef __EMSCRIPTEN__
 struct GLFWwindow;
