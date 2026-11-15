@@ -43,6 +43,24 @@ unsigned long long GpuTexShareCount();
 uint64_t GpuTexBitmapBytes();
 uint64_t GpuTexBitmapBytesPeak();
 
+// Load-time texture warm (dc3 PLAN H-116; Tex_Wgpu.cpp). QueueGpuTexWarm asks
+// for `tex`'s GPU texture to be created ahead of its first draw (a regular
+// bitmap texture not yet created; false if it is not one, or is queued
+// already). WgpuRnd::BeginDrawing calls PumpGpuTexWarms, which creates the
+// queued textures in order through RndTex::PresyncBitmap -- the call the draw
+// makes -- for at most GpuTexWarmBudgetMs() a frame (one texture at least);
+// it returns how many it took. A texture destroyed while queued leaves the
+// queue. GpuTexWarmCreateCount counts the creates the pump made (of
+// GpuTexCreateCount, every create from a bitmap), so a create at a draw is the
+// difference. Nothing is queued unless a consumer queues it.
+bool QueueGpuTexWarm(RndTex* tex);
+int PumpGpuTexWarms();
+size_t GpuTexWarmsPending();
+unsigned long long GpuTexWarmCreateCount();
+unsigned long long GpuTexCreateCount();
+void SetGpuTexWarmBudgetMs(double ms);
+double GpuTexWarmBudgetMs();
+
 // The content fingerprint RndTex::PresyncBitmap keys re-creation on (with the
 // pixel pointer): 8 evenly spaced bytes folded as h = h*31 + byte; 0 for a null
 // or <16-byte buffer.

@@ -34,6 +34,7 @@ enum Kind {
     kFileRead,
     kGpuWait,  // headless: the frames-in-flight wait for the GPU (GpuDevice::EndHeadlessFrame)
     kPace,     // the consumer's frame pacer sleeping out the period (DC3: Dc3FramePacer::Pace)
+    kTexWarm,  // kTexture's work done ahead of the draw (Tex_Wgpu PumpGpuTexWarms)
     kKinds
 };
 

@@ -588,7 +588,9 @@ public:
     // the consumer's frame pacer's sleep (in the game window); `game_vcs` /
     // `game_ivcs` / `draw_vcs` / `draw_ivcs` the thread's voluntary and
     // involuntary context switches in the game window and in the draw (Linux;
-    // -1 elsewhere): an involuntary switch is the box taking the CPU away.
+    // -1 elsewhere): an involuntary switch is the box taking the CPU away;
+    // `texwarm_n` / `texwarm_ms` the textures created ahead of their draw
+    // (PumpGpuTexWarms; tex_n / tex_ms are those a draw created).
     void WriteFrameTimes();
     FILE* mFrameTimes = nullptr;
     bool mFrameTimesStdout = false;  // MILO_FRAME_TIMES=- : rows on stdout, "[FT] " prefixed
