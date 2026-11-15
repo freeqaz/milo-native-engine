@@ -1632,3 +1632,187 @@ dc3 `np-gfx-light` d596f3c16 (np-gfx fd56094e0 merged; the engine pin stays
 - rb3 main a49c0afce built against engine 65c12c7: 158 of 158 pass,
   `native_compat_census.check` included.
 - No new render pass, bind group, buffer or getenv.
+
+## 12. Round 7: the residuals that remain once post is off
+
+Round 7 took the census rows that were still open with post off, plus one
+mechanism question (whether hidden spotlights still light on native). Each
+row was screened against the original under Xenia. Evidence, sheets and tools
+are in dc3-decomp
+`archive/np-gfx-2026-11-14/lanes/light/round7/` (`README.txt`,
+`census_b5_b6_m_max_xenia.txt`, `sheets/`, `evidence/`).
+
+### 12.1 Screening method
+
+- **Frozen, lit, post off.** Both sides pause at song second 20 and force the
+  venue state at 12 s. Both pin the shot with `force_shot` and
+  `disable_picking TRUE`. A beat-driven `PropAnim` is frozen with
+  `stop_animation` and `set_frame` on that anim only. Never freeze every
+  PropAnim: freezing them all at frame 3 hides whole venues.
+- `{rnd toggle_all_postprocs}` turns post off **and clears the spotlights**,
+  so "raw" equals "raw with spots hidden".
+- Native runs with `DC3_DISPLAY_GAMMA=off` and the still performer. A Xenia
+  label is the mean of the frames between its MARK and `end_` MARK (3 s, about
+  180 frames). A native label is one frame.
+- Box values are mean luma (Rec.709 on stored sRGB) in 640x360 coordinates.
+  The noise floor is 3.4% luma / dE76 2.2.
+- **Control for the Xenia rule.** A native build with
+  `rndshape::kAlphaBlendMax = true` (RndShape_DC3.h) takes Xenia's
+  factorless-MAX destination alpha. Retail applies each draw's own blend
+  equation. The bloom mask reads destination alpha, so a post-on gap that
+  closes under this build is Xenia's, not ours (post lane: `dc3-backend-for-rb3-wii.md`
+  §37). Destination alpha does not reach a post-off frame, so this build
+  cannot explain a post-off gap.
+- **Two rules for reading a census box**, both learned this round:
+  1. A box that contains a dancer or crowd silhouette is not a lighting
+     measurement. Poses differ between runs, and between native runs of the
+     same binary. Check the frame before believing the number. The houseparty
+     steps read −8% and then +9% across builds of the same family. The
+     throneroom throne box read +1% to +25%: in far01 it holds the lead
+     dancer's arm.
+  2. Re-read a post-on gap with post off before calling it lighting.
+     Streetside's brick and graffiti were −22% and −16% post-on, but only −2%
+     and −3% post-off.
+
+### 12.2 Results
+
+| row | what the original does | result | tag |
+|---|---|---|---|
+| throneroom peak teal pillars, −12% raw at full alpha, −25% at alpha 0.5 | `NgMat::SetBasicState` (Mat_NG.cpp): alpha_cut is `SetAlphaTestEnable` plus `SetAlphaFunc(5 = GREATER, threshold)` and nothing else. Nothing calls `AlphaToMaskEnable`. `peak_columns_1..16.mat` are SrcAlpha, intensify, alpha_cut at threshold 0 | **Fixed by the coverage rule** (np-menutext, `MaterialCutCoverage` / `MaterialAlphaThreshold`). Native had made every cut alpha-to-coverage on the 4x pass, so the columns drew at about alpha², in a screen-door. On np-menutext 68522e9, frozen raw: 53.0 vs Xenia 52.9 at full alpha, 39.0 vs 38.9 at alpha 0.5, under both `DC3_LOOK=retail` and `enhanced`. Clearing alpha_cut live moves native b5 46.4 → 52.2; Xenia does not move (52.9 → 52.9) | MEASURED |
+| throneroom peak wings / blue_light_l, −14..−20% census | — | **Dissolved: chase phase plus the row above.** Frozen on np-menutext: wing_l −4%, wing_r −3%, blue_light_l +1% | MEASURED |
+| throneroom normal throne, −12% | — | **Dissolved as a box artifact.** The box is the lead dancer's arm. It reads +1%, +12%, +21% and −2% against Xenia across four builds | MEASURED |
+| dclive peak sky, −11..−20% | `DLV_PeakSkyPano.mat` contributes the same on both sides: 11.2 vs 10.8 and 12.8 vs 12.0. Its environ share is −3.5 vs −3.4 | **Post share dissolved as Xenia factorless MAX** (post on: sky_l −14.5% → −9.5%, sky_r −14.1% → −7.3%, scene −13.4% → −3.3%). **Post-off −10% / −10.5% open.** It is unchanged by the MAX build, and its cause lies outside the sky material (INFERRED) | MEASURED / open |
+| houseparty peak neon steps, +16% | stair contributions match. The step-pixel p90 is 233.9 vs 234.6 | **Dissolved as occlusion** (rule 1). Census −8%..+9% depending on the run | MEASURED |
+| streetside normal fence, −20% raw | — | **Dissolved as occlusion** (crowd in the box). On clean fence pixels raw is −2..+3%. Far post-on −5.6% → −0.6% under the MAX build | MEASURED |
+| streetside normal brick / graffiti, −22% / −16% | spots contribute the same on both sides: brick 1.1 vs 1.0, graffiti 10.0 vs 9.9 | **Dissolved as Xenia factorless MAX.** Post-off −2% / −3%. Post-on far −21.9% / −15.4% → −2.2% / −2.2%, near −19.4% / −13.1% → −3.2% / −4.1%. Streetside peak does the same (−11.5% / −13.3% → +2.7% / +1.7%) | MEASURED |
+| do hidden spotlights still light on native? | `SpotlightDrawer` clears `sLights` every frame and never adds a hidden Spotlight | **No.** Hiding every showing Spotlight removes the same light on both sides: houseparty fridge 29.9 vs 29.2, wood floor 6.6 vs 6.4; with post off 0.4 vs 0.5 and 2.1 vs 1.9 | MEASURED |
+| houseparty fridge, +18..+20% | — | **Open.** It is present with spots hidden and with post off, so it is neither spot light nor the MAX rule | MEASURED / open |
+| rollerrink peak booth_top, −10% | — | **Dissolved: within noise.** Post-on −4.6% (before) and +3.9% (np-menutext); post-off −2..+3% | MEASURED |
+
+### 12.3 Cost and verification
+
+- The round-7 engine change (alpha cut as a test with no coverage) cost
+  nothing on the GPU (`MILO_GPU_TIMERS=1`, throneroom peak):
+  MainPassResume 0.399 → 0.385 ms, gpu_sum 0.661 → 0.669 ms. It was reverted
+  in favour of np-menutext's rule, which covers the same case.
+- That lane's two extra tests went to np-menutext:
+  - both material builders (primary and pass) hand the shader the strict test;
+  - the real `peak_columns_1.mat` gets no coverage in either look.
+  Each is shown able to fail: a builder put back on threshold/255 left
+  np-menutext's own tests green and turned these red.
+
+## 13. Round 8: the two post-off residuals, and the enhanced-lighting survey
+
+Round 8 closed the two rows that §12 left open. Both were bisected by hiding
+draws, on both sides, at the same frozen frame, using the method of §12.1.
+Evidence and tools are in dc3-decomp
+`archive/np-gfx-2026-11-14/lanes/light/round8/`.
+
+### 13.1 Houseparty fridge, +18%: a Xenia occlusion-query artifact
+
+**Masked measurement.** Dancer poses differ between the two sides, so box
+means were contaminated. The comparison (`maskcmp.py`) uses only the pixels
+that the fridge's own lights toggle on both sides.
+
+| state | native | Xenia | gap |
+|---|---|---|---|
+| base | 105.1 | 79.3 | +32% |
+| `point_test FALSE` on fridge.flare, fridge1.flare, tv.flare | 109.8 | 106.4 | +3% |
+| flares hidden | 82.1 | 78.9 | +4% |
+
+**What the original does.** `RndFlare::DrawShowing` (Flare.cpp) handles an
+area-tested flare like this:
+1. With `mPointTest`, it queues an occlusion query through `TheRnd.TestPoint`.
+2. It scales strength by `mOcclusionResult / (rect width x height in pixels)`,
+   times the step ratio.
+
+**What each side counts.**
+- Native's `PointTestPass` counts real samples, as the hardware does.
+- Xenia writes a fixed 1000 samples for every ZPASS query:
+  `query_occlusion_fake_sample_count = 1000`, in
+  `command_processor.cc` `ExecutePacketType3_EVENT_WRITE_ZPD`.
+- So on Xenia, a flare whose rect is much larger than 1000 pixels draws at
+  close to zero strength.
+
+**The lighting itself matches.** Specular is 31.5 vs 32.5, and
+FridgePointLight2 dominates on both sides.
+
+**Tag: Xenia artifact (MEASURED).** The control is `point_test FALSE`: it
+takes the flares off the query path, and the gap falls from +32% to +3%.
+
+**Rule for every venue.** Xenia under-draws every area-tested flare. Leave
+such flares out of parity boxes, or compare them with `point_test FALSE` on
+both sides.
+
+### 13.2 dclive peak sky, −10%: the texture term of the peak stage cubes
+
+**The deficit is in the cube textures.** It lies entirely in the texture term
+of `DLV_PeakStageCube01/02/03`.
+- With the cube texture removed, both sides agree: 17.7 vs 17.1 (+3%).
+- With the texture, native is low in all 5 frozen pairs: −17% to −41%, about
+  −30% typical.
+
+**Lighting is not the cause.**
+- Each of the noenv, noa0 and nor0 runs leaves the gap in place.
+- Setting the alpha or tex_gen properties has no effect on either side. A
+  MatAnim probably rewrites them every frame.
+
+**Why the texture term is fragile.**
+- The textures are rgb=1 with stripes in alpha.
+- They sit under an animated `tex_xfm`: Cube01 y_scale 20, Cube02 x_scale 5,
+  Cube03 y_scale 5.
+- The scroll phase differs a little between the two sides (Cube02 y 3.57 vs
+  3.73).
+- Retail caps a texture at 2 mip levels (`DxTex::SyncBitmap`, mirrored by
+  native `kBitmapMaxMipLevels`), so the stripes are heavily minified.
+- The mean therefore depends on filtering and aliasing. Native samples with
+  `maxAnisotropy = 1`. The retail fetch constant's anisotropy is not known.
+
+**Tag: cause with a number (MEASURED); the filter mechanism is INFERRED.**
+This is handed to the texture-filtering (sharpness) work.
+
+The census shares for refraction (−26%) and line fade (−37%) may be the same
+class. They are not tested.
+
+### 13.3 Other findings
+
+- **`MILO_WIDTH=1920 MILO_HEIGHT=1080` is broken for DC3.** The world renders
+  into a 1280x720 rectangle at the top left. The round-8 survey ran at 720p.
+- **An out-of-range `(lights_real i)` crashes Xenia, and SIGSEGVs native DTA
+  eval.** The cause is generic. `PropSync(ObjPtrList<T>&, ...)`
+  (dc3 `src/system/obj/PropSync_p.h`) advances the list iterator `prop->Int(i)`
+  times with no bound, then dereferences it. The asserts there (0x154, 0x15E)
+  do not check the index, so the debug original has nothing to catch this, and
+  crashes the same way under Xenia. Not fixed: the code matches the original.
+  Probe only the indices that exist.
+- `(tex_xfm m x x)` asserts in PropSync: a Matrix3 path needs its last element.
+  Use the named paths instead: `x`, `y`, `z`, `x_scale`, `y_scale`, `z_scale`,
+  `pitch`, `roll`, `yaw`.
+
+### 13.4 Enhanced-lighting survey (`DC3_LOOK=enhanced`)
+
+**Material counts.** Every lit material carries a metamaterial, and vertex
+lighting dominates.
+
+| venue | lit | total |
+|---|---|---|
+| dclive | 75 | 92 |
+| houseparty | 82 | 92 |
+| throneroom | 54 | 77 |
+| streetside | 69 | 104 |
+
+**Cost baseline.** On the RTX 3090 (`MILO_GPU_TIMERS=1`):
+- MainPassResume: 0.34–0.50 ms
+- whole frame: under 1 ms
+- DisplayRamp: 0.018 ms
+- ProjShadowCasters: 0.02 ms
+
+| candidate | evidence (4x crops) | verdict |
+|---|---|---|
+| 8-bit banding in dark gradients | **Dissolved: no gap and no banding.** (1) The 1060 vs 1576 distinct-colour count measured hue spread, not precision. Per channel, native has as many levels or more (blue 97 vs 81; red 51 vs 94 because Xenia's red spans 3–96 against native's 0–64). (2) The lines in the 4x crop are dclive's own post scanlines, at the same amplitude on both sides: row period 2.2 px, 1.35 vs 1.33 blue LSB. They are gone post-off on both sides. (3) The original renders the world into A8R8G8B8 EDRAM (`CreateBackBuffers`, Rnd_Xbox.cpp, 2x MSAA) and resolves into A8R8G8B8 pre/post buffers, so it is 8-bit end to end, like native's surface-format scene target. A wider target would not be a parity fix, and the post lane's composite dither already covers the final 8-bit write | cut (round 8, with the coordinator) |
+| per-pixel lighting for vertex-lit materials (faceting, Mach bands) | metamaterial cleared and `per_pixel_lit` set where a material has no normal or spec map. dclive, throneroom, streetside: no visible change. houseparty: +12% mean luma, and 27% of pixels move by more than 8 (floor and stair stripes) | cut: breaks the luma rule |
+| specular aliasing | streetside and houseparty near shots: no shimmer difference against Xenia; the visible difference is floor-texture sharpness | cut |
+| projected shadow resolution and filtering | native already uses a 512² tile with 9 taps, against retail's 256² with two 5-tap blurs. Edges are equally soft, and the shadow is a blob by design | cut |
+| env and cube maps | — | sharpness lane (this includes §13.2) |
+| hard rim | retail's rim is a smooth pow, and no hard edge shows in any crop | cut |
+| light caps | — | excluded: raising them changes exposure |

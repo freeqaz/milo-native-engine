@@ -29,6 +29,20 @@ struct VsOut {
 @fragment fn fs_present(in: VsOut) -> @location(0) vec4f {
     return vec4f(textureSampleLevel(frameTex, frameSampler, in.uv, 0.0).rgb, 1.0);
 }
+
+// Downscale (render scale): four bilinear taps at +-1/4 of the output pixel's
+// footprint in frame texels. At exactly 2x each tap lands on a texel centre,
+// so the four are the 2x2 box; at 1.5x they cover the 1.5-texel footprint.
+@fragment fn fs_box(in: VsOut) -> @location(0) vec4f {
+    let o = vec2f(abs(dpdx(in.uv.x)), abs(dpdy(in.uv.y))) * 0.25;  // uv per output pixel / 4
+    let c = textureSampleLevel(frameTex, frameSampler, in.uv + vec2f(-o.x, -o.y), 0.0) +
+            textureSampleLevel(frameTex, frameSampler, in.uv + vec2f(o.x, -o.y), 0.0) +
+            textureSampleLevel(frameTex, frameSampler, in.uv + vec2f(-o.x, o.y), 0.0) +
+            textureSampleLevel(frameTex, frameSampler, in.uv + vec2f(o.x, o.y), 0.0);
+    // Alpha averaged too: a readback keeps the frame's alpha (the bloom mask)
+    // as an unscaled frame's does; the window ignores it.
+    return c * 0.25;
+}
 )WGSL";
 
 }  // namespace
@@ -119,6 +133,9 @@ PresentRect PresentScale::Encode(wgpu::Device& device, wgpu::CommandEncoder& enc
         pd.fragment = &frag;
         pd.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
         mPipe = CreateCountedRenderPipeline(device, &pd);
+        frag.entryPoint = "fs_box";
+        pd.label = "PresentScaleBox";
+        mBoxPipe = CreateCountedRenderPipeline(device, &pd);
         mFormat = targetFormat;
     }
     const bool nearest = PresentRectIsIntegerScale(rect, fw, fh);
@@ -144,14 +161,15 @@ PresentRect PresentScale::Encode(wgpu::Device& device, wgpu::CommandEncoder& enc
     att.storeOp = wgpu::StoreOp::Store;
     att.clearValue = {0.0, 0.0, 0.0, 1.0};
     wgpu::RenderPassDescriptor rp{};
-    rp.label = "PresentScalePass";
+    rp.label = mLabel;
     rp.colorAttachmentCount = 1;
     rp.colorAttachments = &att;
     MILO_GPU_TIME_PASS(rp);
     wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&rp);
     if (frame && rect.w > 0 && rect.h > 0) {
         pass.SetViewport((float)rect.x, (float)rect.y, (float)rect.w, (float)rect.h, 0.0f, 1.0f);
-        pass.SetPipeline(mPipe);
+        const bool box = mBoxFilter && rect.w < fw && rect.h < fh;
+        pass.SetPipeline(box ? mBoxPipe : mPipe);
         pass.SetBindGroup(0, mBindGroup);
         pass.Draw(3);
     }

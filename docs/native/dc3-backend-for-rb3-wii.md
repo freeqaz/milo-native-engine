@@ -8338,6 +8338,15 @@ here would not transfer.
   - **Anything that one day changes what `CreateFromBitmap` is given per
     texture** (a per-class level cap, say) has to join `UploadInputs`. The
     comment in `Tex_Wgpu.cpp` says so.
+  - **The look profile (np-sharp-look, merged here at engine main 7e75fcb).**
+    The level cap is now `milo::Look().bitmapMipLevels`: 2 under Retail and
+    Native, the whole chain under Enhanced. That is one value for the
+    process, and it is in the key anyway. The text/HUD clamp to two levels
+    is not a property of the texture. It is the draw's sampler
+    (`ApplyLookSampling` sets `lodMaxClamp`), and samplers are bound per
+    draw. So a glyph page and a world texture with the same bytes share one
+    texture and still each sample the way their class does. Cube maps (now
+    their whole chain) live in their own map and never share.
 - **Why sharing cannot change a picture.**
   - Only kRegular textures share, and never one that is or was a render
     target.

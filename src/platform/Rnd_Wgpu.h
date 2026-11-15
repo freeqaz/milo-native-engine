@@ -145,6 +145,8 @@ public:
     wgpu::TextureFormat CurrentTargetFormat() const { return mCurrentTargetFormat; }
     uint32_t CurrentSampleCount() const { return mCurrentSampleCount; }
     bool CurrentPassHasDepth() const { return mCurrentPassHasDepth; }
+    // GetViewport() in the current frame target's pixels (render scale).
+    Viewport FrameViewport(const Viewport& v) const;
     // The frame has left its world (FlushPostProcessingForOverlay ran): what
     // draws now is UI/HUD, or a render target that UI draws. Reset by the
     // frame's clearing BeginFramePass.

@@ -37,6 +37,16 @@
 class GpuDevice;
 
 struct RetailPostParams {
+    // Render scale (GpuDeviceDesc::renderScale): the scene's drawn size over
+    // its output size, 1 when not scaled. DC3's chain measures its bloom
+    // targets and chromatic offset in frame pixels -- in the original, 1280x720
+    // ones -- so a supersampled frame keeps them at OUTPUT pixels: the bloom is
+    // built from bloomSrcView already box-filtered to bloomSrcW x bloomSrcH
+    // (the output size), and the chromatic offset divides by the output size.
+    // At 1 (every profile but the enhanced look's desktop render scale; every
+    // RB3 path) nothing here changes.
+    float renderScale = 1.0f;
+    int bloomSrcW = 0, bloomSrcH = 0;  // bloomSrcView's size; 0 = the scene's
     bool bloom = false;           // NgPostProc::DoBloom's doBloom
     float bloomColor[3] = {0, 0, 0};   // c6: bloom colour * BloomIntensity()
     float bloomLumaScale = 1.0f;  // c7 scale: threshold > 1 ? 1/threshold : 1
@@ -156,7 +166,8 @@ public:
     void Init(GpuDevice& gpu);
     // Grades `sceneView` (sceneW x sceneH) onto `frameView` (cleared, full
     // overwrite, surface format). Bloom is built from `bloomSrcView` (same
-    // size), which differs from the scene only when depth of field ran.
+    // size unless p.bloomSrcW/H say otherwise), which differs from the scene
+    // when depth of field ran or the frame is render-scaled.
     void Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& sceneView,
              const wgpu::TextureView& bloomSrcView,
              int sceneW, int sceneH, const wgpu::TextureView& frameView,

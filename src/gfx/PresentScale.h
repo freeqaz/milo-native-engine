@@ -47,7 +47,19 @@ public:
                        const wgpu::Texture& frame, const wgpu::TextureView& target,
                        wgpu::TextureFormat targetFormat, int targetW, int targetH);
 
+    // Render scale (GpuDeviceDesc::renderScale): a frame drawn larger than the
+    // rectangle it lands in is box-filtered -- four bilinear taps spread over
+    // each output pixel's footprint, an exact 2x2 box at 2x -- instead of one
+    // bilinear tap, which skips source pixels below 0.5x. Off by default: the
+    // window-fit present samples as it always has.
+    void SetBoxFilter(bool on) { mBoxFilter = on; }
+    // The render pass's label (GPU timers), when the copy is not the present.
+    void SetPassLabel(const char* label) { mLabel = label; }
+
 private:
+    bool mBoxFilter = false;
+    const char* mLabel = "PresentScalePass";
+    wgpu::RenderPipeline mBoxPipe;
     wgpu::ShaderModule mShader;
     wgpu::BindGroupLayout mBGL;
     wgpu::RenderPipeline mPipe;

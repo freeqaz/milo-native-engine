@@ -62,3 +62,5 @@ struct GpuTexDebugInfo {
     bool shared = false;           // this texture's GPU texture is shared
 };
 GpuTexDebugInfo GetGpuTexDebugInfo(RndTex* tex);
+// Mip levels of a cube texture's GPU copy (-1 = not uploaded). Debug/tests.
+int GetGpuCubeTexMipLevels(RndCubeTex* cubeTex);

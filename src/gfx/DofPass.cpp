@@ -141,6 +141,18 @@ void DofPass::RetailBlurOffsets(bool vertical, int blurW, int blurH, float blurW
     }
 }
 
+// Retail's uv offsets grow with the blur target's size (the quarter of its
+// 1280x720 frame). A render-scaled frame (GpuDeviceDesc::renderScale) takes
+// them from its output size's quarter; at 1 this is RetailBlurOffsets(qw, qh).
+void DofPass::SceneBlurOffsets(bool vertical, int sceneW, int sceneH, float renderScale,
+                               float blurWidthScale, float out[8][2]) {
+    const float rs = renderScale > 1.0f ? renderScale : 1.0f;
+    const int qw = std::max(1, sceneW >> 2), qh = std::max(1, sceneH >> 2);
+    const int offW = std::max(1, (int)((float)qw / rs + 0.5f));
+    const int offH = std::max(1, (int)((float)qh / rs + 0.5f));
+    RetailBlurOffsets(vertical, offW, offH, blurWidthScale, out);
+}
+
 void DofPass::EnsurePipelines(wgpu::TextureFormat format, GpuDevice& gpu) {
     if (mShader && mFormat == format) return;
     auto& dev = gpu.Device();
@@ -319,12 +331,11 @@ bool DofPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& sceneV
     auto& dev = gpu.Device();
     auto& queue = gpu.Queue();
 
-    const int qw = std::max(1, sceneW >> 2);
-    const int qh = std::max(1, sceneH >> 2);
     const float widthScale = RndPostProc::DOFOverrides().mBlurWidthScale;
+    const float rs = gpu.RenderScaleFor(sceneW);
     for (int k = 0; k < 2; k++) {
         float off[8][2];
-        RetailBlurOffsets(k == 1, qw, qh, widthScale, off);
+        SceneBlurOffsets(k == 1, sceneW, sceneH, rs, widthScale, off);
         BlurUniforms bu{};
         for (int i = 0; i < 8; i++) {
             bu.taps[i][0] = off[i][0];

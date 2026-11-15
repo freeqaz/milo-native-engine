@@ -516,14 +516,18 @@ wgpu::RenderPipeline PipelineManager::CreatePipeline(const PipelineKey& key) {
     // ignores alpha and whose identity is white or "keep dst" rather than black
     // (standard_wgsl.inc kSkipFringeFade). Keyed on the pipeline's own blend,
     // so it holds for every draw path that reaches the standard pipeline.
-    wgpu::ConstantEntry constants[3]{};
+    wgpu::ConstantEntry constants[5]{};
     constants[0].key = "kSkipFringeFade";
     constants[0].value = BlendSkipsFringeFade((int)key.blend) ? 1.0 : 0.0;
     constants[1].key = "kCutoutCoverage";
     constants[1].value = cutoutCoverage ? 1.0 : 0.0;
     constants[2].key = "kCutoutSamples";
     constants[2].value = (double)key.sampleCount;
-    fragment.constantCount = 3;
+    constants[3].key = "kLodBias";
+    constants[3].value = LodBiasFor(key);
+    constants[4].key = "kOutputPixelScale";
+    constants[4].value = OutputPixelScaleFor(key);
+    fragment.constantCount = 5;
     fragment.constants = constants;
 
     wgpu::DepthStencilState ds{};
@@ -542,11 +546,12 @@ wgpu::RenderPipeline PipelineManager::CreatePipeline(const PipelineKey& key) {
     char label[160];
     snprintf(label, sizeof(label),
              "%s shader=%u blend=%d z=%d cull=%d stencil=%d fmt=%d samples=%u depth=%d "
-             "cut=%d awrite=%d a2c=%d cover=%d bias=%d",
+             "cut=%d awrite=%d a2c=%d cover=%d bias=%d lod=%d opx=%d",
              key.layout == VertexLayoutType::Skinned ? "MainSkinned" : "MainStatic", key.shaderType,
              (int)key.blend, (int)key.zMode, (int)key.cull, (int)key.stencil, (int)key.targetFormat,
              key.sampleCount, key.hasDepth ? 1 : 0, key.alphaCut ? 1 : 0, key.alphaWrite ? 1 : 0,
-             key.alphaToCoverage ? 1 : 0, key.cutoutCoverage ? 1 : 0, (int)key.depthBias);
+             key.alphaToCoverage ? 1 : 0, key.cutoutCoverage ? 1 : 0, (int)key.depthBias,
+             key.lodBias ? 1 : 0, key.outputPixelSampling ? 1 : 0);
     pipeDesc.label = label;
     pipeDesc.layout = mPipelineLayout;
     pipeDesc.vertex.module = shader;
@@ -669,6 +674,9 @@ void PipelineManager::BuildPreWarmKeys(wgpu::TextureFormat mainFmt,
                     key.alphaWrite = pass.alphaWrite;
                     key.alphaToCoverage = false;
                     key.depthBias = 0;
+                    // World draws in the depth passes take the look's LOD
+                    // bias (Mesh_Wgpu); the RT pass's overlay-class draws do not.
+                    key.lodBias = pass.hasDepth && mMaterialLodBias != 0.0f;
                     mPreWarmKeys.push_back(key);
                 }
             }

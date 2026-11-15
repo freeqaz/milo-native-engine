@@ -391,7 +391,8 @@ void PostProcPass::SetVelocity(bool ready, float scale, const float viewProj[16]
 template <class P>
 void PostProcPass::RunDC3Retail(wgpu::CommandEncoder& encoder, P* pp, int mode,
                                 const wgpu::TextureView& sceneView,
-                                const wgpu::TextureView& intermediateView, int w, int h,
+                                const wgpu::TextureView& intermediateView,
+                                const wgpu::Texture& intermediateTex, int w, int h,
                                 const wgpu::TextureView& depthView, uint32_t depthSamples,
                                 wgpu::TextureView& frameView, const wgpu::TextureView& spotBeams,
                                 const wgpu::TextureView& spotFog, GpuDevice& gpu) {
@@ -453,7 +454,31 @@ void PostProcPass::RunDC3Retail(wgpu::CommandEncoder& encoder, P* pp, int mode,
                      (int)rp.hueConverge, rp.hueParams[0], rp.hueParams[1], rp.hueParams[2],
                      rp.hueParams[3], (int)pp->GetMotionBlurVelocity());
         }
-        mRetail.Run(encoder, sceneView, intermediateView, w, h, frameView, rp, gpu);
+        // Render scale: bloom from the scene box-filtered to the output size
+        // (RetailPostParams::renderScale).
+        wgpu::TextureView bloomSrc = intermediateView;
+        rp.renderScale = gpu.RenderScaleFor(w);
+        if (rp.renderScale > 1.0f && rp.bloom && intermediateTex) {
+            const int ow = gpu.OutputWidth(), oh = gpu.OutputHeight();
+            const wgpu::TextureFormat fmt = intermediateTex.GetFormat();
+            if (!mBloomSrcTex || (int)mBloomSrcTex.GetWidth() != ow ||
+                (int)mBloomSrcTex.GetHeight() != oh || mBloomSrcTex.GetFormat() != fmt) {
+                wgpu::TextureDescriptor td{};
+                td.label = "DC3BloomSourceOutputSize";
+                td.size = {(uint32_t)ow, (uint32_t)oh, 1};
+                td.format = fmt;
+                td.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding;
+                mBloomSrcTex = gpu.Device().CreateTexture(&td);
+                mBloomSrcView = mBloomSrcTex.CreateView();
+                mBloomSrcScale.SetBoxFilter(true);
+                mBloomSrcScale.SetPassLabel("DC3BloomSourceDownsample");
+            }
+            mBloomSrcScale.Encode(gpu.Device(), encoder, intermediateTex, mBloomSrcView, fmt, ow, oh);
+            bloomSrc = mBloomSrcView;
+            rp.bloomSrcW = ow;
+            rp.bloomSrcH = oh;
+        }
+        mRetail.Run(encoder, sceneView, bloomSrc, w, h, frameView, rp, gpu);
     }
 }
 
@@ -515,7 +540,8 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& i
     // np-gfx-post: DC3's retail chain (DC3_RETAIL_POST=0 keeps the composite below).
     if constexpr (rndshape::kDC3RetailPost) {
         if (const int mode = rndshape::RetailPostMode()) {
-            RunDC3Retail(encoder, pp, mode, sceneView, intermediateView, intermediateW, intermediateH,
+            RunDC3Retail(encoder, pp, mode, sceneView, intermediateView, intermediateTex,
+                         intermediateW, intermediateH,
                          depthView, depthSamples, frameView, spotBeams, spotFog, gpu);
             return;
         }

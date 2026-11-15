@@ -10,6 +10,7 @@
 #include "rndobj/CubeTex.h"
 #include "rndobj/Bitmap.h"
 #include "platform/rndshape/RndShape.h"
+#include "platform/LookProfile.h"
 
 #include "gfx/Screenshot.h"
 
@@ -351,14 +352,21 @@ void RndTex::PresyncBitmap() {
 
     // The consumer's loader decides how many of those levels reach the GPU:
     // DC3's DxTex::SyncBitmap creates a regular texture with
-    // min(NumMips()+1, 2) levels (rndshape::kBitmapMaxMipLevels; 0 = all).
+    // min(NumMips()+1, 2) levels (rndshape::kBitmapMaxMipLevels; 0 = all); the
+    // look profile can raise it (LookSettings::bitmapMipLevels).
     // The other bitmapped kinds DC3 creates with one level (kRegularLinear,
     // movie, scratch) carry no mips, so the cap only ever bites on kRegular;
     // render targets and cube maps do not come through here.
     // A live kRegular RndTex with this exact bitmap, given the same
     // CreateFromBitmap inputs, already has the texture: share it. (Not when
     // the reference holder is this texture: its bitmap is what changed.)
-    const int maxLevels = rndshape::kBitmapMaxMipLevels;
+    // Levels uploaded: the look profile's (milo::Look().bitmapMipLevels, one
+    // value for the process). It is in the key all the same, so two holders
+    // given different level counts can never share. The text/HUD clamp to two
+    // levels is sampler state of the draw (MaterialSetup ApplyLookSampling,
+    // lodMaxClamp), not of the texture, so a glyph page and a world texture of
+    // the same bytes can share one texture and still sample as their class does.
+    const int maxLevels = milo::Look().bitmapMipLevels;
     const bool shareable = GetType() == RndTex::kRegular && !IsRenderTarget() &&
                            !(it != sTexGpuData.end() && it->second.renderTarget);
     UploadInputs inputs;
@@ -525,6 +533,12 @@ struct GpuCubeTexData {
 
 static std::unordered_map<RndCubeTex*, GpuCubeTexData> sCubeTexGpuData;
 
+int GetGpuCubeTexMipLevels(RndCubeTex* cubeTex) {
+    auto it = sCubeTexGpuData.find(cubeTex);
+    if (it == sCubeTexGpuData.end() || !it->second.uploaded || !it->second.texture) return -1;
+    return (int)it->second.texture.GetMipLevelCount();
+}
+
 bool ReadbackGpuRenderTarget(RndTex* tex, std::vector<uint8_t>& texels, int& w, int& h) {
     if (!gWgpuRnd || !tex) return false;
     auto it = sTexGpuData.find(tex);
@@ -595,8 +609,10 @@ wgpu::TextureView GetGpuCubeTexView(RndCubeTex* cubeTex) {
     }
     if (!allValid) return wgpu::TextureView();
 
+    // Look profile: the DC3 profiles upload the cube's whole mip chain, as
+    // DxCubeTex::Sync does; Native keeps the base level only.
     wgpu::Texture gpuTex = TextureConvert::CreateCubeFromBitmaps(
-        gWgpuRnd->Gpu(), faces, 6);
+        gWgpuRnd->Gpu(), faces, 6, milo::Look().cubeMipChain);
     if (!gpuTex) return wgpu::TextureView();
 
     // Create cube texture view
@@ -604,7 +620,7 @@ wgpu::TextureView GetGpuCubeTexView(RndCubeTex* cubeTex) {
     viewDesc.dimension = wgpu::TextureViewDimension::Cube;
     viewDesc.arrayLayerCount = 6;
     viewDesc.baseArrayLayer = 0;
-    viewDesc.mipLevelCount = 1;
+    viewDesc.mipLevelCount = gpuTex.GetMipLevelCount();
     viewDesc.baseMipLevel = 0;
 
     GpuCubeTexData data;
