@@ -25,6 +25,7 @@ struct ParticleVertex {
     float pos[3];
     float uv[2];
     float color[4];
+    float mask;  // bloom mask scale, the same for the whole system (fs_particle)
 };
 
 // Shared dynamic vertex/index buffers for particle rendering.
@@ -63,12 +64,14 @@ struct VIn {
     @location(0) pos: vec3f,
     @location(1) uv: vec2f,
     @location(2) color: vec4f,
+    @location(3) mask: f32,
 };
 
 struct VOut {
     @builtin(position) clip: vec4f,
     @location(0) uv: vec2f,
     @location(1) color: vec4f,
+    @location(2) @interpolate(flat) mask: f32,
 };
 
 @vertex fn vs_particle(in: VIn) -> VOut {
@@ -76,23 +79,25 @@ struct VOut {
     out.clip = scene.viewProj * vec4f(in.pos, 1.0);
     out.uv = in.uv;
     out.color = in.color;
+    out.mask = in.mask;
     return out;
 }
 
 // The particle colour and the texel are multiplied as stored and written as
 // is, which is RB3 retail's particles.ps (gamma space, like the standard
 // shader under material.gammaShading).
-// Pipeline-overridable (RB3 shape only; 0 for DC3):
-//  kMaskScale   >0: write the pseudo-HDR bloom mask, alpha = luma(rgb) * this,
-//               as retail's particle shader does for an AllowHDR material.
-override kMaskScale: f32 = 0.0;
+// mask > 0: write the pseudo-HDR bloom mask, alpha = luma(rgb) * mask, as
+// retail's particle shader does for an AllowHDR material. The scale is the
+// frame's post-proc's, so it rides in the vertices rather than in the
+// pipeline: a pipeline constant made every post-proc a new pipeline, compiled
+// at the draw.
 
 @fragment fn fs_particle(in: VOut) -> @location(0) vec4f {
     let tex = textureSample(particleTex, particleSampler, in.uv);
     var c = tex * in.color;
     if (c.a < 0.004) { discard; }
-    if (kMaskScale > 0.0) {
-        c.a = clamp(dot(c.rgb, vec3f(0.3, 0.59, 0.11)) * kMaskScale, 0.0, 1.0);
+    if (in.mask > 0.0) {
+        c.a = clamp(dot(c.rgb, vec3f(0.3, 0.59, 0.11)) * in.mask, 0.0, 1.0);
     }
     return c;
 }
@@ -139,7 +144,18 @@ static void EnsureParticlePipeline() {
 
 // The pipeline a particle system with material `mat` drawn with `blend` asks
 // for in a pass (the draw's, or the load-time warm's: WarmParticlePipelines).
-static wgpu::RenderPipeline ParticlePipeline(RndMat* mat, WgpuBlend blend,
+// The bloom mask scale a particle system drawn with `mat` writes in this pass
+// (0: none).
+static float ParticleMaskScale(RndMat* mat, bool hasDepth, bool toTexture) {
+    if (!rndshape::RetailBloomMaskActive() || !hasDepth || toTexture) return 0.0f;
+    // DC3's scale is negative (pre-clamp luma in the mesh shader); a
+    // particle's colour is unlit, so its magnitude is applied as is.
+    return std::fabs(rndshape::BloomMaskScale(rndshape::Mat(mat)));
+}
+
+// `maskWrite`: this draw writes the bloom mask (ParticleMaskScale > 0; the
+// scale itself is in the vertices).
+static wgpu::RenderPipeline ParticlePipeline(RndMat* mat, WgpuBlend blend, bool maskWrite,
                                              wgpu::TextureFormat format, bool hasDepth,
                                              bool toTexture, uint32_t samples) {
     EnsureParticlePipeline();
@@ -149,39 +165,30 @@ static wgpu::RenderPipeline ParticlePipeline(RndMat* mat, WgpuBlend blend,
     ct.format = format;
     ct.blend = &bs;
     ct.writeMask = wgpu::ColorWriteMask::All;
-    // RB3's retail post chain reads the frame's alpha as its bloom mask: in the
-    // main frame a particle writes the mask (AllowHDR material) or leaves alpha
-    // alone. Both are no-ops for DC3 (rndshape::RetailBloomMaskActive false).
-    float maskScale = 0.0f;
-    if (rndshape::RetailBloomMaskActive() && hasDepth && !toTexture) {
-        // DC3's scale is negative (pre-clamp luma in the mesh shader); a
-        // particle's colour is unlit, so its magnitude is applied as is.
-        maskScale = std::fabs(rndshape::BloomMaskScale(rndshape::Mat(mat)));
-        if (maskScale <= 0.0f)
-            ct.writeMask = wgpu::ColorWriteMask::Red | wgpu::ColorWriteMask::Green |
-                           wgpu::ColorWriteMask::Blue;
-    }
-    wgpu::ConstantEntry consts[1] = {};
-    consts[0].key = "kMaskScale";
-    consts[0].value = maskScale;
+    // The retail post chain reads the frame's alpha as its bloom mask (DC3's
+    // retail chain, RB3's): in the main frame a particle writes the mask
+    // (AllowHDR material) or leaves alpha alone.
+    (void)mat;
+    if (rndshape::RetailBloomMaskActive() && hasDepth && !toTexture && !maskWrite)
+        ct.writeMask = wgpu::ColorWriteMask::Red | wgpu::ColorWriteMask::Green |
+                       wgpu::ColorWriteMask::Blue;
 
     wgpu::FragmentState frag{};
     frag.module = sParticleShader;
     frag.entryPoint = "fs_particle";
-    frag.constantCount = 1;
-    frag.constants = consts;
     frag.targetCount = 1;
     frag.targets = &ct;
 
-    wgpu::VertexAttribute attrs[3] = {};
+    wgpu::VertexAttribute attrs[4] = {};
     attrs[0].format = wgpu::VertexFormat::Float32x3; attrs[0].offset = 0; attrs[0].shaderLocation = 0;
     attrs[1].format = wgpu::VertexFormat::Float32x2; attrs[1].offset = 12; attrs[1].shaderLocation = 1;
     attrs[2].format = wgpu::VertexFormat::Float32x4; attrs[2].offset = 20; attrs[2].shaderLocation = 2;
+    attrs[3].format = wgpu::VertexFormat::Float32; attrs[3].offset = 36; attrs[3].shaderLocation = 3;
 
     wgpu::VertexBufferLayout vbl{};
     vbl.arrayStride = sizeof(ParticleVertex);
     vbl.stepMode = wgpu::VertexStepMode::Vertex;
-    vbl.attributeCount = 3;
+    vbl.attributeCount = 4;
     vbl.attributes = attrs;
 
     wgpu::DepthStencilState ds{};
@@ -208,7 +215,7 @@ static wgpu::RenderPipeline ParticlePipeline(RndMat* mat, WgpuBlend blend,
     return sParticlePipelines.GetOrCreate(
         gWgpuRnd->Gpu().Device(),
         RenderPipelineCache::MakeKey(bs, ct.format, ct.writeMask, hasDepth,
-                                     pipeDesc.multisample.count, maskScale, 0u),
+                                     pipeDesc.multisample.count, 0.0f, 0u),
         pipeDesc);
 }
 
@@ -458,6 +465,9 @@ void DrawParticlesBillboard(RndParticleSys* sys) {
     // Count particles and generate vertices
     std::vector<ParticleVertex> verts;
     verts.reserve(256);
+    const bool passHasDepth = gWgpuRnd->CurrentPassHasDepth();
+    const bool passToTexture = gWgpuRnd->ActiveTargetTex() != nullptr;
+    const float mask = ParticleMaskScale(mat, passHasDepth, passToTexture);
 
     for (RndParticle* p = head; p; p = p->next) {
         const Vector3 wp = rndshape::PartWorldPos(sys, p);
@@ -505,6 +515,7 @@ void DrawParticlesBillboard(RndParticleSys* sys) {
         // Quad: TL, BL, TR, BR
         ParticleVertex v;
         v.color[0] = cr; v.color[1] = cg; v.color[2] = cb; v.color[3] = ca;
+        v.mask = mask;
 
         // TL: center - right + up
         v.pos[0] = cx - srx + sux; v.pos[1] = cy - sry + suy; v.pos[2] = cz - srz + suz;
@@ -563,9 +574,8 @@ void DrawParticlesBillboard(RndParticleSys* sys) {
     queue.WriteBuffer(sParticleVB, vbOffset, verts.data(), verts.size() * sizeof(ParticleVertex));
 
     wgpu::RenderPipeline pipe = ParticlePipeline(
-        mat, (WgpuBlend)mat->GetBlend(), gWgpuRnd->CurrentTargetFormat(),
-        gWgpuRnd->CurrentPassHasDepth(), gWgpuRnd->ActiveTargetTex() != nullptr,
-        gWgpuRnd->CurrentSampleCount());
+        mat, (WgpuBlend)mat->GetBlend(), mask > 0.0f, gWgpuRnd->CurrentTargetFormat(),
+        passHasDepth, passToTexture, gWgpuRnd->CurrentSampleCount());
 
     // Bind group 0: reuse the main renderer's scene bind group (same SceneBGL)
     wgpu::BindGroup& sceneBG = gWgpuRnd->SceneBindGroup();
@@ -608,11 +618,20 @@ int WarmParticlePipelines(RndMat* mat, const MeshPassContext& ctx, const int* bl
                           int numBlends) {
     if (!gWgpuRnd || !mat) return 0;
     const uint64_t before = GpuPipelineCreateCount();
-    ParticlePipeline(mat, (WgpuBlend)mat->GetBlend(), ctx.targetFormat, ctx.hasDepth,
-                     ctx.toTexture, ctx.sampleCount);
-    for (int i = 0; i < numBlends; ++i)
-        ParticlePipeline(mat, (WgpuBlend)blends[i], ctx.targetFormat, ctx.hasDepth, ctx.toTexture,
-                         ctx.sampleCount);
+    // Whether the mask is written is the frame's (a current post-proc, no
+    // environment fade), not the material's, so a blend that allows it is
+    // warmed both ways.
+    const bool frameMask = rndshape::RetailBloomMaskActive() && ctx.hasDepth && !ctx.toTexture;
+    auto warm = [&](int blend) {
+        ParticlePipeline(mat, (WgpuBlend)blend, false, ctx.targetFormat, ctx.hasDepth,
+                         ctx.toTexture, ctx.sampleCount);
+        if (frameMask && rndshape::AllowsBloomMaskFor(rndshape::Mat(mat), blend,
+                                                      (bool)rndshape::Mat(mat)->GetAlphaWrite()))
+            ParticlePipeline(mat, (WgpuBlend)blend, true, ctx.targetFormat, ctx.hasDepth,
+                             ctx.toTexture, ctx.sampleCount);
+    };
+    warm((int)mat->GetBlend());
+    for (int i = 0; i < numBlends; ++i) warm(blends[i]);
     return (int)(GpuPipelineCreateCount() - before);
 }
 

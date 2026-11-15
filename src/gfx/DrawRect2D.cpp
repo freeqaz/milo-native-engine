@@ -19,12 +19,14 @@ struct Vertex2D {
     @location(0) pos: vec2f,
     @location(1) uv: vec2f,
     @location(2) color: vec4f,
+    @location(3) mask: f32,
 };
 
 struct VSOut {
     @builtin(position) pos: vec4f,
     @location(0) uv: vec2f,
     @location(1) color: vec4f,
+    @location(2) @interpolate(flat) mask: f32,
 };
 
 @vertex fn vs_2d(in: Vertex2D) -> VSOut {
@@ -32,30 +34,32 @@ struct VSOut {
     out.pos = vec4f(in.pos, 0.0, 1.0);
     out.uv = in.uv;
     out.color = in.color;
+    out.mask = in.mask;
     return out;
 }
 
 @group(0) @binding(0) var rectTex: texture_2d<f32>;
 @group(0) @binding(1) var rectSampler: sampler;
 
-// RB3 pseudo-HDR bloom mask (standard.ps ShaderOptions bit 22): > 0 writes
-// alpha = luma(rgb) * kMaskScale, as a mesh with the same material does.
-override kMaskScale: f32 = 0.0;
-
-fn bloomMask(c: vec4f) -> vec4f {
-    if (kMaskScale > 0.0) {
-        return vec4f(c.rgb, clamp(dot(c.rgb, vec3f(0.3, 0.59, 0.11)) * kMaskScale, 0.0, 1.0));
+// The pseudo-HDR bloom mask (standard.ps ShaderOptions bit 22): a mask > 0
+// writes alpha = luma(rgb) * mask, as a mesh with the same material does. The
+// scale is the frame's post-proc's, so it rides in the vertices (the same on
+// all six) rather than in the pipeline: a pipeline constant made every
+// post-proc a new pipeline, compiled at the draw.
+fn bloomMask(c: vec4f, mask: f32) -> vec4f {
+    if (mask > 0.0) {
+        return vec4f(c.rgb, clamp(dot(c.rgb, vec3f(0.3, 0.59, 0.11)) * mask, 0.0, 1.0));
     }
     return c;
 }
 
 @fragment fn fs_2d(in: VSOut) -> @location(0) vec4f {
     let texColor = textureSample(rectTex, rectSampler, in.uv);
-    return bloomMask(texColor * in.color);
+    return bloomMask(texColor * in.color, in.mask);
 }
 
 @fragment fn fs_2d_notex(in: VSOut) -> @location(0) vec4f {
-    return bloomMask(in.color);
+    return bloomMask(in.color, in.mask);
 }
 )WGSL";
 
@@ -63,6 +67,7 @@ struct Vertex2D {
     float pos[2];
     float uv[2];
     float color[4];
+    float mask;  // bloom mask scale, the same on all six (k2DShaderSource)
 };
 
 Hmx::Color DrawRectMaterialColor(RndMat* mat) {
@@ -119,8 +124,17 @@ void DrawRect2D::EnsurePipeline(GpuDevice& gpu) {
 
 // The pipeline a rect drawn with `mat` (null: DrawRectMat's SrcAlpha) asks for
 // in a pass: the draw's, or the load-time warm's (Warm).
+// The bloom mask scale a rect drawn with `mat` writes in this pass (0: none).
+static float RectMaskScale(RndMat* mat, bool hasDepth, bool toTexture) {
+    if (!mat || !rndshape::RetailBloomMaskActive() || !hasDepth || toTexture) return 0.0f;
+    // DC3's scale is negative (luma of the pre-clamp colour, which a rect
+    // does not have: its colour is the clamped one, so the magnitude is used).
+    // RndShaderDrawRect::CalcShaderOpts ignores the environ's fade-out.
+    return std::fabs(rndshape::BloomMaskScale(rndshape::Mat(mat), false));
+}
+
 wgpu::RenderPipeline DrawRect2D::PipelineFor(GpuDevice& gpu, PipelineManager& pipelines,
-                                             RndMat* mat, bool hasTex,
+                                             RndMat* mat, bool hasTex, bool maskWrite,
                                              wgpu::TextureFormat format, bool hasDepth,
                                              bool toTexture, uint32_t samples) {
     EnsurePipeline(gpu);
@@ -141,38 +155,30 @@ wgpu::RenderPipeline DrawRect2D::PipelineFor(GpuDevice& gpu, PipelineManager& pi
     // (SrcAlpha, so not AllowHDR). So in the main frame an AllowHDR material
     // writes the luma mask, an alpha-write one its alpha, and every other rect
     // leaves alpha alone, as meshes (Mesh_Wgpu) and particles (Part_Wgpu) do.
-    // No-ops for DC3 (rndshape::RetailBloomMaskActive false).
-    float maskScale = 0.0f;
-    if (rndshape::RetailBloomMaskActive() && hasDepth && !toTexture) {
-        // DC3's scale is negative (luma of the pre-clamp colour, which a rect
-        // does not have: its colour is the clamped one, so the magnitude is used).
-        // RndShaderDrawRect::CalcShaderOpts ignores the environ's fade-out.
-        if (mat) maskScale = std::fabs(rndshape::BloomMaskScale(rndshape::Mat(mat), false));
-        if (maskScale <= 0.0f && !(mat && rndshape::Mat(mat)->GetAlphaWrite()))
-            ct.writeMask = wgpu::ColorWriteMask::Red | wgpu::ColorWriteMask::Green |
-                           wgpu::ColorWriteMask::Blue;
-    }
-    wgpu::ConstantEntry consts[1] = {};
-    consts[0].key = "kMaskScale";
-    consts[0].value = maskScale;
+    // `maskWrite`: this draw writes the mask (RectMaskScale > 0; the scale
+    // itself is in the vertices). The mask is the frame's (DC3: the retail
+    // post chain on, rb3-xenon: never).
+    if (rndshape::RetailBloomMaskActive() && hasDepth && !toTexture && !maskWrite &&
+        !(mat && rndshape::Mat(mat)->GetAlphaWrite()))
+        ct.writeMask = wgpu::ColorWriteMask::Red | wgpu::ColorWriteMask::Green |
+                       wgpu::ColorWriteMask::Blue;
 
     wgpu::FragmentState frag{};
     frag.module = m2dShader;
     frag.entryPoint = hasTex ? "fs_2d" : "fs_2d_notex";
-    frag.constantCount = 1;
-    frag.constants = consts;
     frag.targetCount = 1;
     frag.targets = &ct;
 
-    wgpu::VertexAttribute attrs[3] = {};
+    wgpu::VertexAttribute attrs[4] = {};
     attrs[0].format = wgpu::VertexFormat::Float32x2; attrs[0].offset = 0; attrs[0].shaderLocation = 0;
     attrs[1].format = wgpu::VertexFormat::Float32x2; attrs[1].offset = 8; attrs[1].shaderLocation = 1;
     attrs[2].format = wgpu::VertexFormat::Float32x4; attrs[2].offset = 16; attrs[2].shaderLocation = 2;
+    attrs[3].format = wgpu::VertexFormat::Float32; attrs[3].offset = 32; attrs[3].shaderLocation = 3;
 
     wgpu::VertexBufferLayout vbl{};
     vbl.arrayStride = sizeof(Vertex2D);
     vbl.stepMode = wgpu::VertexStepMode::Vertex;
-    vbl.attributeCount = 3;
+    vbl.attributeCount = 4;
     vbl.attributes = attrs;
 
     wgpu::DepthStencilState ds{};
@@ -198,7 +204,7 @@ wgpu::RenderPipeline DrawRect2D::PipelineFor(GpuDevice& gpu, PipelineManager& pi
     return m2dPipelines.GetOrCreate(
         gpu.Device(),
         RenderPipelineCache::MakeKey(bs, ct.format, ct.writeMask, hasDepth,
-                                     pipeDesc.multisample.count, maskScale, hasTex ? 1u : 0u),
+                                     pipeDesc.multisample.count, 0.0f, hasTex ? 1u : 0u),
         pipeDesc);
 }
 
@@ -208,8 +214,13 @@ int DrawRect2D::Warm(GpuDevice& gpu, PipelineManager& pipelines, RndMat* mat,
     const uint64_t before = GpuPipelineCreateCount();
     // A rect samples its material's diffuse texture when it has one (Draw; one
     // whose bitmap never uploads draws untextured and compiles at the draw).
-    PipelineFor(gpu, pipelines, mat, mat && mat->GetDiffuseTex(), format, hasDepth, toTexture,
-                samples);
+    const bool hasTex = mat && mat->GetDiffuseTex();
+    PipelineFor(gpu, pipelines, mat, hasTex, false, format, hasDepth, toTexture, samples);
+    // Whether the mask is written is the frame's (a current post-proc), not
+    // the material's, so a material that allows it is warmed both ways.
+    if (mat && rndshape::RetailBloomMaskActive() && hasDepth && !toTexture &&
+        rndshape::AllowsBloomMask(rndshape::Mat(mat)))
+        PipelineFor(gpu, pipelines, mat, hasTex, true, format, hasDepth, toTexture, samples);
     return (int)(GpuPipelineCreateCount() - before);
 }
 
@@ -259,13 +270,16 @@ void DrawRect2D::Draw(wgpu::RenderPassEncoder& pass, const Hmx::Rect& rect, RndM
         }
     }
 
+    const float mask = gWgpuRnd ? RectMaskScale(mat, gWgpuRnd->CurrentPassHasDepth(),
+                                                 gWgpuRnd->ActiveTargetTex() != nullptr)
+                                : 0.0f;
     Vertex2D verts[6] = {
-        {{x0, y0}, {0, 0}, {cTL[0], cTL[1], cTL[2], cTL[3]}},
-        {{x0, y1}, {0, 1}, {cBL[0], cBL[1], cBL[2], cBL[3]}},
-        {{x1, y0}, {1, 0}, {cTR[0], cTR[1], cTR[2], cTR[3]}},
-        {{x1, y0}, {1, 0}, {cTR[0], cTR[1], cTR[2], cTR[3]}},
-        {{x0, y1}, {0, 1}, {cBL[0], cBL[1], cBL[2], cBL[3]}},
-        {{x1, y1}, {1, 1}, {cBR[0], cBR[1], cBR[2], cBR[3]}},
+        {{x0, y0}, {0, 0}, {cTL[0], cTL[1], cTL[2], cTL[3]}, mask},
+        {{x0, y1}, {0, 1}, {cBL[0], cBL[1], cBL[2], cBL[3]}, mask},
+        {{x1, y0}, {1, 0}, {cTR[0], cTR[1], cTR[2], cTR[3]}, mask},
+        {{x1, y0}, {1, 0}, {cTR[0], cTR[1], cTR[2], cTR[3]}, mask},
+        {{x0, y1}, {0, 1}, {cBL[0], cBL[1], cBL[2], cBL[3]}, mask},
+        {{x1, y1}, {1, 1}, {cBR[0], cBR[1], cBR[2], cBR[3]}, mask},
     };
 
     // Each rect gets its own slot in this frame's arena. A single 6-vertex
@@ -305,7 +319,7 @@ void DrawRect2D::Draw(wgpu::RenderPassEncoder& pass, const Hmx::Rect& rect, RndM
     WgpuRnd* rnd = gWgpuRnd;
     if (!rnd) return;
     wgpu::RenderPipeline pipe =
-        PipelineFor(gpu, pipelines, mat, hasTex, rnd->CurrentTargetFormat(),
+        PipelineFor(gpu, pipelines, mat, hasTex, mask > 0.0f, rnd->CurrentTargetFormat(),
                     rnd->CurrentPassHasDepth(), rnd->ActiveTargetTex() != nullptr,
                     rnd->CurrentSampleCount());
 

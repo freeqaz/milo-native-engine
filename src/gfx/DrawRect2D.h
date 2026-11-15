@@ -34,13 +34,13 @@ public:
 private:
     void EnsurePipeline(GpuDevice& gpu);
     wgpu::RenderPipeline PipelineFor(GpuDevice& gpu, PipelineManager& pipelines, RndMat* mat,
-                                     bool hasTex, wgpu::TextureFormat format, bool hasDepth,
-                                     bool toTexture, uint32_t samples);
+                                     bool hasTex, bool maskWrite, wgpu::TextureFormat format,
+                                     bool hasDepth, bool toTexture, uint32_t samples);
 
     wgpu::ShaderModule m2dShader;
     wgpu::BindGroupLayout m2dBindGroupLayout;
     wgpu::PipelineLayout m2dPipelineLayout;
-    // Pipelines by blend/target/depth/samples/mask/texture variant.
+    // Pipelines by blend/target/write mask/depth/samples/texture variant.
     RenderPipelineCache m2dPipelines;
     // Per-frame arena of 6-vertex rects: Queue::WriteBuffer runs ahead of the
     // whole frame's command buffer, so every rect needs its own slot.
