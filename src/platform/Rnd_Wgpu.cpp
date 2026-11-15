@@ -11,6 +11,7 @@
 #include "gfx/FrameCapture.h"
 #include "gfx/GpuDevice.h"
 #include "gfx/PipelineCount.h"
+#include "gfx/FrameCost.h"
 #include "gfx/PipelineManager.h"
 #include "platform/LookProfile.h"
 #include "gfx/Screenshot.h"
@@ -433,7 +434,7 @@ void WgpuRnd::InitGpuResources() {
         if (mFrameTimes)
             fprintf(mFrameTimes,
                     "frame,period_ms,cpu_ms,draw_ms,pt_wait_ms,pt_recorded,pt_answers,pt_age,"
-                    "pt_end_wait_ms,pt_after_submit,pt_standin\n");
+                    "pt_end_wait_ms,pt_after_submit,pt_standin,pipe_ms,tex_ms,mesh_ms\n");
     }
 
     // Compose RndTexBlender outputs (TexBlendHook.h).
@@ -2113,11 +2114,17 @@ void WgpuRnd::WriteFrameTimes() {
     if (!mFrameTimes) return;
     const double now = PerfNow(), cpu = ThreadCpuNow();
     if (mFrameTimesLastEnd > 0.0) {
-        fprintf(mFrameTimes, "%d,%.3f,%.3f,%.3f,%.3f,%d,%d,%d,%.3f,%d,%d\n", (int)mFrameID,
+        double costMs[3];
+        for (int k = 0; k < 3; k++) {
+            const uint64_t n = framecost::Nanos((framecost::Kind)k).load();
+            costMs[k] = (double)(n - mFrameTimesLastCostNs[k]) / 1e6;
+            mFrameTimesLastCostNs[k] = n;
+        }
+        fprintf(mFrameTimes, "%d,%.3f,%.3f,%.3f,%.3f,%d,%d,%d,%.3f,%d,%d,%.3f,%.3f,%.3f\n", (int)mFrameID,
                 (now - mFrameTimesLastEnd) * 1000.0, (cpu - mFrameTimesLastCpu) * 1000.0,
                 (now - mFrameTimesBegin) * 1000.0, mPointTestWaitMs, mPointTestsRecorded,
                 mPointTestAnswers, mPointTestAgeMax, mPointTestEndWaitMs, mPointTestAfterSubmit,
-                mPointTestStandInsFrame);
+                mPointTestStandInsFrame, costMs[0], costMs[1], costMs[2]);
         fflush(mFrameTimes);
     }
     mFrameTimesLastEnd = now;

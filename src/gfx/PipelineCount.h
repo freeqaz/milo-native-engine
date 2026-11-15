@@ -14,6 +14,8 @@
 
 #include <webgpu/webgpu_cpp.h>
 
+#include "gfx/FrameCost.h"
+
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -46,6 +48,7 @@ inline wgpu::RenderPipeline CreateCountedRenderPipeline(const wgpu::Device& dev,
     const double ms =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     pipelinecount::Counter()++;
+    framecost::Nanos(framecost::kPipeline) += (uint64_t)(ms * 1e6);
     std::lock_guard<std::mutex> lock(pipelinecount::RecentMutex());
     auto& recent = pipelinecount::Recent();
     if (recent.size() < 64) {

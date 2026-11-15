@@ -3,6 +3,7 @@
 // Contains: upload logic, MikkTSpace tangent generation, frame stats, side table.
 
 #include "platform/MeshGpuCache.h"
+#include "gfx/FrameCost.h"
 #include "platform/Rnd_Wgpu.h"
 #include "gfx/VertexFormats.h"
 #include "rndobj/Mesh.h"
@@ -268,6 +269,7 @@ static bool UploadMesh(RndMesh* mesh) {
         return true;
     }
 
+    framecost::Scope cost(framecost::kMesh);
     RndMesh* geomOwner = rndshape::MeshGeomOwner(mesh);
     if (!geomOwner) geomOwner = mesh;
 

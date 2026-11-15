@@ -545,11 +545,15 @@ public:
     // test answers; `pt_age` is how many frames after its tests were recorded
     // the oldest answer delivered this frame arrived; `pt_end_wait` and
     // `pt_after_submit` are the time and answers of FinishPointTestReadback.
+    // `pipe_ms`, `tex_ms`, `mesh_ms`: time this frame spent creating render
+    // pipelines, creating bitmap textures and uploading meshes
+    // (gfx/FrameCost.h), all threads.
     void WriteFrameTimes();
     FILE* mFrameTimes = nullptr;
     double mFrameTimesBegin = 0.0;    // wall s, BeginDrawing
     double mFrameTimesLastEnd = 0.0;  // wall s, previous EndDrawing
     double mFrameTimesLastCpu = 0.0;  // thread CPU s, previous EndDrawing
+    uint64_t mFrameTimesLastCostNs[3] = {0, 0, 0}; // framecost::Nanos at the previous row
     double mPointTestWaitMs = 0.0;
     double mPointTestEndWaitMs = 0.0;  // in FinishPointTestReadback
     int mPointTestAfterSubmit = 0;     // answers it delivered
