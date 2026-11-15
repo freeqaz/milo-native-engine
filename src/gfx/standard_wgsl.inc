@@ -22,7 +22,8 @@ const kHighlightCompressionKnee = 0.9;
 const kAlphaFringeFadeStart = 0.1;
 // True for a pipeline whose blend ignores source alpha AND whose identity is
 // not black -- Multiply (dst * src.rgb) and Darken (min(src, dst)) -- set per
-// pipeline by PipelineManager::CreatePipeline (BlendSkipsFringeFade). The
+// pipeline by PipelineManager::CreatePipeline (BlendSkipsFringeFade; and on
+// every pipeline for a consumer without the fade, SetAlphaFringeFade). The
 // alpha fringe fade (fs_main, near the end) then leaves the colour alone:
 // fading toward black would turn a white, alpha-0 Multiply quad into a full
 // darken, which the image never draws (its NgMat Multiply is src Zero / dst
@@ -1774,7 +1775,10 @@ fn shadeStandard(surfaceInput: VertexOutput) -> vec4f {
     // blends weight by alpha anyway; Add/Subtract/Screen/Lighten add nothing).
     // Multiply and Darken are skipped per pipeline: see kSkipFringeFade.
     // A native heuristic (no retail counterpart), so it must not fire when the
-    // texel alpha is not coverage -- see colorModAlphaIsBandSelector.
+    // texel alpha is not coverage -- see colorModAlphaIsBandSelector. DC3 does
+    // not run it at all (rndshape::kAlphaFringeFade, kSkipFringeFade = 1 on
+    // every pipeline): it squared low-alpha SrcAlpha layers and erased
+    // alpha-0 Add layers the image draws.
     if (baseColor.a < kAlphaFringeFadeStart && !kSkipFringeFade && !colorModAlphaIsBandSelector()) {
         finalColor *= baseColor.a / kAlphaFringeFadeStart;
     }
