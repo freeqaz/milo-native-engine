@@ -258,6 +258,16 @@ public:
     float RenderScaleFor(int w) const {
         return RenderScaled() && w == mWidth ? (float)mWidth / (float)OutputWidth() : 1.0f;
     }
+    // A render-scaled frame's box filter dithered to 8 bits, in the present
+    // AND the readback alike (PresentScale::SetDither), so a screenshot is the
+    // frame the window shows. The enhanced look's 16-bit post chain
+    // (LookSettings::postPrecision) asks for it each frame; nothing changes at
+    // scale 1 (no box filter) or with it off.
+    void SetPresentDither(bool on) {
+        mPresentScale.SetDither(on);
+        mReadbackScale.SetDither(on);
+    }
+    bool PresentDither() const { return mPresentScale.Dither() && mReadbackScale.Dither(); }
     // The adapter reported itself a discrete GPU (render scale's default).
     bool IsDiscreteGpu() const { return mDiscreteGpu; }
     bool IsHeadless() const { return mHeadless; }

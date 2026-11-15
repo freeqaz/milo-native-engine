@@ -53,11 +53,21 @@ public:
     // bilinear tap, which skips source pixels below 0.5x. Off by default: the
     // window-fit present samples as it always has.
     void SetBoxFilter(bool on) { mBoxFilter = on; }
+    // The box filter's output dithered to 8 bits (fs_box_dither): a fixed 4x4
+    // ordered pattern that leaves every exact 8-bit level exact -- flat fills
+    // and glyph interiors come out as drawn -- and keeps the fraction of a
+    // level the 2x2 mean carries (the enhanced look's 16-bit post chain,
+    // LookSettings::postPrecision, under a render scale). Only with the box
+    // filter, into an RGBA8Unorm/BGRA8Unorm target; off by default.
+    void SetDither(bool on) { mDither = on; }
+    bool Dither() const { return mDither; }
     // The render pass's label (GPU timers), when the copy is not the present.
     void SetPassLabel(const char* label) { mLabel = label; }
 
 private:
     bool mBoxFilter = false;
+    bool mDither = false;
+    wgpu::RenderPipeline mBoxDitherPipe;
     const char* mLabel = "PresentScalePass";
     wgpu::RenderPipeline mBoxPipe;
     wgpu::ShaderModule mShader;

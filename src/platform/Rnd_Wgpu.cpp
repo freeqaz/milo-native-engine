@@ -1830,6 +1830,10 @@ void WgpuRnd::BeginDrawing() {
     }
 #endif
 
+    // np-gfx-post: under a render scale the 16-bit post chain's fraction of a
+    // level survives the box filter down (PresentScale::SetDither); the look
+    // can change at runtime ({rnd native_look ...}), so every frame.
+    mGpu.SetPresentDither(milo::Look().postPrecision);
     // Acquire next frame
     if (mGpu.IsHeadless()) {
         mFrameView = mGpu.AcquireHeadlessFrame();
