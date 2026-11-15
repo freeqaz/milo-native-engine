@@ -26,7 +26,21 @@ void NativeSetDataDir(const char *dir) {
 
 const char *NativeGetDataDir() { return gNativeDataDir; }
 
-// On web, all files are "local" (in MEMFS) — no archive routing
+// Content drives (cntNNNNNNNN:), as on desktop: see NativeDrives.h. On web a
+// drive maps to a MEMFS directory (dc3: /data/dlc/<package>); its files are
+// fetched on demand like every other asset, the request path being the MEMFS
+// path less "/data/" (WebAssetsFetchSync), so the server answers
+// /api/file/dlc/<package>/... from its DLC root.
+#include "platform/NativeDrives.h"
+
+bool NativeMountDrive(const char *drive, const char *hostDir) {
+    return NativeDriveMap(drive, hostDir);
+}
+
+void NativeUnmountDrive(const char *drive) { NativeDriveUnmap(drive); }
+
+// On web, all files are "local" (in MEMFS) — no archive routing; a mapped
+// content drive included (File_Win's drive rule)
 bool FileIsLocal(const char *file) {
     return true;
 }
@@ -57,8 +71,13 @@ int FileMkDir(const char *iDirname) {
     return mkdir(str.c_str(), 0755) == 0 ? 1 : 0;
 }
 
-void FileQualifiedFilename(char *out, int, const char *in) {
+void FileQualifiedFilename(char *out, int outSize, const char *in) {
     MILO_ASSERT(in && out, 0x121);
+    const char *driveRest;
+    if (const char *hostDir = NativeDriveHostDir(in, &driveRest)) {
+        snprintf(out, outSize > 0 ? outSize : 0x100, "%s/%s", hostDir, driveRest);
+        return;
+    }
     String str(in);
     const char *inStr = str.c_str();
     char buf[256];
