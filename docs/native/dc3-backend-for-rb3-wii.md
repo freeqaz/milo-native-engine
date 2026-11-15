@@ -7125,10 +7125,14 @@ rollerrink rising to ~4.1 ms with the beams and ~2.9 ms with
 - **Rendering unchanged (MEASURED).** One process per venue (rollerrink,
   houseparty), with `DC3_DISPLAY_GAMMA=off`. At three paused points each,
   screen grabs alternate the old path and the new path (TMPDIAG build, not
-  shipped), and the old path's windows show +2 uploads per frame. Switching
-  path changes no more pixels than two grabs on the same path do: at most
-  187 pixels and at most ±2 levels, except one point where the frozen frame
-  itself moved by ±37.
+  shipped), and the old path's windows show +2 uploads per frame. Across all
+  six points, a grab after the path switch differs from the grab before it
+  by 1–187 pixels. Two grabs on the same path differ by 1–246 pixels. One
+  exception: at two points the paused frame itself kept moving, by up to
+  ±60 levels, and the switch pairs moved with it, in the same region and by
+  the same amount. Every other switch pair is within ±2 levels. The switch
+  differences fall mostly in the top-right HUD corner (x 1128–1247,
+  y 92–193, at 1280×720), not on the beams.
 - **CPU.** This box (RTX 3090, NVIDIA) does not reproduce the GPD cost. The
   beam path cost ~30 µs/frame before the fix, and on−off CPU was within
   noise. The per-frame buffer create/release churn is gone; that it was the
