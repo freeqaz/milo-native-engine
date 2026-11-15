@@ -2176,3 +2176,149 @@ The dancers that are dropped stand off-screen, and so do their shadows
 parity by construction and a small saving, not a visible fix. No frame was
 found where an off-screen dancer's shadow lands in view, so there is no
 Xenia comparison to make.
+
+## 16. Item 13 (c): the normal detail map, and the houseparty floor sheen (np-look13)
+
+Lane archive: dc3-decomp `archive/np-gfx-2026-11-14/lanes/sharp/item13/c/`
+(README first). Protocol: omg paused at 20.16 s, `area1_far02.shot` forced,
+`MILO_RENDER_SCALE=2`, `DC3_DISPLAY_GAMMA=off`, post as shipped unless noted.
+PLAN H-114.
+
+### 16.1 Bit 24: the retail path ignored the normal detail map (FIXED)
+
+`RndShaderStandard::CalcShaderOpts` sets bit 24 (`mNormDetail`) for a
+per-pixel material with a `norm_detail_map` and `norm_detail_strength > 0`.
+`standard.ps` `0000030001030035` against `0000030000030035` differs by one
+fetch:
+- tf14 is fetched at `uv · c106.y` (wrap);
+- before the de_normal factor k and the tangent frame, it adds
+  `s · (dx, dy, sat(1 − dx² − dy²))` to the normal map's `(x, y, z)`, where
+  `d = 2 · texel.rg − 1` and `s` = c106.x = `norm_detail_strength`.
+
+All 191 shipped PS permutations with bit 24 also carry the normal map (bit
+5), so the term lives inside the normal-map branch.
+
+Native's retail path did not read the map. Its modern path,
+`blendDetailNormal`, which rb3 and rb3-xenon use, already did, and it is
+unchanged. The fix adds the term in `retailPixelShade` under
+`retailHasNormDetail()`: `scene.retailLighting > 1.5` (the DC3 shape) and
+the material fields. The texture is sampled with `mapSampler`, which repeats.
+
+- Test: dc3 `RetailCharShadingTest`, kind 4 ("plain + detail"), 12 cases
+  from the microcode model (2e-8).
+- Sabotages, each red:
+  - the term off;
+  - the z term dropped;
+  - gated on `retailLighting > 0.5`, which reaches rb3's form;
+  - the detail scaled by `1/k`.
+
+**Readback that could have come out the other way.** In one paused session,
+every material with a detail map is set to strength 0. On the base binary
+this moves only what animates under the pause (875–1,314 px per venue): the
+HUD column (all of houseparty's 928) and glints on the left dancer's outfit
+(181–299 px elsewhere). On the fixed binary it moves the materials listed
+below. Had native already drawn the term some other way, the two binaries
+would read alike.
+
+### 16.2 Which venues carry it
+
+Strength A/B in one session (shipped strength → 0, `seq/nd_ab.n.txt`):
+pixels that move, those that move by more than 8 levels, and the mean luma
+change on the moved pixels (on − off). Base is the control.
+
+| venue | materials with bit 24 (strength, tiling) | moved px base / fix | > 8 lvl base / fix | mean Δluma (fix) |
+|---|---|---|---|---|
+| houseparty | `HSP_LivingRoomFloor` (0.15, 50) | 928 / 98,515 | 401 / 2,151 | +0.40 |
+| rollerrink | `StageCarpet` (2.0, 20) | 980 / 325,443 | 269 / 91,587 | −1.26 |
+| streetside | `Sidewalk` (10, 100), `Street` (5, 15), `building1/2_fireEscape` (1, 10), `Building2_brick` (0.5, 1) | 1,314 / 328,518 | 543 / 26,389 | +0.51 |
+| throneroom | `THR_floor_main`, `_raised` (4, 10), `THR_columns_crack` (4, 1.9), `THR_rearWall` (2, 6), `THR_floor_main_lowNorm`, `_raised_lowNorm` (1, 10), `THR_floor_edge` (0.4, 10), `THR_columns`, `_darker`, `THR_crowStatue` (0.1) | 1,067 / 407,198 | 330 / 7,893 | +0.24 |
+| dci | `Ceiling` (1.5, 15): ceiling, rear wall top, rear banister | 875 / 60,326 | 324 / 916 | −0.07 |
+| dclive | none | 1,184 / 860 | 449 / 235 | — |
+| glitterati | none (its screens animate under the pause, hence the counts) | 426,564 / 372,358 | 568 / 478 | — |
+
+Houseparty has three more materials with a detail map but strength 0
+(`HSP_Couch1`, `HSP_LivingRoomRug`, `HSP_XmasLights01`), so bit 24 is not
+set on them. Characters: of the 1,956 skinned permutations in the shipped
+cache, one carries bit 24 (`0000020011431037`). It has the houseparty floor's
+feature set and none of the rim bits, so it is a skinned scene object, not a
+dancer.
+
+**Nothing moves outside the materials' own pixels.** Each venue was run once
+more with the A/B, then a second off shot (noise), then the bit-24 meshes
+hidden (footprint = off vs hidden, dilated 2 px; `seq/nd_ab2.n.txt` with
+post as shipped, `nd_ab3.n.txt` with post off):
+
+| venue | post off: footprint px | moved px | moved outside the footprint and the HUD column | post as shipped: moved outside (max level) |
+|---|---|---|---|---|
+| houseparty | 360,998 | 80,094 | **0** | 55 px (1) |
+| rollerrink | 338,510 | 314,770 | **0** | 15 px (1) |
+| streetside | 384,944 | 283,830 | **0** | 32 px (1) |
+| throneroom | 461,863 | 339,956 | **0** | 0 |
+| dci | 179,753 | 56,472 | **0** | 5 px (1) |
+| dclive | none hidden (no bit-24 meshes) | 1,258 (animation) | **0** | 0 |
+| glitterati | none hidden (no bit-24 meshes) | 951 (animation) | **0** | — (its screens animate under the pause) |
+
+Every pixel outside the footprint that moves with post off is in the HUD
+column (x ≥ 1090), which animates under the pause. With post on, the
+footprint includes the bloom's spread, and the few pixels outside it move by
+1 level (the post chain's rounding).
+
+The footprint must be taken at "any change" (> 0). At "> 8 levels" it misses
+a mesh's own pixels wherever what is behind it looks alike: dark brick in
+front of a dark sky, or marble reflecting marble. That version reads tens of
+thousands of "outside" pixels on streetside and throneroom.
+
+### 16.3 Against Xenia
+
+Xenia runs the shipped microcode, so it draws the term. The measure is
+high-frequency energy in boxes on the changed surfaces: the std of luma
+minus a box blur of radius r (`tools/hfenergy.py`). Both sides are far02
+with post on, except rollerrink, where Xenia's bloom is off.
+
+| venue, box | Xenia r1 / r2 / r4 | native before | native after |
+|---|---|---|---|
+| streetside, asphalt (700,640)+(350,80) | 4.34 / 5.42 / 5.67 | 0.85 / 1.16 / 1.62 | **4.19 / 5.34 / 5.62** |
+| rollerrink, carpet (item 13a's floor boxes) | 6.09 / 8.62 / 11.42 | 4.54 / 7.55 / 10.77 | **6.66 / 8.99 / 11.43** |
+| throneroom, marble (0,545)+(150,55), (0,600)+(60,40) | 1.72 / 2.04 / 2.31 | 0.91 / 1.21 / 1.59 | **1.92 / 2.23 / 2.51** |
+| houseparty, wood (10,600)+(70,110), (350,695)+(500,25) | 5.09 / 6.10 / 6.77 | 2.70 / 4.16 / 5.46 | **3.87 / 5.16 / 6.20** |
+
+Streetside's asphalt p95 goes from 58.3 to 66.6, against Xenia's 66.9
+(`sheets/ss_asphalt_x2.png`: Xenia's grain was missing on native and is
+back). Houseparty's remaining gap is the sheen (§16.4).
+
+The detail term does **not** explain item 13a's rollerrink haze residual:
+the carpet box's p5/p95 stays at 0.128, against retail's 0.20–0.28. That
+row stays open.
+
+DCI is not compared: the Xenia survey frame is far03.
+
+### 16.4 The houseparty sheen is Xenia's (no change)
+
+The survey row was a broad golden sheen on the foreground wood in Xenia,
+missing on native. Inputs first:
+- Retail PS `0000120011430037`: spec per point light =
+  `lobe(p · 0.1592 + 0.3183) · sat(V · R)^p · colour · falloff`, with
+  `p = max(specMap.a · power, 0.5)`.
+- The constants match native's: camera position, light positions and
+  colours, falloff slope.
+- The spec map's alpha bytes, decoded from the milo, have 0 DXT1
+  punch-through texels, so p is the material's 18.
+- Native's light-01 spec equals analytic power-18 Phong on the flat floor.
+
+Measurements:
+- Xenia's sheen box p95 goes from 65.0 at power 18 to 33.3 at power 200.
+  Native's is 32.2 at 18.
+- Retail's stills (houseparty 12, 14, 02) show dark wood with no broad
+  sheen. Wood p95 over rug p50, which cancels capture levels:
+  - Xenia far01: **1.72**;
+  - native far01: **1.07**;
+  - retail 12: **1.26** (another song and a near camera).
+- Nothing was tuned toward Xenia.
+
+The rule is in dc3-backend-for-rb3-wii.md §37.10's list of Xenia artifacts.
+
+Two small retail differences are left, both untried:
+- Retail multiplies the spec sum by the projected-light multiplier
+  `1 − 0.75 · c69 · tf5.a · sat(N · c65)`. Native does not, and the
+  multiplier only darkens.
+- Retail normalises V per vertex, across the floor's large triangles.
