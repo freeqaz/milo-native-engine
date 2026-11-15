@@ -1051,10 +1051,9 @@ bool WgpuRnd::SubmitSpotBeams(const NativeSpotBeamFrame& frame, const NativeSpot
         if (!mesh) continue;
         SpotBeamPass::Draw d;
         if (!SpotBeamPass::BeamConstants(b, c, d.k)) continue;
-        // The shaft is unnamed but only changes through Sync (Spotlight::
-        // Generate's BuildNG*, RndMesh::Copy); EnsureMeshUploaded would take it
-        // for a glyph page and re-upload it every frame.
-        if (!EnsureSyncedMeshUploaded(mesh)) continue;
+        // The shaft only changes through Sync (Spotlight::Generate's BuildNG*,
+        // RndMesh::Copy), so this uploads it once (section 36.6).
+        if (!EnsureMeshUploaded(mesh)) continue;
         GpuMeshData* m = GetMeshGpuData(mesh);
         if (!m || !m->uploaded || m->numIndices <= 0) continue;
         for (int j = 0; j < 12; j++) d.meshXfm[j] = b.meshXfm[j];
