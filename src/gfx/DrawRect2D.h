@@ -6,6 +6,7 @@
 class GpuDevice;
 class PipelineManager;
 class RndMat;
+enum class WgpuBlend;  // gfx/PipelineManager.h
 namespace Hmx { struct Rect; struct Color; }
 
 // The factor retail's Xbox DrawRect gives a rect drawn with `mat` through the
@@ -30,12 +31,24 @@ public:
     // a RndFlare's or RndScreenMask's material). Returns the pipelines created.
     int Warm(GpuDevice& gpu, PipelineManager& pipelines, RndMat* mat, wgpu::TextureFormat format,
              bool hasDepth, bool toTexture, uint32_t samples);
+    // The same for a rect whose material is scratch state set just before the
+    // draw (dc3's RndTexBlender draws its base map with the shader manager's
+    // work material, blend Src), in a pass with no depth. There nothing of a
+    // material but its blend reaches the key (the bloom mask is a depth
+    // pass's), so `blend` and whether it is textured are the whole key.
+    int Warm(GpuDevice& gpu, PipelineManager& pipelines, WgpuBlend blend, bool hasTex,
+             wgpu::TextureFormat format, bool toTexture, uint32_t samples);
 
 private:
     void EnsurePipeline(GpuDevice& gpu);
     wgpu::RenderPipeline PipelineFor(GpuDevice& gpu, PipelineManager& pipelines, RndMat* mat,
                                      bool hasTex, bool maskWrite, wgpu::TextureFormat format,
                                      bool hasDepth, bool toTexture, uint32_t samples);
+    // PipelineFor with the blend given (`mat` may be null: then only `blend`).
+    wgpu::RenderPipeline PipelineForBlend(GpuDevice& gpu, PipelineManager& pipelines, RndMat* mat,
+                                          WgpuBlend blend, bool hasTex, bool maskWrite,
+                                          wgpu::TextureFormat format, bool hasDepth,
+                                          bool toTexture, uint32_t samples);
 
     wgpu::ShaderModule m2dShader;
     wgpu::BindGroupLayout m2dBindGroupLayout;

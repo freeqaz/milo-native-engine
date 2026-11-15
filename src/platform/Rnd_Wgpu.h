@@ -159,6 +159,12 @@ public:
         return mDrawRect2D.Warm(mGpu, mPipelines, mat, ctx.targetFormat, ctx.hasDepth,
                                 ctx.toTexture, ctx.sampleCount);
     }
+    // ... for a rect drawn with scratch material state (`blend`, textured or
+    // not) into a target with no depth (DrawRect2D::Warm's second form).
+    int WarmRectPipelines(WgpuBlend blend, bool hasTex, const MeshPassContext& ctx) {
+        return mDrawRect2D.Warm(mGpu, mPipelines, blend, hasTex, ctx.targetFormat, ctx.toTexture,
+                                ctx.sampleCount);
+    }
     // GetViewport() in the current frame target's pixels (render scale).
     Viewport FrameViewport(const Viewport& v) const;
     // The frame has left its world (FlushPostProcessingForOverlay ran): what

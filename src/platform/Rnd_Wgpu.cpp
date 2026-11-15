@@ -2936,7 +2936,7 @@ void WgpuRnd::LogGpuCounters() {
     fprintf(stderr,
             "[GPUCOUNT] frame=%d bindGroupsLive=%zu bgCreated=%llu bgHits=%llu bgEvicted=%llu "
             "bgUncached=%llu ringBuffers=4 ringBytes=%u ringGrows=%u/%u/%u/%u "
-            "ringQueueWrites=%llu ringQueueBytes=%llu pipelines=%d pipelineCreates=%llu pipelineWarms=%llu warmsDrawn=%llu pipelineWaits=%llu gpuMeshes=%zu meshUploads=%llu "
+            "ringQueueWrites=%llu ringQueueBytes=%llu pipelines=%d pipelineCreates=%llu pipelineLoadCreates=%llu pipelineWarms=%llu warmsDrawn=%llu pipelineWaits=%llu gpuMeshes=%zu meshUploads=%llu "
             "gpuTextures=%zu texHolders=%zu texCreates=%llu texShares=%llu "
             "postBgLive=%zu postBgCreated=%llu postBgHits=%llu postBgEvicted=%llu postBgUncached=%llu "
             "ptBatches=%d ptCreated=%llu ptInFlight=%d\n",
@@ -2949,6 +2949,7 @@ void WgpuRnd::LogGpuCounters() {
             (unsigned long long)writes, (unsigned long long)bytes,
             mPipelines.CachedPipelineCount(),
             (unsigned long long)GpuPipelineCreateCount(),
+            (unsigned long long)GpuPipelineLoadCreateCount(),
             (unsigned long long)GpuPipelineWarmCount(),
             (unsigned long long)mPipelines.GetWarmStats().drawn,
             (unsigned long long)GpuPipelineWaitCount(),

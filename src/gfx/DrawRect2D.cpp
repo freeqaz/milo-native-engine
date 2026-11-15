@@ -137,10 +137,15 @@ wgpu::RenderPipeline DrawRect2D::PipelineFor(GpuDevice& gpu, PipelineManager& pi
                                              RndMat* mat, bool hasTex, bool maskWrite,
                                              wgpu::TextureFormat format, bool hasDepth,
                                              bool toTexture, uint32_t samples) {
-    EnsurePipeline(gpu);
-    WgpuBlend blend = WgpuBlend::SrcAlpha;
-    if (mat) blend = (WgpuBlend)mat->GetBlend();
+    return PipelineForBlend(gpu, pipelines, mat, mat ? (WgpuBlend)mat->GetBlend() : WgpuBlend::SrcAlpha,
+                            hasTex, maskWrite, format, hasDepth, toTexture, samples);
+}
 
+wgpu::RenderPipeline DrawRect2D::PipelineForBlend(GpuDevice& gpu, PipelineManager& pipelines,
+                                                  RndMat* mat, WgpuBlend blend, bool hasTex,
+                                                  bool maskWrite, wgpu::TextureFormat format,
+                                                  bool hasDepth, bool toTexture, uint32_t samples) {
+    EnsurePipeline(gpu);
     wgpu::BlendState bs = pipelines.MapBlend(blend);
 
     wgpu::ColorTargetState ct{};
@@ -221,6 +226,13 @@ int DrawRect2D::Warm(GpuDevice& gpu, PipelineManager& pipelines, RndMat* mat,
     if (mat && rndshape::RetailBloomMaskActive() && hasDepth && !toTexture &&
         rndshape::AllowsBloomMask(rndshape::Mat(mat)))
         PipelineFor(gpu, pipelines, mat, hasTex, true, format, hasDepth, toTexture, samples);
+    return (int)(GpuPipelineCreateCount() - before);
+}
+
+int DrawRect2D::Warm(GpuDevice& gpu, PipelineManager& pipelines, WgpuBlend blend, bool hasTex,
+                     wgpu::TextureFormat format, bool toTexture, uint32_t samples) {
+    const uint64_t before = GpuPipelineCreateCount();
+    PipelineForBlend(gpu, pipelines, nullptr, blend, hasTex, false, format, false, toTexture, samples);
     return (int)(GpuPipelineCreateCount() - before);
 }
 
