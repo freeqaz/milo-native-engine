@@ -181,12 +181,6 @@ public:
     void SetDynamicUniformOffsets(bool on) { mDynamicUniformOffsets = on; }
     bool DynamicUniformOffsets() const { return mDynamicUniformOffsets; }
 
-    // LOD bias added to the standard shader's 2D material texture samples
-    // (standard_wgsl.inc kLodBias; cube, projector and shadow samples are not
-    // biased) in pipelines whose key asks for it (PipelineKey::lodBias). 0 by
-    // default -- every consumer's original samples unbiased. Set once, before
-    // any pipeline exists; the caches key on PipelineKey::lodBias, not on the
-    // value.
     // Whether the standard shader's alpha fringe fade runs at all
     // (rndshape::kAlphaFringeFade). Off, every pipeline is created with
     // kSkipFringeFade = 1 -- the override that already exists per blend
@@ -196,6 +190,12 @@ public:
     bool AlphaFringeFade() const { return mAlphaFringeFade; }
     // The kSkipFringeFade a pipeline under `blend` is created with.
     bool SkipsFringeFade(int blend) const { return !mAlphaFringeFade || BlendSkipsFringeFade(blend); }
+    // LOD bias added to the standard shader's 2D material texture samples
+    // (standard_wgsl.inc kLodBias; cube, projector and shadow samples are not
+    // biased) in pipelines whose key asks for it (PipelineKey::lodBias). 0 by
+    // default -- every consumer's original samples unbiased. Set once, before
+    // any pipeline exists; the caches key on PipelineKey::lodBias, not on the
+    // value.
     void SetMaterialLodBias(float bias) { mMaterialLodBias = bias; }
     float MaterialLodBias() const { return mMaterialLodBias; }
     // The kLodBias a pipeline for `key` is created with.
