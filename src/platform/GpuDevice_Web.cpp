@@ -50,6 +50,20 @@ bool GpuDevice::Init(const GpuDeviceDesc& desc) {
     mWidth = (canvasW > 0) ? canvasW : desc.width;
     mHeight = (canvasH > 0) ? canvasH : desc.height;
 
+    // A frame that follows its target (GpuDeviceDesc::outputFollowsTarget,
+    // dc3's enhanced look): the canvas's buffer is the output -- the logical
+    // shape fitted into the canvas's box in device pixels, held to the row
+    // cap (WebOutputRowCap) -- and viewports, UI and post measures stay in the
+    // logical size (LogicalWidth/Height), as on the desktop. The web never
+    // supersamples (render scale 1: the browser's own scaling is the
+    // present). The sizes are resolved once the adapter is known (the cap
+    // depends on it), before the surface is first configured. A frame that
+    // does not follow keeps the canvas's own buffer size, as before.
+    mSizeDesc = WebFrameDesc(desc);
+    mFollowsTarget = desc.outputFollowsTarget && desc.logicalWidth > 0 && desc.logicalHeight > 0;
+    mLogicalWidth = mFollowsTarget ? desc.logicalWidth : 0;
+    mLogicalHeight = mFollowsTarget ? desc.logicalHeight : 0;
+
     // Create instance (no TimedWaitAny — browser doesn't support sync wait)
     mInstance = wgpu::CreateInstance(nullptr);
     if (!mInstance) {
@@ -133,6 +147,22 @@ bool GpuDevice::Init(const GpuDeviceDesc& desc) {
                         mSurfaceFormat = wgpu::TextureFormat::BGRA8Unorm;
                         printf("GpuDevice: no preferred format, using BGRA8Unorm\n");
                     }
+                    if (mFollowsTarget) {
+                        // The cap is a heuristic on web (a browser does not
+                        // say whether its adapter is discrete): print it.
+                        mWebRowCap = WebOutputRowCap(mSizeDesc, mHasBCCompression);
+                        mRowCap = mWebRowCap.rows;
+                        char capText[96];
+                        printf("[look] web output follows the canvas, cap %s\n",
+                               DescribeRowCap(mWebRowCap, capText, sizeof(capText)));
+                        int tw = 0, th = 0;
+                        if (!CanvasTargetSize(tw, th)) {
+                            tw = mWidth;
+                            th = mHeight;
+                        }
+                        mCanvasSize.Take(tw, th);
+                        FollowTarget(tw, th, true);
+                    }
                     ConfigureSurface();
 
                     printf("GpuDevice: initialized (%dx%d, web)\n", mWidth, mHeight);
@@ -174,6 +204,71 @@ bool GpuDevice::CanvasSize(int& width, int& height) const {
         return false;
     }
     return true;
+}
+
+// The canvas's box in device pixels, packed (CanvasTargetSize). EM_JS, not
+// EM_ASM: the body has commas outside parentheses.
+EM_JS(int, milo_web_canvas_target_packed, (const char* selector), {
+    var p = (typeof window !== 'undefined') ? window.miloCanvasDevicePixels : null;
+    var w = 0, h = 0;
+    if (p && p.length === 2) {
+        w = p[0] | 0;
+        h = p[1] | 0;
+    } else {
+        var sel = UTF8ToString(selector);
+        var c = document.getElementById(sel.charAt(0) === '#' ? sel.substring(1) : sel);
+        if (!c) return 0;
+        var r = c.getBoundingClientRect();
+        var dpr = window.devicePixelRatio || 1;
+        w = Math.round(r.width * dpr);
+        h = Math.round(r.height * dpr);
+    }
+    if (w <= 0 || h <= 0 || w > 32767 || h > 65535) return 0;
+    return w * 65536 + h;
+});
+
+// The canvas's box in device pixels: the page's ResizeObserver publishes it
+// as window.miloCanvasDevicePixels = [w, h] (devicePixelContentBoxSize where
+// the browser has it, exact; else its CSS box times devicePixelRatio). Without
+// it, the CSS box times devicePixelRatio, here.
+bool GpuDevice::CanvasTargetSize(int& w, int& h) const {
+    // Packed as w * 65536 + h (w < 32768, h < 65536); 0 = no canvas or an empty box.
+    const int packed = milo_web_canvas_target_packed(MILO_WEB_CANVAS_SELECTOR);
+    if (packed <= 0) {
+        w = h = 0;
+        return false;
+    }
+    w = packed >> 16;
+    h = packed & 0xffff;
+    return true;
+}
+
+// Re-resolve a following frame's sizes for a target of targetW x targetH device
+// pixels; when the drawn size moves (or at init), size the canvas's buffer to
+// it and configure the surface, once.
+bool GpuDevice::FollowTarget(int targetW, int targetH, bool atInit) {
+    const FrameSizes s =
+        ResolveFrameSizesWithCap(mSizeDesc, false, true, targetW, targetH, mRowCap);
+    if (!atInit && s.drawnW == mWidth && s.drawnH == mHeight) return false;
+    emscripten_set_canvas_element_size(MILO_WEB_CANVAS_SELECTOR, s.drawnW, s.drawnH);
+    ApplyFrameSizes(s, atInit);
+    if (!atInit) {
+        if (mSurface && mDevice) ConfigureSurface();
+        mFrameReconfigures++;
+    }
+    printf("GpuDevice: canvas box %dx%d device px -> buffer %dx%d%s (reconfigures %d)\n",
+           targetW, targetH, s.drawnW, s.drawnH, atInit ? " at init" : "", mFrameReconfigures);
+    EM_ASM({ window.miloFrameReconfigures = $0; }, mFrameReconfigures);
+    return !atInit;
+}
+
+bool GpuDevice::FollowCanvas() {
+    if (!mFollowsTarget || !mSurface || !mDevice) return false;
+    int tw = 0, th = 0;
+    // An empty box (a collapsed panel, display:none): keep the frame as it is.
+    if (!CanvasTargetSize(tw, th)) return false;
+    if (!mCanvasSize.Offer(tw, th, emscripten_get_now())) return false;
+    return FollowTarget(tw, th, false);
 }
 
 void GpuDevice::ResizeSurface(int width, int height) {

@@ -127,12 +127,23 @@ void ImGuiBackend::NewFrame() {
     if (!sInitialized) return;
     ImGui_ImplWGPU_NewFrame();
 
-    // Manually set display size from canvas (no GLFW to do this for us)
+    // Display size in the canvas's CSS pixels -- the space the mouse events'
+    // targetX/Y are in -- and the buffer's pixels per CSS pixel as the
+    // framebuffer scale. The buffer is not CSS-sized: 1280x720 stretched to
+    // the box (Retail), or the box in device pixels capped in rows (dc3's
+    // enhanced look follows the canvas). Taking the buffer size as the display
+    // size put the cursor off by that ratio.
     int w, h;
     emscripten_get_canvas_element_size(MILO_WEB_CANVAS_SELECTOR, &w, &h);
+    double cssW = 0.0, cssH = 0.0;
+    if (emscripten_get_element_css_size(MILO_WEB_CANVAS_SELECTOR, &cssW, &cssH) !=
+            EMSCRIPTEN_RESULT_SUCCESS || cssW <= 0.0 || cssH <= 0.0) {
+        cssW = w;
+        cssH = h;
+    }
     ImGuiIO &io = ImGui::GetIO();
-    io.DisplaySize = ImVec2((float)w, (float)h);
-    io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
+    io.DisplaySize = ImVec2((float)cssW, (float)cssH);
+    io.DisplayFramebufferScale = ImVec2((float)(w / cssW), (float)(h / cssH));
     // DeltaTime
     static double lastTime = emscripten_get_now() / 1000.0;
     double now = emscripten_get_now() / 1000.0;
