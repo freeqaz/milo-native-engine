@@ -829,8 +829,10 @@ void AudioDevice::MixSources(float *output, int frameCount) {
         ~PulledCounter() { n += add; }
     } pulled{mMixFramesPulled, frameCount};
 
-    if (mSources.empty())
+    if (mSources.empty()) {
+        mMasterMeter.Process(output, frameCount); // keeps its cursor on the mix's
         return;
+    }
 
     // Ensure temp buffer is large enough
     if ((int)mMixBuffer.size() < totalSamples) {
@@ -880,6 +882,17 @@ void AudioDevice::MixSources(float *output, int frameCount) {
         }
         mLimiterEnv = env;
     }
+
+    mMasterMeter.Process(output, frameCount);
+}
+
+long long AudioDevice::MasterMeterHeardFrame() {
+    // MixSources runs a queue depth ahead of the worklet. The meter has seen
+    // every frame pulled since it was enabled, so subtract what is still
+    // queued from its own cursor.
+    long long queued = mMixFramesPulled - MixFramesConsumed();
+    if (queued < 0) queued = 0;
+    return mMasterMeter.FramesMetered() - queued;
 }
 
 static int sPumpCount = 0;

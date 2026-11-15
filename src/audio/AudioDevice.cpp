@@ -358,6 +358,11 @@ void AudioDevice::RemoveSource(AudioSource *source) {
     );
 }
 
+long long AudioDevice::MasterMeterHeardFrame() {
+    // The device callback plays what it mixes about one period later.
+    return INT64_MAX;
+}
+
 void AudioDevice::Suspend() {
     mSuspended.store(true, std::memory_order_release);
     // Acquire the mutex to ensure the audio thread isn't mid-render
@@ -407,6 +412,7 @@ void AudioDevice::MixSources(float *output, int frameCount) {
     memset(output, 0, totalSamples * sizeof(float));
 
     if (mSuspended.load(std::memory_order_acquire)) {
+        mMasterMeter.Process(output, frameCount); // silence, as the device plays
         goto wav_dump;
     }
 
@@ -481,6 +487,11 @@ void AudioDevice::MixSources(float *output, int frameCount) {
             mLimiterEnv = env;
         }
     }
+
+    // Meter the finished mix (post-limiter, as the 360 meters behind its
+    // limiter) before the host-only background mute: a window in the
+    // background is not a quieter song.
+    mMasterMeter.Process(output, frameCount);
 
 #ifndef __EMSCRIPTEN__
     ApplyBackgroundMute(output, frameCount);
