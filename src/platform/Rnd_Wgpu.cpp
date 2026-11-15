@@ -1636,7 +1636,8 @@ void WgpuRnd::BeginFramePass(bool clear) {
     mCurrentPassHasDepth = true;
     mCurrentTargetWidth = (uint32_t)curW;
     mCurrentTargetHeight = (uint32_t)curH;
-    if (getenv("MILO_DEBUG_PIPELINES")) {
+    static const bool sDebugPipelines = getenv("MILO_DEBUG_PIPELINES") != nullptr;  // H-107: read once; nothing in the process writes it
+    if (sDebugPipelines) {
         printf(
             "DC3 Pass: MainPass clear=%d fmt=%d samples=%u depth=%d size=%ux%u\n",
             clear ? 1 : 0,
@@ -1722,7 +1723,8 @@ void WgpuRnd::BeginTexturePass(RndTex* tex, const TexturePassLoad& load) {
     mCurrentPassHasDepth = depthView != nullptr;
     mCurrentTargetWidth = (uint32_t)tex->Width();
     mCurrentTargetHeight = (uint32_t)tex->Height();
-    if (getenv("MILO_DEBUG_PIPELINES")) {
+    static const bool sDebugPipelines = getenv("MILO_DEBUG_PIPELINES") != nullptr;  // H-107: read once; nothing in the process writes it
+    if (sDebugPipelines) {
         printf(
             "DC3 Pass: TexturePass tex='%s' fmt=%d samples=%u depth=%d size=%ux%u\n",
             tex->Name(),
