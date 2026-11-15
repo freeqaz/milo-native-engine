@@ -9549,3 +9549,148 @@ GPU run took the shared GPU lock, so other lanes were running on the box.
   - Memory: not measured.
   - Trimming them would mean predicting which panels a song shows. Not
     worth doing on desktop; on the GPD the load number would decide it.
+
+## 41. Per-frame costs, round 5: the loader's slice at a 120 fps cap, and per-frame getenv (lane np-gfx spotperf, branch np-framecost5, 2026-11-15)
+
+Measured on Linux desktop (headless, Dawn/Vulkan, NVIDIA), rollerrink/ymca
+from boot to results at `DC3_FPS_CAP=120`, under the shared GPU lock, with
+other lanes running (load average 20–60). Before/after runs alternate, and
+every comparison is between two binaries built from the same tree.
+
+### 41.1 The loader's slice (dc3 PLAN H-110)
+
+- **The problem (section 40.3).** `LoadMgr::Poll` gives loading up to
+  `mPeriod` ms of every frame while anything loads. The image sets 10 ms
+  (14 ms while a loading screen is up), sized for a 16.7 ms frame. At the
+  native 120 fps cap the frame is 8.3 ms, so the frames that load at the end
+  of a song and in the run-up to results took 12–23 ms.
+- **What was asked:** keep the image's duty ratio by scaling the slice by
+  the pacer's target period (10 ms → 5 ms at 120 fps, 10 ms at 60 and on the
+  web, the image's value uncapped). Loads must not get slower in wall time.
+- **Rule A, as asked: not shipped.** Scaling everywhere made boot slower:
+  frame 1 → `title_screen` Enter +0.135 s median, slower in 6 of 6 pairs. The
+  boot's loading frames were not over the period, so halving the slice only
+  spread the same work over about twice the frames, each of them drawn.
+  Song select → game was unchanged in wall time (59 → 100 frames).
+- **Proposal B, a floor plus the frame's spare time: not shipped.** While
+  LoadMgr had something queued, the time left in each frame (target period
+  − 0.5 ms − the frame's measured busy time) was added to the next frame's
+  slice, up to the image's value. On a lightly loaded box boot recovered
+  (−0.023 s median, 2 of 6 slower), but song select → game was +0.049 s
+  (5 of 6). Proposal C kept the loading screen's raised 14 ms unscaled.
+  With the box at load 40–60, boot was again +0.128 s (5 of 6): frames ran
+  over the period, no spare time accrued, and the result depended on how
+  busy the machine was.
+- **Shipped: only while gameplay is on screen.** While `TheUI`'s bottom
+  screen is `game_screen` and the pacer has a target, the slice is the
+  image's value × target period / 16.7 ms. Everywhere else, or with no
+  target, it is the image's value unchanged.
+  - "Gameplay is on screen" is the image's own test (`MetaPanel::Poll` asks
+    the same). The win screen is pushed over `game_screen`
+    (`endgame_helpers.dta` `goto_win_screen`), and the results screens
+    replace it with `goto_screen`, keeping `game_screen` at the bottom. So
+    the end of the song, the run-up to results and results itself get the
+    scaled slice. Boot, the menus and the loading screens never do.
+  - The value is set through the image's own setter
+    (`LoadMgr::SetLoaderPeriod`) before each frame's poll, from
+    `native/src/platform/LoaderBudget_Native.cpp`, called from
+    `Dc3NativeFramePoll` (`HX_NATIVE`). The target comes from
+    `Dc3FramePacer` on desktop and `Dc3RafGate` on the web. Nothing the Xbox
+    build compiles changed. `LoadMgr::Poll` copies `mPeriod` into
+    `mCurrentPeriod` at its start, so the per-frame read (set 0, set back)
+    outside gameplay leaves the loader exactly as it was.
+  - One line is logged whenever the slice, the image's value, the target or
+    the gameplay state changes, e.g. `loader budget 5.00 ms a poll (the
+    image's 10.00 ms at a 120.00 fps frame target; gameplay is on screen)`.
+- **Measured, 6 alternating full-song pairs** (paired difference, new − base):
+
+  | segment | median | mean | new slower in |
+  |---|---|---|---|
+  | frame 1 → `title_screen` | −0.023 s | −0.041 s | 2 of 6 |
+  | `title_screen` → `main_screen` | −0.002 s | −0.002 s | 3 of 6 |
+  | `loading_screen` → `game_screen` (song select → game) | −0.007 s | −0.026 s | 3 of 6 |
+  | `perform_endgame_screen` → `perform_final_results_screen` (game → results) | **+0.070 s** | +0.064 s | **6 of 6** |
+
+  - **Game → results is slower** by 0.03–0.09 s (6.83–6.87 → 6.89–6.93 s).
+    Nearly all of it is the last step, `perform_endgame` →
+    `perform_final_results`: the results load at 5 ms a frame takes about
+    12 more frames (160–162 → 171–175). The final results screen waits for
+    that load. The same holds for any slice smaller than the image's while
+    that load runs, because the run-up frames *are* that load. `game_screen` →
+    `perform_endgame_screen` moved +0.000 to +0.053 s (median +0.022 s).
+  - **The two spots** (per run; base → new):
+
+    | | frames ≥12 ms | ≥16.7 ms | game-thread CPU ≥9 ms | max game CPU |
+    |---|---|---|---|---|
+    | song end (151–153 s) | 8–18 → 2–7 | 2–5 → 1–2 | 8–10 → 2–5 | 16.0–19.4 → 11.0–13.1 ms |
+    | run-up to results | 16–26 → 6–20 | 2–3 → 0–1 | 15–18 → 0–3 | 12.5–19.7 → 8.0–12.3 ms |
+
+    What remains (INFERRED, not profiled): frames of 9–13 ms game CPU at
+    the song end, 2–5 a run. `LoadMgr::Poll` checks the clock only between
+    loader steps, so a single step longer than the slice still overruns
+    it.
+- **Flow tests.** `RunDtaFlow` paces at `DC3_FPS_CAP=240` (kFlowFpsCap),
+  so the slice is 2.5 ms once gameplay is on screen. ymca and omg (8000
+  frames each, 2 runs per side) reach every screen up to and including
+  `game_screen` at the same frame within the base's own run-to-run spread
+  (ymca `game_screen` 3173/3176 → 3171/3172; omg 1910/1904 → 1901/1967, the
+  1967 run reached the title at frame 70 instead of 45–51, before any
+  gameplay; see 41.3). The flows end in gameplay, so no screen after it is
+  counted. `three-songs` runs uncapped (`DC3_FAST_TIME`), so its slice is
+  unchanged.
+- **Tests.**
+  - `LoaderBudget.*` (9): the rule, the image's value tracked, the value put
+    back on leaving gameplay, a whole scaled value not mistaken for the
+    image's.
+  - `HeadlessBootTest.LoaderBudgetIsTheImagesOutsideGameplay`: a 60-frame
+    boot at 120, 60 and uncapped logs only the image's value (10 or 14).
+  - `LoaderBudgetGameplayTest` (default gate, ~13 s each): the running
+    engine's LoadMgr, read through `set_loader_period`, holds 10 ms in the
+    main menu, 5 ms in gameplay at a 120 target (10 ms at 60), and 10 ms
+    again after `goto_screen main_screen`.
+  - Sabotage, each red: gameplay not scaled; scaled everywhere (boot test,
+    the 120 test's main-menu read); the applied value not restored on
+    leaving gameplay; the slice scaled again every frame; the wrong screen
+    as "gameplay" (both gameplay tests).
+
+### 41.2 Per-frame getenv (dc3 PLAN H-110 item 2)
+
+- **Count.** A `--wrap=getenv` build (temporary, not committed) counted
+  getenv calls by caller. Before: 931.6 a frame in a song, 192.8 in song
+  select, 555.7 on results. After: TBD-AFTER.
+- **Cached (read once, `static const`, all `HX_NATIVE` or engine code):**
+  - `DC3_IK_DIAG`: `CharBones::ScaleAdd` 473 a frame, `CharBonesMeshes::PoseMeshes`
+    357, `Dc3KneeLog` 26, `HamIKEffector::Poll` 15, `CharIKFoot::DoFSM`,
+    `HamDriver::Poll` ×2, `CharServoBone::MoveToFacing`.
+  - `DC3_IK_DIAG2`, `DC3_IK_FOOTPLANT`, `DC3_IK_NEUTRAL`, `DC3_TEXT_DIAG`
+    (`RndText::DrawShowing`, 52 a frame in menus), `DC3_CAM_DIAG2` ×2,
+    `DC3_CAM_DIAG3`.
+  - `DC3_HUD_ONLY`, `DC3_NO_UI`, and the `Dc3EnvFlag` reads of
+    `DC3_NATIVE_SCORING` and `DC3_POSE_SELFTEST` (App's gesture poll,
+    `FilterQueue`).
+  - Engine `bd28a0f`: `MILO_DEBUG_PIPELINES` in `WgpuRnd::BeginFramePass`
+    and `BeginTexturePass`, 7.5 + 4.5 a frame.
+- **Writers checked first.** The only `setenv` in the process is
+  `Dc3ProfileApply`, at startup, before the first frame. No HTTP, DTA or
+  cheat path writes the environment. rb3 and rb3-xenon do not set
+  `MILO_DEBUG_PIPELINES`.
+- **Left as they are.**
+  - `DC3_POSE_REACQUIRE_MS` and `DC3_POSE_HOLD_MS` (1 a frame each): tests
+    `setenv` and `unsetenv` them in-process between calls.
+  - The reads under one a frame: telemetry every 10th frame, per-move
+    scoring logs (`DC3_REAL_MOVE_PASSED`, `MOVE_*_LOG`, `SCORING_DEBUG`),
+    `DETECTFRAC_PROBE`, `PassiveMessenger`.
+- **Share of main-thread samples** (`perf record -e cpu-clock`, 30 s of the
+  song from 40 s, 2 runs each): TBD-PERF.
+- **No behaviour change.** The registry census is unchanged (461 flags,
+  same names and read modes). The 12 Xbox objects of the touched files are
+  byte-identical before and after, and a negative control changed the hash.
+
+### 41.3 Not done
+
+- The game → results cost of 41.1 (+0.07 s). The alternative that keeps
+  game → results as it is would leave the run-up's frames at 12–23 ms:
+  the slice could be the image's while a win or results screen is on top of
+  `game_screen`, so that only the song itself is scaled.
+- First-draw textures, the 76 warmed-but-undrawn keys and the late rect
+  warm are out of scope for this round.
