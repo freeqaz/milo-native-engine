@@ -1520,8 +1520,8 @@ the retail uniforms stay zero and the shader takes its existing branches.
 - **Tangent frame**: the normal map uses the vertex tangent as it comes and
   does not rotate it by the material's texgen transform. This only matters
   for normal-mapped materials with a rotated texgen.
-- **Normal detail**: dc3's `normDetail` map is not combined with the retail
-  normal map.
+- **Normal detail** (*done in dc3-retail-lighting.md §16, dc3 PLAN H-114*):
+  dc3's `normDetail` map was not combined with the retail normal map.
 - **The DC3 shape's colour read** (*done in 13.1*): `kCompressedColorIsArgb` is off for DC3,
   although DC3's `FillCompressedVertex` packs ARGB too. Changing it would
   change DC3 renders, so it belongs to a DC3 lane with DC3 references.
@@ -8255,9 +8255,14 @@ region):
    full chain is the spill alone, so it needs no assumption about capture
    levels or content.
 
-**Two other Xenia artifacts** to screen for, from the same rounds:
+**Other Xenia artifacts** to screen for, from the same rounds:
 - Occlusion queries answer a fixed 1000 samples, so flares draw at about 1/80
   strength (§34). Do not compare flare-lit regions against default Xenia.
+- Houseparty's wood floor (`HSP_LivingRoomFloor.mat`, power 18) carries a
+  broad golden specular on Xenia that retail's stills do not show, and Xenia
+  needs about 11 times the power to narrow it to what native and the
+  microcode draw (dc3-retail-lighting.md §16.4, H-114). A "native is missing
+  a sheen" row on a spec-mapped floor needs a retail still first.
 - A DTA `set` on `{rnd get_selected_postproc}` does not persist on either side
   (above). Use a scratch override proc for any post-proc A/B.
 
