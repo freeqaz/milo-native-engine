@@ -218,6 +218,15 @@ public:
     void SetDynamicUniformOffsets(bool on) { mDynamicUniformOffsets = on; }
     bool DynamicUniformOffsets() const { return mDynamicUniformOffsets; }
 
+    // Whether the standard shader's alpha fringe fade runs at all
+    // (rndshape::kAlphaFringeFade). Off, every pipeline is created with
+    // kSkipFringeFade = 1 -- the override that already exists per blend
+    // (BlendSkipsFringeFade), so this adds no pipeline variant. On by default:
+    // the consumer's renderer unchanged. Set once, before any pipeline exists.
+    void SetAlphaFringeFade(bool on) { mAlphaFringeFade = on; }
+    bool AlphaFringeFade() const { return mAlphaFringeFade; }
+    // The kSkipFringeFade a pipeline under `blend` is created with.
+    bool SkipsFringeFade(int blend) const { return !mAlphaFringeFade || BlendSkipsFringeFade(blend); }
     // LOD bias added to the standard shader's 2D material texture samples
     // (standard_wgsl.inc kLodBias; cube, projector and shadow samples are not
     // biased) in pipelines whose key asks for it (PipelineKey::lodBias). 0 by
@@ -288,6 +297,7 @@ private:
     bool mAlphaBlendMax = false;   // SetAlphaBlendMax
     bool mDynamicUniformOffsets = false;  // SetDynamicUniformOffsets
     float mMaterialLodBias = 0.0f;        // SetMaterialLodBias
+    bool mAlphaFringeFade = true;         // SetAlphaFringeFade
     float mOutputPixelScale = 1.0f;       // SetOutputPixelScale
     void BuildPreWarmKeys(wgpu::TextureFormat mainFmt, wgpu::TextureFormat rtFmt);
 };

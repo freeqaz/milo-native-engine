@@ -1816,3 +1816,35 @@ lighting dominates.
 | env and cube maps | — | sharpness lane (this includes §13.2) |
 | hard rim | retail's rim is a smooth pow, and no hard edge shows in any crop | cut |
 | light caps | — | excluded: raising them changes exposure |
+
+### 13.5 Reading Xenia: three rules from the post lane's round 10
+
+The post lane closed its residual C (dclive normal, colour difference 8–15
+with post on) in round 10 part 3: dc3-backend-for-rb3-wii.md §37.10,
+"Residual C: closed". Evidence is in dc3-decomp
+`archive/np-gfx-2026-11-14/lanes/post/round10/p3c/`. Three measurement rules
+came out of it. They apply to any native-vs-Xenia census, lighting included:
+
+1. **Run native with `DC3_DISPLAY_GAMMA=off`.** §12.1 already does this. The
+   rule is here because the default is wrong for a census: native captures
+   are POST-ramp (the engine logs "DC3 display ramp: gamma 0.850 ... captures
+   are POST-ramp"), while Xenia's front buffer is pre-ramp. With the ramp on,
+   a correct grade reads as a contrast error of the exact form
+   R(k·R⁻¹(x) + off) − x, with R(x) = 255·(x/256)^0.85. Part 3c's first native
+   run read −9.4 levels at input 11 against Xenia's −6.0, exactly that
+   formula. Raw boxes read native +10–16% brighter in the same run.
+2. **On a venue with strobing content, a gap from frames not matched in song
+   time is not a measurement.** The post lane's round 10 read native's
+   no-bloom grade ~15% brighter on unmatched frames. Paused at matched song
+   times (±0.05 s), the same comparison is −1.0..+2.6%, under the floor. Match
+   song time first (pause both sides at the same `{taskmgr seconds}`), and
+   treat a strobing board as its own question.
+3. **Test a grade term with per-pixel transfer curves.** Install a copy of
+   the proc as the post-proc override, with only one term active (here the
+   others neutral and bloom intensity 0). Freeze the frame, then take out − in
+   per input bin, per channel, against the post-off frame. Each pixel is
+   compared with itself, so it needs no registration and ignores content
+   differences such as poses, flares and strobes. Then compare the curve with
+   the term's formula on both sides. Contrast matched k·x + off to 0.03
+   levels on both, and saturation and the full grade matched to ≤ 0.3. Tool:
+   `p3c/tools/xfer3c.py`.
