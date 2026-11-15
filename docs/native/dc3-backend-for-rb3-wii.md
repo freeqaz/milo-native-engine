@@ -7146,6 +7146,10 @@ rollerrink rising to ~4.1 ms with the beams and ~2.9 ms with
 - **Not fixed, a lead.** DC3's text meshes are unnamed glyph pages and are
   still re-uploaded every frame, ~5.7 per frame in rollerrink gameplay. `UploadMesh` is ~1.3% of
   main-thread cycles here.
+- **Superseded by section 38.1 (2026-11-15).** The cache is now sync-gated
+  for every mesh. `EnsureSyncedMeshUploaded` is folded back into
+  `EnsureMeshUploaded`, and `SubmitSpotBeams` calls that again. The beam
+  test and its numbers are unchanged.
 
 ## 37. DC3 post chain, round 6: throneroom against Xenia, and depth of field (lane np-gfx-post, 2026-11-14)
 
@@ -7919,3 +7923,94 @@ average of this streak term.
 
 - No engine or dc3 code changed in round 9b.
 - The experiment builds edited only scratch trees and were not committed.
+
+## 38. Per-frame costs, round 2: glyph pages, first-song-frame pipelines, texture creates (lane np-gfx spotperf, branch np-framecost, 2026-11-15)
+
+The target is a GPD handheld (Radeon 890M, RADV). It is CPU-bound at about
+3–4 ms of main-thread time per frame, and there a buffer create or release
+appears to cost about 25 times what it costs on this box (RTX 3090). So
+this section counts uploads and creates per frame; milliseconds measured
+here would not transfer.
+
+### 38.1 RndText glyph pages were re-uploaded every frame
+
+- **Cause (MEASURED).** `UploadMesh` (`MeshGpuCache.cpp`) took every
+  unnamed mesh for an RndText glyph page and re-read it on every call: an
+  unpack, a new vertex buffer and a new index buffer, both written, and the
+  old pair released. The rule dates from 2026-03 (dc3 `2b00768c9`). That is
+  older than the Sync wiring.
+- **What RndText does per frame.** Nothing to its pages' vertices:
+  - The vertices are written only when the text is rebuilt:
+    `ConstructMeshes` → `FontMap::CleanupSyncMeshes` →
+    `RndMesh::Sync(page.mSyncFlags)`. FontMap3d does the same. A text's
+    rebuild syncs all of that text's pages.
+  - A scroll or a marquee (`UpdateScrolling`, the offset copies in
+    `DrawMesh`) moves only the page transform.
+  - `Sync` reaches this cache in every consumer that uses it. In dc3,
+    `src/system/rndobj/Mesh.cpp` `OnSync` calls `InvalidateGpuMesh` under
+    `HX_NATIVE`. rb3-xenon's `rb3-render` links the engine's weak `OnSync`,
+    because its own body is `#ifndef HX_NATIVE` and the `milo_link_stubs`
+    stub is retired under `RB3_ENGINE_RENDER`. rb3 (RB3-Wii shape) draws
+    through `RB3MeshCache`, which has its own sync-dirty flag, and never
+    reaches this code.
+- **Audit (MEASURED, TMPDIAG, not shipped).** Each re-read the old rule
+  forced was hashed against the mesh's last upload: position, normal,
+  colour, UV, bone data and indices. Tangents were left out, since only a
+  first upload computes MikkTSpace. One headless run of
+  `scripts/native_cpu_profile.py` covered the main menu, song select, YMCA
+  gameplay and its results.
+  - 1.54M forced re-reads were spread over 50 unnamed-mesh kinds: 47 glyph
+    page labels, two HamRibbon trails and one unnamed material-less mesh.
+  - **0** of them found geometry that differed from the last upload.
+  - rb3-xenon `rb3-render` (11 scenes, 4 frames each) had no forced re-read
+    at all.
+- **Fix.** `UploadMesh` uploads a mesh once, and again only after
+  `InvalidateGpuMesh`, named or not. `EnsureSyncedMeshUploaded` (36.6) is
+  folded back into `EnsureMeshUploaded`.
+- **Writing into the existing buffers instead (not done).** The coordinator
+  asked for this if text genuinely rewrites its vertices every frame. It does
+  not. With scoring running (`DC3_POSE_SELFTEST=1`), the HUD's score counter
+  and flashcard names re-sync on change, about once every 100 frames:
+  gameplay re-uploads 0.01 meshes per frame after the fix. The one mesh pair
+  that is synced every frame anywhere is song select's
+  `bg_fill_up.mesh`/`bg_fill_down.mesh`. Those are named, 6 vertices each,
+  and synced every frame by their owner; that is the 2.00 per frame below.
+  An in-place `WriteBuffer` would be correct only if the mesh had not
+  already been drawn in the open frame, because the write lands before the
+  frame's submit. That is a lead, not done.
+- **Counters (MEASURED).** `[GPUCOUNT] meshUploads=` per frame. Two runs
+  each of base (round-1 head) and fix, on the same tree: rollerrink, YMCA,
+  `DC3_POSE_SELFTEST=1` (the score moves), a 10 s window on song select
+  (cursor on YMCA), 30 s of gameplay, 10 s on results. The two runs of each
+  binary agree to the second decimal.
+
+  | | song select | gameplay | results |
+  |---|---|---|---|
+  | base | 111.00 | 9.46 | 25.00 |
+  | fix | 2.00 | 0.01 | 0.00 |
+
+  Every upload creates two buffers and releases two, so song select drops
+  from ~444 buffer creates and releases a frame to 8.
+- **Rendering identical (MEASURED, in one process).** TMPDIAG build:
+  - A flag file freezes the game, so the main loop skips its poll and keeps
+    drawing.
+  - A second flag file switches the old per-call re-read back on.
+  - At each point the grabs are new1, new2 | old1, old2 | new3, with
+    `DC3_DISPLAY_GAMMA=off`.
+  - The seven points: song select ×2, gameplay ×3 (rollerrink, score
+    525,624 and climbing, flashcard names, FLAWLESS), and results ×2.
+
+  The old path's windows re-upload 109, 13, 13, 12 and 25 per frame, while
+  the new path's re-upload 0.00. **Every pair at every point is
+  byte-identical:** 0 differing pixels for new/new, old/old, new→old,
+  old→new and new1/new3.
+- **Guard.** dc3 `TextFrameCostTest.UnchangedTextUploadsNothingAfterItsFirstFrame`
+  (`native/tests/test_text_frame_cost.cpp`) draws three real-font RndTexts
+  for 10 frames, moves one, changes another's string, and draws two more
+  frames. Uploads per frame are `3 0 0 0 0 0 0 0 0 0 0 1 0`, with no
+  texture creates.
+  - Sabotage, the per-call re-read restored: `3 3 3 …`, so it fails.
+  - Sabotage, `InvalidateGpuMesh` dropped from dc3's `OnSync`: the changed
+    string uploads 0. It fails, and so does `SpotBeamFrameCostTest`'s
+    synced-beam check.
+
