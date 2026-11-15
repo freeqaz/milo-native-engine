@@ -9005,7 +9005,7 @@ here would not transfer.
 
 ## 39. First-use hitches, round 3: pipelines compiled at load, a persistent pipeline cache (lane np-gfx spotperf, branch np-hitch, 2026-11-15)
 
-dc3 PLAN H-101. The brief was to move first-draw work into loading. The
+dc3 PLAN H-104. The brief was to move first-draw work into loading. The
 measurement below says that work is pipeline compiles. Texture and mesh
 uploads are 1–3% of the attributed time and were left alone (39.6).
 

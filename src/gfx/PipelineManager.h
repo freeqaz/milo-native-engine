@@ -145,7 +145,7 @@ public:
                     int maxThisCall, float budgetMs = 0.f);
     bool PreWarmDone() const { return mPreWarmStarted && mPreWarmCursor >= (int)mPreWarmKeys.size(); }
 
-    // Load-time warm (dc3 PLAN H-101; engine doc section 39). WarmAsync queues
+    // Load-time warm (dc3 PLAN H-104; engine doc section 39). WarmAsync queues
     // `key` to be compiled before anything draws with it; PollWarms (WgpuRnd
     // calls it once a frame) issues at most kWarmIssuePerFrame of the queue
     // and takes in the ones that finished. Each is a CreateRenderPipelineAsync,
@@ -173,6 +173,10 @@ public:
         uint64_t drawn = 0;       // warmed keys a draw has asked for since
     };
     const WarmStats& GetWarmStats() const { return mWarmStats; }
+    // Async creates whose entry has not yet been deleted, across every
+    // PipelineManager: in flight, done but not yet taken in, or abandoned and
+    // waiting for their callback. For the lifetime tests.
+    static int LivePendingWarms() { return LiveCount(); }
 
     // Bind group layouts (shared across all pipelines)
     wgpu::BindGroupLayout& SceneLayout() { return mLayouts[0]; }    // Group 0
@@ -265,12 +269,21 @@ private:
     // which libstdc++ declares out of line under -fms-compatibility and does
     // not export, so rb3-xenon (which builds the engine that way) cannot link.
     struct PendingWarm {
+        PendingWarm() { ++LiveCount(); }
+        ~PendingWarm() { --LiveCount(); }
+        PendingWarm(const PendingWarm&) = delete;
+        PendingWarm& operator=(const PendingWarm&) = delete;
         wgpu::Future future{};
         wgpu::RenderPipeline result;
         bool done = false;
         bool ok = false;
         bool abandoned = false;
     };
+    // Same thread as the callbacks (see above), so a plain count.
+    static int& LiveCount() {
+        static int n = 0;
+        return n;
+    }
     static void ReleasePending(PendingWarm* pw);
     void FinishWarm(const PipelineKey& key, PendingWarm& pw);
     void DrainWarms();  // natively waits out every async create first
