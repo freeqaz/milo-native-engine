@@ -3028,7 +3028,7 @@ void WgpuRnd::LogGpuCounters() {
             "[GPUCOUNT] frame=%d bindGroupsLive=%zu bgCreated=%llu bgHits=%llu bgEvicted=%llu "
             "bgUncached=%llu ringBuffers=4 ringBytes=%u ringGrows=%u/%u/%u/%u "
             "ringQueueWrites=%llu ringQueueBytes=%llu pipelines=%d pipelineCreates=%llu pipelineLoadCreates=%llu pipelineWarms=%llu warmsDrawn=%llu pipelineWaits=%llu gpuMeshes=%zu meshUploads=%llu "
-            "gpuTextures=%zu texHolders=%zu texCreates=%llu texShares=%llu "
+            "gpuTextures=%zu texHolders=%zu texCreates=%llu texShares=%llu texBytes=%llu texBytesPeak=%llu "
             "postBgLive=%zu postBgCreated=%llu postBgHits=%llu postBgEvicted=%llu postBgUncached=%llu "
             "ptBatches=%d ptCreated=%llu ptInFlight=%d "
             "bgCreatesAll=%llu bgCreatesRaw=%s sceneBgWrites=%llu sceneBgCreates=%llu\n",
@@ -3049,6 +3049,7 @@ void WgpuRnd::LogGpuCounters() {
             (unsigned long long)GpuMeshUploadCount(), GpuTexCount(), GpuTexHolderCount(),
             (unsigned long long)GetGpuTexDebugInfo(nullptr).createCount,
             (unsigned long long)GpuTexShareCount(),
+            (unsigned long long)GpuTexBitmapBytes(), (unsigned long long)GpuTexBitmapBytesPeak(),
             mPostBindGroupCache.Size(), (unsigned long long)mPostBindGroupCache.Creates(),
             (unsigned long long)mPostBindGroupCache.Hits(),
             (unsigned long long)mPostBindGroupCache.Evictions(),
