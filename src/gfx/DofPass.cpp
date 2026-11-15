@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include "gfx/PipelineCount.h"
 
 namespace {
 
@@ -239,7 +240,7 @@ void DofPass::EnsurePipelines(wgpu::TextureFormat format, GpuDevice& gpu) {
         pd.vertex.entryPoint = "vs_full";
         pd.fragment = &frag;
         pd.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
-        return dev.CreateRenderPipeline(&pd);
+        return CreateCountedRenderPipeline(dev, &pd);
     };
     mDownPipe = make(mPassPL, "fs_down4", "DofDownsample4x");
     mBlurPipe = make(mPassPL, "fs_blur", "DofBlur");

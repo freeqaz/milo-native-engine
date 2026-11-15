@@ -1,4 +1,5 @@
 #include "gfx/PipelineManager.h"
+#include "gfx/PipelineCount.h"
 #include "gfx/GpuDevice.h"
 #include "gfx/VertexFormats.h"
 #include "platform/FrameTraceCounters.h"  // pulls <chrono> + the g*MsThisFrame decls
@@ -536,7 +537,17 @@ wgpu::RenderPipeline PipelineManager::CreatePipeline(const PipelineKey& key) {
     }
 
     wgpu::RenderPipelineDescriptor pipeDesc{};
-    pipeDesc.label = (key.layout == VertexLayoutType::Skinned) ? "MainSkinned" : "MainStatic";
+    // The label carries the key, so a capture or a [GPUPIPE] line says which
+    // material state a mid-song compile was for.
+    char label[160];
+    snprintf(label, sizeof(label),
+             "%s shader=%u blend=%d z=%d cull=%d stencil=%d fmt=%d samples=%u depth=%d "
+             "cut=%d awrite=%d a2c=%d cover=%d bias=%d",
+             key.layout == VertexLayoutType::Skinned ? "MainSkinned" : "MainStatic", key.shaderType,
+             (int)key.blend, (int)key.zMode, (int)key.cull, (int)key.stencil, (int)key.targetFormat,
+             key.sampleCount, key.hasDepth ? 1 : 0, key.alphaCut ? 1 : 0, key.alphaWrite ? 1 : 0,
+             key.alphaToCoverage ? 1 : 0, key.cutoutCoverage ? 1 : 0, (int)key.depthBias);
+    pipeDesc.label = label;
     pipeDesc.layout = mPipelineLayout;
     pipeDesc.vertex.module = shader;
     pipeDesc.vertex.entryPoint = (key.layout == VertexLayoutType::Skinned) ? "vs_skinned" : "vs_main";
@@ -565,7 +576,7 @@ wgpu::RenderPipeline PipelineManager::CreatePipeline(const PipelineKey& key) {
         );
     }
 
-    return mDevice->Device().CreateRenderPipeline(&pipeDesc);
+    return CreateCountedRenderPipeline(mDevice->Device(), &pipeDesc);
 }
 
 int PipelineManager::PreWarm(wgpu::TextureFormat mainFmt, wgpu::TextureFormat rtFmt) {

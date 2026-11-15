@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include "gfx/PipelineCount.h"
 
 struct BloomUniforms {
     float threshold;
@@ -176,7 +177,7 @@ void BloomPass::EnsurePipelines(GpuDevice& gpu) {
         pipeDesc.vertex.entryPoint = "vs_bloom";
         pipeDesc.fragment = &frag;
         pipeDesc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
-        return dev.CreateRenderPipeline(&pipeDesc);
+        return CreateCountedRenderPipeline(dev, &pipeDesc);
     };
 
     mBloomThresholdPipeline = makePipeline("fs_bloom_threshold", false);

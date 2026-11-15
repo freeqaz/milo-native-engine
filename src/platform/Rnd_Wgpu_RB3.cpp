@@ -41,6 +41,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include "gfx/PipelineCount.h"
 
 // The single global renderer. TheRnd (declared extern in rndobj/Rnd.h) is a
 // WEAK no-op alias in rndobj_synth_link_stubs.s; this strong definition wins.
@@ -6536,7 +6537,7 @@ void BandRnd::DrawParticles(RndParticleSys* sys) {
             pd.primitive.cullMode = wgpu::CullMode::None;
             pd.multisample.count = 1;   // rb3 backend is single-sampled
 
-            pipe = mGpu.Device().CreateRenderPipeline(&pd);
+            pipe = CreateCountedRenderPipeline(mGpu.Device(), &pd);
             mPartPipelines[pkey] = pipe;
         }
     }

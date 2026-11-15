@@ -10,6 +10,7 @@
 
 #include "gfx/FrameCapture.h"
 #include "gfx/GpuDevice.h"
+#include "gfx/PipelineCount.h"
 #include "gfx/PipelineManager.h"
 #include "gfx/Screenshot.h"
 #include "rndobj/Cam.h"
@@ -2800,7 +2801,7 @@ void WgpuRnd::LogGpuCounters() {
     fprintf(stderr,
             "[GPUCOUNT] frame=%d bindGroupsLive=%zu bgCreated=%llu bgHits=%llu bgEvicted=%llu "
             "bgUncached=%llu ringBuffers=4 ringBytes=%u ringGrows=%u/%u/%u/%u "
-            "ringQueueWrites=%llu ringQueueBytes=%llu pipelines=%d gpuMeshes=%zu meshUploads=%llu "
+            "ringQueueWrites=%llu ringQueueBytes=%llu pipelines=%d pipelineCreates=%llu gpuMeshes=%zu meshUploads=%llu "
             "gpuTextures=%zu texCreates=%llu "
             "postBgLive=%zu postBgCreated=%llu postBgHits=%llu postBgEvicted=%llu postBgUncached=%llu "
             "ptBatches=%d ptCreated=%llu ptInFlight=%d\n",
@@ -2811,7 +2812,8 @@ void WgpuRnd::LogGpuCounters() {
             (unsigned long long)mBindGroupCache.Uncached(), capacity, mSceneRing.Grows(),
             mMaterialRing.Grows(), mObjectRing.Grows(), mBoneRing.Grows(),
             (unsigned long long)writes, (unsigned long long)bytes,
-            mPipelines.CachedPipelineCount(), GpuMeshCount(),
+            mPipelines.CachedPipelineCount(),
+            (unsigned long long)GpuPipelineCreateCount(), GpuMeshCount(),
             (unsigned long long)GpuMeshUploadCount(), GpuTexCount(),
             (unsigned long long)GetGpuTexDebugInfo(nullptr).createCount,
             mPostBindGroupCache.Size(), (unsigned long long)mPostBindGroupCache.Creates(),
@@ -2819,6 +2821,18 @@ void WgpuRnd::LogGpuCounters() {
             (unsigned long long)mPostBindGroupCache.Evictions(),
             (unsigned long long)mPostBindGroupCache.Uncached(), mPointTestPass.Batches(),
             (unsigned long long)mPointTestPass.ResourceCreates(), mPointTestPass.InFlight());
+    // The pipelines created since the last line, by label: a compile mid-song is
+    // a hitch, and this says which one it was.
+    const std::vector<std::string> created = TakeRecentPipelineLabels();
+    if (!created.empty()) {
+        std::string names;
+        for (const std::string& n : created) {
+            if (!names.empty()) names += ", ";
+            names += n;
+        }
+        fprintf(stderr, "[GPUPIPE] frame=%d created=%zu: %s\n", (int)mFrameID, created.size(),
+                names.c_str());
+    }
 }
 
 #ifdef HX_IMGUI
