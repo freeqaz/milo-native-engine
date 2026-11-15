@@ -5,6 +5,7 @@
 #pragma once
 
 #include "platform/Rnd_Wgpu.h"
+#include "platform/LookProfile.h"
 #include <cstdint>
 
 // RndMat / BaseMaterial come from platform/rndshape/RndShape.h (via Rnd_Wgpu.h):
@@ -42,9 +43,40 @@ bool MaterialShadesPrelit(bool matPrelit, bool isTextMesh, bool isOverlayPass,
 // any phase when the shape says so (rndshape::kIntensifyScalesAlpha: DC3's
 // world draws use the same shader), else 1.
 float MaterialAlphaScale(bool intensify, bool retailMaterialTerms);
-// Whether the material's pipeline turns on alpha-to-coverage (its alpha cut,
-// on a shape with rndshape::kAlphaCutUsesCoverage; DC3: never).
-bool MaterialAlphaToCoverage(BaseMaterial* mat);
+// How an alpha-cut material's edge is drawn in a multisampled pass.
+//   None             the alpha test alone: DC3 retail (NgMat::SetBasicState
+//                    sets the test and never alpha-to-mask), and under the
+//                    enhanced look a cut at threshold 0 under a blend that
+//                    weights by alpha (SrcAlpha, SrcAlphaAdd, PreMultAlpha:
+//                    text) -- the blend already fades that edge, and coverage
+//                    on top attenuated it twice (the faded song-select rows).
+//   AlphaToCoverage  hardware coverage from the output alpha
+//                    (rndshape::kAlphaCutUsesCoverage: rb3-xenon, unchanged).
+//   Sharpened        DC3_LOOK=enhanced, every other alpha cut: one whose cut
+//                    is a hard step (Src hair and crowd clothing at 110-150,
+//                    SrcAlpha palms and peak bands at 90-110, ...). A coverage
+//                    mask from the quantity retail's test tests (texel alpha
+//                    x material fade x vertex alpha) against the threshold,
+//                    sharpened over the pixel footprint (standard_wgsl.inc
+//                    fs_cutout): 1 inside the cut, so the blend is not
+//                    attenuated twice, and a fade erodes the shape exactly
+//                    where the original's test would, with an anti-aliased
+//                    edge.
+enum class CutCoverage : unsigned char { None, AlphaToCoverage, Sharpened };
+// Whether a blend weights the source by its alpha (SrcAlpha, SrcAlphaAdd,
+// PreMultAlpha).
+bool BlendWeightsByAlpha(int blend);
+// The rule, on plain values (table-driven tests). threshold: 0..255.
+CutCoverage CutCoverageRule(bool alphaCut, int blend, int threshold, milo::LookProfile look,
+                            bool shapeAlphaToCoverage);
+// The rule for a material under the process look profile (milo::Look()).
+CutCoverage MaterialCutCoverage(BaseMaterial* mat);
+// The shader's alpha threshold uniform for an alpha cut at `threshold`
+// (0..255): 0 without a cut; with one, threshold / 255, or the next float
+// above it (at least FLT_MIN) where the test is retail's strict
+// "alpha > threshold" (rndshape::kAlphaTestGreater), so the shader's
+// `a < uniform` discard is `a <= threshold`.
+float MaterialAlphaThreshold(bool alphaCut, int threshold);
 // The material colour as the shader sees it. A premultiplied-alpha material
 // (blend 7, pipeline One / OneMinusSrcAlpha) has its rgb scaled by its alpha
 // before the constant is set -- NgMat::SetRegularShaderConst (Mat_NG.cpp:191,

@@ -2248,7 +2248,7 @@
   "DC3_LOOK": {
     "class": "feature",
     "owner": "render/look",
-    "faithfulStatus": "live: the DC3 look profile (platform/LookProfile.h), read once. Unset or 'enhanced' = native polish on (the default); 'retail' = the original hardware's behaviour for parity measurement against Xenia/retail; anything else warns and uses enhanced. One switch that every enhancement hangs off (LookSettings), so no per-feature env var. DC3 retail model only (rndshape::kDC3RetailModel); rb3-xenon reports profile 'native' and never reads it, and the rb3 flavor does not link the TU [platform/LookProfile.cpp]",
+    "faithfulStatus": "live: the DC3 look profile (platform/LookProfile.h), read once. Unset or 'enhanced' = native polish on (the default); 'retail' = the original hardware's behaviour for parity measurement against Xenia/retail; anything else warns and uses enhanced. One switch that every enhancement hangs off (LookSettings), so no per-feature env var. DC3 retail model only (rndshape::kDC3RetailModel); rb3-xenon and rb3 (kDC3RetailModel false in their shapes) resolve profile 'native' and never read it [platform/LookProfile.cpp]",
     "default": "on",
     "read": "value"
   }

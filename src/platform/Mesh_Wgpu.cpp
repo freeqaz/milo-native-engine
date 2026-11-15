@@ -275,7 +275,9 @@ void DrawMeshImmediate(RndMesh* mesh) {
         ? rndshape::BloomMaskScale(mat) : 0.0f;
     if (bloomMaskScale != 0.0f)  // DC3: negative (rndshape::BloomMaskScale)
         key.alphaWrite = true;
-    key.alphaToCoverage = MaterialAlphaToCoverage(rawMat);
+    const CutCoverage cutCov = MaterialCutCoverage(rawMat);
+    key.alphaToCoverage = cutCov == CutCoverage::AlphaToCoverage;
+    key.cutoutCoverage = cutCov == CutCoverage::Sharpened;
     key.depthBias = meshData.depthBias;
 
     wgpu::RenderPipeline pipeline = gWgpuRnd->Pipelines().GetPipeline(key);
@@ -422,7 +424,9 @@ void DrawMeshImmediate(RndMesh* mesh) {
         if (rndshape::kRenderTargetForcesAlphaWrite && gWgpuRnd->ActiveTargetTex()
             && !rndshape::MatPinsAlphaWrite(nextPass))
             npKey.alphaWrite = true;
-        npKey.alphaToCoverage = MaterialAlphaToCoverage(nextPass);
+        const CutCoverage npCutCov = MaterialCutCoverage(nextPass);
+        npKey.alphaToCoverage = npCutCov == CutCoverage::AlphaToCoverage;
+        npKey.cutoutCoverage = npCutCov == CutCoverage::Sharpened;
 
         wgpu::RenderPipeline npPipeline = gWgpuRnd->Pipelines().GetPipeline(npKey);
         if (npPipeline) {
