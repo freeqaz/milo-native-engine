@@ -140,7 +140,7 @@ public:
                     int maxThisCall, float budgetMs = 0.f);
     bool PreWarmDone() const { return mPreWarmStarted && mPreWarmCursor >= (int)mPreWarmKeys.size(); }
 
-    // Load-time warm (dc3 PLAN H-33; engine doc section 39). WarmAsync queues
+    // Load-time warm (dc3 PLAN H-101; engine doc section 39). WarmAsync queues
     // `key` to be compiled before anything draws with it; PollWarms (WgpuRnd
     // calls it once a frame) issues at most kWarmIssuePerFrame of the queue
     // and takes in the ones that finished. Natively each is a
