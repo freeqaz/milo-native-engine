@@ -286,6 +286,7 @@ endif()
 # (gfx core ON, backends OFF) compiles exactly this set.
 set(MILO_ENGINE_GFX_SOURCES
     src/gfx/GpuDevice.cpp
+    src/gfx/FrameSizes.cpp      # the frame-size rules, shared with GpuDevice_Web.cpp
     src/gfx/PresentScale.cpp    # GpuDevice's fixed-frame present (dc3 PLAN H-18)
     ${MILO_ENGINE_METAL_SOURCE}
     src/gfx/Screenshot.cpp
