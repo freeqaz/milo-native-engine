@@ -6,6 +6,7 @@
 #pragma once
 
 #include "audio/BackgroundMute.h"
+#include "audio/MasterMeter.h"
 
 #include <atomic>
 #include <cstddef>
@@ -132,6 +133,14 @@ public:
     void NoteMainLoopFrame(bool windowFocused);
     bool IsBackgroundMuted() const { return mBackgroundMute.IsMuted(); }
 
+    // Master-bus level meter (audio/MasterMeter.h). Off until a consumer
+    // enables it; MixSources then feeds it the finished mix (post-limiter, as
+    // the 360's meter sits after its limiter). Readers drain quanta up to
+    // MasterMeterHeardFrame(): everything mixed on desktop, what the worklet
+    // has played on the web.
+    MasterMeterTap &MasterMeter() { return mMasterMeter; }
+    long long MasterMeterHeardFrame();
+
 #ifdef __EMSCRIPTEN__
     // Web only: called each frame from main loop to push mixed audio
     // into the SharedArrayBuffer ring buffer for the AudioWorklet
@@ -167,6 +176,8 @@ private:
     std::vector<float> mMixBuffer;
 
     std::atomic<bool> mSuspended{false};
+
+    MasterMeterTap mMasterMeter;
 
     // Background mute: the decision, and the gain the audio thread ramps
     // towards it (1 = playing, 0 = silent).

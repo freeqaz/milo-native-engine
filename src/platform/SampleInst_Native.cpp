@@ -4,6 +4,7 @@
 
 #include "platform/SampleInst_Native.h"
 #include "platform/FxSendNative.h"
+#include "platform/ImagePan_Native.h"
 #include "synth/SampleData.h"
 #include "synth/SynthSample.h"
 
@@ -91,8 +92,11 @@ int SampleInstNative::RenderAudio(float *output, int frameCount) {
     }
 
     int endPos = (mEndSample > 0) ? mEndSample : mPCMSamples;
-    float volL = mInstVolume * std::max(0.0f, 1.0f - mInstPan);
-    float volR = mInstVolume * std::max(0.0f, 1.0f + mInstPan);
+    // The image's pan law, folded to stereo (ImagePan_Native.h): a mono
+    // sample is ring-panned, a stereo one scaled by the cos/sin pair.
+    float volL, volR;
+    if (mNumChannels == 2) ImagePan::Stereo(mInstVolume, mInstPan, volL, volR);
+    else ImagePan::Mono(mInstVolume, mInstPan, volL, volR);
 
     // Rate ratio: how many source samples per output sample
     double rateRatio = (double)mSampleRate / (double)kOutputSampleRate * (double)mInstSpeed;
@@ -114,8 +118,8 @@ int SampleInstNative::RenderAudio(float *output, int frameCount) {
         if (mNumChannels == 2) {
             float left = LerpSample(mPCMData, mPCMSamples, mPlayPos, 0, 2);
             float right = LerpSample(mPCMData, mPCMSamples, mPlayPos, 1, 2);
-            output[i * 2 + 0] = left * mInstVolume;
-            output[i * 2 + 1] = right * mInstVolume;
+            output[i * 2 + 0] = left * volL;
+            output[i * 2 + 1] = right * volR;
         } else {
             float sample = LerpSample(mPCMData, mPCMSamples, mPlayPos, 0, 1);
             output[i * 2 + 0] = sample * volL;

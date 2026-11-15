@@ -8,6 +8,8 @@
 // - Create stream decoders for audio formats (Vorbis, FFmpeg/Bink)
 
 #include "synth/Synth.h"
+#include "synth/FxSend.h"
+#include "math/Decibels.h"
 #include "synth/StandardStream.h"
 #include "os/System.h"
 #include "synth/StreamReceiver.h"
@@ -27,6 +29,51 @@ extern File *NewFile(const char *, int);
 
 class NativeSynth : public Synth {
 public:
+    // Synth360::PreInit's meter buses, by the same names and in the order its
+    // MeterEffect writes them; 7 and 8 are the stereo downmix Poll() derives,
+    // 6 is unused. HamMaster::CheckLevels reads the last two.
+    virtual void PreInit() override {
+        const char *busNames[9] = { "  FL", "  FR", "   C", " LFE", "  SL",
+                                    "  SR", "",     " DML", " DMR" };
+        for (int i = 0; i < 9; i++) {
+            mLevelData.push_back(LevelData(busNames[i]));
+        }
+        AudioDevice::GetInstance().MasterMeter().SetEnabled(true);
+    }
+
+    // Synth360::Poll: hand the meter its parameters (which resets its
+    // running sums), then derive the downmix pair from the buses it wrote.
+    virtual void Poll() override {
+        UpdateMasterLevels();
+        Synth::Poll();
+    }
+
+    void UpdateMasterLevels() {
+        if (mLevelData.size() < 9) return;
+        float rms[6], peak[6];
+        for (int c = 0; c < 6; c++) {
+            rms[c] = mLevelData[c].mRMS;
+            peak[c] = mLevelData[c].mPeak;
+        }
+        AudioDevice &dev = AudioDevice::GetInstance();
+        dev.MasterMeter().Drain(dev.MasterMeterHeardFrame(), [&](const MeterQuantum &q) {
+            mMeterState.Apply(q, rms, peak);
+        });
+        mMeterState.Reset();
+        for (int c = 0; c < 6; c++) {
+            mLevelData[c].mRMS = rms[c];
+            mLevelData[c].mPeak = peak[c];
+        }
+        static float gainCenter = DbToRatio(-3.0f);
+        static float gainSide = DbToRatio(-1.2f);
+        static float gainRear = DbToRatio(-6.2f);
+        std::vector<LevelData> &l = mLevelData;
+        l[7].mRMS = l[2].mRMS * gainCenter + (l[5].mRMS * gainRear + l[4].mRMS * gainSide) + l[0].mRMS;
+        l[7].mPeak = l[2].mPeak * gainCenter + (l[5].mPeak * gainRear + l[4].mPeak * gainSide) + l[0].mPeak;
+        l[8].mRMS = l[2].mRMS * gainCenter + (l[5].mRMS * gainSide + l[4].mRMS * gainRear) + l[1].mRMS;
+        l[8].mPeak = l[2].mPeak * gainCenter + (l[5].mPeak * gainSide + l[4].mPeak * gainRear) + l[1].mPeak;
+    }
+
     virtual void Init() override {
         Synth::Init();
 
@@ -123,6 +170,9 @@ public:
         File *file = new BufFile(buf, size);
         return new StandardStream(file, vol, 0.0f, codecType, loop, true, false);
     }
+
+private:
+    MeterEffectState mMeterState; // the master MeterEffect's running sums
 };
 
 // Called from SynthPreInit() via Synth::New()
