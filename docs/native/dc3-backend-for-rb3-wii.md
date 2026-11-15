@@ -7093,6 +7093,60 @@ No measured venue has a proxy, so no measured venue needs a fog density map.
   measured venue has a proxy. The far01 crowd_l gap and the rollerrink
   floor tiles are not this pass.
 
+### 36.6 Beam shafts were re-uploaded every frame (lane np-gfx spotperf, 2026-11-14)
+
+A GPD handheld (Radeon 890M, RADV) measured main-thread CPU p50 at
+rollerrink rising to ~4.1 ms with the beams and ~2.9 ms with
+`MILO_NO_SPOT_BEAMS=1`, for ~0.14 ms of beam GPU time.
+
+- **Cause (MEASURED here).** `SubmitSpotBeams` called
+  `EnsureMeshUploaded` for each beam's shaft. `EnsureMeshUploaded` takes
+  every *unnamed* mesh for an RndText glyph page and re-reads it on every
+  call. Each re-read unpacks the geometry, creates a new vertex buffer and
+  a new index buffer, writes both, and releases the old pair. The shafts are
+  unnamed: `Spotlight::Generate`'s `BuildNG*` use `Hmx::Object::New<RndMesh>()`.
+  So every beam was re-uploaded every frame. `[GPUCOUNT] meshUploads=`
+  (new) at rollerrink, three runs each:
+
+  | | beams on | beams off |
+  |---|---|---|
+  | before | 7.65–7.75 per frame | 5.60–5.71 |
+  | after | 5.63–5.77 | 5.67–5.76 |
+
+  This box draws 2 beams per frame there. The rest are DC3's glyph-page text
+  meshes, which re-upload in both modes.
+- **Fix.** Add `EnsureSyncedMeshUploaded`: the same upload with the glyph-page
+  guess off, so only `RndMesh::OnSync` → `InvalidateGpuMesh` makes it re-read.
+  `SubmitSpotBeams` uses it. Every `BuildNG*` ends in `Sync(0x13F)`, and
+  nothing else writes a shaft's vertices. The per-frame code
+  (`SpotlightDrawer_NG.cpp`) only moves the shaft's transform and reads its
+  material. `EnsureMeshUploaded` is unchanged, so rb3 and rb3-xenon are
+  untouched.
+- **Rendering unchanged (MEASURED).** One process per venue (rollerrink,
+  houseparty), with `DC3_DISPLAY_GAMMA=off`. At three paused points each,
+  screen grabs alternate the old path and the new path (TMPDIAG build, not
+  shipped), and the old path's windows show +2 uploads per frame. Across all
+  six points, a grab after the path switch differs from the grab before it
+  by 1–187 pixels. Two grabs on the same path differ by 1–246 pixels. One
+  exception: at two points the paused frame itself kept moving, by up to
+  ±60 levels, and the switch pairs moved with it, in the same region and by
+  the same amount. Every other switch pair is within ±2 levels. The switch
+  differences fall mostly in the top-right HUD corner (x 1128–1247,
+  y 92–193, at 1280×720), not on the beams.
+- **CPU.** This box (RTX 3090, NVIDIA) does not reproduce the GPD cost. The
+  beam path cost ~30 µs/frame before the fix, and on−off CPU was within
+  noise. The per-frame buffer create/release churn is gone; that it was the
+  GPD's ~1.2 ms is INFERRED, not measured.
+- **Guard.** dc3 `SpotBeamFrameCostTest.AnUnchangedBeamSetUploadsNothingAfterItsFirstFrame`
+  (`native/tests/test_spot_beam_frame_cost.cpp`) runs 3 beams for 10 frames:
+  uploads per frame are `3 0 0 …`, with no texture creates. A `Sync` on one
+  shaft uploads exactly 1, then 0.
+  - Sabotage, `SubmitSpotBeams` back on `EnsureMeshUploaded`: `3 3 3 …`, so it fails.
+  - Sabotage, the synced path ignoring invalidation: the sync half fails.
+- **Not fixed, a lead.** DC3's text meshes are unnamed glyph pages and are
+  still re-uploaded every frame, ~5.7 per frame in rollerrink gameplay. `UploadMesh` is ~1.3% of
+  main-thread cycles here.
+
 ## 37. DC3 post chain, round 6: throneroom against Xenia, and depth of field (lane np-gfx-post, 2026-11-14)
 
 The brief came from the Xenia ground-truth lane's round 2 (dc3-decomp

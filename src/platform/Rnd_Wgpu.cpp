@@ -1051,7 +1051,10 @@ bool WgpuRnd::SubmitSpotBeams(const NativeSpotBeamFrame& frame, const NativeSpot
         if (!mesh) continue;
         SpotBeamPass::Draw d;
         if (!SpotBeamPass::BeamConstants(b, c, d.k)) continue;
-        if (!EnsureMeshUploaded(mesh)) continue;
+        // The shaft is unnamed but only changes through Sync (Spotlight::
+        // Generate's BuildNG*, RndMesh::Copy); EnsureMeshUploaded would take it
+        // for a glyph page and re-upload it every frame.
+        if (!EnsureSyncedMeshUploaded(mesh)) continue;
         GpuMeshData* m = GetMeshGpuData(mesh);
         if (!m || !m->uploaded || m->numIndices <= 0) continue;
         for (int j = 0; j < 12; j++) d.meshXfm[j] = b.meshXfm[j];
@@ -2798,7 +2801,8 @@ void WgpuRnd::LogGpuCounters() {
     fprintf(stderr,
             "[GPUCOUNT] frame=%d bindGroupsLive=%zu bgCreated=%llu bgHits=%llu bgEvicted=%llu "
             "bgUncached=%llu ringBuffers=4 ringBytes=%u ringGrows=%u/%u/%u/%u "
-            "ringQueueWrites=%llu ringQueueBytes=%llu pipelines=%d gpuMeshes=%zu gpuTextures=%zu "
+            "ringQueueWrites=%llu ringQueueBytes=%llu pipelines=%d gpuMeshes=%zu meshUploads=%llu "
+            "gpuTextures=%zu texCreates=%llu "
             "postBgLive=%zu postBgCreated=%llu postBgHits=%llu postBgEvicted=%llu postBgUncached=%llu "
             "ptBatches=%d ptCreated=%llu ptInFlight=%d\n",
             (int)mFrameID, mBindGroupCache.Size(),
@@ -2808,7 +2812,9 @@ void WgpuRnd::LogGpuCounters() {
             (unsigned long long)mBindGroupCache.Uncached(), capacity, mSceneRing.Grows(),
             mMaterialRing.Grows(), mObjectRing.Grows(), mBoneRing.Grows(),
             (unsigned long long)writes, (unsigned long long)bytes,
-            mPipelines.CachedPipelineCount(), GpuMeshCount(), GpuTexCount(),
+            mPipelines.CachedPipelineCount(), GpuMeshCount(),
+            (unsigned long long)GpuMeshUploadCount(), GpuTexCount(),
+            (unsigned long long)GetGpuTexDebugInfo(nullptr).createCount,
             mPostBindGroupCache.Size(), (unsigned long long)mPostBindGroupCache.Creates(),
             (unsigned long long)mPostBindGroupCache.Hits(),
             (unsigned long long)mPostBindGroupCache.Evictions(),

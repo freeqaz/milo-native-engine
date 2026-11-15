@@ -24,7 +24,19 @@ struct GpuMeshData {
 
 // Upload mesh vertex/index data to GPU (creates or re-uploads as needed).
 // Returns true if mesh data is ready for drawing.
+// A mesh is re-read once RndMesh::OnSync / InvalidateGpuMesh has marked it
+// stale -- and, when it has no name, on EVERY call: an unnamed mesh is taken
+// for an RndText glyph page (each re-upload unpacks the geometry and creates a
+// new vertex and index buffer).
 bool EnsureMeshUploaded(RndMesh* mesh);
+
+// EnsureMeshUploaded for a mesh the caller knows is no glyph page, whose
+// geometry only changes through RndMesh::Sync: uploaded once, and again only
+// after a sync, named or not. The spotlight beam shafts (Spotlight::Generate's
+// BuildNG* meshes, unnamed, finished with Sync) go through this: under
+// EnsureMeshUploaded every frame re-uploaded every beam (milo-native-engine
+// docs/native/dc3-backend-for-rb3-wii.md section 36).
+bool EnsureSyncedMeshUploaded(RndMesh* mesh);
 
 // Release GPU resources for a mesh (called from RndMesh destructor).
 void CleanupGpuMesh(RndMesh* mesh);
@@ -48,6 +60,11 @@ void ClearMeshGpuCache();
 
 // Live GPU mesh entries (vertex + index buffer pairs), for [GPUCOUNT].
 size_t GpuMeshCount();
+
+// Monotonic count of mesh uploads EnsureMeshUploaded has performed (each one
+// unpacks the geometry and creates a vertex and an index buffer). A frame that
+// draws what the last one drew should add none; [GPUCOUNT] meshUploads=.
+uint64_t GpuMeshUploadCount();
 
 // Set a debug label for GPU buffer names + frame capture.
 void SetMeshDebugLabel(RndMesh* mesh, const char* label);
