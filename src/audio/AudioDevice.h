@@ -131,6 +131,9 @@ public:
     // and focus state BackgroundMute decides from (audio/BackgroundMute.h).
     // Never called headless or on the web, where nothing is muted.
     void NoteMainLoopFrame(bool windowFocused);
+    // Main thread, around a call that can block on the compositor (acquiring
+    // or presenting the window's frame): a hidden window waits there.
+    void NoteCompositorWait(bool waiting);
     bool IsBackgroundMuted() const { return mBackgroundMute.IsMuted(); }
 
     // Master-bus level meter (audio/MasterMeter.h). Off until a consumer

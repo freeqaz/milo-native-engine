@@ -379,13 +379,18 @@ static int64_t SteadyNowMs() {
     return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
 }
 
+void AudioDevice::NoteCompositorWait(bool waiting) {
+    if (waiting) mBackgroundMute.BeginCompositorWait(SteadyNowMs());
+    else mBackgroundMute.EndCompositorWait(SteadyNowMs());
+}
+
 void AudioDevice::NoteMainLoopFrame(bool windowFocused) {
     mBackgroundMute.OnFrame(SteadyNowMs(), windowFocused);
     // Report from here, not from the audio thread: one line per change.
     const bool muted = mBackgroundMute.IsMuted();
     if (muted != mBackgroundMuteReported) {
         mBackgroundMuteReported = muted;
-        printf(muted ? "AudioDevice: window in the background and not drawing, audio muted "
+        printf(muted ? "AudioDevice: window hidden and not drawing, audio muted "
                        "(MILO_BACKGROUND_AUDIO=1 keeps it playing)\n"
                      : "AudioDevice: window is drawing again, audio back on\n");
     }
