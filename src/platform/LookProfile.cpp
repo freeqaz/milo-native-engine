@@ -56,13 +56,19 @@ const char *LookProfileName(LookProfile p) {
     return "native";
 }
 
-bool SetLookPostForInspection(bool enhanced) {
+bool SetLookPostFieldsForInspection(bool precision, bool bloomFilter, bool dofFilter) {
     LookSettings &s = Mutable();
     if (s.profile == LookProfile::Native) return false;
-    s.postPrecision = s.postBloomFilter = s.postDofFilter = enhanced;
-    fprintf(stderr, "[look] post fields %s (inspection, profile %s)\n", enhanced ? "enhanced" : "retail",
-            LookProfileName(s.profile));
+    s.postPrecision = precision;
+    s.postBloomFilter = bloomFilter;
+    s.postDofFilter = dofFilter;
+    fprintf(stderr, "[look] post fields precision %d bloom filter %d dof filter %d (inspection, profile %s)\n",
+            (int)precision, (int)bloomFilter, (int)dofFilter, LookProfileName(s.profile));
     return true;
+}
+
+bool SetLookPostForInspection(bool enhanced) {
+    return SetLookPostFieldsForInspection(enhanced, enhanced, enhanced);
 }
 
 bool SetLookProfileForInspection(LookProfile p) {

@@ -85,6 +85,9 @@ bool SetLookProfileForInspection(LookProfile p);
 // postDofFilter), the rest of the profile untouched: an A/B of the post look
 // without the other enhancements (alpha-cut coverage) changing too.
 bool SetLookPostForInspection(bool enhanced);
+// One post field at a time (the per-item cost A/B: each enhancement against
+// retail in the same run); the fields not named are set retail.
+bool SetLookPostFieldsForInspection(bool precision, bool bloomFilter, bool dofFilter);
 
 // Tests only: replace the resolved settings for the lifetime of the object
 // (nests; restores the previous settings on destruction). Not thread-safe.
