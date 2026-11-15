@@ -8141,10 +8141,20 @@ scales the difference:
   1000-sample occlusion answer (§34; dc3-retail-lighting.md §13.1). Xenia's
   debug text band ("GLITCH ... ACTIVE game_screen") also crosses the top of
   the box.
-- **wall_dots** (streak ratio 1.23). The dot board strobes; raw native reads
-  +35..+49% on the four frames. A phase-independent test of that board is the
-  follow-up: sample it every ~0.25 s over the same 20 s with post off, and
-  compare the distributions.
+- **wall_dots** (streak ratio 1.23; raw native +35..+49% on the four frames).
+  The excess is not the dot board but the box's right strip, the same lamp
+  region as the sign. Measured with post off and not paused, sampled over
+  song 14–34 s on both sides (154 native and 130 Xenia frames, each
+  registered to the median Xenia frame), the dots alone (x 80–150) agree:
+  - box mean luma +2.4% (95% CI −4.7..+9.8);
+  - lit fraction −2.8%, lit-dot count −4.8%;
+  - KS D 0.091, under the 5% critical value of 0.162.
+
+  A native run-to-run control moves the mean by 2.3%. On the same frames, the
+  full census box reads +38.6%, and all of it is the strip x 150–190 (the
+  lamp, pillar and glow) at +114%. Evidence: dc3-decomp
+  `archive/np-gfx-2026-11-14/lanes/post/round10/p3d/` (`NOTES.txt`,
+  `cmp_n_x1.json`, `cmp_box_*.json`, `peek_NX.png`).
 - **shelves_r**, the 26 s frame above.
 
 Nothing in post changes for C.
@@ -8223,6 +8233,11 @@ above; also in dc3-retail-lighting.md §13.5):
    ColorXfm contrast: k = 1/(1 − c·0.9921875) with c = contrast/100, and
    off = (1 − k)/2 of full scale; contrast 5 gives k = 1.052, off = −6.7 levels). Tool:
    `p3c/tools/xfer3c.py`.
+
+**Census box note, dclive far01:** narrow `wall_dots` to x < 150 (640x360
+coordinates, i.e. [80,35,150,95]). Its strip x 150–190 holds the lamp, an
+area-tested flare that Xenia under-draws (fixed-sample occlusion, §34). That
+strip carries all of the box's +38.6% post-off excess (residual C above).
 
 ### 37.11 Round 10 part 2: the enhanced post look (`DC3_LOOK=enhanced`)
 
