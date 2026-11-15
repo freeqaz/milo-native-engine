@@ -13,8 +13,9 @@
 //                    weight[3] = 1/3, weight[3 +- i] = a^i / 3 with
 //                    a = attenuation^(4^pass); offset 0.5 +- i * 4^pass texels;
 //                    rotated by `angle`, the horizontal x scaled by the screen's
-//                    height/width. Retail's 0.5 texel is D3D9's half-texel
-//                    convention; centred here, as RB3RetailPost's 15-tap blur.
+//                    height/width. The 0.5 is kept: DxRnd::DrawRect sets
+//                    HalfPixelOffset, so it is a real half-texel step per
+//                    pass, not a convention fix (engine doc §37.10).
 //   postprocess.ps   bit 4 bloom (tf7 + tf11 + tf15, c6), bit 15 chroma (c121),
 //                    bit 43 chroma sharpen, bit 2 noise (tf13, c112, c113), bit
 //                    47 midtone noise, bit 21 colour matrix (c92..c94), bit 36
@@ -624,18 +625,25 @@ void RB3RetailPost::PassDC3(wgpu::CommandEncoder& encoder, const wgpu::RenderPip
 }
 
 // SetBloomBlurWeightsStreak (dc3-decomp rndobj/Utl.cpp), as uv offsets.
+static constexpr float kStreakCentreOffset = 0.5f;
 static TapUniforms StreakTaps(bool horizontal, float w, float h, float attenuation, int pass,
                               float angleDeg, float yRatio) {
     float weights[7], offsets[7];
     const float scale = std::pow(4.0f, (float)pass);
     const float atten = std::pow(attenuation, scale);
+    // Retail's offsets are 0.5 +- i * scale (initOffset = 0.5f in Utl.cpp).
+    // DxRnd::DrawRect draws with D3DDevice_SetRenderState_HalfPixelOffset(1),
+    // so a pixel centre already samples its texel centre, exactly as here: the
+    // 0.5 is NOT a convention fix but a real half-texel step along the
+    // streak's axis on every pass (MEASURED against the original under
+    // Xenia on frozen frames, engine doc §37.10).
     weights[3] = 1.0f / 3.0f;
-    offsets[3] = 0.0f;
+    offsets[3] = kStreakCentreOffset;
     float curWeight = atten;
     for (int i = 1; i <= 3; i++) {
         weights[3 - i] = weights[3 + i] = curWeight * (1.0f / 3.0f);
-        offsets[3 - i] = -(float)i * scale;
-        offsets[3 + i] = (float)i * scale;
+        offsets[3 - i] = kStreakCentreOffset - (float)i * scale;
+        offsets[3 + i] = kStreakCentreOffset + (float)i * scale;
         curWeight *= atten;
     }
     const float a = angleDeg * 0.017453292f;
