@@ -98,6 +98,13 @@ struct LightShadowObjects : L {
     static auto Member() { return &LightShadowObjects::mShadowObjects; }
 };
 
+// The cone radii, likewise protected with setters only.
+template <class L>
+struct LightConeRadii : L {
+    static auto Top() { return &LightConeRadii::mTopRadius; }
+    static auto Bot() { return &LightConeRadii::mBotRadius; }
+};
+
 // The gobo (projected_blend 0's tf10) of the light WriteSceneLighting last
 // published; null for blend 1 or no projected light.
 RndTex *sFrameGobo = nullptr;
@@ -132,6 +139,45 @@ void ProjShadowClip(L *l, float out[16]) {
         out[c * 4 + 2] = 0.0f;
         out[c * 4 + 3] = r2[c];
     }
+}
+
+// The transform the casters are drawn with: NgLight::SetShadowTransforms
+// (100% matched), not Projection(). It takes the light's true inverse world
+// transform (Invert), swaps y and z, and applies the cone projection, so
+// clip = (xL, zL, yL / range, top + (bot - top) yL / range) with (xL, yL, zL)
+// the light-local position. A 256x256 viewport maps clip x/w, y/w to the
+// target as the receivers' bias does, so in this atlas's clip convention the
+// rows are (xL, zL, 0, top + slope yL).
+//
+// Projection() builds the receivers' uv from the raw rows of WorldXfm (and
+// multiplies in mTextureXfm). For an orthonormal light with an identity
+// texture_xfm the two agree. They differ when the light's transform is
+// scaled: dclive's a2_spotlight.lit has world scale (1, 0.86, 0.86), so on
+// the Xbox the casters land in the map at a different place and size than
+// the receivers read, and its dancers' shadows sit about 25 px (720p) further
+// up the floor than the geometry puts them, which is where Xenia draws them
+// (docs/native/dc3-retail-lighting.md §15). False (and the caller keeps the
+// Projection() clip) for a light of zero range, where Projection() is the
+// identity and SetShadowTransforms would divide by zero.
+template <class L>
+bool ProjShadowCasterClip(L *l, float out[16]) {
+    const float range = l->Range();
+    if (range == 0.0f) return false;
+    Transform inv;
+    Invert(l->WorldXfm(), inv);
+    const float invRange = 1.0f / range;
+    const float top = l->*LightConeRadii<L>::Top();
+    const float slope = (l->*LightConeRadii<L>::Bot() - top) * invRange;
+    const float xr[4] = {inv.m.x.x, inv.m.y.x, inv.m.z.x, inv.v.x};
+    const float yr[4] = {inv.m.x.y, inv.m.y.y, inv.m.z.y, inv.v.y};
+    const float zr[4] = {inv.m.x.z, inv.m.y.z, inv.m.z.z, inv.v.z};
+    for (int c = 0; c < 4; c++) {   // column-major: out[c * 4 + row]
+        out[c * 4 + 0] = xr[c];
+        out[c * 4 + 1] = zr[c];
+        out[c * 4 + 2] = 0.0f;
+        out[c * 4 + 3] = slope * yr[c] + (c == 3 ? top : 0.0f);
+    }
+    return true;
 }
 
 template <class E>
@@ -179,7 +225,9 @@ void WriteDC3ProjShadow(SceneUniforms &s, E *env) {
     for (int i = 0; i < sProj.frameCount; i++) queued = queued || sProj.frameLights[i] == proj;
     if (!queued && sProj.frameCount < rndshape::kMaxProjShadowMaps) {
         sProj.frameLights[sProj.frameCount] = proj;
-        memcpy(sProj.frameClips[sProj.frameCount], clip, sizeof(clip));
+        float casterClip[16];
+        if (!ProjShadowCasterClip(proj, casterClip)) memcpy(casterClip, clip, sizeof(clip));
+        memcpy(sProj.frameClips[sProj.frameCount], casterClip, sizeof(casterClip));
         sProj.frameCount++;
     }
 }
