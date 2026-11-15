@@ -2265,5 +2265,12 @@
     "faithfulStatus": "live: an explicit internal render scale (supersampling) for the DC3 look (platform/LookProfile.h, LookSettings::renderScaleExplicit), read once with DC3_LOOK. Unset = the profile default (enhanced: 2 on a discrete GPU when presenting to a window, 1 integrated and headless; retail: 1). A number is clamped to [1, 2] and honoured under either DC3 profile, headless included, on any adapter class, and not held to the default's 3840x2160 cap: 1 = the enhanced look without supersampling, 1.5 / 2 to try supersampling on a handheld. Not a number > 0: warns, profile default. DC3 retail model only (rndshape::kDC3RetailModel); rb3 and rb3-xenon never read it [platform/LookProfile.cpp; gfx/GpuDevice.cpp ResolveRenderScale]",
     "default": "off",
     "read": "value"
+  },
+  "MILO_BACKGROUND_AUDIO": {
+    "class": "feature",
+    "owner": "audio",
+    "faithfulStatus": "live: =1 keeps the desktop output playing when the game window is in the background and starved. Unset = mute: when the window has no focus and no frame has finished for 500 ms the mix is ramped to silence, and it comes back when the window has focus or 30 frames in a row each took under 100 ms (audio/BackgroundMute.h). A compositor that stops presenting a hidden window drops the main loop to about one frame a second, and the streams it decodes then play in bursts. Never applies headless or on the web [audio/AudioDevice.cpp]",
+    "default": "off",
+    "read": "truthy"
   }
 }
