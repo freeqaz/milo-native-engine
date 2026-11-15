@@ -69,6 +69,18 @@ struct GpuDeviceDesc {
     bool outputFollowsTarget = false;
     int logicalWidth = 0;
     int logicalHeight = 0;
+    // A following frame's OUTPUT height cap, in rows (0 = no cap), applied
+    // after the fit (ResolveFrameSizes); the output keeps the logical shape,
+    // and the present path scales it up into the window as it scaled the
+    // fixed frame before:
+    //   outputMaxRowsIntegrated  the DEFAULT, on a non-discrete adapter
+    //       presenting to a window (a handheld's iGPU, measured at 2.7-3.0 ms
+    //       per 720p frame, would otherwise draw its whole 2560x1600 panel);
+    //       discrete adapters and headless frames are not capped by default
+    //   outputMaxRowsExplicit  asked for (< 0 = not): 0 = no cap, > 0 = that
+    //       cap, on any adapter, headless included
+    int outputMaxRowsIntegrated = 0;
+    int outputMaxRowsExplicit = -1;
 };
 
 // The render scale rule (pure; GpuDevice::Init applies it).
@@ -95,13 +107,19 @@ float ResolveRenderScale(const GpuDeviceDesc& desc, bool discreteGpu, bool prese
 // frame) of targetW x targetH -- the one rule for every window size (pure;
 // GpuDevice applies it at Init and at every resize):
 //   output  outputFollowsTarget with a logical size: the logical shape fitted
-//           into the target (FitPresentRect); else windowed frameWidth x
-//           frameHeight when set; else the target
+//           into the target (FitPresentRect), then held to the row cap
+//           (OutputRowCap: outputMaxRowsExplicit when asked, else
+//           outputMaxRowsIntegrated on a non-discrete adapter presenting
+//           to a window, else none) at the same shape; else windowed
+//           frameWidth x frameHeight when set; else the target
 //   scale   ResolveRenderScale(output)
 //   drawn   output * scale
 // So a 1280x720 window draws 2560x1440 and boxes it down 2x (the enhanced
 // look's desktop default), 1920x1080 draws 3840x2160 and boxes 2x, 2560x1440
 // and 3840x2160 draw 1x at their own size; headless draws 1x at its size.
+// On an integrated adapter (enhanced: cap 1080) a 2560x1600 panel's frame is
+// 1920x1080, scaled up into the window.
+int OutputRowCap(const GpuDeviceDesc& desc, bool discreteGpu, bool presentsToSurface);
 struct FrameSizes {
     int outputW = 0, outputH = 0;
     float scale = 1.0f;

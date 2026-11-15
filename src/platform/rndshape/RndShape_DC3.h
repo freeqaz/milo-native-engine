@@ -727,7 +727,9 @@ constexpr bool kAlphaBlendMax = !kDC3RetailPost;
 // MILO_WIDTH x MILO_HEIGHT frame is drawn at 1920x1080, viewports, UI and the
 // post chain's pixel measures laid out in the Rnd's virtual 1280x720 and scaled
 // to it, pillar/letterboxed to keep 16:9. dc3-decomp (kDC3RetailPost) only:
-// rb3-xenon keeps its 1280x720 frame scaled into the window.
+// rb3-xenon keeps its 1280x720 frame scaled into the window. Within DC3 the
+// look decides (LookSettings::outputFollowsTarget): Enhanced follows, Retail
+// keeps the original's 1280x720 frame.
 constexpr bool kOutputFollowsTarget = kDC3RetailPost;
 // ---- end np-gfx-post ----
 // DC3 shades in gamma space, as the image does: no bitmap format DxRnd uses

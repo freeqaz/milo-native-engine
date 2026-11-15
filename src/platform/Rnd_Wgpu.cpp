@@ -354,10 +354,17 @@ void WgpuRnd::Init() {
         // MILO_WIDTH x MILO_HEIGHT, is the frame -- the virtual resolution
         // only defines the space viewports, UI and post measures are laid out
         // in, scaled to the frame (GpuDeviceDesc::outputFollowsTarget).
-        if (rndshape::kOutputFollowsTarget && mWidth > 0 && mHeight > 0 && presentScale) {
+        // Under the look's switch (LookSettings::outputFollowsTarget): Retail
+        // keeps the original's 1280x720 frame, scaled into the window.
+        if (rndshape::kOutputFollowsTarget && milo::Look().outputFollowsTarget && mWidth > 0 &&
+            mHeight > 0 && presentScale) {
             desc.outputFollowsTarget = true;
             desc.logicalWidth = mWidth;
             desc.logicalHeight = mHeight;
+            // The output's row cap (an integrated adapter's default, or
+            // MILO_OUTPUT_MAX_ROWS anywhere): OutputRowCap, gfx/GpuDevice.h.
+            desc.outputMaxRowsIntegrated = milo::Look().outputMaxRowsIntegrated;
+            desc.outputMaxRowsExplicit = milo::Look().outputMaxRowsExplicit;
         }
 
         if (!mGpu.Init(desc)) {

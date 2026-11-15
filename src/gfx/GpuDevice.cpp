@@ -100,6 +100,12 @@ float ResolveRenderScale(const GpuDeviceDesc& desc, bool discreteGpu, bool prese
     return s < 1.0f ? 1.0f : s;
 }
 
+int OutputRowCap(const GpuDeviceDesc& desc, bool discreteGpu, bool presentsToSurface) {
+    if (desc.outputMaxRowsExplicit >= 0) return desc.outputMaxRowsExplicit;
+    if (discreteGpu || !presentsToSurface) return 0;
+    return desc.outputMaxRowsIntegrated > 0 ? desc.outputMaxRowsIntegrated : 0;
+}
+
 FrameSizes ResolveFrameSizes(const GpuDeviceDesc& desc, bool discreteGpu, bool presentsToSurface,
                              int targetW, int targetH) {
     FrameSizes s;
@@ -107,6 +113,12 @@ FrameSizes ResolveFrameSizes(const GpuDeviceDesc& desc, bool discreteGpu, bool p
         const PresentRect r = FitPresentRect(desc.logicalWidth, desc.logicalHeight, targetW, targetH);
         s.outputW = r.w;
         s.outputH = r.h;
+        const int cap = OutputRowCap(desc, discreteGpu, presentsToSurface);
+        if (cap > 0 && s.outputH > cap) {
+            // The same shape, cap rows tall (1920x1080 for 16:9 at 1080).
+            s.outputW = (int)((double)r.w * cap / r.h + 0.5);
+            s.outputH = cap;
+        }
     } else if (presentsToSurface && desc.frameWidth > 0 && desc.frameHeight > 0) {
         s.outputW = desc.frameWidth;
         s.outputH = desc.frameHeight;
@@ -137,12 +149,17 @@ void GpuDevice::ApplyFrameSizes(const FrameSizes& s, bool atInit) {
     if (!atInit && s.drawnW == prevW && s.drawnH == prevH && OutputWidth() == prevOutW &&
         OutputHeight() == prevOutH)
         return;
+    const int rowCap = mFollowsTarget ? OutputRowCap(mSizeDesc, mDiscreteGpu, !mHeadless) : 0;
+    char capText[48] = "";
+    if (rowCap > 0)
+        snprintf(capText, sizeof(capText), ", output capped at %d rows%s", rowCap,
+                 mSizeDesc.outputMaxRowsExplicit >= 0 ? " (asked for)" : "");
     printf("GpuDevice: frame %dx%d out, render scale %.2f%s on a %s GPU (%dx%d drawn, logical "
-           "%dx%d)\n",
+           "%dx%d%s)\n",
            OutputWidth(), OutputHeight(), s.scale,
            mSizeDesc.renderScaleExplicit > 0.0f ? " (asked for)" : "",
            mDiscreteGpu ? "discrete" : "non-discrete", mWidth, mHeight, LogicalWidth(),
-           LogicalHeight());
+           LogicalHeight(), capText);
 }
 
 GpuDevice::~GpuDevice() {
