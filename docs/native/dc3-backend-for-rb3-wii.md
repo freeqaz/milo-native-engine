@@ -9377,7 +9377,7 @@ GPU run took the shared GPU lock, so other lanes were running on the box.
 
 ### 40.1 Counting every create
 
-- **The counters (`1cdd98c`).** `gfx/WgpuCallCount.cpp` wraps four Dawn
+- **The counters (`e14e052`).** `gfx/WgpuCallCount.cpp` wraps four Dawn
   entry points at link time on Linux
   (`-Wl,--wrap=wgpuDeviceCreateBuffer`, `…CreateTexture`,
   `wgpuTextureCreateView`, `wgpuDeviceCreateBindGroup`; `milo-engine`'s
@@ -9392,7 +9392,7 @@ GPU run took the shared GPU lock, so other lanes were running on the box.
   `sceneBgCreates`. `[GPUBG]` lists each frame window's creates by label,
   with their time.
 - **The frame-times CSV gains** `bg_ms`, `buf_ms`, `gtex_ms`, `view_ms`,
-  `acquire_ms`, `present_ms`, `file_n` and `file_ms` (file reads). `dcff281`
+  `acquire_ms`, `present_ms`, `file_n` and `file_ms` (file reads). `3a97586`
   adds:
   - `gpu_wait_ms`: the headless frames-in-flight wait in
     `GpuDevice::EndHeadlessFrame`;
@@ -9425,7 +9425,7 @@ GPU run took the shared GPU lock, so other lanes were running on the box.
   - On the web each create is a call out of wasm into the browser. Song:
     52.5 a frame, 0.221 ms a frame, 2112 ms a song. Song select 67.7 a
     frame (0.277 ms), results 90.5 a frame (0.325 ms), boot 38.1 a frame.
-- **Fix (`cd2f12f`).** The group comes from the renderer's bind-group cache
+- **Fix (`8f56282`).** The group comes from the renderer's bind-group cache
   (`mBindGroupCache.GetOrCreate`). The key is the layout plus every field of
   every entry, so the offset, the shadow view and the projected-light view
   are all in it. The ring is reset every frame, so a frame that writes its
