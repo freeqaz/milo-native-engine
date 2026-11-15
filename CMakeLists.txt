@@ -286,7 +286,9 @@ endif()
 # (gfx core ON, backends OFF) compiles exactly this set.
 set(MILO_ENGINE_GFX_SOURCES
     src/gfx/GpuDevice.cpp
+    src/gfx/FrameSizes.cpp      # the frame-size rules, shared with GpuDevice_Web.cpp
     src/gfx/PresentScale.cpp    # GpuDevice's fixed-frame present (dc3 PLAN H-18)
+    src/gfx/PipelineDiskCache.cpp # GpuDevice's persistent Dawn blob cache (native only)
     ${MILO_ENGINE_METAL_SOURCE}
     src/gfx/Screenshot.cpp
     src/gfx/PipelineManager.cpp
@@ -490,6 +492,7 @@ if(MILO_BUILD_WEB AND EMSCRIPTEN)
     list(FILTER MILO_ENGINE_FULL_SOURCES EXCLUDE REGEX "/CDReader_Native\\.cpp$")
     list(FILTER MILO_ENGINE_FULL_SOURCES EXCLUDE REGEX "/AudioDevice\\.cpp$")
     list(FILTER MILO_ENGINE_FULL_SOURCES EXCLUDE REGEX "/GpuDevice\\.cpp$")
+    list(FILTER MILO_ENGINE_FULL_SOURCES EXCLUDE REGEX "/PipelineDiskCache\\.cpp$")
     list(FILTER MILO_ENGINE_FULL_SOURCES EXCLUDE REGEX "/ImGuiBackend\\.cpp$")
 
     list(APPEND MILO_ENGINE_FULL_SOURCES ${MILO_ENGINE_WEB_PLATFORM_SOURCES})

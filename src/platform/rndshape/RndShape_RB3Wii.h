@@ -652,6 +652,14 @@ constexpr bool kMapsFollowTexWrap = false;
 // with a current RndPostProc, else 0 (no mask). The caller decides "main frame".
 // envFadeOutCancels: the DC3 shape's rect switch; not established for RB3-Wii, ignored.
 float BloomMaskScale(const MatView &m, bool envFadeOutCancels = true);
+// The material's half of that test (NgMat::AllowHDR), without the frame's
+// (retail chain on, a current RndPostProc): whether BloomMaskScale can ever be
+// non-zero for it. The load-time pipeline warm asks it, as the frame's half is
+// not knowable at load.
+bool AllowsBloomMask(const MatView &m);
+// The same with the blend and alpha write given (a state a property
+// animation keys) instead of read from the material.
+bool AllowsBloomMaskFor(const MatView &m, int blend, bool alphaWrite);
 // RB3 shades in gamma space: retail's standard.ps multiplies the texel by the
 // material colour and the ambient + diffuse lighting sum as stored and
 // authored, and writes the product straight to an 8-bit target

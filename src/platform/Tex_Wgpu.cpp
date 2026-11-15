@@ -13,6 +13,7 @@
 #include "platform/LookProfile.h"
 
 #include "gfx/Screenshot.h"
+#include "gfx/FrameCost.h"
 
 #include <unordered_map>
 #include <vector>
@@ -345,6 +346,7 @@ void RndTex::PresyncBitmap() {
     }
 
     // Create GPU texture from Milo bitmap
+    framecost::Scope cost(framecost::kTexture);
     int numMips = 0;
     RndBitmap* mip = mBitmap.nextMip();
     while (mip) {

@@ -61,17 +61,23 @@ static float BloomLumaScale(const RndPostProc *pp) {
     return (1.0f - thr >= 0.0f) ? 1.0f : 1.0f / thr;
 }
 
+bool AllowsBloomMaskFor(const MatView &m, int blend, bool alphaWrite) {
+    // NgMat::AllowHDR.
+    const RndMat *mat = m.Raw();
+    return !(blend == RndMat::kBlendSrcAlpha || blend == RndMat::kBlendSrcAlphaAdd
+             || blend == RndMat::kPreMultAlpha || mat->mAlphaCut || alphaWrite);
+}
+
+bool AllowsBloomMask(const MatView &m) {
+    return AllowsBloomMaskFor(m, (int)m.Raw()->GetBlend(), m.Raw()->mAlphaWrite);
+}
+
 float BloomMaskScale(const MatView &m, bool envFadeOutCancels) {
     (void)envFadeOutCancels;
     if (!RetailBloomMaskActive()) return 0.0f;
     const RndPostProc *pp = RndPostProc::Current();
     if (!pp) return 0.0f;
-    // NgMat::AllowHDR.
-    const RndMat *mat = m.Raw();
-    const RndMat::Blend b = mat->GetBlend();
-    if (b == RndMat::kBlendSrcAlpha || b == RndMat::kBlendSrcAlphaAdd
-        || b == RndMat::kPreMultAlpha || mat->mAlphaCut || mat->mAlphaWrite)
-        return 0.0f;
+    if (!AllowsBloomMask(m)) return 0.0f;
     return BloomLumaScale(pp);
 }
 
