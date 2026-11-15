@@ -4,6 +4,7 @@
 #include "gfx/GpuDevice.h"
 
 #include <cstring>
+#include "gfx/PipelineCount.h"
 
 namespace {
 
@@ -130,7 +131,7 @@ TexBlendPass::Pipelines* TexBlendPass::EnsurePipelines(wgpu::TextureFormat forma
     pd.vertex.bufferCount = 0;
     fs.entryPoint = "fs_base";
     ct.blend = nullptr;
-    p.base = dev.CreateRenderPipeline(&pd);
+    p.base = CreateCountedRenderPipeline(dev, &pd);
 
     // Unwrapped layers: kBlendSrcAlpha.
     wgpu::BlendState blend{};
@@ -153,10 +154,10 @@ TexBlendPass::Pipelines* TexBlendPass::EnsurePipelines(wgpu::TextureFormat forma
     pd.vertex.buffers = &vbl;
     pd.label = "TexBlendUnwrap64";
     vbl.arrayStride = 64;
-    p.unwrap64 = dev.CreateRenderPipeline(&pd);
+    p.unwrap64 = CreateCountedRenderPipeline(dev, &pd);
     pd.label = "TexBlendUnwrap88";
     vbl.arrayStride = 88;
-    p.unwrap88 = dev.CreateRenderPipeline(&pd);
+    p.unwrap88 = CreateCountedRenderPipeline(dev, &pd);
 
     if (!p.base || !p.unwrap64 || !p.unwrap88) return nullptr;
     mPipelines.push_back(p);

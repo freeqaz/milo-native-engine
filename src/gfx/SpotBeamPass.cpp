@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstring>
 #include <vector>
+#include "gfx/PipelineCount.h"
 
 namespace {
 
@@ -563,7 +564,7 @@ bool SpotBeamPass::EnsurePipelines(GpuDevice& gpu) {
             pd.primitive.cullMode = cull[s];
             vbl.arrayStride = strides[v];
             pd.label = entry[s];
-            mBeamPipe[s][v] = dev.CreateRenderPipeline(&pd);
+            mBeamPipe[s][v] = CreateCountedRenderPipeline(dev, &pd);
             if (!mBeamPipe[s][v]) {
                 mFailed = true;
                 return false;
@@ -581,7 +582,7 @@ bool SpotBeamPass::EnsurePipelines(GpuDevice& gpu) {
     bd.vertex.entryPoint = "vs_full";
     bd.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
     bd.fragment = &fs;
-    mBlurPipe = dev.CreateRenderPipeline(&bd);
+    mBlurPipe = CreateCountedRenderPipeline(dev, &bd);
     if (!mBlurPipe) {
         mFailed = true;
         return false;

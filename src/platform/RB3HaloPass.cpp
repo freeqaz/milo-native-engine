@@ -20,6 +20,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include "gfx/PipelineCount.h"
 
 // ===========================================================================
 // P1 additive-halo-only highway gem bloom (DEFAULT-ON; opt out RB3_HIGHWAY_BLOOM_OFF).
@@ -187,7 +188,7 @@ void BandRnd::EnsureHaloBlitPipeline() {
     pd.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
     pd.depthStencil = nullptr;
     pd.multisample.count = 1;
-    mHaloAddPipeline = mGpu.Device().CreateRenderPipeline(&pd);
+    mHaloAddPipeline = CreateCountedRenderPipeline(mGpu.Device(), &pd);
 
     mHaloBlitReady = true;
 }

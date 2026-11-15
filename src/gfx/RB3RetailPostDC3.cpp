@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include "gfx/PipelineCount.h"
 
 namespace {
 
@@ -728,7 +729,7 @@ void RB3RetailPost::EnsureDC3Pipelines(GpuDevice& gpu) {
         pd.vertex.entryPoint = "vs_full";
         pd.fragment = &frag;
         pd.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
-        return dev.CreateRenderPipeline(&pd);
+        return CreateCountedRenderPipeline(dev, &pd);
     };
     mDC3BloomTapsPipe = make("fs_bloom_taps", mDC3PassPL, mBloomFormat);
     mDC3StreakPipe = make("fs_streak", mDC3PassPL, mBloomFormat);
@@ -757,7 +758,7 @@ void RB3RetailPost::EnsureDC3Pipelines(GpuDevice& gpu) {
         pd.vertex.entryPoint = "vs_full";
         pd.fragment = &frag;
         pd.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
-        mDC3CompositeMBPipe = dev.CreateRenderPipeline(&pd);
+        mDC3CompositeMBPipe = CreateCountedRenderPipeline(dev, &pd);
     }
     mDC3Ready = true;
 }
@@ -793,7 +794,7 @@ void RB3RetailPost::EnsureDC3Family(int idx, GpuDevice& gpu) {
         pd.vertex.entryPoint = "vs_full";
         pd.fragment = &frag;
         pd.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
-        return gpu.Device().CreateRenderPipeline(&pd);
+        return CreateCountedRenderPipeline(gpu.Device(), &pd);
     };
     f.bloomBox = make("fs_bloom_box", "DC3LookBloomBox");
     f.bloomTent = make("fs_bloom_tent", "DC3LookBloomTent");
@@ -823,7 +824,7 @@ void RB3RetailPost::EnsureDC3Family(int idx, GpuDevice& gpu) {
         pd.vertex.entryPoint = "vs_full";
         pd.fragment = &frag;
         pd.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
-        return gpu.Device().CreateRenderPipeline(&pd);
+        return CreateCountedRenderPipeline(gpu.Device(), &pd);
     };
     f.combCopy = makeComb("fs_comb_copy", "DC3LookCombCopy", false);
     f.combAdd = makeComb("fs_comb_bspline", "DC3LookCombAdd", true);

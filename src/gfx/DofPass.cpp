@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include "gfx/PipelineCount.h"
 
 namespace {
 
@@ -299,7 +300,7 @@ void DofPass::EnsurePipelines(wgpu::TextureFormat format, GpuDevice& gpu) {
     mDownPipe = make(mPassPL, "fs_down4", "DofDownsample4x");
     mBlurPipe = make(mPassPL, "fs_blur", "DofBlur");
     mCompositePipe = make(mCompositePL, "fs_composite", "DofComposite");
-    mDownTentPipe = nullptr;           // Run's `enhanced`, on first use
+    mDownTentPipe = nullptr;           // `enhanced`: Prewarm or the first Run
     mCompositeBSplinePipe = nullptr;
     // The quarter and output textures are in `format` too.
     mW = mH = 0;
@@ -323,7 +324,13 @@ wgpu::RenderPipeline DofPass::MakePipe(const wgpu::PipelineLayout& layout, const
     pd.vertex.entryPoint = "vs_full";
     pd.fragment = &frag;
     pd.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
-    return dev.CreateRenderPipeline(&pd);
+    return CreateCountedRenderPipeline(dev, &pd);
+}
+
+void DofPass::EnsureEnhancedPipelines(GpuDevice& gpu) {
+    if (mDownTentPipe) return;
+    mDownTentPipe = MakePipe(mPassPL, "fs_down_tent", "DofDownsampleTent", gpu);
+    mCompositeBSplinePipe = MakePipe(mCompositePL, "fs_composite_bspline", "DofCompositeBSpline", gpu);
 }
 
 float DofPass::EnhancedTapScale(float v) {
@@ -412,10 +419,9 @@ bool DofPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& sceneV
     for (int k = 0; k < 2; k++) SceneBlurOffsets(k == 1, sceneW, sceneH, rs, widthScale, off[k]);
     float tapScale[2] = {1.0f, 1.0f};
     if (enhanced) {
-        if (!mDownTentPipe) {
-            mDownTentPipe = MakePipe(mPassPL, "fs_down_tent", "DofDownsampleTent", gpu);
-            mCompositeBSplinePipe = MakePipe(mCompositePL, "fs_composite_bspline", "DofCompositeBSpline", gpu);
-        }
+        // Warmed at Init when the look starts with postDofFilter on
+        // (Prewarm); a runtime switch to it compiles them here, once.
+        EnsureEnhancedPipelines(gpu);
         // The two passes' spread per axis, in quarter texels^2 (each pass the
         // mean of its 8 taps, so its variance is E[o^2] - E[o]^2).
         for (int a = 0; a < 2; a++) {

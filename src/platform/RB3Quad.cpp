@@ -15,6 +15,7 @@
 // kRB3PostProcShaderSource / PostProcUniforms (RB3PostProc.h, W1.4.S2).
 
 #include "platform/Rnd_Wgpu_RB3.h"
+#include "gfx/PipelineCount.h"
 #include "platform/RB3Quad.h"
 #include "platform/RB3PostProc.h"        // kRB3PostProcShaderSource / PostProcUniforms
 #include "platform/RB3MaterialBinder.h"  // GetRB3TexView / UploadRndTexIfNeeded
@@ -431,7 +432,7 @@ void BandRnd::DrawRect(const Hmx::Rect& rect, const Hmx::Color& paramColor,
                 cpd.depthStencil = hasDepth ? &cds : nullptr;
                 cpd.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
                 cpd.multisample.count = 1;
-                cpipe = mGpu.Device().CreateRenderPipeline(&cpd);
+                cpipe = CreateCountedRenderPipeline(mGpu.Device(), &cpd);
                 mComposePipelines[ckey] = cpipe;
             }
             if (cpipe) {
@@ -506,7 +507,7 @@ void BandRnd::DrawRect(const Hmx::Rect& rect, const Hmx::Color& paramColor,
             pd.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
             pd.multisample.count = 1;   // rb3 backend is single-sampled
 
-            pipe = mGpu.Device().CreateRenderPipeline(&pd);
+            pipe = CreateCountedRenderPipeline(mGpu.Device(), &pd);
             mQuadPipelines[pkey] = pipe;
         }
     }

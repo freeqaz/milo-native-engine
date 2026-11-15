@@ -249,15 +249,22 @@ static void ComputeMikkTangents(void* verts, const uint16_t* indices,
 // Helper: Upload mesh vertex/index data to GPU
 // ============================================================================
 
-// reuploadUnnamed: an unnamed mesh is taken for an RndText glyph page and
-// re-read on every call (EnsureMeshUploaded); EnsureSyncedMeshUploaded's
-// callers know theirs is not one, so only a sync invalidates it.
-static bool UploadMesh(RndMesh* mesh, bool reuploadUnnamed) {
+// A mesh is read once, and again only after RndMesh::Sync -> OnSync ->
+// InvalidateGpuMesh has cleared `uploaded` (or SetGeomOwner's caller did).
+// Named or not: an unnamed mesh used to be taken for an RndText glyph page and
+// re-read on every call, a guess older than the Sync wiring. Every writer of
+// a glyph page's vertices ends in Sync -- DC3 RndText::FontMap::
+// CleanupSyncMeshes / FontMap3d::CleanupSyncMeshes, rb3-xenon RndText::
+// SyncMeshes and SetColor -- and a scroll or a marquee moves only the page's
+// transform. Measured over menus, song select, a song and its results (DC3,
+// 1.54M re-reads under the guess): no re-read found geometry that differed
+// from the last upload (milo-native-engine docs/native/dc3-backend-for-rb3-wii.md
+// section 38).
+static bool UploadMesh(RndMesh* mesh) {
     if (!gWgpuRnd) return false;
 
-    bool isTextMesh = reuploadUnnamed && !mesh->Name()[0];
     auto it = sMeshGpuData.find(mesh);
-    if (it != sMeshGpuData.end() && it->second.uploaded && !isTextMesh) {
+    if (it != sMeshGpuData.end() && it->second.uploaded) {
         return true;
     }
 
@@ -397,6 +404,4 @@ static bool UploadMesh(RndMesh* mesh, bool reuploadUnnamed) {
     return true;
 }
 
-bool EnsureMeshUploaded(RndMesh* mesh) { return UploadMesh(mesh, true); }
-
-bool EnsureSyncedMeshUploaded(RndMesh* mesh) { return UploadMesh(mesh, false); }
+bool EnsureMeshUploaded(RndMesh* mesh) { return UploadMesh(mesh); }

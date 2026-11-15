@@ -59,11 +59,17 @@ public:
     const wgpu::TextureView& OutputView() const { return mOutView; }
     const wgpu::Texture& OutputTexture() const { return mOutTex; }
     void Terminate();
+    // Compiles the three pipelines for a `format` scene now, so the first
+    // Run() that finds the depth of field on does not (they used to compile on
+    // the first song frame, with the spot beam and point-test pipelines:
+    // docs/native/dc3-backend-for-rb3-wii.md section 38.2).
+    void Prewarm(wgpu::TextureFormat format, GpuDevice& gpu) { EnsurePipelines(format, gpu); }
     // Bind groups from `cache` (null: four created per run); dc3 PLAN H-66.
     void SetBindGroupCache(BindGroupCache* cache) { mBindGroups = cache; }
 
 private:
     void EnsurePipelines(wgpu::TextureFormat format, GpuDevice& gpu);
+    void EnsureEnhancedPipelines(GpuDevice& gpu);
     wgpu::RenderPipeline MakePipe(const wgpu::PipelineLayout& layout, const char* fs, const char* label,
                                   GpuDevice& gpu);
     void EnsureTextures(int w, int h, wgpu::TextureFormat format, GpuDevice& gpu);
@@ -80,7 +86,7 @@ private:
     wgpu::BindGroupLayout mCompositeBGL;  // scene, blur, depth (MS), sampler, params
     wgpu::PipelineLayout mPassPL, mCompositePL;
     wgpu::RenderPipeline mDownPipe, mBlurPipe, mCompositePipe;
-    wgpu::RenderPipeline mDownTentPipe, mCompositeBSplinePipe;   // `enhanced`, on first use
+    wgpu::RenderPipeline mDownTentPipe, mCompositeBSplinePipe;   // `enhanced`: Prewarm or first use
     wgpu::Sampler mSampler;               // linear, clamp
     // One buffer per pass: Queue::WriteBuffer lands at Submit, ahead of every
     // pass in the frame, so passes sharing a buffer would read the same data.

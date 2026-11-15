@@ -14,6 +14,7 @@
 
 #include <cstring>
 #include <cstdlib>
+#include "gfx/PipelineCount.h"
 
 struct PostProcUniforms {
     float contrast;
@@ -287,7 +288,7 @@ void PostProcPass::EnsurePipeline(GpuDevice& gpu) {
     pipeDesc.fragment = &frag;
     pipeDesc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
 
-    mPostProcPipeline = dev.CreateRenderPipeline(&pipeDesc);
+    mPostProcPipeline = CreateCountedRenderPipeline(dev, &pipeDesc);
     mPostProcReady = true;
 }
 
