@@ -1520,8 +1520,8 @@ the retail uniforms stay zero and the shader takes its existing branches.
 - **Tangent frame**: the normal map uses the vertex tangent as it comes and
   does not rotate it by the material's texgen transform. This only matters
   for normal-mapped materials with a rotated texgen.
-- **Normal detail**: dc3's `normDetail` map is not combined with the retail
-  normal map.
+- **Normal detail** (*done in dc3-retail-lighting.md §16, dc3 PLAN H-114*):
+  dc3's `normDetail` map was not combined with the retail normal map.
 - **The DC3 shape's colour read** (*done in 13.1*): `kCompressedColorIsArgb` is off for DC3,
   although DC3's `FillCompressedVertex` packs ARGB too. Changing it would
   change DC3 renders, so it belongs to a DC3 lane with DC3 references.
@@ -6810,6 +6810,49 @@ additive AllowHDR draws. Settling which one retail does needs a Xenia GPU
 trace or a hardware capture. It does not affect the rink, which has no
 additive floor draws, or any number in this section.
 
+**A levels-independent retail check (lane sharp, item 13a / PLAN H-112,
+2026-11-15).** A later survey re-ranked this row (Xenia +31 against native
++2.6 over far02's floor band) because it had not been screened with §37.10's
+rule. The re-check re-derived this section from a different starting point,
+and agrees with it. Evidence: dc3-decomp
+`archive/np-gfx-2026-11-14/lanes/sharp/item13/a/` (README first).
+
+- **The far02 foreground floor is `StageCarpet.mesh`.** A cumulative hide
+  bisect over all 347 meshes finds it (group 50–74 drops the band 99.9 → 8.5).
+  `curved_floor`, `curved_floor_refract` and `Rink*.mesh` change 0 pixels of
+  that band.
+- **Catchers hidden.** Both sides give the carpet's own mask the same bloom:
+  +13.9 on Xenia, +14.5 on native, with the bloom-off floor at 108.3 and 107.6.
+- **Catchers drawn.** The two sides move in opposite directions:
+  - native's mask view drops from 13.5/255 to 2.1/255 (the equation);
+  - Xenia's lift rises to +29.7 (factorless MAX).
+- **The retail check is the boombox's speaker cones.** They read 0.0 with
+  bloom off on both renderers, so under the full chain their level is the floor
+  mask's spill, and nothing else.
+
+  | cones (p1 luma) | catchers drawn | catchers hidden |
+  |---|---|---|
+  | Xenia | 40.3 | 21.2 |
+  | native | 10.5 | 22.2 |
+  | retail 01 / 02 / 04 / 05 | 9.5 / 1.5 / 13.6 / 3.5 | — |
+
+  Retail sits at or below native, and below even the catchers-hidden level.
+  Under Xenia's rule the retail cones would read about 40.
+- **The capture does not explain it.** The HUD card's purple reads 85,19,88
+  rendered against 88,23,87 and 86,21,84 in retail 01 and 02, a black lift of
+  2–4 levels. This check needs no assumption about capture levels or floor
+  content, which the contrast table above did need.
+- **Residual, not bloom (open, unranked).** In floor-only boxes with no
+  dancers, retail's dark carpet tiles sit higher relative to the light ones than
+  native's: p5/p95 is 0.20–0.28 in retail against 0.11–0.13 on native.
+  - The cones rule out bloom, the HUD rules out levels, and blur moves native
+    only to 0.156.
+  - Both renderers agree on the bloom-off floor at far02.
+  - So the residual is the carpet's own shading under retail's songs, lights or
+    cameras (specular, normal map, light preset), not this mechanism.
+  - The lower-third contrast above includes the dancers and reads the other
+    way. The two measures are not comparable.
+
 ### 35.5 Re-checks on the merged base (np-gfx engine `bd1da89`, dc3 `dfe16cb0f`)
 
 Binary `dc3-native-r5b`. It carries light round 4 (`kIntensifyScalesAlpha`)
@@ -8205,10 +8248,21 @@ region):
    9b: to within the census noise floor, 3.4% / dE 2.2), the row is Xenia's
    alpha rule, not a native bug. Record it and drop it.
 3. Only a row that survives the MAX build is worth chasing.
+4. The rule applies to survey rows and contact sheets as well as to census
+   rows. The rollerrink floor came back as a survey row a day after §35 had
+   settled it (§35.4, H-112). The cheapest retail arbiter is an object that
+   is black with bloom off (the boombox's speaker cones): its level under the
+   full chain is the spill alone, so it needs no assumption about capture
+   levels or content.
 
-**Two other Xenia artifacts** to screen for, from the same rounds:
+**Other Xenia artifacts** to screen for, from the same rounds:
 - Occlusion queries answer a fixed 1000 samples, so flares draw at about 1/80
   strength (§34). Do not compare flare-lit regions against default Xenia.
+- Houseparty's wood floor (`HSP_LivingRoomFloor.mat`, power 18) carries a
+  broad golden specular on Xenia that retail's stills do not show, and Xenia
+  needs about 11 times the power to narrow it to what native and the
+  microcode draw (dc3-retail-lighting.md §16.4, H-114). A "native is missing
+  a sheen" row on a spec-mapped floor needs a retail still first.
 - A DTA `set` on `{rnd get_selected_postproc}` does not persist on either side
   (above). Use a scratch override proc for any post-proc A/B.
 
