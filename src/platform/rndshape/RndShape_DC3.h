@@ -497,6 +497,33 @@ constexpr bool kGxTextureLayout = false;
 // rb3-xenon's Tex.cpp SyncBitmap is not decompiled, so it keeps the full chain.
 constexpr int kBitmapMaxMipLevels = kDC3RetailModel ? 2 : 0;
 
+// ---- alpha cut -------------------------------------------------------------
+// DC3's alpha cut is the alpha test and nothing else: NgMat::SetBasicState
+// (dc3 src/system/rndobj/Mat_NG.cpp) sets
+//     SetAlphaTestEnable(mAlphaCut);
+//     if (mAlphaCut) SetAlphaFunc(5, mAlphaThreshold);
+// and RndRenderState::SetAlphaFunc (0x82625D40) maps TestFunc 5 through its
+// table at 0x8208A138 to 4, the 360's D3DCMP_GREATER: a pixel passes when its
+// alpha is ABOVE the threshold, so a cut at 0 drops alpha-0 texels.
+// Nothing in the image calls D3DDevice_SetRenderState_AlphaToMaskEnable
+// (0x82BA2D60; its only references are the d3d9i state tables), so coverage
+// never follows alpha.
+//
+// kAlphaCutUsesCoverage: the cut also turns on hardware alpha-to-coverage
+// (coverage = output alpha) in a multisampled pass. rb3-xenon (also this shape)
+// keeps it: its NgMat is not decompiled. DC3 never does: with coverage on, a
+// texel of alpha a covers a of the samples, so a premultiplied glyph drawn at
+// alpha a resolved to a * a of its colour -- song select's list rows (the
+// Eagle-Light(47) font: alpha_cut 1, threshold 0, PreMultAlpha, faded to 0.5)
+// drew at ~0.6 of the original and every glyph lost its soft edge.
+// DC3's enhanced look (DC3_LOOK, platform/LookProfile.h) instead anti-aliases
+// the edge of an otherwise opaque cutout with a sharpened coverage mask
+// (MaterialCutCoverage, platform/MaterialSetup.h).
+constexpr bool kAlphaCutUsesCoverage = !kDC3RetailModel;
+// Whether the cut is retail's strict "alpha > threshold" (DC3) rather than the
+// native port's "alpha >= threshold" (rb3-xenon, unchanged).
+constexpr bool kAlphaTestGreater = kDC3RetailModel;
+
 // ---- draw modes ------------------------------------------------------------
 // The Rnd::Mode WorldReflection::DrawShowing sets while it draws the mirrored
 // world (DC3 world/Reflection.cpp: SetDrawMode((Rnd::Mode)8)).

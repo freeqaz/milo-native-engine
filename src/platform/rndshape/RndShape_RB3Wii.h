@@ -504,6 +504,12 @@ constexpr bool kGxTextureLayout = true;
 // (and the GX path regenerates its own chain). See RndShape_DC3.h for DC3's cap.
 constexpr int kBitmapMaxMipLevels = 0;
 
+// ---- alpha cut -------------------------------------------------------------
+// An alpha-cut material also gets alpha-to-coverage in a multisampled pass
+// (native behaviour kept; see RndShape_DC3.h for DC3's alpha-test-only rule).
+constexpr bool kAlphaCutUsesCoverage = true;
+constexpr bool kAlphaTestGreater = false;  // native ">= threshold" kept
+
 // ---- draw modes ------------------------------------------------------------
 // RB3's WorldReflection::DrawShowing sets mode 7 for the mirrored pass
 // (world/Reflection.cpp: SetDrawMode((Mode)7)); DC3 renumbered it to 8 when it
@@ -594,6 +600,10 @@ inline bool PostProcNoiseMap(const RndPostProc *, PostProcNoise &) { return fals
 constexpr bool kRetailPostChain = true;
 // DC3's retail chain (RndShape_DC3.h, np-gfx-post) is the DC3 shape's only.
 constexpr bool kDC3RetailPost = false;
+// DC3's retail material model (RndShape_DC3.h) is the DC3 shape's only; the
+// look profile (platform/LookProfile.cpp) keys DC3_LOOK on it, so rb3 resolves
+// LookProfile::Native and never reads the variable.
+constexpr bool kDC3RetailModel = false;
 // The DC3 shape's Rnd::DoPostProcess selection (blacklight override, then
 // set_postproc_override, then the registered post-proc). PostProcPass names it
 // under `if constexpr (kDC3RetailPost)`, which outside a template still needs

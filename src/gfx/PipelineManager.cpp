@@ -503,20 +503,27 @@ wgpu::RenderPipeline PipelineManager::CreatePipeline(const PipelineKey& key) {
         ? wgpu::ColorWriteMask::All
         : (wgpu::ColorWriteMask::Red | wgpu::ColorWriteMask::Green | wgpu::ColorWriteMask::Blue);
 
+    // Enhanced cutout coverage needs samples to cover; single-sampled it is
+    // the plain alpha test (fs_main).
+    const bool cutoutCoverage = key.cutoutCoverage && key.sampleCount > 1;
     wgpu::FragmentState fragment{};
     fragment.module = shader;
-    fragment.entryPoint = "fs_main";
+    fragment.entryPoint = cutoutCoverage ? "fs_cutout" : "fs_main";
     fragment.targetCount = 1;
     fragment.targets = &colorTarget;
     // The standard shader's alpha fringe fade is skipped under a blend that
     // ignores alpha and whose identity is white or "keep dst" rather than black
     // (standard_wgsl.inc kSkipFringeFade). Keyed on the pipeline's own blend,
     // so it holds for every draw path that reaches the standard pipeline.
-    wgpu::ConstantEntry skipFringeFade{};
-    skipFringeFade.key = "kSkipFringeFade";
-    skipFringeFade.value = BlendSkipsFringeFade((int)key.blend) ? 1.0 : 0.0;
-    fragment.constantCount = 1;
-    fragment.constants = &skipFringeFade;
+    wgpu::ConstantEntry constants[3]{};
+    constants[0].key = "kSkipFringeFade";
+    constants[0].value = BlendSkipsFringeFade((int)key.blend) ? 1.0 : 0.0;
+    constants[1].key = "kCutoutCoverage";
+    constants[1].value = cutoutCoverage ? 1.0 : 0.0;
+    constants[2].key = "kCutoutSamples";
+    constants[2].value = (double)key.sampleCount;
+    fragment.constantCount = 3;
+    fragment.constants = constants;
 
     wgpu::DepthStencilState ds{};
     if (key.hasDepth) {
