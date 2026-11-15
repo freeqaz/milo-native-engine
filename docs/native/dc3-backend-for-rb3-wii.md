@@ -8111,7 +8111,7 @@ region):
 
 Evidence: dc3-decomp `archive/np-gfx-2026-11-14/lanes/post/round10/`
 (`native/p3/`, `native/cost3/`, `measure/p2/`, `sheets/`). Guards:
-dc3 `native/tests/test_dc3_look_post.cpp` (`DC3LookPostTest`, 13 tests).
+dc3 `native/tests/test_dc3_look_post.cpp` (`DC3LookPostTest`, 12 tests) and the three enhanced arms of `DC3RetailPostGpuTest.SteadyFrameCreatesNoBindGroup`.
 
 **The switch.** Three `LookSettings` fields, each true under the Enhanced
 profile on every platform (web and integrated GPUs included) and false under
@@ -8434,7 +8434,7 @@ re-creates the banding the composite dither removed at 1×.
 - The bloom-source downsample (`mBloomSrcScale`, a third `PresentScale`) stays
   undithered. It feeds the 16-bit bloom chain, not the screen.
 
-**Tests** (`test_dc3_look_post.cpp`, scale-2 variants; 13 tests in the file):
+**Tests** (`test_dc3_look_post.cpp`, scale-2 variants; 12 tests in the file):
 - `RenderScaledPresentDitherKeepsLevelsAndFractions`:
   - flat 2×2 fills change in 0 / 0 bytes (present / readback);
   - block-mean error is 0.25 (worst 0.5) undithered and exactly 0 dithered;
