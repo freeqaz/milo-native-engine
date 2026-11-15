@@ -515,10 +515,11 @@ wgpu::RenderPipeline PipelineManager::CreatePipeline(const PipelineKey& key) {
     // The standard shader's alpha fringe fade is skipped under a blend that
     // ignores alpha and whose identity is white or "keep dst" rather than black
     // (standard_wgsl.inc kSkipFringeFade). Keyed on the pipeline's own blend,
-    // so it holds for every draw path that reaches the standard pipeline.
+    // so it holds for every draw path that reaches the standard pipeline. A
+    // consumer without the fade (SetAlphaFringeFade(false)) skips it everywhere.
     wgpu::ConstantEntry constants[5]{};
     constants[0].key = "kSkipFringeFade";
-    constants[0].value = BlendSkipsFringeFade((int)key.blend) ? 1.0 : 0.0;
+    constants[0].value = SkipsFringeFade((int)key.blend) ? 1.0 : 0.0;
     constants[1].key = "kCutoutCoverage";
     constants[1].value = cutoutCoverage ? 1.0 : 0.0;
     constants[2].key = "kCutoutSamples";

@@ -439,8 +439,11 @@ void PostProcPass::RunDC3Retail(wgpu::CommandEncoder& encoder, P* pp, int mode,
             rp.velocityDepthSamples = depthSamples;
         }
         // Which post-process grades the frame, once per change: the venue's
-        // comes through RndPostProc::Select, which logs nothing.
-        if (pp != mLoggedPostProc) {
+        // comes through RndPostProc::Select, which logs nothing. Not on an
+        // identity frame (mode 2, toggle_all_postprocs): no proc grades it and
+        // rp is unfilled, so the line would print c6=(0 0 0); the change is
+        // logged on the next graded frame instead.
+        if (pp != mLoggedPostProc && mode != 2) {
             mLoggedPostProc = pp;
             const char* dir = pp->Dir() ? pp->Dir()->Name() : "";
             fprintf(stderr, "DC3 post: %s (%s) bloom I=%.2f thr=%.2f streak=%d glare=%d c6=(%.2f %.2f %.2f) "

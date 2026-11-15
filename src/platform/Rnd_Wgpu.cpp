@@ -404,6 +404,8 @@ void WgpuRnd::InitGpuResources() {
     mPipelines.SetDynamicUniformOffsets(true);
     // Look profile: material texture LOD bias (0 unless the profile sets one).
     mPipelines.SetMaterialLodBias(milo::Look().lodBias);
+    // The consumer's alpha fringe fade (off for DC3: no retail counterpart).
+    mPipelines.SetAlphaFringeFade(rndshape::kAlphaFringeFade);
     // A render-scaled frame's text and HUD sample at output-pixel centres
     // (again each frame, BeginDrawing: a resize can change the scale).
     mPipelines.SetOutputPixelScale(mGpu.SupersampleScale());

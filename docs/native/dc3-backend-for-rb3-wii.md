@@ -7764,6 +7764,10 @@ isolations and match in raw:
 - **B**, streetside peak: `neon_upper` and the sky are darker;
 - **C**, dclive normal: colour difference 8–15 with post on.
 
+C is closed in §37.10 ("Residual C: closed", round 10 part 3). It is not in
+post: the grade and the streak term match the original, and the excess sits
+on boxes whose content already differs with post off.
+
 Evidence is in `archive/np-gfx-2026-11-14/lanes/post/round9/`:
 - `measure/cmp_base_max.txt` and `measure/cmp_base_fmax.txt`;
 - `measure/term_dE_summary.txt`, `measure/termtab_*.txt` and `measure/xpp_*.txt`;
@@ -8034,8 +8038,8 @@ The raw columns (`toggle_all_postprocs`) are the control: the two builds run
 the same code there, yet scene dE reads 1.8 and 0.3, so a run-to-run spread of
 about 1.5 dE sits under every cell. far01 improves by about that much and
 near01 not at all. The streak term now sits where the original puts it, but
-C (the sign +13%, wall_dots +15%, shelves_r) is not the streak's position, and
-it is still open. Evidence: `measure/cells/{base,half}-dclive-normal-*.json`,
+C (the sign +13%, wall_dots +15%, shelves_r) is not the streak's position.
+Part 3 below closes it. Evidence: `measure/cells/{base,half}-dclive-normal-*.json`,
 `measure_cells10.json`.
 
 **Open lead: the plain arm's 0.5.** Retail's `SetBloomBlurWeights` puts the
@@ -8056,7 +8060,94 @@ The plain arm is unchanged: changing `fs_blur` would change RB3, and nothing
 measured says which half of the claim is true. The next step is the vertical
 pass's constants in a GPU trace of the original (c138..c152 for the second
 pass). Evidence: `native/ovr1_{half,phalf}_p{14,16}_dclive_normal`,
-`native/ovr6_phalf_dclive_normal`.
+`native/ovr6_phalf_dclive_normal`. Part 3 below shows the plain arm never
+grades a dclive-normal world frame, so this question touches plain-arm frames
+only (the menus' `PostProc_local.pp` and override experiments). It stays open
+and is not a cause of residual C.
+
+**Residual C: closed (round 10 part 3).** C is not in post. Two leads were
+measured and refuted, and the excess sits on boxes whose content already
+differs with post off. Evidence: dc3-decomp
+`archive/np-gfx-2026-11-14/lanes/post/round10/p3c/` (`NOTES.txt`,
+`cmp_n2_x1.json`, `crop21_sign_dots_NX.png`, the Xenia frames in `xenia_x1/`,
+and the tools, with part 3b's in `tools/p3b/`).
+
+*Method.* dclive normal, omg, still performer, `DC3_LOOK=retail`,
+`DC3_DISPLAY_GAMMA=off`, far01 pinned at song 13.5 s on both sides. Each
+side pauses at four song times inside C's 14–33 s window: Xenia at
+16.180 / 21.188 / 26.163 / 31.279 s, native 0.04–0.05 s later. On each frozen
+frame, a deep copy of `world.pp` is installed as the post-proc override, and
+these states are shot in order:
+- s0: the copy as loaded (streak arm; beams are skipped on both sides);
+- s1: bloom intensity 0;
+- s2: s1 with a neutral colour xfm;
+- s3: s1 with saturation alone;
+- s4: s1 with contrast alone;
+- s5: `toggle_all_postprocs`, the raw control.
+
+The grade fields read back identical on both sides: saturation 8, contrast 5,
+hue/lightness/brightness 0, default levels. The native binary is unmodified
+engine `609b1ba` / dc3 `22b08a0ca` (xxh3 `29e74eb0d0f19879`). Boxes are the
+census `dclive_far01` set at 640x360. Native is registered to Xenia by the
+census's phase correlation on the s5 pair, and that one shift is used for
+every state.
+
+*Lead 1, refuted: the plain arm's tap positions (part 3b).* A scratch build
+toggled the plain arm between centred taps and retail's −6.5..+7.5 live on one
+frozen frame, at six song times from 12.2 to 29.7 s:
+- Game frames: 0–1 px changed, max ≤ 2, against a determinism control of
+  58–370 px.
+- Positive control, the same toggle under a plain-arm override: 736k–814k px
+  changed.
+- Every state selects `world.pp` with streak 1. `RunDC3Bloom`'s streak arm
+  never calls `blurPass`.
+
+So the plain arm never grades these frames. One earlier set, on an older
+scratch base at song ~3 s, moved 37,777 px. It did not reproduce in 11 later
+sets and is recorded as unexplained.
+
+*Lead 2, refuted: the colour grade (part 3c).* Per-pixel transfer curves
+(out − in per input bin, single-term overrides; see "Reading Xenia" below):
+
+| input | contrast N / X / model k·x+off | saturation N / X | full grade N / X |
+|---|---|---|---|
+| 11 | −6.00 / −6.00 / −6.07 | −0.36 / −0.32 | −6.43 / −6.40 |
+| 56 | −3.81 / −3.81 / −3.75 | −1.75 / −1.98 | −5.61 / −5.85 |
+| 142 | +0.68 / +0.68 / +0.75 | +0.36 / +0.22 | +1.12 / +0.98 |
+| 205 | +4.03 / +4.01 / +4.04 | +4.61 / +4.38 | +8.93 / +8.66 |
+
+- Contrast agrees to 0.03 levels on both sides; saturation and the full grade
+  to ≤ 0.3. s2 equals s5 exactly on both sides.
+- Registered stable pool (every non-emissive box) at s1, N − X per frame:
+  −1.0 / 0.0 / +2.6 / −0.6% luma, dE ≤ 1.0. That equals the raw control and is
+  under the floor (3.4% / dE 2.2).
+- The round-10 "s1 is 15% brighter natively" reading came from frames not
+  matched in song time. It does not survive time matching.
+
+*The streak term matches too.* Streak-only delta s0 − s1, in mean luma levels,
+N / X:
+- stable pool: 28.17 / 28.17; per channel, (21.0, 30.0, 31.5) vs
+  (20.7, 30.0, 31.5);
+- per box, ratios 0.95–1.07 (floor_l, floor_c, floor_edge, steps_l, steps_r,
+  boombox, wall_l, backwall_c);
+- shelves_r: 1.16, but that comes from the 26 s frame alone (62.5 / 35.4),
+  where raw shelves_r already reads +107%. The other three frames read
+  1.05 / 1.00 / 0.98.
+
+*Where the excess lives.* Three boxes already differ with post off, and bloom
+scales the difference:
+- **sign** (streak ratio 1.50). Native's lamp flare above the sign is much
+  brighter and larger. It is area-tested, so this is Xenia's fixed
+  1000-sample occlusion answer (§34; dc3-retail-lighting.md §13.1). Xenia's
+  debug text band ("GLITCH ... ACTIVE game_screen") also crosses the top of
+  the box.
+- **wall_dots** (streak ratio 1.23). The dot board strobes; raw native reads
+  +35..+49% on the four frames. A phase-independent test of that board is the
+  follow-up: sample it every ~0.25 s over the same 20 s with post off, and
+  compare the distributions.
+- **shelves_r**, the 26 s frame above.
+
+Nothing in post changes for C.
 
 **Consumers, passes, cost.** No new pass, texture or getenv; the offsets are
 uniforms the streak passes already take, so the cost is unchanged.
@@ -8110,6 +8201,28 @@ region):
   strength (§34). Do not compare flare-lit regions against default Xenia.
 - A DTA `set` on `{rnd get_selected_postproc}` does not persist on either side
   (above). Use a scratch override proc for any post-proc A/B.
+
+**Three rules for the measurement itself**, from round 10 part 3 (residual C
+above; also in dc3-retail-lighting.md §13.5):
+1. **Run native with `DC3_DISPLAY_GAMMA=off`.** Native captures are POST-ramp
+   by default (the log says so: "DC3 display ramp: gamma 0.850 ... captures
+   are POST-ramp"). Xenia's front buffer is pre-ramp. With the ramp on, a
+   correct grade term reads as a contrast error of the exact form
+   R(k·R⁻¹(x) + off) − x, with R(x) = 255·(x/256)^0.85. Part 3c's first native
+   run read −9.4 levels at input 11 against Xenia's −6.0, which is that
+   formula and not a bug. The run is kept as `native/n1_POSTRAMP_instrument_wrong`.
+2. **On a venue with strobing content, a gap from frames not matched in song
+   time is not a measurement.** Round 10's s1 luma read native ~15% brighter
+   on unmatched frames. Paused at matched song times (±0.05 s), the same
+   comparison is −1.0..+2.6%.
+3. **Test a grade term with per-pixel transfer curves.** Override a copy of
+   the proc so that only one term is active, freeze the frame, and plot
+   out − in per input bin for each channel. This needs no registration and
+   ignores content differences, because each pixel is compared with itself.
+   Then compare the curve with the term's own formula on both sides (for
+   ColorXfm contrast: k = 1/(1 − c·0.9921875) with c = contrast/100, and
+   off = (1 − k)/2 of full scale; contrast 5 gives k = 1.052, off = −6.7 levels). Tool:
+   `p3c/tools/xfer3c.py`.
 
 ### 37.11 Round 10 part 2: the enhanced post look (`DC3_LOOK=enhanced`)
 
@@ -8428,7 +8541,7 @@ not measured.
 | full-res velocity (`DC3VelocityBuffer`, w/2) | the velocity blur's edge against a depth step is 2×2-blocky | 4× the camera pass (≈75 µs worst case now) | low: it shows on fast camera moves only (§33) |
 | 16-bit spot beam target (`SpotBeamPass`, RGBA8, as retail's A8R8G8B8) | beam gradients over a dark, smoky venue band | the beam target at 8 B/px | spot lane |
 | 16-bit scene colour | real HDR into the post, instead of retail's pseudo-HDR mask | doubles the 4× MSAA colour traffic (≈15 → 30 MB per write at 720p) | light lane; it changes the look far beyond precision, so it needs its own A/B against retail footage |
-| plain-arm half-texel (retail offsets −6.5..7.5) | a correctness lead (§37.10), not an enhancement | 0 (uniforms) | this lane, Residual C |
+| plain-arm half-texel (retail offsets −6.5..7.5) | a correctness lead (§37.10), not an enhancement; plain-arm frames only (menus' `PostProc_local.pp`) | 0 (uniforms) | this lane; open, but refuted as a cause of residual C (§37.10 part 3) |
 | MSAA sample count | native 4× against the original's 1 sample (§37.8) | — | owner call; `kMSAASamples` is shared |
 
 #### Scale 2 and the box-dither follow-up
