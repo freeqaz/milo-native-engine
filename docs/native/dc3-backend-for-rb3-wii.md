@@ -8106,3 +8106,393 @@ region):
   strength (§34). Do not compare flare-lit regions against default Xenia.
 - A DTA `set` on `{rnd get_selected_postproc}` does not persist on either side
   (above). Use a scratch override proc for any post-proc A/B.
+
+### 37.11 Round 10 part 2: the enhanced post look (`DC3_LOOK=enhanced`)
+
+Evidence: dc3-decomp `archive/np-gfx-2026-11-14/lanes/post/round10/`
+(`native/p3/`, `native/cost3/`, `measure/p2/`, `sheets/`). Guards:
+dc3 `native/tests/test_dc3_look_post.cpp` (`DC3LookPostTest`, 13 tests).
+
+**The switch.** Three `LookSettings` fields, each true under the Enhanced
+profile on every platform (web and integrated GPUs included) and false under
+Retail:
+
+| field | what it changes |
+|---|---|
+| `postPrecision` | bloom sets in RGBA16Float, saturated at 1 after every pass, with retail's dead zone kept as a knee; a static sub-level dither on the composite's 8-bit write |
+| `postBloomFilter` | the 8×8 tent downsample; the plain arm's sets combined once with a B-spline upsample; the streak arm's set1 from an alias-free box |
+| `postDofFilter` | the DOF downsample as the same tent; a B-spline composite at the same radius |
+
+They act in the **world grade only**: the post run before the HUD and UI draw
+(`WgpuRnd::FlushPostProcessingForOverlay` → `PostProcPass::SetWorldGrade(true)`).
+A post that runs over the UI (a menu graded at `EndDrawing`) and the identity
+copy (mode 2) stay retail, so UI, HUD and text cannot change. Under Retail
+every byte of every frame is the round-10 part-1 chain.
+`{rnd native_look post_retail|post_enhanced}` flips these three fields alone
+(`milo::SetLookPostForInspection`), which is how every frozen-frame A/B below
+was taken: `cheat_pause`, then retail, enhanced, retail again on the same frame
+(the control must read 0).
+
+#### (a) Precision: 16-bit sets, retail's dead zone, a static dither
+
+**What retail does.** `NgPostProc::BloomTextureSet` makes the sets
+A8R8G8B8 (`TheRnd.Bpp()`). Every pass resolves to 8 bits, which does two things:
+- it **saturates** at 1. The 16-bit sets keep that (`kSat`, a WGSL override
+  constant, per pass), so a hot surface blooms no wider than on retail;
+- it **rounds**. A value under half a level becomes 0 on every pass.
+
+**The dead zone is part of the look.** The rounding removes a dim surface's own
+glow (colour × mask under 0.5/255) and the halo tails, pass after pass.
+Plain linear 16-bit sets keep both. On dci far01 that lifted the dark floor by
++1.2 levels (box (0,560)–(300,700), frozen frames), and a uniform field at
+colour 40 / mask 3 bloomed by 4.0 levels where retail blooms 0.000. The
+shipped sets keep the dead zone as a smooth knee instead of a step:
+
+```wgsl
+s * smoothstep(0.25 / 255, 0.6 / 255, s)   // s = the saturated pass output
+```
+
+The thresholds came from a sweep (knee on the first pass only, or on every
+pass; edges 0.25–0.6). [0.25, 0.6] on every pass is the closest match to
+retail's plain-arm term. The dci floor now reads +0.39 (11.25 → 11.64), and the
+whole frame +0.35–0.4.
+
+| `DC3LookPostTest` | retail | shipped (16F + knee) | 16F linear (test only) |
+|---|---|---|---|
+| uniform dim surface (colour 40, mask 3): bloom term mean | 0.000 | 0.000 | 4.000 |
+| sparse dots at 255: bloom term mean | 9.767 | 9.383 | 9.731 |
+| sparse dots at 64 | 0.101 | 0.094 | 2.314 |
+| glow ramp: steps of 2+ levels (5 rows × 560 px) | 154 | 0 | |
+| glow ramp: max step | 2 | 1 | |
+| white field, glare arm: peak | 102 | 102 (max diff 0) | |
+
+The linear family (`RetailPostParams::enhLinear`) exists for tests only. The
+filter test below measures the filters with it on both sides, because a knee
+truncates both sides' tails and would hide a filter defect. The knee has its
+own test (`SixteenBitSetsKeepRetailsDeadZone`).
+
+**Dither.** Interleaved-gradient noise, triangular, ±1 LSB, added at the
+composite's 8-bit write (`cu.enh.y = 1/255`). It is static (a function of the
+pixel position only), so a still image does not crawl. Over a flat 99.6 field:
+mean 99.955, sd 0.447, range 99..101, and two runs are byte-equal. Not in the
+mask/bloom inspection views. The UI post never dithers.
+
+#### (b) Bloom filter: the same energy and extent, without the box's alias
+
+- **Downsample.** Retail's `downsample_4x` is a 4×4 box on a 4× decimation, so
+  the result depends on where the content sits within the 4-pixel block. The
+  enhanced downsample is an 8×8 tent (weights 1,3,3,1 per axis), taken as 16
+  bilinear taps at ±0.9167 and ±2.75 texels from the block centre
+  `floor(pos)·4 + 2` (weights 0.375 / 0.125).
+- **Plain arm.** One combine pass at w/4 into an RGBA16Float target
+  (`DC3LookBloomComb`, passes `DC3LookCombCopy` / `DC3LookCombAdd`): set0
+  copied, sets 1 and 2 B-spline upsampled and added (One+One). The composite
+  reads the combined target bilinearly, with sets 1 and 2 bound black. That is
+  two passes at w/4 instead of a 16-tap B-spline per set per full-res pixel.
+- **Streak arm.** The seven-tap streak passes are unchanged. Set1 is a box4 of
+  set0's bloom output, which no longer depends on sub-block position. The
+  composite reads the streak sets bilinearly, as retail does: a B-spline would
+  widen their thin perpendicular extent.
+- **Glare arm.** Set0 B-spline upsampled in the composite (`cu.enh.x`).
+
+Over 64 sub-pixel phases of a moving dot (`EnhancedBloomKeepsEnergyAndExtentAndStopsWobbling`,
+both sides linear):
+
+| arm | energy | energy CV | extent sx / sy (px) | centroid wobble (px) |
+|---|---|---|---|---|
+| plain | ×0.999 | 0.0006 → 0.0002 | 44.59 → 45.03 / 44.71 → 45.13 | 0.364 → 0.010 |
+| streak | ×0.991 | 1.4815 → 0.0021 | 6.60 → 7.27 / 27.65 → 26.26 | 7.049 → 2.315 |
+
+**The streak arm's trade-off.** Retail's streak on a small source *blinks*: its
+energy swings with the source's position in the 4×4 block (CV 1.48), and its
+average over positions is what the eye integrates in motion. Enhanced holds that
+average at every position. The price is a cross-streak width +10% (sx 6.60 →
+7.27 px). With the knee on, a sparse dot's streak is dimmer than retail's
+time average, because the knee drops the low taps that retail's lucky phases
+keep.
+
+**The sparse-dot case in the game** (`archive/…/round10/native/p3/sdot_sheet_4x.png`).
+This is the dclive light board top left, on the streak arm, in the orange state of
+Xenia's frame 2058. The crop is x 90–250, y 50–170 at 4× nearest. The top row is
+paused: Xenia, then native retail, then native enhanced (frozen, set 1). The bottom
+row is the time average.
+
+- **Paused.** Enhanced differs from retail by mean |d| 2.09 over the crop, and the
+  control reads 0. The crop mean goes 71.7 → 69.6; Xenia's is 57.6. Each dot
+  keeps its size. The halo is a little softer and dimmer, as the knee predicts.
+- **The board blinks in the original.** Xenia's crop mean over frames 1902–2058
+  steps 14.8 → 48.3 → 33.5 → 57.6: the lights strobe with the music. So the
+  time average is over content that changes, and natively the camera also pans
+  (the bottom row's dots are smeared).
+- **Blink number.** `sdot_blink.json` takes the second difference of the crop's
+  mean over 6 consecutive shots, which removes a linear pan or fade, relative to
+  the mean, as a median over 4 windows per look:
+  - composite: retail 19.3%, enhanced 22.7%;
+  - bloom term alone (`DC3_RETAIL_POST=bloom`): retail 28.5%, enhanced 18.7%.
+
+  Per-window values range from 9% to 53% for both looks. The content strobe
+  dominates, and the look effect is below this noise in both directions.
+- Per-pixel temporal SD of the bloom term is 7.09 → 5.21. Energy CV is
+  0.177 → 0.115, but the windows are different song moments.
+- The controlled stability number stays the pinned sub-pixel test above:
+  streak energy CV 1.48 → 0.002.
+
+#### (c) Depth of field: the same radius, no creases
+
+`DofPass` downsamples with the same 16-tap tent and composites with a B-spline
+reconstruction of the quarter-res blur. The B-spline adds its own blur
+(variance 1/6 texel² per axis, the tent 3/32), so the blur taps are pulled in
+by `EnhancedTapScale(v) = sqrt(1 − (3/32 + 1/6)/v)` (clamped 0.5..1), which
+keeps the radius. `EnhancedDofKeepsTheRadiusWithoutCreases`: energy ×1.000,
+blur radius 6.74 → 6.72 px, creases (the profile's curvature concentrated on
+one phase of 4; 0.25 = none) 0.519 → 0.328.
+
+On intro shots (`sheets/p3_dci_intro_dof.png`, frozen) the near dancer's outline
+against the blurred crowd loses retail's 2×2 block steps. Box means move by
++0.3–0.5 (dci) and −0.02..+0.14 (throneroom); the control reads 0.
+
+#### UI, HUD and text
+
+- `UiPostIgnoresTheLook`: the UI post under enhanced differs from retail in 0
+  bytes (both arms), and the world grade under retail in 0 bytes. The world
+  grade under enhanced differs in 87,113 / 104,739 of 147,456 bytes (plain /
+  streak), so the test is not vacuous.
+- dclive far01, three frozen sets: the four HUD card interiors (8,904 to
+  15,035 px each) differ by 0. Only the border rows of two cards read 1: their
+  anti-aliased edges blend the world under them.
+- **Song select at 1x** (6 retail and 6 enhanced shots, interleaved). The world
+  backdrop *is* graded by the enhanced chain, because `DC3LookBloom` runs during
+  song select. The comparison is restricted to the pixels identical across all
+  retail shots (10%, since the backdrop animates), split into flat 3×3 and
+  near-white ink:
+  - the opaque player box: flat 1,054 px, 0 changed;
+  - ink on the translucent bars: 6 px change by 1 ("MODE SELECT", blended over
+    the world);
+  - flat pixels on the translucent top bar change (1,700), because the bar is
+    translucent over the world grade.
+  - Script: `menucard.py`.
+
+#### Real frames (shipped binary, frozen A/B)
+
+| shot | control max / mean | A/B mean \|d\| | box means, retail → enhanced |
+|---|---|---|---|
+| dci far01, 3 sets | 0–6 / ≤1e-5 | 0.55–0.56 | floor 11.25 → 11.64; wall +0.4–0.9 |
+| dclive far01, 3 sets | 1 / ≈0 | 0.92–1.11 | whole frame within ±0.3 |
+| dci intro, 2 sets | 1 / 0 | 0.59–0.61 | +0.3–0.5 |
+| throneroom intro, 2 sets | 0–2 / ≤3e-4 | 0.46–0.54 | −0.02..+0.14 |
+
+The bloom term alone (`DC3_RETAIL_POST=bloom`, frozen, two sets each):
+- dci: mean 23.43 → 23.82 and 21.26 → 21.70. Roughness (mean |Δ²|) −5%.
+  Retail's vertical box-alias columns in the floor glow are gone
+  (`sheets/p2_dci_bloomterm.png`).
+- dclive: mean 60.57 → 61.11 and 48.56 → 48.63. Roughness −2%.
+
+**Temporal stability (live play).** `nstab10.sh` alternates the post looks
+every window of one run (dclive far01, 8 windows of 6 shots). The first run
+read retail hf 2.46 against enhanced 3.48, with the boombox speakers at
+1.3 against 9.4. The two controls show that this gap follows the window
+parity, not the look:
+
+| run (dclive far01) | odd windows | even windows | whole-frame hf odd / even | boombox hf odd / even |
+|---|---|---|---|---|
+| first run | retail | enhanced | 2.46 / 3.48 | 1.31 / 9.40 |
+| null control | retail | retail | 2.80 / 2.28 | 4.51 / 1.37 |
+| swapped | enhanced | retail | 2.69 / 2.71 | 1.55 / 4.81 |
+
+With the same look in both windows, the null control has a gap of the same
+size, and it lands on the other parity. The speakers pump on the beat, and the
+2 s window cadence locks each parity to a beat phase. The shimmer on still
+pixels (`hf_still`, the temporal high-pass where the frame does not move) is
+the number the look could change. It reads enhanced/retail +12% (first run),
+−7% (swapped) and −3% between the null control's two retail parities. So any
+look effect on live-play stability is under the run's ±10% noise.
+
+The pinned-shot number is the sub-pixel test above. A dot moving in 1/8 px
+steps over 64 phases:
+- plain arm: centroid wobble 0.364 → 0.010 px;
+- streak arm: energy CV 1.48 → 0.002.
+
+#### Cost
+
+All on the RTX 3090, 720p, headless 1x, with `MILO_GPU_TIMERS=1`.
+
+Separate runs were contaminated by other lanes' GPU jobs on the same card: dci
+retail read 0.128 ms against enhanced 0.114 ms. So the yardstick is an
+**interleaved A/B** (`tools/costab10.sh`): one run switches the look every 2 s,
+and each 1 s timer window is classed by its pass labels (`DC3LookBloom` exists
+only under the enhanced chain). Medians:
+
+| item (interleaved) | dci (plain arm) post ms | dclive (streak arm) post ms |
+|---|---|---|
+| all three | 0.075 → 0.102 (+0.027) | 0.056 → 0.073 (+0.017) |
+| `postBloomFilter` alone | 0.0751 → 0.103 (+0.028) | 0.0585 → 0.0684 (+0.010) |
+| `postPrecision` alone | 0.107 → 0.090 (contended run, below its noise) | 0.0536 → 0.0587 (+0.005) |
+
+- Bloom passes: dci 0.048 → 0.072 ms, dclive 0.042 → 0.055 ms. The plain arm's
+  extra cost is the tent's 16 taps and the two combine passes.
+- Composite: dci 0.0172 → 0.0182 ms, dclive 0.0151 → 0.0181 ms.
+- **DOF composite**, measured at 1x per DOF frame: 0.0157 → 0.0216 ms
+  (dci, interleaved). A separate dclive run read 0.0156 → 0.021 ms.
+- All DOF passes: ≈0.034 → 0.040 ms.
+- Effects that are off cost nothing. No enhanced pipeline or target is created
+  under Retail.
+- CPU, encoding one world grade with the game's bind group cache (no per-frame
+  `CreateBindGroup`; `SteadyFrameCreatesNoBindGroup` runs the three
+  enhanced arms on the same cache):
+  - retail 19–28 µs;
+  - enhanced plain arm 26–30 µs;
+  - enhanced streak arm 18–26 µs.
+
+**890M (integrated, ≤0.36 ms post budget).** This is an inference; nothing was
+measured on the card. Scaling the whole chain by the bandwidth ratio (×7.8)
+already puts retail at 0.58 ms. The 3090's small passes are launch-bound, so
+that ratio overstates the cost and cannot be the yardstick.
+
+A bytes-moved model gives:
+- enhanced adds about 5–6 MB a frame: the 16-bit sets at 8 B/px over ~10
+  passes, the w/4 combine, and the tent's wider read, which the texture cache
+  mostly absorbs;
+- at ~120 GB/s that is ≈0.05 ms;
+- the B-spline DOF composite is ≈+0.04 ms of ALU, on DOF frames only;
+- retail is ≈0.1–0.15 ms by the same model, so enhanced is ≈0.15–0.25 ms.
+
+Integrated GPUs also stay at render scale 1 (`renderScaleIntegrated = 1`). So
+the three fields stay on for every platform, with no per-platform default. If a
+measurement on the card disagrees, the first thing to drop is
+`postBloomFilter`, which on dci is the whole of the +0.027. It is one
+`LookSettings` field, so a per-platform default would be one line in
+`SettingsFor`.
+
+#### Sabotages (each fails at least one test)
+
+| sabotage | caught by |
+|---|---|
+| world grade ignored (enhanced over the UI) | `UiPostIgnoresTheLook` |
+| 16-bit sets made 8-bit | `EnhancedBloom…`, `…DeadZone`, `…Staircase` |
+| `kSat` off | `…DeadZone`, `…StillSaturate…` |
+| no dither | `DitherIsStaticAndSubLevel` |
+| dither animated per frame | `DitherIsStaticAndSubLevel` |
+| streak set1 back to the retail taps | `EnhancedBloom…` |
+| tent back to box | `EnhancedBloom…` |
+| B-spline weights unnormalised | `EnhancedBloom…` |
+| dead zone removed | `…DeadZone` |
+| combine pass drops set2 | `EnhancedBloom…`, `…DeadZone` |
+| combine pass bilinear instead of B-spline | `EnhancedBloom…` (plain wobble 0.037 > 0.02) |
+| tent taps with flat weights | `EnhancedBloom…` (plain wobble 0.067 > 0.02) |
+| no DOF radius compensation | `EnhancedDof…` |
+| DOF composite bilinear | `EnhancedDof…` |
+| `post_precision` token setting the bloom filter instead | `NativeLookPostTokensSetTheirOwnField` |
+| DOF spread measured in the 1x quarter's texels at 2x (`texels = qw / rs`) | `RenderScaledDofKeepsTheEnhancedRadius` (5.82 against 6.09 px) |
+| the np-gfx merge losing `rp.enhPrecision` / `enhFilter` | `RenderScaledWorldGradeKeepsTheEnhancedBloom`, `UiPostIgnoresTheLook` |
+| the enhanced bloom reading the 2x scene, not the output-sized copy | `RenderScaledWorldGrade…` (streak halo 21,148 → 16,263) |
+| the readback's box filter undithered | `RenderScaledPresentDither…` (block means 0.5 off) |
+| the box dither keyed on the target position | `RenderScaledPresentDither…` (letterboxed present differs, 6,144 bytes) |
+| the box dither ±1 level (threshold −0.5..1.5) | `RenderScaledPresentDither…` (flat 2×2s changed, 6,093) |
+| `WgpuRnd::BeginDrawing` not asking for the dither | `PresentDitherFollowsPostPrecision` |
+| the combine target recreated every frame | `DC3RetailPostGpuTest.SteadyFrameCreatesNoBindGroup` (1 group per steady frame) |
+
+The tent-weights and combine-bilinear sabotages survived until the test gained
+absolute plain-arm bounds (wobble < 0.02 px, energy CV < 0.001); the relative
+bounds alone passed them. The target-position sabotage survived a 4 px
+letterbox (a multiple of the pattern's period); the test letterboxes 3 px.
+
+#### (d) Candidates not done, with costs
+
+Costs are INFERRED (bytes moved, and the per-pass cost measured above),
+not measured.
+
+| candidate | what it fixes | cost | owner / judgement |
+|---|---|---|---|
+| 16-bit DOF quarter targets (`DofPass` follows the 8-bit surface format) | the intro background is a 320×180 8-bit blur, upsampled 4×; smooth backgrounds band at the blur's levels, and the composite's dither cannot restore them | two 320×180 targets at 8 B/px: +0.9 MB per DOF frame, ≈1 µs on the 3090; 0 when DOF is off | this lane; the next cheap step |
+| 16-bit motion-blur feedback (`DC3PostProcessBuffer`, RGBA8) | an 8-bit feedback at k = 0.6 cannot decay the last level: c + 0.6·(prev − c) rounds a 1-level residual back to 1, so a fading ghost stalls one level above the scene (arithmetic, not observed; retail's 8-bit feedback does the same) | 2 × 720p at 8 B/px instead of 4: +7.4 MB per frame where motion blur runs | value only where a world-grade proc has motion blur; dclive and dci `world.pp` have none (the menus' `PostProc_local` is graded by the UI post, which stays retail) |
+| full-res velocity (`DC3VelocityBuffer`, w/2) | the velocity blur's edge against a depth step is 2×2-blocky | 4× the camera pass (≈75 µs worst case now) | low: it shows on fast camera moves only (§33) |
+| 16-bit spot beam target (`SpotBeamPass`, RGBA8, as retail's A8R8G8B8) | beam gradients over a dark, smoky venue band | the beam target at 8 B/px | spot lane |
+| 16-bit scene colour | real HDR into the post, instead of retail's pseudo-HDR mask | doubles the 4× MSAA colour traffic (≈15 → 30 MB per write at 720p) | light lane; it changes the look far beyond precision, so it needs its own A/B against retail footage |
+| plain-arm half-texel (retail offsets −6.5..7.5) | a correctness lead (§37.10), not an enhancement | 0 (uniforms) | this lane, Residual C |
+| MSAA sample count | native 4× against the original's 1 sample (§37.8) | — | owner call; `kMSAASamples` is shared |
+
+#### Scale 2 and the box-dither follow-up
+
+np-gfx's `MILO_RENDER_SCALE` renders the scene and UI at 2× and box-filters
+2×2 → 1× twice: into the swapchain (`mPresentScale`) and into the readback
+(`mReadbackScale`). The box mean of four 8-bit samples has quarter-level
+fractions, and `fs_box` rounds each one to the nearest level. That rounding
+re-creates the banding the composite dither removed at 1×.
+
+**`fs_box_dither`** (`PresentScale.cpp`, pipeline `PresentScaleBoxDither`):
+- writes `floor(c·255 + t)/255`;
+- t is a 4×4 Bayer threshold `(m + 0.5)/16`, strictly inside (0,1), so an
+  exact 8-bit level stays exact and a 4×4 block's mean is preserved exactly;
+- the pattern is keyed on the **output** pixel (`floor(uv / (4·o))`), not the
+  target position, so the letterboxed present and the readback agree;
+- the pattern is fixed: no frame index, no animation;
+- it is used only when boxing into RGBA8/BGRA8Unorm. The pipeline is created
+  lazily, and at scale 1 it is never created or bound.
+- `GpuDevice::SetPresentDither` drives both instances. `WgpuRnd::BeginDrawing`
+  sets it from `Look().postPrecision` every frame, so a look switch takes effect
+  on the next frame.
+- The bloom-source downsample (`mBloomSrcScale`, a third `PresentScale`) stays
+  undithered. It feeds the 16-bit bloom chain, not the screen.
+
+**Tests** (`test_dc3_look_post.cpp`, scale-2 variants; 13 tests in the file):
+- `RenderScaledPresentDitherKeepsLevelsAndFractions`:
+  - flat 2×2 fills change in 0 / 0 bytes (present / readback);
+  - block-mean error is 0.25 (worst 0.5) undithered and exactly 0 dithered;
+  - frame to frame 0 bytes;
+  - present (letterboxed 3 px) against readback 0 bytes.
+- `PresentDitherFollowsPostPrecision`: the dither is on under enhanced, off
+  under retail, and follows a mid-run look switch.
+- `RenderScaledWorldGradeKeepsTheEnhancedBloom` compares 1× with 2×:
+  - plain arm: mean |1×−2×| 0.402; halo energy 21,747 / 21,735; |enh−ret|
+    0.789 / 0.790;
+  - streak arm: 0.376; 21,148 / 21,163; 0.493 / 0.465.
+- `RenderScaledDofKeepsTheEnhancedRadius`: blur radius 6.09 → 6.08 px (1.5%
+  tolerance).
+
+**In-song HUD at 2×** (dclive far01, three frozen sets, `s2/hudmask*.py`).
+The mask is the opaque-UI pixels of the 1× run (flat 3×3, and not changed by
+the look at 1×), applied to the 2× A/B:
+
+| region | mask px per set | changed at 2× | max |
+|---|---|---|---|
+| score card interior | 698–699 | 0 | 0 |
+| Dap, Dap Side and next card interiors | 0–7 | 0 | 0 |
+| score digit ink (magenta, 430–438 px) | — | 5–7 at 2× (1–2 at 1×); the 3×3 core 0–1 | 1 |
+
+The only changed pixels in the whole HUD-side mask (429 of 1,701 in set 1) are
+saturated world highlights behind the HUD (255,234,209). They were clipped and
+unchanged at 1×, and the 2× world grade reaches them. Control (retail again) is
+0 in every box.
+
+**Song select at 2×** (`menucard.py`, same split as 1× above):
+- the opaque player box: flat 1,054 px, 0 changed (1× 0);
+- body icon: flat 10 changed of 735 (1× 4);
+- bar ink: 6 px by ≤ 2 (1× 6 px by ≤ 1);
+- flat pixels on the translucent top bar: 2,272 changed (1× 1,700). This is
+  the world grade showing through the bar at both scales.
+
+Whole-frame static-pixel change share: 12.6% at 2×, 9.2% at 1×.
+
+**Cost at 2×** (dci, interleaved, 3090, medians):
+
+| pass | retail → enhanced ms |
+|---|---|
+| post total | 0.141 → 0.189 (+0.047) |
+| bloom | 0.047 → 0.0745 |
+| composite | 0.055 → 0.0635 |
+| `DC3BloomSourceDownsample` | 0.015 → 0.016 |
+| DOF composite per DOF frame | 0.0486 → 0.0721 (+0.024) |
+| DOF total per DOF frame | ≈0.083 → 0.107 |
+
+- The box dither is not in the timer windows (it runs at present and readback).
+  It reads the same four texels as `fs_box` and adds about a dozen ALU ops per
+  output pixel: INFERRED ≤ 1 µs at 720p on the 3090.
+- At 1×, the DOF composite costs 0.0157 → 0.0216 ms per DOF frame.
+
+**DOF at 2× — recommendation: keep the B-spline.**
+- Scale 2 is only chosen on discrete adapters; integrated adapters stay at 1×.
+- +0.024 ms on DOF frames only, which are intros and transitions.
+- The 2× radius test passes.
+- Falling back to bilinear at 2× would bring back the creases. The 2× scene is
+  box-filtered to 1× afterwards, but the quarter-res blur's 4× upsample steps
+  are 8 output px wide and survive the box.

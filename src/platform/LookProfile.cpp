@@ -30,7 +30,9 @@ LookSettings SettingsFor(LookProfile p) {
         s.renderScaleIntegrated = 1.0f;
     }
     // np-gfx-post round 10 (LookProfile.h): every platform, web and
-    // integrated GPUs included; the three cost 0.0x ms together (doc §37.11).
+    // integrated GPUs included. Measured on a 3090 at 1x, the three together add
+    // 0.017-0.027 ms to the post chain, +0.006 ms on DOF frames; the 890M estimate
+    // is 0.15-0.25 ms of a 0.36 ms budget (doc §37.11).
     const bool enh = p == LookProfile::Enhanced;
     s.postPrecision = enh;
     s.postBloomFilter = enh;
