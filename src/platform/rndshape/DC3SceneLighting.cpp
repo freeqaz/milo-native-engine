@@ -46,6 +46,7 @@
 #include "obj/Dir.h"
 #include "rndobj/Dir.h"
 #include "rndobj/Group.h"
+#include "rndobj/Cam.h"
 #include "rndobj/Lit.h"
 #include "rndobj/Mat.h"
 #include "rndobj/Mesh.h"
@@ -85,6 +86,11 @@ namespace {
 struct ProjShadowState {
     RndLight *frameLights[rndshape::kMaxProjShadowMaps] = {};   // this frame's; never kept across frames
     float frameClips[rndshape::kMaxProjShadowMaps][16] = {};
+    // The camera frustum current when the light was first selected this frame
+    // (retail: RndCam::Current() during NgLight::CheckShadowMap), which every
+    // nested caster draw is culled against; hasFrustum false = no camera.
+    Frustum frameFrustums[rndshape::kMaxProjShadowMaps];
+    bool frameHasFrustum[rndshape::kMaxProjShadowMaps] = {};
     int frameCount = 0;
     const void *mapLights[rndshape::kMaxProjShadowMaps] = {};   // whose casters each tile holds (identity only)
     int mapCount = 0;
@@ -181,7 +187,7 @@ bool ProjShadowCasterClip(L *l, float out[16]) {
 }
 
 template <class E>
-void WriteDC3ProjShadow(SceneUniforms &s, E *env) {
+void WriteDC3ProjShadow(SceneUniforms &s, E *env, RndCam *cam) {
     using LightT = std::remove_pointer_t<decltype(*env->LightsReal().begin())>;
     LightT *proj = nullptr;
     for (auto it = env->LightsReal().begin(); it != env->LightsReal().end(); ++it) {
@@ -228,6 +234,8 @@ void WriteDC3ProjShadow(SceneUniforms &s, E *env) {
         float casterClip[16];
         if (!ProjShadowCasterClip(proj, casterClip)) memcpy(casterClip, clip, sizeof(clip));
         memcpy(sProj.frameClips[sProj.frameCount], casterClip, sizeof(casterClip));
+        sProj.frameHasFrustum[sProj.frameCount] = cam != nullptr;
+        if (cam) sProj.frameFrustums[sProj.frameCount] = cam->WorldFrustum();
         sProj.frameCount++;
     }
 }
@@ -256,14 +264,24 @@ struct CharShadowMembers : C {
 //    character's own draw list plus the current LOD's opaque list. Prop
 //    meshes nobody lists, the other LODs and the translucent lists are not
 //    casters. (All four DC3 dancers carry a shadow group of *_lod meshes.)
-// The image also culls each nested draw against the camera's frustum; that
-// is not reproduced (a caster out of view still shadows the floor in view).
+// Every nested draw goes through RndDrawable::Draw, which skips a drawable
+// whose world sphere is wholly outside RndCam::Current()'s frustum, and
+// RenderShadows does not select a light camera: the casters are culled
+// against the view being drawn, so a dancer out of view casts no shadow onto
+// the floor in view. `cull` is that frustum (null: no camera, no cull).
 // Templated on the mesh type so the Character branch is instantiated only for
 // dc3-decomp: rb3-xenon compiles this TU with its own Character, whose shadow
 // is a single RndGroup.
 template <class Mesh>
-void AddOcclusionDraw(RndDrawable *d, std::vector<RndMesh *> &out, int depth) {
+void AddOcclusionDraw(RndDrawable *d, std::vector<RndMesh *> &out, int depth, const Frustum *cull) {
     if (!d || depth > 8 || !d->Showing()) return;
+    // RndDrawable::Draw: a nested draw whose world sphere is wholly outside
+    // the current camera's frustum draws nothing. The shadow object itself
+    // (depth 0) is drawn with DrawShowing and is not tested.
+    if (depth > 0 && cull) {
+        Sphere sphere;
+        if (d->MakeWorldSphere(sphere, false) && sphere > *cull) return;
+    }
     if (Mesh *m = dynamic_cast<Mesh *>(d)) {
         out.push_back(m);
         return;
@@ -276,42 +294,42 @@ void AddOcclusionDraw(RndDrawable *d, std::vector<RndMesh *> &out, int depth) {
             const auto &shadow = c->*CharShadowMembers<CharT>::Shadow();
             if (shadow.size() != 0) {
                 for (auto it = shadow.begin(); it != shadow.end(); ++it)
-                    AddOcclusionDraw<Mesh>(it->Obj(), out, depth + 1);
+                    AddOcclusionDraw<Mesh>(it->Obj(), out, depth + 1, cull);
                 return;
             }
             for (int i = 0; i < c->NumDraws(); i++)
-                AddOcclusionDraw<Mesh>(c->GetDraw(i), out, depth + 1);
+                AddOcclusionDraw<Mesh>(c->GetDraw(i), out, depth + 1, cull);
             if (c->NumLods() != 0) {
                 int lod = c->LastLod();
                 lod = lod < 0 ? 0 : (lod >= c->NumLods() ? c->NumLods() - 1 : lod);
                 const auto &opaque = c->GetLod(lod).mOpaque;
                 for (auto it = opaque.begin(); it != opaque.end(); ++it)
-                    AddOcclusionDraw<Mesh>(it->Obj(), out, depth + 1);
+                    AddOcclusionDraw<Mesh>(it->Obj(), out, depth + 1, cull);
             }
             return;
         }
     }
     if (RndGroup *g = dynamic_cast<RndGroup *>(d)) {
-        for (RndDrawable *child : g->Draws()) AddOcclusionDraw<Mesh>(child, out, depth + 1);
+        for (RndDrawable *child : g->Draws()) AddOcclusionDraw<Mesh>(child, out, depth + 1, cull);
         return;
     }
     if (RndDir *dir = dynamic_cast<RndDir *>(d)) {
         for (int i = 0; i < dir->NumDraws(); i++)
-            AddOcclusionDraw<Mesh>(dir->GetDraw(i), out, depth + 1);
+            AddOcclusionDraw<Mesh>(dir->GetDraw(i), out, depth + 1, cull);
     }
 }
 
 template <class L>
-bool CollectDC3Casters(rndshape::ProjShadowCasters &out, L *light) {
+bool CollectDC3Casters(rndshape::ProjShadowCasters &out, L *light, const Frustum *cull) {
     auto *list = light->GetShadowOverride();
     if (!list || list->size() == 0) list = &(light->*LightShadowObjects<L>::Member());
     for (auto it = list->begin(); it != list->end(); ++it)
-        AddOcclusionDraw<RndMesh>(*it, out.meshes, 0);
+        AddOcclusionDraw<RndMesh>(*it, out.meshes, 0, cull);
     return true;
 }
 
 template <class E>
-void WriteDC3Retail(SceneUniforms &s, E *env) {
+void WriteDC3Retail(SceneUniforms &s, E *env, RndCam *cam) {
     s.retailLighting = 2.0f;      // 2: DC3's form of the retail model
     s.pointFalloffMode = 2.0f;
     s.venueHighlightLumaMode = 0.0f;
@@ -372,7 +390,7 @@ void WriteDC3Retail(SceneUniforms &s, E *env) {
     }
     s.numPointLights = (float)numPoint;
 
-    WriteDC3ProjShadow(s, env);
+    WriteDC3ProjShadow(s, env, cam);
 
     // NgEnviron::Select: PS c109..c111 = the colour transform when
     // use_color_adjust (option bit 21, CalcShaderOpts reads the environ's
@@ -419,10 +437,10 @@ void FillDC3Approx(E *env, M *mesh, float box[6][4], float retail[4]) {
 
 namespace rndshape {
 
-bool WriteSceneLighting(SceneUniforms &s, RndCam *) {
+bool WriteSceneLighting(SceneUniforms &s, RndCam *cam) {
     if constexpr (kDC3RetailModel) {
         WriteDC3Retail(s, static_cast<typename DependentEnvT<SceneUniforms>::type *>(
-                              RndEnviron::Current()));
+                              RndEnviron::Current()), cam);
         return true;
     } else {
         (void)s;
@@ -458,7 +476,8 @@ int CollectProjShadowCasterSets(std::vector<ProjShadowCasters> &out) {
             ProjShadowCasters set;
             memcpy(set.clipFromWorld, sProj.frameClips[i], sizeof(set.clipFromWorld));
             set.tile = i;
-            CollectDC3Casters(set, sProj.frameLights[i]);
+            CollectDC3Casters(set, sProj.frameLights[i],
+                              sProj.frameHasFrustum[i] ? &sProj.frameFrustums[i] : nullptr);
             out.push_back(std::move(set));
             sProj.mapLights[i] = sProj.frameLights[i];
             sProj.frameLights[i] = nullptr;
