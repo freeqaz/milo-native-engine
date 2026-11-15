@@ -2171,7 +2171,7 @@
   "MILO_GPU_TIMERS": {
     "class": "perf",
     "owner": "render/perf",
-    "faithfulStatus": "n/a: log-only. MILO_GPU_TIMERS=1 (truthy) requests WebGPU timestamp-query when the adapter offers it, disables Dawn's timestamp_quantization toggle, and times every render pass (begin/end timestamps, resolved and read back asynchronously, never waited on); one [GPUTIME] window line + one [GPUTIME] pass= line per pass name every ~1 s (per-frame mean/max ms, passes per frame, frame pass sum and span), latest window via GpuTimers::LatestJson (dc3 GET /api/gputime). Unset = no query set, no buffer, no line. Adapter without the feature / web build: one 'GPU timers unavailable: <reason>' line. No draw change [GpuTimers.cpp, GpuDevice.cpp]",
+    "faithfulStatus": "n/a: log-only. MILO_GPU_TIMERS=1 (truthy) requests WebGPU timestamp-query when the adapter offers it, disables Dawn's timestamp_quantization toggle, and times every render pass (begin/end timestamps, resolved and read back asynchronously, never waited on); one [GPUTIME] window line + one [GPUTIME] pass= line per pass name every ~1 s (per-frame mean/max ms, passes per frame, frame pass sum and span), latest window via GpuTimers::LatestJson (dc3 GET /api/gputime). Unset = no query set, no buffer, no line. Adapter without the feature / web build: one 'GPU timers unavailable: <reason>' line. Also a render-target census: one '[GPUTARGET] <label> <w>x<h> samples=<n>' line per distinct RenderAttachment texture GpuDevice::CreateTexture makes (GpuTimers::NoteTarget; what sizes each pass draws at, e.g. at a 1080p output). No draw change [GpuTimers.cpp, GpuDevice.cpp]",
     "default": "off",
     "read": "truthy"
   },
