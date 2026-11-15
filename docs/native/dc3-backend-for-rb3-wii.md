@@ -8260,6 +8260,15 @@ here would not transfer.
     warm against 25–37 ms without it, in the window). The init warm itself
     took 23 ms (101 ms under load).
   - On the handheld, the counts are what transfer.
+  - **Web (dc3-web release, headless Chromium, WebGPU over ANGLE/Vulkan).**
+    The same warm runs at Init. It costs **0.9–1.3 ms** of main-thread time
+    in two boots. `createRenderPipeline` returns at once in the browser, and
+    the compile happens in the GPU process. Init runs after the async adapter
+    request, about 25 ms before the first screen. Chrome's violation reports
+    (CDP `Log.startViolationsReport`: long tasks over 50 ms, blocked
+    events) carried none, and no console warning mentions a pipeline.
+    So the web build keeps the warm and is not gated. This box did not test
+    whether that instrument can fire, so "none" means none reported.
 
 - **What still compiles on the venue frame and mid-song (MEASURED, not
   fixed).** F0 itself still compiles 14–15 material pipelines
