@@ -515,14 +515,18 @@ wgpu::RenderPipeline PipelineManager::CreatePipeline(const PipelineKey& key) {
     // ignores alpha and whose identity is white or "keep dst" rather than black
     // (standard_wgsl.inc kSkipFringeFade). Keyed on the pipeline's own blend,
     // so it holds for every draw path that reaches the standard pipeline.
-    wgpu::ConstantEntry constants[3]{};
+    wgpu::ConstantEntry constants[5]{};
     constants[0].key = "kSkipFringeFade";
     constants[0].value = BlendSkipsFringeFade((int)key.blend) ? 1.0 : 0.0;
     constants[1].key = "kCutoutCoverage";
     constants[1].value = cutoutCoverage ? 1.0 : 0.0;
     constants[2].key = "kCutoutSamples";
     constants[2].value = (double)key.sampleCount;
-    fragment.constantCount = 3;
+    constants[3].key = "kLodBias";
+    constants[3].value = LodBiasFor(key);
+    constants[4].key = "kOutputPixelScale";
+    constants[4].value = OutputPixelScaleFor(key);
+    fragment.constantCount = 5;
     fragment.constants = constants;
 
     wgpu::DepthStencilState ds{};
@@ -658,6 +662,9 @@ void PipelineManager::BuildPreWarmKeys(wgpu::TextureFormat mainFmt,
                     key.alphaWrite = pass.alphaWrite;
                     key.alphaToCoverage = false;
                     key.depthBias = 0;
+                    // World draws in the depth passes take the look's LOD
+                    // bias (Mesh_Wgpu); the RT pass's overlay-class draws do not.
+                    key.lodBias = pass.hasDepth && mMaterialLodBias != 0.0f;
                     mPreWarmKeys.push_back(key);
                 }
             }

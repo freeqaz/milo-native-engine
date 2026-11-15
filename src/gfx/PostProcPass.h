@@ -1,6 +1,7 @@
 #pragma once
 #include "gfx/BloomPass.h"
 #include "gfx/DofPass.h"
+#include "gfx/PresentScale.h"
 #include "gfx/RB3RetailPost.h"
 #include <webgpu/webgpu_cpp.h>
 #include <chrono>
@@ -72,7 +73,7 @@ private:
     template <class P>
     void RunDC3Retail(wgpu::CommandEncoder& encoder, P* pp, int mode,
                       const wgpu::TextureView& sceneView, const wgpu::TextureView& intermediateView,
-                      int w, int h, const wgpu::TextureView& depthView, uint32_t depthSamples,
+                      const wgpu::Texture& intermediateTex, int w, int h, const wgpu::TextureView& depthView, uint32_t depthSamples,
                       wgpu::TextureView& frameView, const wgpu::TextureView& spotBeams,
                       const wgpu::TextureView& spotFog, GpuDevice& gpu);
     const RndPostProc* mLoggedPostProc = nullptr;   // the last post-process logged
@@ -80,6 +81,12 @@ private:
     BloomPass mBloom;
     DofPass mDof;
     RB3RetailPost mRetail;   // RB3 (kRetailPostChain) and DC3 (kDC3RetailPost) retail chains
+    // Render scale (GpuDeviceDesc::renderScale): the scene box-filtered to its
+    // output size, the bloom chain's source, so DC3's bloom keeps its output-
+    // pixel footprint on a supersampled frame. Created only when scaled.
+    PresentScale mBloomSrcScale;
+    wgpu::Texture mBloomSrcTex;
+    wgpu::TextureView mBloomSrcView;
     wgpu::TextureView mSpotBeams, mSpotFog;  // SetSpotBeams, this frame only
     float mSpotK[3] = {};
     // SetVelocity: this frame's (pending until Run) and the previous call's VP.

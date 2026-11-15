@@ -49,3 +49,5 @@ struct GpuTexDebugInfo {
     unsigned long long createCount = 0;
 };
 GpuTexDebugInfo GetGpuTexDebugInfo(RndTex* tex);
+// Mip levels of a cube texture's GPU copy (-1 = not uploaded). Debug/tests.
+int GetGpuCubeTexMipLevels(RndCubeTex* cubeTex);

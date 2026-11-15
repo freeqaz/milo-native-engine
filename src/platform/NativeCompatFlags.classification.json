@@ -2251,5 +2251,12 @@
     "faithfulStatus": "live: the DC3 look profile (platform/LookProfile.h), read once. Unset or 'enhanced' = native polish on (the default); 'retail' = the original hardware's behaviour for parity measurement against Xenia/retail; anything else warns and uses enhanced. One switch that every enhancement hangs off (LookSettings), so no per-feature env var. DC3 retail model only (rndshape::kDC3RetailModel); rb3-xenon and rb3 (kDC3RetailModel false in their shapes) resolve profile 'native' and never read it [platform/LookProfile.cpp]",
     "default": "on",
     "read": "value"
+  },
+  "MILO_RENDER_SCALE": {
+    "class": "perf",
+    "owner": "render",
+    "faithfulStatus": "live: an explicit internal render scale (supersampling) for the DC3 look (platform/LookProfile.h, LookSettings::renderScaleExplicit), read once with DC3_LOOK. Unset = the profile default (enhanced: 2 on a discrete GPU when presenting to a window, 1 integrated and headless; retail: 1). A number is clamped to [1, 2] and honoured under either DC3 profile, headless included, on any adapter class, and not held to the default's 3840x2160 cap: 1 = the enhanced look without supersampling, 1.5 / 2 to try supersampling on a handheld. Not a number > 0: warns, profile default. DC3 retail model only (rndshape::kDC3RetailModel); rb3 and rb3-xenon never read it [platform/LookProfile.cpp; gfx/GpuDevice.cpp ResolveRenderScale]",
+    "default": "off",
+    "read": "value"
   }
 }

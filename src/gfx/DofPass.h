@@ -31,6 +31,12 @@ public:
     // vertical = false gives the horizontal pass, true the vertical one.
     static void RetailBlurOffsets(bool vertical, int blurW, int blurH, float blurWidthScale,
                                   float out[8][2]);
+    // The offsets Run uses for a sceneW x sceneH scene: RetailBlurOffsets for
+    // its quarter-size blur target -- the quarter of the OUTPUT size when the
+    // scene is a render-scaled frame (renderScale > 1, GpuDevice::
+    // RenderScaleFor), so the blur spans the part of the screen it does at 1x.
+    static void SceneBlurOffsets(bool vertical, int sceneW, int sceneH, float renderScale,
+                                 float blurWidthScale, float out[8][2]);
 
     // When TheDOFProc is enabled: blurs `sceneView` (sceneW x sceneH, format
     // `sceneFormat`) by `depthView` (a depth-only view of the scene depth,
