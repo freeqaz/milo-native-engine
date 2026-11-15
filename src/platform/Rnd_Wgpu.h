@@ -591,6 +591,7 @@ public:
     // -1 elsewhere): an involuntary switch is the box taking the CPU away.
     void WriteFrameTimes();
     FILE* mFrameTimes = nullptr;
+    bool mFrameTimesStdout = false;  // MILO_FRAME_TIMES=- : rows on stdout, "[FT] " prefixed
     double mFrameTimesBegin = 0.0;    // wall s, BeginDrawing
     double mFrameTimesBeginCpu = 0.0; // thread CPU s, BeginDrawing
     double mFrameTimesLastEnd = 0.0;  // wall s, previous EndDrawing
