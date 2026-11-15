@@ -7296,6 +7296,10 @@ Reading it:
 
 ### 37.4 Softness (MEASURED, no change)
 
+**Superseded by §37.8, item 3:** on matched frames native is softer, mostly
+from its 4× MSAA against the original's 1-sample world target. The
+conclusion below that it is not the post chain still holds.
+
 The Xenia lane measured native sharpness at 8–13 against Xenia's 13–17. Its
 own JSON (`xenia/round2/tables/json`) shows that this is not the post chain
 and not uniform:
@@ -7445,3 +7449,419 @@ commits after it change no code. Results:
   (`27da180`). Round 7 had 0 against round 6, and round 6 had 0 against
   round 5.
 - `native_compat_census.py check`: OK, 455 flags, regen clean.
+
+### 37.8 Round 9: intro colour, DOF strength, softness
+
+Base: np-gfx engine `cf53b48` / dc3 `fc41cc8e6` (with dc3 main
+`b5a1b7d2f`), merged into the lane (engine `256492a`, dc3 `5c94f8f42`).
+Binaries:
+- `dc3-native-r9` (XXH3 `7d846e37c8670216`) on that base;
+- `dc3-native-r9b` (`b267789a4b5f9575`) with the fix below;
+- `dc3-native-r9msaa1` (`31abc09896b6e38e`), an experiment only:
+  `kMSAASamples = 1` in a scratch engine tree, never committed.
+
+Xenia: the original debug XEX, same forced shots
+(`{$hamdirector force_shot …}`). Evidence:
+`archive/np-gfx-2026-11-14/lanes/post/round9/` (`measure/`, `sheets/`,
+`tools/`, `ucode/`).
+
+#### Item 1: intro colour (MEASURED; not reproduced on the current base)
+
+The round-6 sheet's "Xenia warmer and darker" is none of the three
+candidates.
+- **Not a fade-in (a).** Xenia's houseparty series
+  (`measure/hp_colour_series.txt`, region means every 0.13 s) is flat
+  from the cut at 2.5 s. cu02: scene Y 46.5–48.6, B/G 0.57–0.59, floor
+  27.2–28.5. venue05 before it moves only with its spotlights.
+- **Not a post-proc difference (b).** `tools/probe_cmp.py` reads the
+  shot, `world.pp`, the selected post proc and every light on both sides at
+  the same song times (1.4, 3.7, 5.1, 9.0 s;
+  `measure/hp_probe_cmp.txt`, `measure/tr_probe_cmp.txt`):
+  - the selected proc (`rnd get_selected_postproc`, the one `DoPost` runs)
+    is `world.pp` on both sides at every probe, and every colour,
+    intensity, threshold, hue, contrast, saturation and blend field is
+    identical (houseparty: sat 8, con 5, bloom 1.60);
+  - `blend_amount` is 0, so there is no second proc to blend toward.
+- **Not a lighting preset (c).** Every light's colour and intensity is
+  identical. The one exception is houseparty's flickering TV light, which
+  is animated.
+
+What it is: the round-6 sheet's native frames
+(`round6/dof/hpF_after`) predate np-gfx's `Hmx::Color::Unpack` and
+spotlight-clear fixes (§37.6). Xenia did not change between round 6 and
+round 9: cu02 scene Y 48.3 → 48.6, B/G 0.585 → 0.588.
+
+Region means, cu02 at 4.0 s (`measure/hp_colour_series.txt`; the
+16-cell grids are in `measure/r6sheet_pairs.txt` and
+`measure/hp_r9_pairs.txt`):
+
+| frames | scene Y | sat | R/G | B/G | top band Y | floor Y |
+|---|---|---|---|---|---|---|
+| Xenia (r9) | 48.6 | 0.560 | 1.18 | 0.59 | 74.1 | 28.0 |
+| native, round-6 sheet | 50.7 | 0.596 | 1.19 | 0.54 | 61.8 | 45.1 |
+| native, r9 | 47.0 | 0.562 | 1.17 | 0.58 | 71.3 | 27.6 |
+
+- The round-6 frames had stale spotlight pools: the floor read 45 against
+  Xenia's 28, and the walls and crowd read 62 against 74.
+- On the round-6 frames, native was the *more* saturated and the yellower
+  by B/G (0.54 vs 0.59). The impression of a cast on Xenia is the spread
+  between a hot floor and a dimmed back wall on native.
+- On r9 every grid cell's luma ratio Xenia/native is 0.97–1.12 and
+  chroma agrees to ±0.05. venue05 at 1.6 s: scene Y 48.5 vs 45.4, sat 0.670
+  vs 0.676, B/G 0.583 vs 0.594; the cells that differ track the moving
+  spotlights.
+- **Second venue: throneroom** (`measure/tr_pairs.txt`,
+  `measure/tr_colour_series.txt`, `sheets/tr_intro_r9_pairs.png`).
+  - venue03 at 1.6 s: Y 22.5 vs 22.9, B/G 2.01 vs 1.97.
+  - near01 at 4.0 and 8.4 s: R/G 1.19 vs 1.19 and B/G 2.06–2.08 vs
+    2.07–2.09.
+  - Native luma is 5–7% lower there, concentrated on the carpet, which is
+    §37.1's Xenia factorless-MAX bloom.
+  - There is no cast on either venue.
+
+#### Item 2: DOF strength (settled against DC3's shaders)
+
+`ucode/dof_shader_check.txt` disassembles DC3's own `downsample_4x`, blur
+and `postprocess` bit-3 shaders (`xenia-gpu-shader-compiler`, after the
+0x40-byte literal block of each dump):
+- **Downsample.** Four bilinear taps at uv ± 2·c15, times 0.25. c15 is
+  `kPS_NgMatCustom` = `NgMat`'s mTexHalfPixel = 0.5/size
+  (`Mat_NG.cpp:211, :345`), so the taps sit at ±1 texel and the result is
+  the exact 4×4 box. `DofPass` loads the 4×4 block and divides by 16.
+- **Blur.** 8 taps, weight 0.125. The offsets are
+  `NgDOFProc::SetVHBlurWeights`' expression, the same tap tables, and no
+  centre tap. The constants 1/(640·320) and 1/(360·180) assume a 320×180
+  quarter target; both sides render 1280×720.
+- **Composite.** Retail reads r = 1 − z (reverse-Z), then
+  sat(min(max(|r·c24.x + c24.y|, c24.z), c24.w)), then the lerp of blur
+  over scene. Native's depth is standard-Z, i.e. already 1 − z. c24 is
+  `NgDOFProc::Set` + `DoPost`'s (range, −scale·range, the clamps) with
+  `DxCam::ProjectZ`'s scale and bias before its reverse-Z flip.
+
+No constant, tap, filter or mapping differs.
+
+The A/B that settles it uses one run per side: `{rnd toggle_all_postprocs}`
+at 3–8 s on the forced cu02 shot, so post and raw frames of the same run
+are seconds apart (`tools/toggle_ab.py`, `measure/hp_toggle_ab_r9b.txt`).
+Background box (0,40)–(640,150), foreground (150,150)–(460,330) at
+640×360:
+
+| side | raw BG | post BG | post/raw | raw FG | post FG |
+|---|---|---|---|---|---|
+| Xenia | 18.31 | 9.83 | **0.537** | 12.53 | 10.06 |
+| native r9b | 13.92 | 7.53 | **0.541** | 10.02 | 8.22 |
+
+- The blur removes the same fraction of detail on both sides.
+- The post frames read 18–23% blurrier on native because native's raw
+  frame is already 24% softer (item 3), not because its blur is wider.
+- The crowd's pose does not enter this ratio.
+
+**Bug found on the way, fixed (engine `c9cd3ea`).** `{rnd
+toggle_all_postprocs}` turned off the retail chain but not the DOF.
+- On retail, `NgDOFProc` is a registered post processor
+  (`DOFProc_NG.cpp:24`), and `Rnd::DoPostProcess` skips every `DoPost` when
+  `mDisablePostProc` is set (`Rnd.cpp:827`).
+- `PostProcPass::Run` now skips `mDof.Run` when
+  `rndshape::PostProcDisabled()` (DC3 retail-post shape only).
+- So every earlier native "raw" frame on a DOF shot was blurred:
+  r9 read raw BG 7.63 = post 7.55, a ratio of 0.989
+  (`measure/hp_toggle_ab.txt`).
+- Round 6's own DOF before/after was a build A/B, not a toggle, so it is
+  not affected.
+- **Guard:** `DC3RetailPostGpuTest.TogglePostProcsSkipsDepthOfField` in dc3
+  `native/tests/test_dc3_retail_post.cpp` (dc3 `3996c5e2a`).
+  - Scene: 1-pixel stripes. Depth: a 4-sample buffer at 1.0. The game
+    screen is active and `TheDOFProc->Set` runs at full blur.
+  - Results: graded 0.00, post off 210.00, again 0.00 (stripe contrast,
+    0–210).
+  - Sabotage `sabotage/sab_doftoggle.sh` replaces the gate with
+    `(void)dofRuns;`. The test fails (off 0 vs > 180). The file was
+    restored byte-for-byte and rebuilt (`sab_doftoggle.log`).
+
+#### Item 3: softness (REPRODUCED; MSAA, plus surface detail on throneroom)
+
+Round 6's §37.4 said native raw = post on throneroom and native sharper on
+houseparty. **That is withdrawn.** It rested on the Xenia lane's numbers
+from separate runs and different frames, and any native "raw" frame on a
+DOF shot still had the DOF in it (above). On matched frames, native *is*
+softer:
+- throneroom `area1_near01` (no DOF), intro post frames 2.6–12 s
+  (`measure/tr_intro_sharp_aaf_r9.txt`): BG 13.56 vs Xenia 18.04, FG
+  11.51 vs 18.43;
+- houseparty cu02 raw (table above): BG 13.92 vs 18.31, FG 10.02 vs 12.53.
+
+Where it is: two things.
+- The 4× MSAA closes about two thirds of the gap on houseparty and a third
+  on throneroom.
+- The rest of throneroom's gap is the carpet's and floor's surface detail
+  (below).
+
+The details:
+- **MSAA.** The original's HD world back buffer is
+  `D3DMULTISAMPLE_NONE`, tiled in 2 (`rnddx9/Rnd_Xbox.cpp` ~829); only the
+  UI offscreen target is 2×. Native renders the world at 4×
+  (`kMSAASamples = 4`, `Rnd_Wgpu.h:465`).
+  - The edge statistic AAF is the fraction of strong edges (> 48 levels)
+    with an intermediate pixel between 20% and 80%, i.e. ramp vs step.
+    It reads native 0.43–0.48 against Xenia 0.18–0.27.
+- **Not the other global candidates:**
+  - texture LOD bias: the original sets one for fur only;
+  - anisotropy: none globally on the original; native's samplers use
+    maxAnisotropy 1, lodMinClamp 0, lodMaxClamp 16;
+  - present scaling: 1280×720 end to end on both sides (Xenia
+    `draw_resolution_scale` 1);
+  - the post chain: texel-centre sampling (§37.4).
+
+The `kMSAASamples = 1` experiment build (`dc3-native-r9msaa1`,
+`measure/hp_toggle_ab_msaa1.txt`) on the same toggle run:
+
+| houseparty cu02, raw | BG | FG | FG AAF |
+|---|---|---|---|
+| Xenia | 18.31 | 12.53 | 0.195 |
+| native 4× (r9b) | 13.92 | 10.02 | 0.428 |
+| native 1× | 16.88 | 11.65 | 0.178 |
+
+- At one sample the edge profile matches Xenia's (0.178 vs 0.195).
+- Two thirds of the sharpness gap closes: BG −24% → −8%, FG −20% → −7%.
+- Only the raw state of the 1× build is comparable.
+  - `DofPass` needs multisampled depth (`depthSamples < 2` returns), and so
+    do `SpotBeamPass` and the velocity blur.
+  - On houseparty the 1× build's post frames do not brighten at all:
+    luma 38.3 against raw 38.9 and Xenia's post 50.5.
+  - On throneroom they do (46.2 against raw 49.5, the same as 4×'s 45.9 /
+    49.4).
+  - The experiment did not pursue why. It is a scratch build, not a
+    candidate.
+- Per cell (`tools/cell_sharp.py`, `measure/hp_cell_sharp.txt`, a 4×4
+  grid), native/Xenia goes from 0.68–1.02 at 4× to 0.84–1.07 at 1×.
+  Houseparty's residual is spread evenly.
+
+Throneroom `area1_near01` (no DOF), same toggle schedule. Xenia
+`r9-xtrtog2`: background (0,40)–(640,150), foreground (150,60)–(520,300);
+`measure/tr_toggle_ab_r9b.txt`, `measure/tr_toggle_ab_msaa1.txt`:
+
+| throneroom near01, raw | BG | FG | FG AAF |
+|---|---|---|---|
+| Xenia | 18.62 | 18.39 | 0.266 |
+| native 4× (r9b) | 13.88 | 11.38 | 0.472 |
+| native 1× | 15.59 | 13.55 | 0.265 |
+
+- The edge profile matches exactly at 1× (0.265 vs 0.266), but only a
+  third of the sharpness gap closes: BG −25% → −16%, FG −38% → −26%.
+- The rest is not spread evenly (`measure/tr_cell_sharp.txt`). Native/Xenia
+  at 1× is 0.74–1.06 on the upper half and 0.35–0.66 on the lower half:
+  the carpet, its gold trim and the blue floor.
+- `sheets/tr_floor_raw_x_n4_n1.png` (raw, 5.3–5.5 s; Xenia / 4× / 1×)
+  shows why. Xenia draws a carpet weave and a patterned trim, even close to
+  the camera. Native draws both smooth at either sample count.
+- That is surface detail in the scene shading (a map, the mip chain or
+  texture fetch state), not post and not MSAA. It belongs to the light lane
+  or a texture owner.
+- A probe of the materials (`dta/probe_floor_mats.txt`,
+  `measure/tr_floor_mats.txt`) shows the detail is in maps:
+  - the carpet (`carpet_main`/`_stairs`/`_raised`, `THR_carpet.mat`) is
+    per-pixel lit with a normal map `thr_carpet_norm.tex` (512) and a
+    specular map;
+  - the floors (`THR_floor_main`, `_raised`, `_edge`) carry the
+    normal-detail map `marbleDetail.tex` at tiling 10, strength 0.4–4.
+- The engine's standard shader has both paths (`standard_wgsl.inc`,
+  `normDetailMapTex`). So the question for that owner is how strong they
+  come out and which mip they sample, not whether they exist. INFERRED:
+  the carpet weave is the normal and specular maps.
+
+**Not changed: native stays at 4×.** Matching the original means a
+1-sample world target.
+- It is shared engine code: `kMSAASamples` is used by every consumer.
+- The intermediate, `DofPass`, `SpotBeamPass` and the velocity blur all
+  assume multisampled depth today, so it would need a non-MS path for each.
+- It is also a visible trade: the original's aliasing comes back.
+
+That is an owner call, not a lane fix.
+
+#### Consumers, passes, cost
+
+- **Passes.** None added, split or renamed in the engine. The guard's test
+  harness labels its depth clear `TestDofDepthClear`.
+- **Cost.** One branch per frame in `PostProcPass::Run`. With post
+  processing off the DOF passes are no longer recorded at all.
+- **No new getenv.**
+- **Consumers.** rb3 master `3e36eb5d2` and rb3-xenon main `15ce9d4bb`
+  were built with `MILO_ENGINE_PATH` at `c9cd3ea`:
+  - rb3 `all`: built, ctest 158 of 158 passed;
+  - rb3-xenon `rb3-render`: 11 frames, 0 differing pixels against round 8
+    (`6ea6901`);
+  - `native_compat_census.py check`: OK, 455 flags, regen clean.
+  - The change is behind `rndshape::kDC3RetailPost`, so neither consumer
+    compiles it in.
+- On rb3 master `7aacd125f` the census fails for the round-8 engine as
+  well (a stale ledger), so that is base drift, not this change; the rb3
+  clone at `3e36eb5d2` passes.
+
+### 37.9 Round 9b: the census's three post-chain residuals (MEASURED)
+
+The pinned-camshot census (`archive/np-gfx-2026-11-14/xenia/round3/RANKED.md`)
+left three residuals that survive its spotlight (iso) and Multiply (mul)
+isolations and match in raw:
+- **A**, dclive peak: the characters are darker with post on;
+- **B**, streetside peak: `neon_upper` and the sky are darker;
+- **C**, dclive normal: colour difference 8–15 with post on.
+
+Evidence is in `archive/np-gfx-2026-11-14/lanes/post/round9/`:
+- `measure/cmp_base_max.txt` and `measure/cmp_base_fmax.txt`;
+- `measure/term_dE_summary.txt`, `measure/termtab_*.txt` and `measure/xpp_*.txt`;
+- the tools `ncell.sh`, `xpp.sh`, `nterm.sh`, `xterm.sh`, `cells9.py`,
+  `cellsT.py`, `cellsum.py`, `cmpbm.py` and `termtab.py`;
+- the DTA probes `dta/term_*.txt`.
+
+The method is the census's own: `gt3.py measure`, registered pairs, the
+census's timeline and boxes.
+
+**Instrument control.** The base build (`dc3-native-r9c-base`, xxh3
+`e0f1b70b4ab1f3dc`, engine `c6e3d72` / dc3 `e4a93fba5`) reproduces the
+census int21 row on dclive peak far01:
+- dancer box 41.7/46.4 (census 41.0/46.3);
+- skin 70.0/100.1 (census 69.8/99.8);
+- raw 28.5/29.2.
+
+**The procs are the same on both sides.** The full selected-postproc probe
+(`dta/probe_pp_full.txt`, 46 fields) ran at 15, 30, 40 and 50 s. All three
+cells select `world.pp` on both sides, with 0 differing fields:
+
+| cell | bloom_color | intensity | streak | attenuation | angle | saturation | contrast |
+|---|---|---|---|---|---|---|---|
+| dclive peak | 16727727 (R175 G61 B255) | 1.20 | 1 | 0.93 | −45 | 10 | 5 |
+| streetside peak | 232 (R232) | 1.40 | 1 | 0.92 | −55 | 10 | 5 |
+| dclive normal | 15324587 (R171 G212 B233) | 1.00 | 1 | 0.90 | −55 | 8 | 5 |
+
+All three cells share these: threshold 8, no glare, motion blur, hue
+converge or vignette. **All three use the streak arm.**
+
+#### Factorless-MAX cross-check
+
+`dc3-native-r9c-max` is the base with `kAlphaBlendMax = true`, which is
+Xenia's destination-alpha rule (xxh3 `7c4ad6d5063a615d`). Values are median
+N−X % and dE76:
+
+| cell, box | base | factorless MAX | factored MAX (see below) |
+|---|---|---|---|
+| A far01 scene | −12.7% / 12.0 | **−3.1% / 2.7** | −12.7% / 12.3 |
+| A far01 dancer box (X 46.4) | 41.7 | **45.5** | 41.5 |
+| A far01 skin (X 100.1) | 70.0 | 87.7 | 69.6 |
+| A near01 scene | −12.8% / 11.0 | **−1.1% / 2.1** | −13.6% / 11.8 |
+| B far01 neon_upper | −14.6% / 17.3 | **−3.8% / 2.7** | −15.0% / 16.2 |
+| B far01 sky | −12.3% / 12.8 | **−2.4% / 1.3** | −10.1% / 12.0 |
+| B near01 sky | −18.6% / 17.6 | **−2.9% / 4.7** | −17.9% / 18.2 |
+| C far01 sign | +11.9% / 12.5 | +10.0% / 11.3 | |
+| C far01 shelves_r | −9.5% / 19.1 | −10.7% / 16.6 | |
+| C far01 scene | +2.1% / 6.6 | +1.2% / 5.4 | |
+
+Reading the table:
+- Factorless MAX reproduces Xenia on A and B to within about the census
+  noise floor (3.4% / dE 2.2).
+- What is left on A is `sky_l` near01 at −14.7% and the skin rule, which
+  RANKED.md already treats as an upper bound.
+- C does not move.
+
+**Which draws.** A third build, `dc3-native-r9c-fmax` (xxh3
+`28ac4cdd589dde97`, scratch only), gives each blend its *factored* MAX,
+`max(src.a·f_src, dst.a·f_dst)`:
+- **Exact** for factors (1,1): Add, Subtract, Lighten and Darken. These
+  become plain MAX.
+- **Exact** for Dest (0,1) and Multiply (dst,0). Both reduce to the
+  equation.
+- **An upper bound** for SrcAlpha, SrcAlphaAdd and PreMultAlpha. These keep
+  the equation, which is greater than or equal to their factored MAX.
+
+fmax reads as base on both A and B. So the whole A/B difference comes from
+SrcAlpha-family draws under Xenia's factorless MAX. That is not the
+Multiply family the census's mul run removed, which is why A and B survived
+that isolation.
+
+**Which rule the hardware runs (INFERRED).** Retail footage refutes
+factorless MAX twice: the song-select debloom cards in §31.5, and the rink
+floor contrast in §35.4. With the factors applied, Multiply's MAX
+*equals* its equation, `max(0, dst.a·src.a)`. That would explain §31.5's
+"mechanism UNKNOWN" without contradicting either piece of footage, and
+ATI-lineage hardware does have factor-weighted MIN/MAX
+(`GL_AMD_blend_minmax_factor`). Under any rule that applies the factors,
+the SrcAlpha family gives at most the equation, so native cannot be too
+dark because of these draws.
+
+**A and B therefore dissolve as Xenia's factorless MAX**, like the carpet
+(§37.1) and the rink (§35). Nothing was changed.
+
+#### Term split: which post term (MEASURED)
+
+Both sides ran a new timeline, `nterm.sh` / `xterm.sh`, with far01 pinned
+throughout. The DTA sets are read back on both sides.
+
+| window | s | state |
+|---|---|---|
+| full | 14–21.5 | as loaded |
+| nobloom | 22.5–29.5 | `bloom_intensity 0` |
+| plain | 30.5–37.5 | intensity back, `bloom_streak 0`, which is the plain three-set arm |
+| full2 | 38.5–45.5 | streak back |
+| raw | 46.5–54 | `toggle_all_postprocs` |
+
+Scene box, dE76 N−X:
+
+| cell | build | full | nobloom | plain | full2 | raw |
+|---|---|---|---|---|---|---|
+| A dclive peak | base | 16.0 | **12.9** | 12.8 | 7.3 | 1.3 |
+| A dclive peak | factorless MAX | 3.7 | **2.3** | 4.5 | 5.1 | 3.3 |
+| B streetside peak | base | 7.9 | **8.1** | 4.5 | 6.5 | 0.8 |
+| B streetside peak | factorless MAX | 4.3 | 5.1 | 1.1 | 0.9 | 0.6 |
+| C dclive normal | base | **6.2** | 3.4 | **1.2** | **10.6** | 2.4 |
+| C dclive normal | factorless MAX | **6.5** | 1.9 | **0.8** | **10.7** | 2.5 |
+
+**A and B are not the bloom chain.** With bloom off on both sides the gap
+stays as large, and factorless MAX closes it there too. So the frame alpha
+reaches the colour by some path other than `bloom.ps`.
+- No native post pass reads frame alpha into RGB except bloom. Checked: the
+  DC3 composite (chroma, velocity, spot beams, noise, matrix, vignette),
+  `DofPass` and `SpotBeamPass`.
+- No pipeline uses a destination-alpha factor.
+- The path is therefore inside the scene. INFERRED candidates are a draw
+  that samples a copy or render target carrying the mask in its alpha, and
+  then blends by that alpha.
+- Not identified. It does not change the verdict: the rule decides the
+  numbers, and the rule is Xenia's.
+
+**C is the streak arm, and it is not alpha.**
+- The two arms disagree on C: the plain arm reads 1.2 / 0.8, the streak arm
+  6.2 and 10.6.
+- Both alpha rules give the same numbers.
+- The sign of the colour error flips between the two streak windows:
+  - full: da +2.3, db +5.6;
+  - full2: da −7.5, db −7.5.
+
+  So the error follows the scene's light colour at the time, not a fixed
+  tint. It is the size or extent of the streak term, not a grade term and
+  not the bloom colour.
+
+Audited equal to retail, with nothing found:
+- `SetBloomBlurWeightsStreak`: the weights, the offsets and the rotation,
+  including the y/x ratio;
+- `BloomTextures<3>`: each set a quarter of the last, off
+  `PreProcessTexture`;
+- the 8-bit targets;
+- the 3+3 pass order and its ping-pong (retail's `mBloomTexture[1] ==
+  [0]` is still a ping-pong through the EDRAM resolve);
+- set1's 4-tap `bloom.ps` straight from the scene;
+- the composite slots (tf7 set0, tf11 set1, tf15 black).
+
+One difference is open: retail's +0.5-texel centre tap, which native
+centres (as the plain arm does). Over three streak passes that could
+amount to 1.5 set texels, about 24 px at set1's 1/16 scale. That is a
+candidate, not a finding.
+
+The next measurement is a frozen frame on both sides, with the streak
+toggled and each set shown alone. Not changed.
+
+**Census sheet 03's "Xenia cream, native lavender"** is the far01 window
+average of this streak term.
+
+#### Consumers, passes, cost
+
+- No engine or dc3 code changed in round 9b.
+- The experiment builds edited only scratch trees and were not committed.

@@ -44,6 +44,10 @@ struct PipelineKey {
     bool alphaCut;
     bool alphaWrite;
     bool alphaToCoverage = false;
+    // Enhanced cutout coverage (MaterialCutCoverage == Sharpened): the
+    // fs_cutout entry, whose sample mask is the texel's sharpened coverage
+    // (standard_wgsl.inc kCutoutCoverage). Only in a multisampled pass.
+    bool cutoutCoverage = false;
     int32_t depthBias = 0;  // positive = push away from camera (loses z-test vs unbiased)
     // The standard shader samples its 2D material textures with
     // PipelineManager::MaterialLodBias (kLodBias); false: unbiased. Only a
@@ -61,6 +65,7 @@ struct PipelineKey {
                targetFormat == o.targetFormat && sampleCount == o.sampleCount &&
                hasDepth == o.hasDepth && alphaCut == o.alphaCut &&
                alphaWrite == o.alphaWrite && alphaToCoverage == o.alphaToCoverage &&
+               cutoutCoverage == o.cutoutCoverage &&
                depthBias == o.depthBias && lodBias == o.lodBias &&
                outputPixelSampling == o.outputPixelSampling;
     }
@@ -79,6 +84,7 @@ struct PipelineKeyHash {
         h ^= std::hash<bool>{}(k.hasDepth) + 0x9e3779b9 + (h << 6) + (h >> 2);
         h ^= std::hash<bool>{}(k.alphaCut) + 0x9e3779b9 + (h << 6) + (h >> 2);
         h ^= std::hash<bool>{}(k.alphaToCoverage) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        h ^= std::hash<bool>{}(k.cutoutCoverage) + 0x9e3779b9 + (h << 6) + (h >> 2);
         h ^= std::hash<int32_t>{}(k.depthBias) + 0x9e3779b9 + (h << 6) + (h >> 2);
         h ^= std::hash<bool>{}(k.lodBias) + 0x9e3779b9 + (h << 6) + (h >> 2);
         h ^= std::hash<bool>{}(k.outputPixelSampling) + 0x9e3779b9 + (h << 6) + (h >> 2);

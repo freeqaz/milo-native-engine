@@ -275,7 +275,9 @@ void DrawMeshImmediate(RndMesh* mesh) {
         ? rndshape::BloomMaskScale(mat) : 0.0f;
     if (bloomMaskScale != 0.0f)  // DC3: negative (rndshape::BloomMaskScale)
         key.alphaWrite = true;
-    key.alphaToCoverage = MaterialAlphaToCoverage(rawMat);
+    const CutCoverage cutCov = MaterialCutCoverage(rawMat);
+    key.alphaToCoverage = cutCov == CutCoverage::AlphaToCoverage;
+    key.cutoutCoverage = cutCov == CutCoverage::Sharpened;
     key.depthBias = meshData.depthBias;
     // The look's texture LOD bias (LookSettings::lodBias) is for world
     // textures; text and HUD keep the original's unbiased samples, as their
@@ -430,7 +432,9 @@ void DrawMeshImmediate(RndMesh* mesh) {
         if (rndshape::kRenderTargetForcesAlphaWrite && gWgpuRnd->ActiveTargetTex()
             && !rndshape::MatPinsAlphaWrite(nextPass))
             npKey.alphaWrite = true;
-        npKey.alphaToCoverage = MaterialAlphaToCoverage(nextPass);
+        const CutCoverage npCutCov = MaterialCutCoverage(nextPass);
+        npKey.alphaToCoverage = npCutCov == CutCoverage::AlphaToCoverage;
+        npKey.cutoutCoverage = npCutCov == CutCoverage::Sharpened;
 
         wgpu::RenderPipeline npPipeline = gWgpuRnd->Pipelines().GetPipeline(npKey);
         if (npPipeline) {
