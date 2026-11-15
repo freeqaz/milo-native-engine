@@ -10,12 +10,13 @@
 // Any other value warns once and falls back to enhanced. The variable is read
 // ONCE (first call to Look()), registered in NativeCompatFlags.classification.json.
 //
-// Only the DC3 shape (rndshape::kDC3RetailModel) reads it. rb3-xenon (DC3 shape
-// header, not the retail model) gets LookProfile::Native; the rb3 flavor does
-// not link this TU at all (MILO_ENGINE_GPU_PLATFORM_SOURCES). With Native,
-// neither Retail() nor Enhanced() is true, so an enhancement written as `if (Look().Enhanced())` and a faithful
-// branch written as `if (Look().Retail())` both leave those consumers exactly as
-// they render today. Keep it that way: never key an rb3-visible change on
+// Only the DC3 retail model (rndshape::kDC3RetailModel) reads it. rb3-xenon
+// (DC3 shape header, not the retail model) and rb3 (RB3Wii shape,
+// kDC3RetailModel = false) get LookProfile::Native and never read the variable.
+// With Native, neither Retail() nor Enhanced() is true, so an enhancement
+// written as `if (Look().Enhanced())` and a faithful branch written as
+// `if (Look().Retail())` both leave those consumers exactly as they render
+// today. Keep it that way: never key an rb3-visible change on
 // `!Look().Retail()`.
 //
 // Hanging an enhancement here: add a bool to LookSettings, set it in
