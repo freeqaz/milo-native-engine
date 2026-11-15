@@ -65,6 +65,32 @@ struct SkinInput {
     skinnedPos.w = 1.0;
     return lightVP.matrix * object.world * skinnedPos;
 }
+
+// The projected-shadow caster pass (RenderCasters) skins exactly as the main
+// pass does (standard_wgsl.inc vs_skinned / normalizeBoneWeights): weights are
+// divided by their sum, and an all-zero set binds the vertex to its first
+// bone. Without it a vertex whose weights do not sum to one is pulled toward
+// the world origin, and DC3's *_lod shadow meshes (drawn by no other pass)
+// smeared each dancer's upper body into a wedge pointing at the origin's
+// texel (throneroom: the floor shadow became a faint wash). vs_shadow_skinned
+// is left as it was for the generic pass rb3-xenon draws.
+@vertex fn vs_caster_skinned(in: SkinInput) -> @builtin(position) vec4f {
+    let total = in.boneWeights.x + in.boneWeights.y + in.boneWeights.z + in.boneWeights.w;
+    var weights = vec4f(1.0, 0.0, 0.0, 0.0);
+    if (total > 0.0) {
+        weights = in.boneWeights / total;
+    }
+    var skinnedPos = vec4f(0.0);
+    let p = vec4f(in.pos, 1.0);
+    for (var i = 0u; i < 4u; i++) {
+        let w = weights[i];
+        if (w > 0.0) {
+            skinnedPos += bones.bones[in.boneIndices[i]] * p * w;
+        }
+    }
+    skinnedPos.w = 1.0;
+    return lightVP.matrix * object.world * skinnedPos;
+}
 )WGSL";
 
 static void BuildOrthoMatrix(float left, float right, float bottom, float top,
@@ -445,7 +471,7 @@ void ShadowPass::EnsureCasterPipelines(GpuDevice& gpu) {
         pd.label = skinned ? "CasterSkinned" : "CasterStatic";
         pd.layout = skinned ? skinnedLayout : staticLayout;
         pd.vertex.module = mShadowShader;
-        pd.vertex.entryPoint = skinned ? "vs_shadow_skinned" : "vs_shadow";
+        pd.vertex.entryPoint = skinned ? "vs_caster_skinned" : "vs_shadow";
         pd.vertex.bufferCount = 1;
         pd.vertex.buffers = skinned ? &VertexFormats::SkinnedLayout() : &VertexFormats::StaticLayout();
         pd.depthStencil = &ds;
