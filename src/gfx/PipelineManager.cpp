@@ -4,6 +4,7 @@
 #include "gfx/VertexFormats.h"
 #include "platform/FrameTraceCounters.h"  // pulls <chrono> + the g*MsThisFrame decls
 
+#include <chrono>
 #include <cstdlib>
 #include <cstdio>
 #include <string>
@@ -483,8 +484,22 @@ bool BlendSkipsFringeFade(int blend) {
     return blend == (int)WgpuBlend::Multiply || blend == (int)WgpuBlend::Darken;
 }
 
-wgpu::RenderPipeline PipelineManager::CreatePipeline(const PipelineKey& key) {
-    wgpu::ShaderModule shader = GetOrCreateShader(key.shaderType);
+// Everything a material pipeline's descriptor points at, so one built for an
+// async create outlives the call that built it (Dawn copies it on the call).
+struct PipelineManager::DescStorage {
+    wgpu::ShaderModule shader;
+    wgpu::BlendState blendState;
+    wgpu::ColorTargetState colorTarget;
+    wgpu::FragmentState fragment;
+    wgpu::ConstantEntry constants[5];
+    wgpu::DepthStencilState ds;
+    char label[160];
+    wgpu::RenderPipelineDescriptor desc;
+};
+
+void PipelineManager::BuildDescriptor(const PipelineKey& key, DescStorage& st) {
+    st.shader = GetOrCreateShader(key.shaderType);
+    wgpu::ShaderModule& shader = st.shader;
 
     // Vertex layout
     const wgpu::VertexBufferLayout* vtxLayout;
@@ -495,9 +510,11 @@ wgpu::RenderPipeline PipelineManager::CreatePipeline(const PipelineKey& key) {
     }
 
     // Blend state
-    wgpu::BlendState blendState = MapBlend(key.blend);
+    st.blendState = MapBlend(key.blend);
+    wgpu::BlendState& blendState = st.blendState;
 
-    wgpu::ColorTargetState colorTarget{};
+    st.colorTarget = {};
+    wgpu::ColorTargetState& colorTarget = st.colorTarget;
     colorTarget.format = key.targetFormat;
     colorTarget.blend = &blendState;
     colorTarget.writeMask = key.alphaWrite
@@ -507,7 +524,8 @@ wgpu::RenderPipeline PipelineManager::CreatePipeline(const PipelineKey& key) {
     // Enhanced cutout coverage needs samples to cover; single-sampled it is
     // the plain alpha test (fs_main).
     const bool cutoutCoverage = key.cutoutCoverage && key.sampleCount > 1;
-    wgpu::FragmentState fragment{};
+    st.fragment = {};
+    wgpu::FragmentState& fragment = st.fragment;
     fragment.module = shader;
     fragment.entryPoint = cutoutCoverage ? "fs_cutout" : "fs_main";
     fragment.targetCount = 1;
@@ -516,7 +534,7 @@ wgpu::RenderPipeline PipelineManager::CreatePipeline(const PipelineKey& key) {
     // ignores alpha and whose identity is white or "keep dst" rather than black
     // (standard_wgsl.inc kSkipFringeFade). Keyed on the pipeline's own blend,
     // so it holds for every draw path that reaches the standard pipeline.
-    wgpu::ConstantEntry constants[5]{};
+    wgpu::ConstantEntry* constants = st.constants;
     constants[0].key = "kSkipFringeFade";
     constants[0].value = BlendSkipsFringeFade((int)key.blend) ? 1.0 : 0.0;
     constants[1].key = "kCutoutCoverage";
@@ -530,7 +548,8 @@ wgpu::RenderPipeline PipelineManager::CreatePipeline(const PipelineKey& key) {
     fragment.constantCount = 5;
     fragment.constants = constants;
 
-    wgpu::DepthStencilState ds{};
+    st.ds = {};
+    wgpu::DepthStencilState& ds = st.ds;
     if (key.hasDepth) {
         ds = MapDepthStencil(key.zMode, key.stencil);
         if (key.depthBias != 0) {
@@ -540,11 +559,12 @@ wgpu::RenderPipeline PipelineManager::CreatePipeline(const PipelineKey& key) {
         }
     }
 
-    wgpu::RenderPipelineDescriptor pipeDesc{};
+    st.desc = {};
+    wgpu::RenderPipelineDescriptor& pipeDesc = st.desc;
     // The label carries the key, so a capture or a [GPUPIPE] line says which
     // material state a mid-song compile was for.
-    char label[160];
-    snprintf(label, sizeof(label),
+    char* label = st.label;
+    snprintf(label, sizeof(st.label),
              "%s shader=%u blend=%d z=%d cull=%d stencil=%d fmt=%d samples=%u depth=%d "
              "cut=%d awrite=%d a2c=%d cover=%d bias=%d lod=%d opx=%d",
              key.layout == VertexLayoutType::Skinned ? "MainSkinned" : "MainStatic", key.shaderType,
@@ -581,7 +601,12 @@ wgpu::RenderPipeline PipelineManager::CreatePipeline(const PipelineKey& key) {
         );
     }
 
-    return CreateCountedRenderPipeline(mDevice->Device(), &pipeDesc);
+}
+
+wgpu::RenderPipeline PipelineManager::CreatePipeline(const PipelineKey& key) {
+    DescStorage st;
+    BuildDescriptor(key, st);
+    return CreateCountedRenderPipeline(mDevice->Device(), &st.desc);
 }
 
 int PipelineManager::PreWarm(wgpu::TextureFormat mainFmt, wgpu::TextureFormat rtFmt) {
@@ -712,9 +737,122 @@ int PipelineManager::PreWarmStep(wgpu::TextureFormat mainFmt,
     return total - mPreWarmCursor;  // remaining
 }
 
+bool PipelineManager::WarmAsync(const PipelineKey& key) {
+    if (!mDevice || mPipelineCache.count(key) || mWarmPending.count(key) ||
+        !mWarmQueued.insert(key).second)
+        return false;
+    mWarmQueue.push_back(key);
+    mWarmStats.queued++;
+    return true;
+}
+
+void PipelineManager::FinishWarm(const PipelineKey& key, PendingWarm& pw) {
+    if (pw.ok && pw.result) {
+        mPipelineCache[key] = pw.result;
+        mWarmedUndrawn.insert(key);
+        mWarmStats.finished++;
+    } else {
+        mWarmStats.failed++;  // GetPipeline makes it synchronously, as before
+    }
+}
+
+void PipelineManager::DrainWarms() {
+#ifndef __EMSCRIPTEN__
+    for (auto& [key, pw] : mWarmPending)
+        if (!pw->done && mDevice) mDevice->Instance().WaitAny(pw->future, UINT64_MAX);
+#endif
+    mWarmPending.clear();
+    mWarmQueue.clear();
+    mWarmQueued.clear();
+    mWarmedUndrawn.clear();
+}
+
+void PipelineManager::PollWarms() {
+    if (!mDevice) return;
+    // Take in what finished (natively the callbacks run in ProcessEvents).
+#ifndef __EMSCRIPTEN__
+    if (!mWarmPending.empty()) mDevice->Instance().ProcessEvents();
+#endif
+    for (auto it = mWarmPending.begin(); it != mWarmPending.end();) {
+        if (it->second->done) {
+            FinishWarm(it->first, *it->second);
+            it = mWarmPending.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    // Issue the next few. The queue is first in, first out: a dir's keys are
+    // queued in the order its walk found them.
+    int issued = 0;
+    size_t i = 0;
+    for (; i < mWarmQueue.size() && issued < kWarmIssuePerFrame; ++i) {
+        const PipelineKey& key = mWarmQueue[i];
+        mWarmQueued.erase(key);
+        if (mPipelineCache.count(key)) continue;  // made at a draw meanwhile
+        ++issued;
+#ifdef __EMSCRIPTEN__
+        mPipelineCache[key] = CreatePipeline(key);
+        mWarmedUndrawn.insert(key);
+        mWarmStats.finished++;
+#else
+        DescStorage st;
+        BuildDescriptor(key, st);
+        auto pw = std::make_unique<PendingWarm>();
+        PendingWarm* raw = pw.get();
+        const auto t0 = std::chrono::steady_clock::now();
+        raw->future = mDevice->Device().CreateRenderPipelineAsync(
+            &st.desc, wgpu::CallbackMode::AllowProcessEvents,
+            [raw](wgpu::CreatePipelineAsyncStatus status, wgpu::RenderPipeline p, wgpu::StringView msg) {
+                raw->done = true;
+                raw->ok = status == wgpu::CreatePipelineAsyncStatus::Success;
+                if (raw->ok) raw->result = std::move(p);
+                else
+                    fprintf(stderr, "PipelineManager: warm failed (%d): %.*s\n", (int)status,
+                            (int)msg.length, msg.data);
+            });
+        // The issuing thread's share (validation, the cache lookup); the
+        // compile itself is on Dawn's workers.
+        framecost::Nanos(framecost::kPipeline) += (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - t0).count();
+        pipelinecount::WarmCounter()++;
+        mWarmPending.emplace(key, std::move(pw));
+#endif
+    }
+    mWarmQueue.erase(mWarmQueue.begin(), mWarmQueue.begin() + (ptrdiff_t)i);
+}
+
 wgpu::RenderPipeline PipelineManager::GetPipeline(const PipelineKey& key) {
     auto it = mPipelineCache.find(key);
-    if (it != mPipelineCache.end()) return it->second;
+    if (it != mPipelineCache.end()) {
+        if (!mWarmedUndrawn.empty() && mWarmedUndrawn.erase(key)) mWarmStats.drawn++;
+        return it->second;
+    }
+#ifndef __EMSCRIPTEN__
+    // In flight: wait for it -- a draw never skips, and never takes another
+    // pipeline. The wait is this frame's to pay, so it is counted as one.
+    if (auto pit = mWarmPending.find(key); pit != mWarmPending.end()) {
+        PendingWarm& pw = *pit->second;
+        const auto t0 = std::chrono::steady_clock::now();
+        if (!pw.done) mDevice->Instance().WaitAny(pw.future, UINT64_MAX);
+        const double ms =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        mWarmStats.waited++;
+        mWarmStats.waitMs += ms;
+        RecordPipelineWait(pw.result ? "warm" : "warm(failed)", ms);
+        FinishWarm(key, pw);
+        mWarmPending.erase(pit);
+        it = mPipelineCache.find(key);
+        if (it != mPipelineCache.end()) {
+            mWarmedUndrawn.erase(key);
+            mWarmStats.drawn++;
+            return it->second;
+        }
+    }
+#endif
+    if (mWarmQueued.erase(key)) {
+        // Still queued: made now, as before; the queue skips it when it gets there.
+        mWarmStats.takenEarly++;
+    }
 
     // Frame-trace: only the cache MISS pays the (expensive) shader/pipeline
     // compile; the hit path above is free and stays uninstrumented.

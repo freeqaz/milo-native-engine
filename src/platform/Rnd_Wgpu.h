@@ -18,6 +18,7 @@
 #include "gfx/UniformRingBuffer.h"
 #include "gfx/BindGroupCache.h"
 #include "platform/rndshape/RndShape.h"
+#include "platform/MeshPipelineKey.h"
 #include "platform/PointTestHook.h"
 #include "platform/SpotBeamHook.h"
 #include "platform/TexBlendHook.h"
@@ -145,6 +146,13 @@ public:
     wgpu::TextureFormat CurrentTargetFormat() const { return mCurrentTargetFormat; }
     uint32_t CurrentSampleCount() const { return mCurrentSampleCount; }
     bool CurrentPassHasDepth() const { return mCurrentPassHasDepth; }
+    // The pass states a mesh can be drawn in, for a warm that runs outside any
+    // pass (MeshPipelineKey.h): the world (BeginFramePass), the HUD overlay
+    // (BeginOverlayPass), and a render target (the TexturePass) with or
+    // without depth.
+    MeshPassContext WorldPassContext(bool reflection) const;
+    MeshPassContext OverlayPassContext() const;
+    MeshPassContext TexturePassContext(bool depth) const;
     // GetViewport() in the current frame target's pixels (render scale).
     Viewport FrameViewport(const Viewport& v) const;
     // The frame has left its world (FlushPostProcessingForOverlay ran): what

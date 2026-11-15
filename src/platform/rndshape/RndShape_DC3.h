@@ -779,6 +779,32 @@ constexpr bool kIntensifyScalesAlpha = kDC3RetailModel;
 // fadeOut = env->FadeOut() && env->FadeEnd() != env->FadeStart() for the
 // current environ. RndShaderDrawRect::CalcShaderOpts has no such test, so a
 // rect passes envFadeOutCancels = false.
+// The material's half of BloomMaskScale (NgMat::AllowHDR, dc3-decomp
+// rndobj/Mat_NG.cpp), without the frame's (retail post on, a current
+// RndPostProc, no environment fade): whether the mask can ever be written for
+// it. The load-time pipeline warm asks it, as the frame's half is not
+// knowable at load.
+// AllowsBloomMaskFor: the same with the blend and alpha write given (a state
+// a property animation keys) instead of read from the material.
+template <class M>
+inline bool AllowsBloomMaskFor(const M &m, int blend, bool alphaWrite) {
+    using Raw = std::remove_cv_t<std::remove_pointer_t<std::decay_t<M>>>;
+    if constexpr (!kDC3RetailPost || !MatHasBloomMultiplier<Raw>::value) {
+        (void)m;
+        (void)blend;
+        (void)alphaWrite;
+        return false;
+    } else {
+        if (!m) return false;
+        return !(blend == (int)Raw::kBlendSrcAlpha || blend == (int)Raw::kBlendSrcAlphaAdd ||
+                 blend == (int)Raw::kPreMultAlpha || m->GetAlphaCut() || alphaWrite);
+    }
+}
+template <class M>
+inline bool AllowsBloomMask(const M &m) {
+    if (!m) return false;
+    return AllowsBloomMaskFor(m, (int)m->GetBlend(), (bool)m->GetAlphaWrite());
+}
 template <class M>
 inline float BloomMaskScale(const M &m, bool envFadeOutCancels = true) {
     using Raw = std::remove_cv_t<std::remove_pointer_t<std::decay_t<M>>>;
@@ -793,11 +819,7 @@ inline float BloomMaskScale(const M &m, bool envFadeOutCancels = true) {
             const RndEnviron *env = RndEnviron::Current();
             if (env && env->FadeOut() && env->FadeEnd() != env->FadeStart()) return 0.0f;
         }
-        // NgMat::AllowHDR (dc3-decomp rndobj/Mat_NG.cpp).
-        const auto b = m->GetBlend();
-        if (b == Raw::kBlendSrcAlpha || b == Raw::kBlendSrcAlphaAdd || b == Raw::kPreMultAlpha ||
-            m->GetAlphaCut() || m->GetAlphaWrite())
-            return 0.0f;
+        if (!AllowsBloomMask(m)) return 0.0f;
         const float scale = -(BloomLumaScale(pp) * m->GetBloomMultiplier());
         return scale < 0.0f ? scale : -std::numeric_limits<float>::min();
     }

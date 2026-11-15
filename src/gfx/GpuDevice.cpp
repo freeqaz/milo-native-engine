@@ -355,6 +355,11 @@ bool GpuDevice::InitAdapter() {
     // Detect null/fallback backend (renders produce empty frames)
     mNullBackend = (info.backendType == wgpu::BackendType::Null);
     mDiscreteGpu = (info.adapterType == wgpu::AdapterType::DiscreteGPU);
+    mAdapterVendorId = info.vendorID;
+    mAdapterDeviceId = info.deviceID;
+    mAdapterDescription.assign(info.device.data, info.device.length);
+    mAdapterDescription += '|';
+    mAdapterDescription.append(info.description.data, info.description.length);
     if (mNullBackend) {
         fprintf(stderr, "GpuDevice: WARNING — using Null backend (no real GPU). "
                 "Renders will be black/empty.\n");
@@ -431,6 +436,32 @@ bool GpuDevice::InitDevice() {
         deviceDesc.nextInChain = &toggles;
     }
 
+    // Persistent pipeline cache (gfx/PipelineDiskCache.h): Dawn's blob cache,
+    // stored where the consumer says, keyed (on top of Dawn's own key) by the
+    // executable's build id and the adapter and its driver.
+    wgpu::DawnCacheDeviceDescriptor cacheDesc{};
+    {
+        const std::string dir = PipelineDiskCache::ResolveDir();
+        const std::string build = PipelineDiskCache::ExecutableBuildId();
+        char ids[64];
+        snprintf(ids, sizeof(ids), "|%08x:%08x|", mAdapterVendorId, mAdapterDeviceId);
+        const std::string isolation = "milo-pipeline-cache 1|" + build + ids + mAdapterDescription;
+        if (!dir.empty() && build.empty()) {
+            printf("GpuDevice: pipeline cache off (the executable has no build id)\n");
+        } else if (!dir.empty() && mPipelineCache.Open(dir, isolation)) {
+            mPipelineCacheIsolation = isolation;
+            cacheDesc.isolationKey = {mPipelineCacheIsolation.data(), mPipelineCacheIsolation.size()};
+            cacheDesc.loadDataFunction = &PipelineDiskCache::LoadThunk;
+            cacheDesc.storeDataFunction = &PipelineDiskCache::StoreThunk;
+            cacheDesc.functionUserdata = &mPipelineCache;
+            cacheDesc.nextInChain = deviceDesc.nextInChain;
+            deviceDesc.nextInChain = &cacheDesc;
+            printf("GpuDevice: pipeline cache %s\n", mPipelineCache.Dir().c_str());
+        } else if (dir.empty()) {
+            printf("GpuDevice: pipeline cache off\n");
+        }
+    }
+
     deviceDesc.SetDeviceLostCallback(
         wgpu::CallbackMode::AllowSpontaneous,
         [](const wgpu::Device&, wgpu::DeviceLostReason reason, wgpu::StringView msg) {
@@ -465,8 +496,7 @@ bool GpuDevice::InitDevice() {
         deviceDesc.requiredFeatureCount = --featureCount;
         deviceDesc.requiredFeatures = featureCount ? requiredFeatures : nullptr;
         toggles.disabledToggleCount = 0;
-        toggles.disabledToggles = nullptr;
-        if (toggles.enabledToggleCount == 0) deviceDesc.nextInChain = nullptr;
+        toggles.disabledToggles = nullptr;  // an empty toggles struct can stay chained
         requestDevice();
     }
 

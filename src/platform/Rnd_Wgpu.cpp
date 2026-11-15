@@ -757,6 +757,32 @@ void WgpuRnd::ClearDepthForOverlay() {
 // the flush. The DC3 attract movie (MoviePanel draws after the flush; the
 // blacklight panel's EndWorld then ran SavePreBuffer) was drawn and then wiped
 // every frame on web, and the whole frame went black on desktop.
+MeshPassContext WgpuRnd::WorldPassContext(bool reflection) const {
+    MeshPassContext c;  // as BeginFramePass sets the pass state
+    c.targetFormat = mGpu.SurfaceFormat();
+    c.sampleCount = kMSAASamples;
+    c.hasDepth = true;
+    c.reflection = reflection;
+    return c;
+}
+
+MeshPassContext WgpuRnd::OverlayPassContext() const {
+    MeshPassContext c;  // as BeginOverlayPass does
+    c.targetFormat = mGpu.SurfaceFormat();
+    c.sampleCount = 1;
+    c.hasDepth = false;
+    return c;
+}
+
+MeshPassContext WgpuRnd::TexturePassContext(bool depth) const {
+    MeshPassContext c;  // as the TexturePass does, for a colour target
+    c.targetFormat = ChooseRenderTargetFormat(nullptr);
+    c.sampleCount = 1;
+    c.hasDepth = depth;
+    c.toTexture = true;
+    return c;
+}
+
 void WgpuRnd::BeginOverlayPass() {
     int curW = mGpu.WindowWidth();
     int curH = mGpu.WindowHeight();
@@ -1724,6 +1750,9 @@ void WgpuRnd::BeginDrawing() {
     mFrameInOverlay = false;
     mWorldPostDone = false;
     mPreSavedThisFrame = false;
+    // Load-time pipeline warm (PipelineManager::WarmAsync): take in what
+    // finished, issue the next few. Nothing queued: one empty check.
+    if (mPipelines.WarmsOutstanding()) mPipelines.PollWarms();
 
     // Frame capture: set target frame via MILO_CAPTURE_FRAME env var
     {
@@ -2870,7 +2899,7 @@ void WgpuRnd::LogGpuCounters() {
     fprintf(stderr,
             "[GPUCOUNT] frame=%d bindGroupsLive=%zu bgCreated=%llu bgHits=%llu bgEvicted=%llu "
             "bgUncached=%llu ringBuffers=4 ringBytes=%u ringGrows=%u/%u/%u/%u "
-            "ringQueueWrites=%llu ringQueueBytes=%llu pipelines=%d pipelineCreates=%llu gpuMeshes=%zu meshUploads=%llu "
+            "ringQueueWrites=%llu ringQueueBytes=%llu pipelines=%d pipelineCreates=%llu pipelineWarms=%llu warmsDrawn=%llu pipelineWaits=%llu gpuMeshes=%zu meshUploads=%llu "
             "gpuTextures=%zu texHolders=%zu texCreates=%llu texShares=%llu "
             "postBgLive=%zu postBgCreated=%llu postBgHits=%llu postBgEvicted=%llu postBgUncached=%llu "
             "ptBatches=%d ptCreated=%llu ptInFlight=%d\n",
@@ -2882,7 +2911,11 @@ void WgpuRnd::LogGpuCounters() {
             mMaterialRing.Grows(), mObjectRing.Grows(), mBoneRing.Grows(),
             (unsigned long long)writes, (unsigned long long)bytes,
             mPipelines.CachedPipelineCount(),
-            (unsigned long long)GpuPipelineCreateCount(), GpuMeshCount(),
+            (unsigned long long)GpuPipelineCreateCount(),
+            (unsigned long long)GpuPipelineWarmCount(),
+            (unsigned long long)mPipelines.GetWarmStats().drawn,
+            (unsigned long long)GpuPipelineWaitCount(),
+            GpuMeshCount(),
             (unsigned long long)GpuMeshUploadCount(), GpuTexCount(), GpuTexHolderCount(),
             (unsigned long long)GetGpuTexDebugInfo(nullptr).createCount,
             (unsigned long long)GpuTexShareCount(),

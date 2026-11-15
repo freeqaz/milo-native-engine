@@ -31,6 +31,18 @@ inline std::atomic<uint64_t>& Counter() {
     static std::atomic<uint64_t> n{0};
     return n;
 }
+// Pipelines issued to Dawn's async create (PipelineManager::PollWarms): they
+// compile off the issuing thread, so they are not in Counter().
+inline std::atomic<uint64_t>& WarmCounter() {
+    static std::atomic<uint64_t> n{0};
+    return n;
+}
+// Draws that waited for an async create still in flight, and for how long
+// (PipelineManager::GetPipeline): a wait is a hitch like a create.
+inline std::atomic<uint64_t>& WaitCounter() {
+    static std::atomic<uint64_t> n{0};
+    return n;
+}
 inline std::mutex& RecentMutex() {
     static std::mutex m;
     return m;
@@ -68,6 +80,22 @@ inline wgpu::RenderPipeline CreateCountedRenderPipeline(const wgpu::Device& dev,
     }
     return pipe;
 }
+
+// A draw waited `ms` for an async create (counted, named in [GPUPIPE]).
+inline void RecordPipelineWait(const char* what, double ms) {
+    pipelinecount::WaitCounter()++;
+    framecost::Nanos(framecost::kPipeline) += (uint64_t)(ms * 1e6);
+    std::lock_guard<std::mutex> lock(pipelinecount::RecentMutex());
+    auto& recent = pipelinecount::Recent();
+    if (recent.size() < 64) {
+        char t[64];
+        snprintf(t, sizeof(t), "wait:%s (%.1f ms)", what, ms);
+        recent.emplace_back(t);
+    }
+}
+
+inline uint64_t GpuPipelineWarmCount() { return pipelinecount::WarmCounter().load(); }
+inline uint64_t GpuPipelineWaitCount() { return pipelinecount::WaitCounter().load(); }
 
 // Render pipelines created so far, by every caller.
 inline uint64_t GpuPipelineCreateCount() { return pipelinecount::Counter().load(); }

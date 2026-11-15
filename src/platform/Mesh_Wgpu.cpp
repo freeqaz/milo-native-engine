@@ -9,6 +9,7 @@
 #include "platform/MaterialSetup.h"
 #include "platform/MeshDrawShowing.h"
 #include "platform/MeshFilter.h"
+#include "platform/MeshPipelineKey.h"
 #include "platform/TransformUtils.h"
 #include "platform/TexGpu.h"
 #include "gfx/FrameCapture.h"
@@ -192,6 +193,170 @@ static uint64_t DrawLogToken(const void* buffer, uint32_t offset) {
     return h;
 }
 
+MeshPassContext CurrentMeshPassContext() {
+    MeshPassContext c;
+    c.targetFormat = gWgpuRnd->CurrentTargetFormat();
+    c.sampleCount = gWgpuRnd->CurrentSampleCount();
+    c.hasDepth = gWgpuRnd->CurrentPassHasDepth();
+    c.toTexture = gWgpuRnd->ActiveTargetTex() != nullptr;
+    c.reflection = rndshape::TheRndRef().DrawMode() == rndshape::kDrawModeReflection;
+    return c;
+}
+
+PipelineKey MeshPipelineKey(RndMesh* mesh, RndMat* rawMat, bool skinned, int32_t depthBias,
+                            const MeshPassContext& ctx) {
+    // Text meshes (created by RndText::FontMap) have empty names (not registered in ObjectDir).
+    // Debug labels are stored in GpuMeshData::debugLabel for GPU debugging.
+    // Only a glyph page gives up its material's depth test and culling
+    // (MeshDrawsAsGlyph: a page the game marked, or -- for a game that does not
+    // mark them -- an unnamed unskinned mesh). Other code builds unnamed meshes
+    // too: spotlight beams, RndRibbon/RndLine, crowd billboards, and DC3's
+    // HamRibbon hand trail (skinned, hamribbon.mat asks zMode 2 / cull 1).
+    // Drawn as text they went through whatever stood in front of them.
+    const bool isGlyphMesh = MeshDrawsAsGlyph(mesh, skinned);
+    // The text colour path (forced prelit, atlas alpha as RGB) follows the same
+    // mark when the game sets one (MeshShadesAsText); otherwise every unnamed
+    // mesh, as before. A ribbon shaded as text happened to look right only
+    // because its vertices are white.
+    const bool isTextMesh = MeshShadesAsText(mesh);
+    return MaterialPipelineKey(rawMat, skinned, isGlyphMesh, isTextMesh, depthBias, ctx);
+}
+
+PipelineKey MaterialPipelineKey(RndMat* rawMat, bool skinned, bool isGlyphMesh, bool isTextMesh,
+                                int32_t depthBias, const MeshPassContext& ctx) {
+    auto mat = rndshape::Mat(rawMat);
+    PipelineKey key{};
+    key.shaderType = 18; // kStandardShader
+
+    BaseMaterial::Blend matBlend = mat->GetBlend();
+
+    // Overlay pass (no depth buffer) = HUD/2D elements. Disable face culling
+    // because Xbox D3D9 uses CW front face while WebGPU uses CCW. HUD quads
+    // authored for CW winding are back-facing in CCW and would be culled.
+    const bool isOverlayPass = !ctx.hasDepth;
+
+    key.blend = (WgpuBlend)matBlend;
+    key.zMode = isGlyphMesh ? (WgpuZMode)0 : (WgpuZMode)mat->GetZMode(); // No depth for text
+    WgpuCull matCull = (isGlyphMesh || isOverlayPass) ? WgpuCull::None : (WgpuCull)mat->GetCull();
+    // Reflection mode (rndshape::kDrawModeReflection) flips the camera, reversing winding order.
+    // Flip cull mode so front faces aren't discarded.
+    if (ctx.reflection && matCull != WgpuCull::None) {
+        matCull = (matCull == WgpuCull::Regular) ? WgpuCull::Backwards : WgpuCull::Regular;
+    }
+    key.cull = matCull;
+    key.stencil = (WgpuStencil)mat->GetStencil();
+    key.layout = skinned ? VertexLayoutType::Skinned : VertexLayoutType::Static;
+    key.targetFormat = ctx.targetFormat;
+    key.sampleCount = ctx.sampleCount;
+    key.hasDepth = ctx.hasDepth;
+    key.alphaCut = mat->GetAlphaCut();
+    key.alphaWrite = mat->GetAlphaWrite();
+    if (rndshape::kRenderTargetForcesAlphaWrite && ctx.toTexture
+        && !rndshape::MatPinsAlphaWrite(rawMat))
+        key.alphaWrite = true;
+    // RB3's pseudo-HDR bloom mask (rndshape::BloomMaskScale; 0 for DC3): an
+    // AllowHDR material drawn into the main frame writes its luma to alpha.
+    const float bloomMaskScale = (!isOverlayPass && !ctx.toTexture)
+        ? rndshape::BloomMaskScale(mat) : 0.0f;
+    if (bloomMaskScale != 0.0f)  // DC3: negative (rndshape::BloomMaskScale)
+        key.alphaWrite = true;
+    const CutCoverage cutCov = MaterialCutCoverage(rawMat);
+    key.alphaToCoverage = cutCov == CutCoverage::AlphaToCoverage;
+    key.cutoutCoverage = cutCov == CutCoverage::Sharpened;
+    key.depthBias = depthBias;
+    // The look's texture LOD bias (LookSettings::lodBias) is for world
+    // textures; text and HUD keep the original's unbiased samples, as their
+    // samplers keep its two mip levels (MaterialSetup ApplyLookSampling).
+    key.lodBias = MaterialDrawTakesLodBias(isTextMesh || isOverlayPass,
+                                           gWgpuRnd->Pipelines().MaterialLodBias());
+    key.outputPixelSampling = MaterialDrawSamplesAtOutputPixels(
+        isTextMesh || isOverlayPass, ctx.toTexture,
+        gWgpuRnd->Pipelines().OutputPixelScale());
+    return key;
+}
+
+PipelineKey MeshNextPassPipelineKey(const PipelineKey& first, BaseMaterial* nextPass,
+                                    const MeshPassContext& ctx) {
+    // Pipeline may differ (blend mode, z mode, etc.)
+    PipelineKey npKey = first;
+    npKey.blend = (WgpuBlend)rndshape::Mat(nextPass)->GetBlend();
+    npKey.zMode = (WgpuZMode)rndshape::Mat(nextPass)->GetZMode();
+    WgpuCull npCull = (WgpuCull)rndshape::Mat(nextPass)->GetCull();
+    if (ctx.reflection && npCull != WgpuCull::None) {
+        npCull = (npCull == WgpuCull::Regular) ? WgpuCull::Backwards : WgpuCull::Regular;
+    }
+    npKey.cull = npCull;
+    npKey.stencil = (WgpuStencil)rndshape::Mat(nextPass)->GetStencil();
+    npKey.alphaCut = rndshape::Mat(nextPass)->GetAlphaCut();
+    npKey.alphaWrite = rndshape::Mat(nextPass)->GetAlphaWrite();
+    if (rndshape::kRenderTargetForcesAlphaWrite && ctx.toTexture
+        && !rndshape::MatPinsAlphaWrite(nextPass))
+        npKey.alphaWrite = true;
+    const CutCoverage npCutCov = MaterialCutCoverage(nextPass);
+    npKey.alphaToCoverage = npCutCov == CutCoverage::AlphaToCoverage;
+    npKey.cutoutCoverage = npCutCov == CutCoverage::Sharpened;
+    return npKey;
+}
+
+namespace {
+// Queue the keys `key` stands for once `v` is applied, and each NextPass's.
+// A variant replaces the material state a property animation keys (blend,
+// z mode, alpha write); the draw reads the material as it is that frame.
+// The pseudo-HDR bloom mask (rndshape::BloomMaskScale) turns alphaWrite on
+// for a material that allows it, in the main frame, but only while the frame
+// has a current post-proc and no environment fade -- state of the frame, not
+// of the content -- so such a material is warmed both ways in the main frame.
+int WarmVariant(PipelineKey key, RndMat* rawMat, bool glyph, const MeshPassContext& ctx,
+                const MatKeyVariant& v) {
+    PipelineManager& pm = gWgpuRnd->Pipelines();
+    auto mat = rndshape::Mat(rawMat);
+    const int blend = v.blend >= 0 ? v.blend : (int)mat->GetBlend();
+    const bool alphaWrite = v.alphaWrite >= 0 ? v.alphaWrite != 0 : (bool)mat->GetAlphaWrite();
+    key.blend = (WgpuBlend)blend;
+    if (v.zMode >= 0 && !glyph) key.zMode = (WgpuZMode)v.zMode;
+    key.alphaWrite = alphaWrite;
+    if (rndshape::kRenderTargetForcesAlphaWrite && ctx.toTexture
+        && !rndshape::MatPinsAlphaWrite(rawMat))
+        key.alphaWrite = true;
+    int queued = pm.WarmAsync(key) ? 1 : 0;
+    if (ctx.hasDepth && !ctx.toTexture && rndshape::AllowsBloomMaskFor(mat, blend, alphaWrite)) {
+        PipelineKey masked = key;
+        masked.alphaWrite = true;
+        queued += pm.WarmAsync(masked) ? 1 : 0;
+    }
+    for (BaseMaterial* np = mat->NextPass(); np; np = rndshape::Mat(np)->NextPass())
+        queued += pm.WarmAsync(MeshNextPassPipelineKey(key, np, ctx)) ? 1 : 0;
+    return queued;
+}
+} // namespace
+
+int WarmMeshPipelines(RndMesh* mesh, const MeshPassContext& ctx, const MatKeyVariant* variants,
+                      int numVariants) {
+    if (!gWgpuRnd || !mesh) return 0;
+    RndMat* rawMat = mesh->Mat();
+    if (!rawMat) rawMat = rndshape::DefaultMat();
+    auto mat = rndshape::Mat(rawMat);
+    if (!mat || ShouldSkipMesh(mesh->Name(), mat)) return 0;
+    const GpuMeshData* gd = GetMeshGpuData(mesh);
+    const bool skinned = mesh->IsSkinned();
+    const PipelineKey key = MeshPipelineKey(mesh, rawMat, skinned, gd ? gd->depthBias : 0, ctx);
+    const bool glyph = MeshDrawsAsGlyph(mesh, skinned);
+    int queued = WarmVariant(key, rawMat, glyph, ctx, MatKeyVariant{});
+    for (int i = 0; i < numVariants; ++i)
+        queued += WarmVariant(key, rawMat, glyph, ctx, variants[i]);
+    return queued;
+}
+
+int WarmTextPagePipelines(RndMat* fontMat, const MeshPassContext& ctx) {
+    if (!gWgpuRnd || !fontMat) return 0;
+    auto mat = rndshape::Mat(fontMat);
+    if (!mat || ShouldSkipMesh("", mat)) return 0;  // a page is unnamed
+    // A glyph page (MeshDrawsAsGlyph and MeshShadesAsText both hold for a page
+    // the game marks) of an unskinned mesh, as FontMap::AllocateMeshes makes.
+    const PipelineKey key = MaterialPipelineKey(fontMat, false, true, true, 0, ctx);
+    return WarmVariant(key, fontMat, true, ctx, MatKeyVariant{});
+}
+
 void DrawMeshImmediate(RndMesh* mesh) {
     if (!gWgpuRnd || !gWgpuRnd->IsInPass()) return;
 
@@ -239,54 +404,16 @@ void DrawMeshImmediate(RndMesh* mesh) {
     // because its vertices are white.
     bool isTextMesh = MeshShadesAsText(mesh);
 
-    // --- Pipeline selection ---
-    PipelineKey key{};
-    key.shaderType = 18; // kStandardShader
-
-    BaseMaterial::Blend matBlend = mat->GetBlend();
-
-    // Overlay pass (no depth buffer) = HUD/2D elements. Disable face culling
-    // because Xbox D3D9 uses CW front face while WebGPU uses CCW. HUD quads
-    // authored for CW winding are back-facing in CCW and would be culled.
-    bool isOverlayPass = !gWgpuRnd->CurrentPassHasDepth();
-
-    key.blend = (WgpuBlend)matBlend;
-    key.zMode = isGlyphMesh ? (WgpuZMode)0 : (WgpuZMode)mat->GetZMode(); // No depth for text
-    WgpuCull matCull = (isGlyphMesh || isOverlayPass) ? WgpuCull::None : (WgpuCull)mat->GetCull();
-    // Reflection mode (rndshape::kDrawModeReflection) flips the camera, reversing winding order.
-    // Flip cull mode so front faces aren't discarded.
-    if (rndshape::TheRndRef().DrawMode() == rndshape::kDrawModeReflection && matCull != WgpuCull::None) {
-        matCull = (matCull == WgpuCull::Regular) ? WgpuCull::Backwards : WgpuCull::Regular;
-    }
-    key.cull = matCull;
-    key.stencil = (WgpuStencil)mat->GetStencil();
-    key.layout = skinned ? VertexLayoutType::Skinned : VertexLayoutType::Static;
-    key.targetFormat = gWgpuRnd->CurrentTargetFormat();
-    key.sampleCount = gWgpuRnd->CurrentSampleCount();
-    key.hasDepth = gWgpuRnd->CurrentPassHasDepth();
-    key.alphaCut = mat->GetAlphaCut();
-    key.alphaWrite = mat->GetAlphaWrite();
-    if (rndshape::kRenderTargetForcesAlphaWrite && gWgpuRnd->ActiveTargetTex()
-        && !rndshape::MatPinsAlphaWrite(rawMat))
-        key.alphaWrite = true;
+    // --- Pipeline selection --- (MeshPipelineKey: the load-time warm asks
+    // the same function, so it cannot warm a key this draw would not ask for)
+    const MeshPassContext passCtx = CurrentMeshPassContext();
+    const bool isOverlayPass = !passCtx.hasDepth;
+    const PipelineKey key = MeshPipelineKey(mesh, rawMat, skinned, meshData.depthBias, passCtx);
     // RB3's pseudo-HDR bloom mask (rndshape::BloomMaskScale; 0 for DC3): an
-    // AllowHDR material drawn into the main frame writes its luma to alpha.
-    const float bloomMaskScale = (!isOverlayPass && !gWgpuRnd->ActiveTargetTex())
+    // AllowHDR material drawn into the main frame writes its luma to alpha
+    // (MeshPipelineKey sets alphaWrite for it).
+    const float bloomMaskScale = (!isOverlayPass && !passCtx.toTexture)
         ? rndshape::BloomMaskScale(mat) : 0.0f;
-    if (bloomMaskScale != 0.0f)  // DC3: negative (rndshape::BloomMaskScale)
-        key.alphaWrite = true;
-    const CutCoverage cutCov = MaterialCutCoverage(rawMat);
-    key.alphaToCoverage = cutCov == CutCoverage::AlphaToCoverage;
-    key.cutoutCoverage = cutCov == CutCoverage::Sharpened;
-    key.depthBias = meshData.depthBias;
-    // The look's texture LOD bias (LookSettings::lodBias) is for world
-    // textures; text and HUD keep the original's unbiased samples, as their
-    // samplers keep its two mip levels (MaterialSetup ApplyLookSampling).
-    key.lodBias = MaterialDrawTakesLodBias(isTextMesh || isOverlayPass,
-                                           gWgpuRnd->Pipelines().MaterialLodBias());
-    key.outputPixelSampling = MaterialDrawSamplesAtOutputPixels(
-        isTextMesh || isOverlayPass, gWgpuRnd->ActiveTargetTex() != nullptr,
-        gWgpuRnd->Pipelines().OutputPixelScale());
 
     wgpu::RenderPipeline pipeline = gWgpuRnd->Pipelines().GetPipeline(key);
     if (!pipeline) return;
@@ -367,7 +494,7 @@ void DrawMeshImmediate(RndMesh* mesh) {
 
     // --- Capture record ---
     if (capturing) {
-        RecordDrawCall(mesh, mat, matParams, skinned, (int)matBlend, heuristics);
+        RecordDrawCall(mesh, mat, matParams, skinned, (int)mat->GetBlend(), heuristics);
         auto& rec = FrameCapture::Get().LastRecord();
         rec.hasPipeState = true;
         rec.pipeZMode = (int)key.zMode;
@@ -417,24 +544,7 @@ void DrawMeshImmediate(RndMesh* mesh) {
     // Walk the NextPass chain and draw additional passes with the same geometry
     BaseMaterial* nextPass = mat->NextPass();
     while (nextPass) {
-        // Pipeline may differ (blend mode, z mode, etc.)
-        PipelineKey npKey = key;
-        npKey.blend = (WgpuBlend)rndshape::Mat(nextPass)->GetBlend();
-        npKey.zMode = (WgpuZMode)rndshape::Mat(nextPass)->GetZMode();
-        WgpuCull npCull = (WgpuCull)rndshape::Mat(nextPass)->GetCull();
-        if (rndshape::TheRndRef().DrawMode() == rndshape::kDrawModeReflection && npCull != WgpuCull::None) {
-            npCull = (npCull == WgpuCull::Regular) ? WgpuCull::Backwards : WgpuCull::Regular;
-        }
-        npKey.cull = npCull;
-        npKey.stencil = (WgpuStencil)rndshape::Mat(nextPass)->GetStencil();
-        npKey.alphaCut = rndshape::Mat(nextPass)->GetAlphaCut();
-        npKey.alphaWrite = rndshape::Mat(nextPass)->GetAlphaWrite();
-        if (rndshape::kRenderTargetForcesAlphaWrite && gWgpuRnd->ActiveTargetTex()
-            && !rndshape::MatPinsAlphaWrite(nextPass))
-            npKey.alphaWrite = true;
-        const CutCoverage npCutCov = MaterialCutCoverage(nextPass);
-        npKey.alphaToCoverage = npCutCov == CutCoverage::AlphaToCoverage;
-        npKey.cutoutCoverage = npCutCov == CutCoverage::Sharpened;
+        const PipelineKey npKey = MeshNextPassPipelineKey(key, nextPass, passCtx);
 
         wgpu::RenderPipeline npPipeline = gWgpuRnd->Pipelines().GetPipeline(npKey);
         if (npPipeline) {

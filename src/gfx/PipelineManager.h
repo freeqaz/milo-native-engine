@@ -2,6 +2,8 @@
 
 #include <webgpu/webgpu_cpp.h>
 #include <unordered_map>
+#include <unordered_set>
+#include <memory>
 #include <vector>
 #include <cstdint>
 
@@ -138,6 +140,32 @@ public:
                     int maxThisCall, float budgetMs = 0.f);
     bool PreWarmDone() const { return mPreWarmStarted && mPreWarmCursor >= (int)mPreWarmKeys.size(); }
 
+    // Load-time warm (dc3 PLAN H-33; engine doc section 39). WarmAsync queues
+    // `key` to be compiled before anything draws with it; PollWarms (WgpuRnd
+    // calls it once a frame) issues at most kWarmIssuePerFrame of the queue
+    // and takes in the ones that finished. Natively each is a
+    // CreateRenderPipelineAsync, compiled on Dawn's worker threads, so the
+    // frame -- a loading screen -- keeps moving; on the web a plain create
+    // (the browser compiles off the page's thread already), a few a frame so
+    // one flush does not carry them all. A draw that asks for a key still in
+    // flight waits for it in GetPipeline -- it never skips, and never draws
+    // with another pipeline -- and one still queued is created there as
+    // before. False when the key already exists, or is queued or in flight.
+    static constexpr int kWarmIssuePerFrame = 8;
+    bool WarmAsync(const PipelineKey& key);
+    void PollWarms();
+    size_t WarmsOutstanding() const { return mWarmQueue.size() + mWarmPending.size(); }
+    struct WarmStats {
+        uint64_t queued = 0;      // WarmAsync calls that queued a key
+        uint64_t finished = 0;    // compiled and in the cache
+        uint64_t failed = 0;      // async create reported an error (then made at draw)
+        uint64_t waited = 0;      // draws that waited for one in flight
+        double waitMs = 0.0;      // ... for this long, on the drawing thread
+        uint64_t takenEarly = 0;  // draws that found theirs still queued (created there)
+        uint64_t drawn = 0;       // warmed keys a draw has asked for since
+    };
+    const WarmStats& GetWarmStats() const { return mWarmStats; }
+
     // Bind group layouts (shared across all pipelines)
     wgpu::BindGroupLayout& SceneLayout() { return mLayouts[0]; }    // Group 0
     wgpu::BindGroupLayout& MaterialLayout() { return mLayouts[1]; } // Group 1
@@ -154,6 +182,7 @@ public:
 
     // Release all GPU objects (call before device shutdown)
     void Terminate() {
+        DrainWarms();
         mPipelineCache.clear();
         mShaderCache.clear();
         mPipelineLayout = nullptr;
@@ -201,7 +230,22 @@ public:
     }
 
 private:
+    struct DescStorage;
+    void BuildDescriptor(const PipelineKey& key, DescStorage& st);
     wgpu::RenderPipeline CreatePipeline(const PipelineKey& key);
+    struct PendingWarm {
+        wgpu::Future future{};
+        wgpu::RenderPipeline result;
+        bool done = false;
+        bool ok = false;
+    };
+    void FinishWarm(const PipelineKey& key, PendingWarm& pw);
+    void DrainWarms();  // waits out every async create (their callbacks hold pointers here)
+    std::vector<PipelineKey> mWarmQueue;
+    std::unordered_set<PipelineKey, PipelineKeyHash> mWarmQueued;  // mWarmQueue's members
+    std::unordered_map<PipelineKey, std::unique_ptr<PendingWarm>, PipelineKeyHash> mWarmPending;
+    std::unordered_set<PipelineKey, PipelineKeyHash> mWarmedUndrawn;  // made by a warm, not yet asked for
+    WarmStats mWarmStats;
     wgpu::ShaderModule GetOrCreateShader(uint32_t shaderType);
     wgpu::DepthStencilState MapDepthStencil(WgpuZMode z, WgpuStencil s);
     wgpu::CullMode MapCull(WgpuCull cull);
