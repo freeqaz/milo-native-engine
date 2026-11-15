@@ -6,6 +6,7 @@
 #include "os/File.h"
 #include "os/System.h"
 #include "utl/MemMgr.h"
+#include "gfx/FrameCost.h"
 
 #include <cstdio>
 #include <cstring>
@@ -34,6 +35,7 @@ protected:
         if (mMode & 0x100) fmode = "w+b";
 
         // mFilename is already qualified by AsyncFile::Init()
+        framecost::Scope cost(framecost::kFileRead);  // the open and size probe (web: the fetch)
         mFp = fopen(mFilename.c_str(), fmode);
 #ifdef __EMSCRIPTEN__
         // On-demand fetch: if file isn't in MEMFS, try fetching from server.
@@ -75,6 +77,7 @@ protected:
 
     virtual void _ReadAsync(void *buf, int size) {
         if (mFp) {
+            framecost::Scope cost(framecost::kFileRead);
             size_t got = fread(buf, 1, size, mFp);
             (void)got; // Base class tracks mBytesRead; we must NOT overwrite it
         }

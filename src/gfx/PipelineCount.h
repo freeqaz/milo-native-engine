@@ -80,6 +80,7 @@ inline wgpu::RenderPipeline CreateCountedRenderPipeline(const wgpu::Device& dev,
     const bool load = pipelinecount::LoadScopeDepth() > 0;
     if (load) pipelinecount::LoadCounter()++;
     framecost::Nanos(framecost::kPipeline) += (uint64_t)(ms * 1e6);
+    framecost::Count(framecost::kPipeline)++;
     std::lock_guard<std::mutex> lock(pipelinecount::RecentMutex());
     auto& recent = pipelinecount::Recent();
     if (recent.size() < 64) {

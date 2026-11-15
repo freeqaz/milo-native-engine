@@ -14,6 +14,7 @@
 // stay in Rnd_Wgpu_RB3.cpp (out of W1.4 scope).
 
 #include "platform/Rnd_Wgpu_RB3.h"
+#include "gfx/BindGroupCount.h"
 #include "gfx/GpuTimers.h"
 #include "platform/RB3PostProc.h"
 #include "platform/RB3MaterialBinder.h"  // W1.3: UploadRndTexIfNeeded (noise-map upload)
@@ -512,7 +513,7 @@ void BandRnd::RunPostProcComposite(wgpu::TextureView dst, bool venueGrade) {
     bgd.layout = mQuadPostBGL;
     bgd.entryCount = 5;
     bgd.entries = bge;
-    wgpu::BindGroup bg = mGpu.Device().CreateBindGroup(&bgd);
+    wgpu::BindGroup bg = CreateCountedBindGroup(mGpu.Device(), &bgd);
 
     wgpu::RenderPassColorAttachment colorAtt{};
     colorAtt.view = dst;

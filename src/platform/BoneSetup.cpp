@@ -3,6 +3,7 @@
 // between DrawMeshImmediate and DrawMeshShadow.
 
 #include "platform/BoneSetup.h"
+#include "gfx/BindGroupCount.h"
 #include "platform/TransformUtils.h"
 #include "rndobj/Rnd.h"
 #include "platform/rndshape/RndShape.h"
@@ -293,7 +294,7 @@ void EnsureDummyBoneBindGroup() {
     desc.layout = gWgpuRnd->Pipelines().BoneLayout();
     desc.entryCount = 1;
     desc.entries = &entry;
-    sDummyBoneBindGroup = gWgpuRnd->Gpu().Device().CreateBindGroup(&desc);
+    sDummyBoneBindGroup = CreateCountedBindGroup(gWgpuRnd->Gpu().Device(), &desc);
 }
 
 wgpu::BindGroup GetDummyBoneBindGroup() {

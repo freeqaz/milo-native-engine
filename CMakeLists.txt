@@ -286,6 +286,7 @@ endif()
 # (gfx core ON, backends OFF) compiles exactly this set.
 set(MILO_ENGINE_GFX_SOURCES
     src/gfx/GpuDevice.cpp
+    src/gfx/WgpuCallCount.cpp   # buffer/texture/view/bind-group create counters (Linux: --wrap)
     src/gfx/FrameSizes.cpp      # the frame-size rules, shared with GpuDevice_Web.cpp
     src/gfx/PresentScale.cpp    # GpuDevice's fixed-frame present (dc3 PLAN H-18)
     src/gfx/PipelineDiskCache.cpp # GpuDevice's persistent Dawn blob cache (native only)
@@ -578,6 +579,19 @@ if(MILO_ENGINE_HAVE_CONTEXT)
         endif()
         if(NOT EMSCRIPTEN)
             target_link_libraries(milo-engine PUBLIC dawn::webgpu_dawn glfw imgui)
+            # Every buffer, texture, view and bind-group create, whoever makes
+            # it, counted and timed for the frame-times log (gfx/WgpuCallCount.cpp,
+            # docs section 40): the program's references to these Dawn entry
+            # points resolve to timing wrappers. GNU ld and lld only, so Linux;
+            # elsewhere the counters read 0 and say so (framecost::RawCallsCounted).
+            if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+                target_compile_definitions(milo-engine PUBLIC MILO_WGPU_CALL_COUNT=1)
+                target_link_options(milo-engine INTERFACE
+                    "LINKER:--wrap=wgpuDeviceCreateBuffer"
+                    "LINKER:--wrap=wgpuDeviceCreateTexture"
+                    "LINKER:--wrap=wgpuTextureCreateView"
+                    "LINKER:--wrap=wgpuDeviceCreateBindGroup")
+            endif()
         elseif(MILO_BUILD_WEB AND TARGET imgui)
             # Web build: link the EMSCRIPTEN sibling imgui target (see top of
             # this file). emdawnwebgpu is supplied via --use-port; no Dawn/glfw.

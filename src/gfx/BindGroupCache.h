@@ -30,6 +30,7 @@
 #pragma once
 
 #include <webgpu/webgpu_cpp.h>
+#include "gfx/BindGroupCount.h"
 
 #include <array>
 #include <cstdint>
@@ -150,7 +151,7 @@ public:
 
     wgpu::BindGroup GetOrCreate(wgpu::Device& device, const wgpu::BindGroupDescriptor& desc) {
         return GetOrCreate(desc, [&device](const wgpu::BindGroupDescriptor& d) {
-            return device.CreateBindGroup(&d);
+            return CreateCountedBindGroup(device, &d);
         });
     }
 

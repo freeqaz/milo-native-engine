@@ -1,4 +1,5 @@
 #include "gfx/PostProcPass.h"
+#include "gfx/BindGroupCount.h"
 #include "gfx/GpuTimers.h"
 #include "gfx/GpuDevice.h"
 #include "rndobj/PostProc.h"
@@ -660,7 +661,7 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& i
     bgDesc.entryCount = 6;
     bgDesc.entries = bgEntries;
     wgpu::BindGroup bg = mBindGroups ? mBindGroups->GetOrCreate(gpu.Device(), bgDesc)
-                                     : gpu.Device().CreateBindGroup(&bgDesc);
+                                     : CreateCountedBindGroup(gpu.Device(), &bgDesc);
 
     wgpu::RenderPassColorAttachment colorAtt{};
     colorAtt.view = frameView;

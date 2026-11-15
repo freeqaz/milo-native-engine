@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "gfx/FrameCost.h"
 #include "gfx/GpuDevice.h"
 #include "gfx/PipelineManager.h"
 #include "gfx/ShadowPass.h"
@@ -379,6 +380,10 @@ public:
     void CreateDepthTexture(int w, int h);
     void CreateDefaultTextures();
     void WriteSceneUniforms();
+    // WriteSceneUniforms calls, and the scene bind groups they created
+    // ([GPUCOUNT] sceneBgWrites= / sceneBgCreates=).
+    uint64_t mSceneBgWrites = 0;
+    uint64_t mSceneBgCreates = 0;
     // Slot 3 of the scene bind group as WriteSceneUniforms last chose it
     // (null = the white fallback).
     wgpu::TextureView ProjLightTexView() const { return mProjLightTexView; }
@@ -568,13 +573,24 @@ public:
     // `pt_after_submit` are the time and answers of FinishPointTestReadback.
     // `pipe_ms`, `tex_ms`, `mesh_ms`: time this frame spent creating render
     // pipelines, creating bitmap textures and uploading meshes
-    // (gfx/FrameCost.h), all threads.
+    // (gfx/FrameCost.h), all threads. Then, each as a count and ms: `bg`
+    // bind-group creates, `buf` buffer creates, `gtex` raw texture creates,
+    // `view` texture-view creates (the last three Linux desktop only:
+    // gfx/WgpuCallCount.cpp; -1 where not counted), `file` file opens and
+    // reads; `acquire_ms` / `present_ms` the surface's; `game_ms` /
+    // `game_cpu_ms` the wall and thread-CPU time from the previous
+    // EndDrawing to this BeginDrawing (the game's poll, outside the
+    // renderer); `scene_bg_writes` / `scene_bg_creates` WriteSceneUniforms
+    // calls and the scene bind groups they made (docs section 40).
     void WriteFrameTimes();
     FILE* mFrameTimes = nullptr;
     double mFrameTimesBegin = 0.0;    // wall s, BeginDrawing
+    double mFrameTimesBeginCpu = 0.0; // thread CPU s, BeginDrawing
     double mFrameTimesLastEnd = 0.0;  // wall s, previous EndDrawing
     double mFrameTimesLastCpu = 0.0;  // thread CPU s, previous EndDrawing
-    uint64_t mFrameTimesLastCostNs[3] = {0, 0, 0}; // framecost::Nanos at the previous row
+    uint64_t mFrameTimesLastCostNs[framecost::kKinds] = {}; // framecost::Nanos at the previous row
+    uint64_t mFrameTimesLastCount[framecost::kKinds] = {};  // framecost::Count at the previous row
+    uint64_t mFrameTimesLastSceneWrites = 0, mFrameTimesLastSceneCreates = 0;
     double mPointTestWaitMs = 0.0;
     double mPointTestEndWaitMs = 0.0;  // in FinishPointTestReadback
     int mPointTestAfterSubmit = 0;     // answers it delivered

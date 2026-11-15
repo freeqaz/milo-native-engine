@@ -1,5 +1,6 @@
 // SpotBeamPass — see SpotBeamPass.h for where each step comes from.
 #include "gfx/SpotBeamPass.h"
+#include "gfx/BindGroupCount.h"
 #include "gfx/BindGroupCache.h"
 #include "gfx/GpuTimers.h"
 #include "gfx/GpuDevice.h"
@@ -617,7 +618,7 @@ bool SpotBeamPass::EnsurePipelines(GpuDevice& gpu) {
 }
 
 wgpu::BindGroup SpotBeamPass::Group(GpuDevice& gpu, const wgpu::BindGroupDescriptor& d) {
-    return mBindGroups ? mBindGroups->GetOrCreate(gpu.Device(), d) : gpu.Device().CreateBindGroup(&d);
+    return mBindGroups ? mBindGroups->GetOrCreate(gpu.Device(), d) : CreateCountedBindGroup(gpu.Device(), &d);
 }
 
 void SpotBeamPass::EnsureTargets(int w, int h, GpuDevice& gpu) {
