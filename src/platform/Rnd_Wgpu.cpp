@@ -1109,10 +1109,18 @@ bool WgpuRnd::ComposeTexBlend(RndTex* output, RndTex* base, const NativeTexBlend
     const bool resumeFrame = mInPass;
     EndActivePass();
     const bool ok = mTexBlendPass.Record(mEncoder, target, ChooseRenderTargetFormat(output), w, h,
-                                         baseView, draws.data(), draws.size(), mGpu);
+                                         baseView, draws.data(), draws.size(), mGpu,
+                                         &mBindGroupCache);
     if (ok) mTexBlendsComposed++;
     if (resumeFrame) BeginFramePass(false);
     return ok;
+}
+
+int WgpuRnd::WarmTexBlendPipelines(RndTex* output) {
+    if (!output || !mGpu.IsReady()) return 0;
+    const uint64_t before = GpuPipelineCreateCount();
+    mTexBlendPass.Warm(ChooseRenderTargetFormat(output), mGpu);
+    return (int)(GpuPipelineCreateCount() - before);
 }
 
 // ----------------------------------------------------------------------------
@@ -1806,6 +1814,7 @@ void WgpuRnd::BeginDrawing() {
     mFrameInOverlay = false;
     mWorldPostDone = false;
     mPreSavedThisFrame = false;
+    mTexBlendPass.BeginFrame();
     // Load-time pipeline warm (PipelineManager::WarmAsync): take in what
     // finished, issue the next few. Nothing queued: one empty check.
     if (mPipelines.WarmsOutstanding()) mPipelines.PollWarms();

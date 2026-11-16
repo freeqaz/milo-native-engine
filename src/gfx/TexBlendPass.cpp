@@ -1,6 +1,7 @@
 // TexBlendPass — see TexBlendPass.h.
 #include "gfx/TexBlendPass.h"
 #include "gfx/BindGroupCount.h"
+#include "gfx/BindGroupCache.h"
 #include "gfx/GpuTimers.h"
 #include "gfx/GpuDevice.h"
 
@@ -76,6 +77,7 @@ TexBlendPass::Pipelines* TexBlendPass::EnsurePipelines(wgpu::TextureFormat forma
         e[0].binding = 0;
         e[0].visibility = wgpu::ShaderStage::Fragment;
         e[0].buffer.type = wgpu::BufferBindingType::Uniform;
+        e[0].buffer.hasDynamicOffset = true;
         e[0].buffer.minBindingSize = kParamBytes;
         e[1].binding = 1;
         e[1].visibility = wgpu::ShaderStage::Fragment;
@@ -168,15 +170,30 @@ TexBlendPass::Pipelines* TexBlendPass::EnsurePipelines(wgpu::TextureFormat forma
 bool TexBlendPass::Record(wgpu::CommandEncoder& encoder, const wgpu::TextureView& target,
                           wgpu::TextureFormat format, uint32_t w, uint32_t h,
                           const wgpu::TextureView& base, const Layer* layers, size_t count,
-                          GpuDevice& gpu) {
+                          GpuDevice& gpu, BindGroupCache* cache) {
     if (!encoder || !target || w == 0 || h == 0) return false;
     Pipelines* pipes = EnsurePipelines(format, gpu);
     if (!pipes) return false;
     wgpu::Device& dev = gpu.Device();
 
-    // One parameter block per draw. Queue::WriteBuffer lands at submit, ahead
-    // of the whole frame, so every Record gets its own buffer.
+    // One parameter block per draw, each in its own ring slot.
     const size_t draws = count + 1;
+    if (!mParams || mFrameUsed + draws > mParamSlots) {
+        uint32_t slots = mParamSlots ? mParamSlots : 64;
+        while (slots < mFrameUsed + draws) slots *= 2;
+        wgpu::BufferDescriptor bd{};
+        bd.label = "TexBlendParams";
+        bd.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
+        bd.size = (uint64_t)slots * kParamStride;
+        mParams = dev.CreateBuffer(&bd);
+        mParamSlots = slots;
+        mParamNext = 0;
+        mFrameUsed = 0;  // the old buffer keeps this frame's earlier slots
+    }
+    if (mParamNext + draws > mParamSlots) mParamNext = 0;
+    const uint32_t first = mParamNext;
+    mParamNext += (uint32_t)draws;
+    mFrameUsed += (uint32_t)draws;
     std::vector<uint8_t> params(draws * kParamStride, 0);
     auto put = [&](size_t i, float alpha) {
         float v[4] = {alpha, 1.0f / (float)w, 1.0f / (float)h, 0.0f};
@@ -184,18 +201,16 @@ bool TexBlendPass::Record(wgpu::CommandEncoder& encoder, const wgpu::TextureView
     };
     put(0, 1.0f);
     for (size_t i = 0; i < count; i++) put(i + 1, layers[i].alpha);
-    wgpu::BufferDescriptor bd{};
-    bd.label = "TexBlendParams";
-    bd.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
-    bd.size = params.size();
-    wgpu::Buffer ubuf = dev.CreateBuffer(&bd);
-    gpu.Queue().WriteBuffer(ubuf, 0, params.data(), params.size());
+    gpu.Queue().WriteBuffer(mParams, (uint64_t)first * kParamStride, params.data(), params.size());
+    auto offsetOf = [&](size_t i) { return (uint32_t)((first + i) * kParamStride); };
 
-    auto bindGroup = [&](size_t i, const wgpu::TextureView& tex) {
+    // The group binds the ring at offset 0 (the draw's slot is the dynamic
+    // offset), the texture and the sampler: one group per texture.
+    auto bindGroup = [&](const wgpu::TextureView& tex) {
         wgpu::BindGroupEntry e[3] = {};
         e[0].binding = 0;
-        e[0].buffer = ubuf;
-        e[0].offset = i * kParamStride;
+        e[0].buffer = mParams;
+        e[0].offset = 0;
         e[0].size = kParamBytes;
         e[1].binding = 1;
         e[1].textureView = tex;
@@ -206,7 +221,7 @@ bool TexBlendPass::Record(wgpu::CommandEncoder& encoder, const wgpu::TextureView
         d.layout = mBgl;
         d.entryCount = 3;
         d.entries = e;
-        return CreateCountedBindGroup(dev, &d);
+        return cache ? cache->GetOrCreate(dev, d) : CreateCountedBindGroup(dev, &d);
     };
 
     wgpu::RenderPassColorAttachment ca{};
@@ -223,7 +238,8 @@ bool TexBlendPass::Record(wgpu::CommandEncoder& encoder, const wgpu::TextureView
 
     if (base) {
         pass.SetPipeline(pipes->base);
-        pass.SetBindGroup(0, bindGroup(0, base));
+        const uint32_t off = offsetOf(0);
+        pass.SetBindGroup(0, bindGroup(base), 1, &off);
         pass.Draw(3, 1, 0, 0);
     }
     for (size_t i = 0; i < count; i++) {
@@ -231,7 +247,8 @@ bool TexBlendPass::Record(wgpu::CommandEncoder& encoder, const wgpu::TextureView
         if (!l.vertexBuffer || !l.indexBuffer || !l.tex || l.indexCount == 0) continue;
         if (l.vertexStride != 64 && l.vertexStride != 88) continue;
         pass.SetPipeline(l.vertexStride == 64 ? pipes->unwrap64 : pipes->unwrap88);
-        pass.SetBindGroup(0, bindGroup(i + 1, l.tex));
+        const uint32_t off = offsetOf(i + 1);
+        pass.SetBindGroup(0, bindGroup(l.tex), 1, &off);
         pass.SetVertexBuffer(0, l.vertexBuffer, 0, l.vertexBytes);
         pass.SetIndexBuffer(l.indexBuffer, wgpu::IndexFormat::Uint16, 0, WGPU_WHOLE_SIZE);
         pass.DrawIndexed(l.indexCount, 1, 0, 0, 0);
@@ -241,6 +258,10 @@ bool TexBlendPass::Record(wgpu::CommandEncoder& encoder, const wgpu::TextureView
 }
 
 void TexBlendPass::Terminate() {
+    mParams = nullptr;
+    mParamSlots = 0;
+    mParamNext = 0;
+    mFrameUsed = 0;
     mPipelines.clear();
     mSampler = nullptr;
     mLayout = nullptr;

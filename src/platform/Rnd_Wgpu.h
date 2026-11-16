@@ -298,6 +298,9 @@ public:
     bool ComposeTexBlend(RndTex* output, RndTex* base, const NativeTexBlendLayer* layers,
                          int count);
     int TexBlendsComposed() const { return mTexBlendsComposed; }
+    // Creates the pipelines ComposeTexBlend draws `output` with (a load-time
+    // warm, PLAN H-104); returns how many were created.
+    int WarmTexBlendPipelines(RndTex* output);
 
     // Volumetric spotlight beams (platform/SpotBeamHook.h, gfx/SpotBeamPass.h):
     // retail NgSpotlightDrawer::DoPost. SubmitSpotBeams keeps this frame's
