@@ -480,15 +480,7 @@ void WgpuRnd::InitGpuResources() {
         // would stay in the page's MEMFS).
         mFrameTimesStdout = strcmp(path, "-") == 0;
         mFrameTimes = mFrameTimesStdout ? stdout : fopen(path, "w");
-        if (mFrameTimes)
-            fprintf(mFrameTimes,
-                    "%sframe,period_ms,cpu_ms,draw_ms,pt_wait_ms,pt_recorded,pt_answers,pt_age,"
-                    "pt_end_wait_ms,pt_after_submit,pt_standin,pipe_ms,tex_ms,mesh_ms,"
-                    "pipe_n,tex_n,mesh_n,bg_n,bg_ms,buf_n,buf_ms,gtex_n,gtex_ms,view_n,view_ms,"
-                    "acquire_ms,present_ms,file_n,file_ms,game_ms,game_cpu_ms,"
-                    "scene_bg_writes,scene_bg_creates,gpu_wait_ms,pace_ms,"
-                    "game_vcs,game_ivcs,draw_vcs,draw_ivcs\n",
-                    mFrameTimesStdout ? "[FT] " : "");
+        WriteFrameTimesHeader();
     }
 
     // Compose RndTexBlender outputs (TexBlendHook.h).
@@ -2218,6 +2210,19 @@ void WgpuRnd::EndDrawing() {
             mPerfBudgetViolations = 0;
         }
     }
+}
+
+void WgpuRnd::WriteFrameTimesHeader() {
+    if (!mFrameTimes) return;
+    fprintf(mFrameTimes,
+            "%sframe,period_ms,cpu_ms,draw_ms,pt_wait_ms,pt_recorded,pt_answers,pt_age,"
+            "pt_end_wait_ms,pt_after_submit,pt_standin,pipe_ms,tex_ms,mesh_ms,"
+            "pipe_n,tex_n,mesh_n,bg_n,bg_ms,buf_n,buf_ms,gtex_n,gtex_ms,view_n,view_ms,"
+            "acquire_ms,present_ms,file_n,file_ms,game_ms,game_cpu_ms,"
+            "scene_bg_writes,scene_bg_creates,gpu_wait_ms,pace_ms,"
+            "game_vcs,game_ivcs,draw_vcs,draw_ivcs\n",
+            mFrameTimesStdout ? "[FT] " : "");
+    fflush(mFrameTimes);
 }
 
 void WgpuRnd::WriteFrameTimes() {

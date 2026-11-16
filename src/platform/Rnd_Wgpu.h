@@ -590,6 +590,9 @@ public:
     // involuntary context switches in the game window and in the draw (Linux;
     // -1 elsewhere): an involuntary switch is the box taking the CPU away.
     void WriteFrameTimes();
+    // The column-name line, written once when the log opens (and "[FT] "
+    // prefixed like the rows on stdout).
+    void WriteFrameTimesHeader();
     FILE* mFrameTimes = nullptr;
     bool mFrameTimesStdout = false;  // MILO_FRAME_TIMES=- : rows on stdout, "[FT] " prefixed
     double mFrameTimesBegin = 0.0;    // wall s, BeginDrawing
