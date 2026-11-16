@@ -10060,8 +10060,11 @@ How it was measured:
 - Linux desktop, headless, Dawn/Vulkan, NVIDIA, `DC3_FPS_CAP=120`;
   rollerrink/ymca and streetside/iceicebaby, boot to results; 4 base runs a
   venue and one fix run, other lanes running.
-- Heads: engine np-gfx f277c9b, dc3 np-gfx aff6eeb61 (base); engine a174365,
-  dc3 np-framecost7 (fixes).
+- Heads: engine np-gfx f277c9b, dc3 np-gfx aff6eeb61 for the attribution
+  (both with `end_s` added). Re-taken on int36 (engine b26fce9 = 2e9e933,
+  dc3 82f15913f, with np-texblend's per-frame TexBlender draws): base and
+  fix alternating, 2 pairs a venue, perf on one streetside pair. The fix
+  build is dc3 np-framecost7 on engine np-framecost7.
 - `perf record -e cpu-clock:u -F 2000 --call-graph fp --user-callchains
   -k CLOCK_MONOTONIC -p <pid>`; a sample is put in its frame by the new
   `end_s` column (below), and in the draw (`end_s - draw_ms` .. `end_s`) or
@@ -10111,6 +10114,11 @@ How it was measured:
 
   Slow frames also have 3-6x the involuntary context switches in their draw
   (0.72-0.89 vs 0.15-0.22 a frame).
+- Over all 10 runs with the box sampled (the 8 int36 re-take runs too),
+  about 52,000 frames had 0-4 busy CPUs and none reached 6 ms of draw
+  CPU. Above 4 busy CPUs the share depends on what else is running: from 0%
+  to 60% between bands and runs. In every run the slow frames' box is
+  busier than the rest's (mean 5.8-29.8 against 4.6-5.6 busy CPUs).
 - The rollerrink 60-84 s section is the heaviest camera section (930-950
   lookups a frame, against 193 at 85-89 s), so it is where a busy box shows
   most. Its draw CPU is about 3 ms a frame when the box is quiet.
@@ -10169,6 +10177,20 @@ Fix run against base, streetside, the same window:
 | `__dynamic_cast`, whole window | 42.0 ms | 6.0 ms |
 | frames over 16.7 ms, 149.3-152.3 s | 1-3 a run (8 runs) | 0 (streetside, rollerrink) |
 | longest frame there | 17.5-20.3 ms | 14.6 ms (streetside), 16.7 ms (rollerrink) |
+
+Re-taken on int36, 149.3-152.3 s:
+
+| | base (4 runs) | fix (4 runs) |
+|---|---|---|
+| frames over 16.7 ms | 4, 1, 1, 1 | 0, 0, 0, 0 |
+| longest frame | 18.1-21.6 ms | 13.5-16.2 ms |
+| `CompleteSong` (perf, streetside) | 8.0 ms (`GetOutfitRemap` 7.0) | 3.5 ms (0) |
+| its frame's game CPU | 11.7 ms | 7.0 ms |
+| loader | 70.5 ms over 17 frames | 31.5 ms over 9 frames |
+| warm walk / `__dynamic_cast` | 54.5 / 53.0 ms | 15.5 / 8.5 ms |
+
+The keys queued are again the same dir by dir in all 8 runs (streetside 158
+keys / 14 created, rollerrink 154 / 13, with np-texblend's).
 
 - The fix run's longest song-end frame, streetside, is 12.0 ms of game CPU
   (14.6 ms period). It is a stream start (`Play` 2.0 ms, buffering decode
