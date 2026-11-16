@@ -200,6 +200,8 @@ MeshPassContext CurrentMeshPassContext() {
     c.hasDepth = gWgpuRnd->CurrentPassHasDepth();
     c.toTexture = gWgpuRnd->ActiveTargetTex() != nullptr;
     c.reflection = rndshape::TheRndRef().DrawMode() == rndshape::kDrawModeReflection;
+    c.selfShadowCaster = rndshape::kSelfShadowMap
+        && rndshape::TheRndRef().DrawMode() == rndshape::kSelfShadowCasterDrawMode;
     return c;
 }
 
@@ -243,6 +245,7 @@ PipelineKey MaterialPipelineKey(RndMat* rawMat, bool skinned, bool isGlyphMesh, 
     if (ctx.reflection && matCull != WgpuCull::None) {
         matCull = (matCull == WgpuCull::Regular) ? WgpuCull::Backwards : WgpuCull::Regular;
     }
+    if (ctx.selfShadowCaster && !isGlyphMesh && !isOverlayPass) matCull = WgpuCull::Backwards;
     key.cull = matCull;
     key.stencil = (WgpuStencil)mat->GetStencil();
     key.layout = skinned ? VertexLayoutType::Skinned : VertexLayoutType::Static;
@@ -285,6 +288,7 @@ PipelineKey MeshNextPassPipelineKey(const PipelineKey& first, BaseMaterial* next
     if (ctx.reflection && npCull != WgpuCull::None) {
         npCull = (npCull == WgpuCull::Regular) ? WgpuCull::Backwards : WgpuCull::Regular;
     }
+    if (ctx.selfShadowCaster) npCull = first.cull;
     npKey.cull = npCull;
     npKey.stencil = (WgpuStencil)rndshape::Mat(nextPass)->GetStencil();
     npKey.alphaCut = rndshape::Mat(nextPass)->GetAlphaCut();

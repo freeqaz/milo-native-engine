@@ -9,6 +9,9 @@ class RndCubeTex;
 // GPU texture view accessors (defined in Tex_Wgpu.cpp)
 wgpu::TextureView GetGpuTexView(RndTex* tex);
 wgpu::TextureView GetGpuTexDepthView(RndTex* tex);
+// The depth of a self-shadow map target as a binding (depth aspect); null for
+// any other texture (rndshape::kSelfShadowTexType).
+wgpu::TextureView GetGpuTexDepthSampleView(RndTex* tex);
 wgpu::TextureView GetGpuCubeTexView(RndCubeTex* cubeTex);
 
 // The GPU texture behind a texture's view (null when it has none), for tests

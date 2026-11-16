@@ -143,6 +143,10 @@ struct SceneUniforms {
     aoStrength: f32,
     colorAdjust: f32,
     colorXfm: array<vec4f, 3>,
+    // DC3 character self-shadow (UniformStructs.h; dc3SelfShadowLit below).
+    selfShadowClip: mat4x4f,
+    selfShadowColor: vec4f,   // c107; .w = 1 when the map applies
+    selfShadowDir: vec4f,     // c108
 };
 
 @group(0) @binding(0) var<uniform> scene: SceneUniforms;
@@ -864,6 +868,55 @@ fn retailPointAO(ao: vec4f, i: i32) -> f32 {
     return 1.0;
 }
 
+// DC3's character self-shadow: standard.ps option bit 19 (mShadowBuffer),
+// set for a per-pixel material while TheRnd.GetShadowCam() is non-null, i.e.
+// between RndShadowMap::PrepShadow and EndShadow inside Character::DrawShowing.
+// PrepShadow draws the character's shadow group from a light camera into a
+// 512x512 depth map; the shipped permutations (00000320400b5037 skin,
+// 00000300800b1017 hair, 00000320000b1037 plain with rim, ...) read it as
+//   uv, z = the light camera's clip position / w (the VS's r6 interpolant),
+//   four point fetches of tf5 around uv, each lit when map >= z, weighted
+//   bilinearly (getWeights2D): s = the lit fraction,
+// and scale every point light's contribution -- diffuse, specular and the
+// rim's back light -- by
+//   m(N) = 1 - 0.75 c107 sat(N . -c108) (1 - s)
+// with N the normal that term uses (checked against an emulation of the
+// microcode to 7.5e-8, dc3-decomp scripts/gpu/xenos_ucode/char_models.py
+// shadow_mult). The box (approx) light and the ambient are not shadowed.
+// gSelfShadowOn / gSelfShadowLit are set once per fragment by retailPixelShade;
+// they stay off for every other caller (vertex lighting, RB3).
+var<private> gSelfShadowOn: bool = false;
+var<private> gSelfShadowLit: f32 = 1.0;
+
+// The lit fraction s at worldPos. The image's texture matrix adds half a
+// 512-texel (0.5 + 0.5/512) because D3D9 rasterised the map with pixel centres
+// on integer coordinates; WebGPU's are at +0.5, which is the same shift, so
+// the native taps are floor(uv * size - 0.5) and the one to its right/below,
+// with weights fract(uv * size - 0.5), exactly where the image's land.
+fn dc3SelfShadowLit(worldPos: vec3f) -> f32 {
+    let clip = scene.selfShadowClip * vec4f(worldPos, 1.0);
+    let ndc = clip.xyz / clip.w;
+    let size = vec2f(textureDimensions(shadowMap));
+    let t = vec2f(0.5 + 0.5 * ndc.x, 0.5 - 0.5 * ndc.y) * size - vec2f(0.5);
+    let i0 = floor(t);
+    let f = t - i0;
+    let hi = vec2i(size) - vec2i(1);
+    let a = clamp(vec2i(i0), vec2i(0), hi);
+    let b = clamp(vec2i(i0) + vec2i(1), vec2i(0), hi);
+    let z = ndc.z;
+    let l00 = select(0.0, 1.0, textureLoad(shadowMap, vec2i(a.x, a.y), 0) >= z);
+    let l10 = select(0.0, 1.0, textureLoad(shadowMap, vec2i(b.x, a.y), 0) >= z);
+    let l01 = select(0.0, 1.0, textureLoad(shadowMap, vec2i(a.x, b.y), 0) >= z);
+    let l11 = select(0.0, 1.0, textureLoad(shadowMap, vec2i(b.x, b.y), 0) >= z);
+    return mix(mix(l00, l10, f.x), mix(l01, l11, f.x), f.y);
+}
+
+// m(N) above; 1 when the fragment has no self-shadow.
+fn dc3SelfShadowMult(N: vec3f) -> vec3f {
+    return vec3f(1.0) - 0.75 * scene.selfShadowColor.rgb *
+        saturate(dot(N, -scene.selfShadowDir.xyz)) * (1.0 - gSelfShadowLit);
+}
+
 // RB3 retail ambient occlusion (standard.vs, option bit 38: not prelit, the
 // mesh HasAOCalc, the environ's AO on with strength S > 0.003). The vertex
 // colour holds the baked visibility as four spherical-harmonic coefficients
@@ -908,8 +961,11 @@ fn retailDiffuseLight(worldPos: vec3f, N: vec3f, ao: vec4f) -> vec3f {
         if (i >= pointLightCount) {
             break;
         }
-        lit += retailPointAO(ao, i) * retailPointColor(i, worldPos) *
-            max(dot(N, retailPointDir(i, worldPos)), 0.0);
+        var c = retailPointColor(i, worldPos);
+        if (gSelfShadowOn) {
+            c *= dc3SelfShadowMult(N);
+        }
+        lit += retailPointAO(ao, i) * c * max(dot(N, retailPointDir(i, worldPos)), 0.0);
     }
     return lit;
 }
@@ -946,7 +1002,11 @@ fn retailSpecular(worldPos: vec3f, N: vec3f, V: vec3f, ao: vec4f, power: f32) ->
         if (i >= pointLightCount) {
             break;
         }
-        spec += lobeScale * retailPointAO(ao, i) * retailPointColor(i, worldPos) *
+        var c = retailPointColor(i, worldPos);
+        if (gSelfShadowOn) {
+            c *= dc3SelfShadowMult(N);
+        }
+        spec += lobeScale * retailPointAO(ao, i) * c *
             pow(saturate(dot(R, retailPointDir(i, worldPos))), power);
     }
     return spec;
@@ -1261,11 +1321,16 @@ fn dc3SkinLight(worldPos: vec3f, Nk: vec3f, Nf: vec3f, V: vec3f, ao: vec4f,
             break;
         }
         let L = retailPointDir(i, worldPos);
-        let c = retailPointAO(ao, i) * retailPointColor(i, worldPos);
-        light += c * saturate(dot(Nk, L) * vec3f(0.55, 0.6, 0.65) + vec3f(0.45, 0.4, 0.35));
-        back += c * saturate(-dot(L, V)) * sheen;
+        var ck = retailPointAO(ao, i) * retailPointColor(i, worldPos);
+        var cf = ck;
+        if (gSelfShadowOn) {
+            ck *= dc3SelfShadowMult(Nk);
+            cf *= dc3SelfShadowMult(Nf);
+        }
+        light += ck * saturate(dot(Nk, L) * vec3f(0.55, 0.6, 0.65) + vec3f(0.45, 0.4, 0.35));
+        back += cf * saturate(-dot(L, V)) * sheen;
         let R = 2.0 * dot(Nf, L) * Nf - L;
-        spec += c * fres * lobe * pow(saturate(dot(V, R)), power);
+        spec += cf * fres * lobe * pow(saturate(dot(V, R)), power);
     }
     let Re = 2.0 * dot(V, Nf) * Nf - V;
     let rimf = (1.0 - vnf) * (0.5 * Nf.z + 0.5);
@@ -1305,7 +1370,10 @@ fn dc3HairLight(worldPos: vec3f, N: vec3f, nRaw: vec3f, V: vec3f, ao: vec4f,
             break;
         }
         let L = retailPointDir(i, worldPos);
-        let c = retailPointAO(ao, i) * retailPointColor(i, worldPos);
+        var c = retailPointAO(ao, i) * retailPointColor(i, worldPos);
+        if (gSelfShadowOn) {
+            c *= dc3SelfShadowMult(N);
+        }
         light += c * saturate(dot(N, L) * vec3f(0.75, 0.8, 0.85) + vec3f(0.25, 0.2, 0.15));
         spec += c * saturate(dot(L, Re)) * lobe * aniso;
     }
@@ -1366,6 +1434,12 @@ fn retailPixelShade(p: RetailPixel, base: vec3f, ambientTerm: vec3f, proj: Dc3Pr
     }
     let worldPos = p.worldPos;
     let V = normalize(scene.cameraPos - worldPos);
+
+    // Option bit 19 (dc3SelfShadowLit above): DC3 only, per-pixel materials.
+    gSelfShadowOn = scene.retailLighting > 1.5 && scene.selfShadowColor.w > 0.5;
+    if (gSelfShadowOn) {
+        gSelfShadowLit = dc3SelfShadowLit(worldPos);
+    }
 
     // DC3 skin and hair (dc3SkinLight / dc3HairLight above).
     let skin = shaderVariationIs(material.shaderVariation, kShaderVariationSkin);
@@ -1431,7 +1505,11 @@ fn retailPixelShade(p: RetailPixel, base: vec3f, ambientTerm: vec3f, proj: Dc3Pr
                 if (i >= pointLightCount) {
                     break;
                 }
-                rimLight += retailPointAO(ao, i) * retailPointColor(i, worldPos) *
+                var c = retailPointColor(i, worldPos);
+                if (gSelfShadowOn) {
+                    c *= dc3SelfShadowMult(N);
+                }
+                rimLight += retailPointAO(ao, i) * c *
                     saturate(-dot(retailPointDir(i, worldPos), V)) * sheen;
             }
         }

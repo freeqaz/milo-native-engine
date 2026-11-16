@@ -767,12 +767,13 @@ wgpu::Texture CreateRenderTarget(GpuDevice& gpu, int w, int h, wgpu::TextureForm
     return gpu.CreateTexture(desc);
 }
 
-wgpu::Texture CreateDepthTarget(GpuDevice& gpu, int w, int h, const char* label) {
+wgpu::Texture CreateDepthTarget(GpuDevice& gpu, int w, int h, const char* label, bool sampled) {
     wgpu::TextureDescriptor desc{};
     desc.label = label;
     desc.size = {(uint32_t)w, (uint32_t)h, 1};
     desc.format = wgpu::TextureFormat::Depth24PlusStencil8;
     desc.usage = wgpu::TextureUsage::RenderAttachment;
+    if (sampled) desc.usage |= wgpu::TextureUsage::TextureBinding;
     return gpu.CreateTexture(desc);
 }
 

@@ -41,9 +41,10 @@ wgpu::Texture CreateCubeFromBitmaps(GpuDevice& gpu, const RndBitmap* const* face
 wgpu::Texture CreateRenderTarget(GpuDevice& gpu, int w, int h, wgpu::TextureFormat fmt,
                                  const char* label = "RndTexTarget");
 
-// Create depth-stencil target
+// Create depth-stencil target. `sampled` adds TextureBinding, so a depth-only
+// view of it can be bound (a self-shadow map).
 wgpu::Texture CreateDepthTarget(GpuDevice& gpu, int w, int h,
-                                const char* label = "RndTexDepth");
+                                const char* label = "RndTexDepth", bool sampled = false);
 
 // Map Milo bitmap format to WebGPU texture format
 wgpu::TextureFormat MapBitmapFormat(const RndBitmap& bmp, bool hasBCSupport);

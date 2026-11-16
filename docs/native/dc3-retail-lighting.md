@@ -1535,7 +1535,7 @@ Bits whose VS differs:
 | 13 | screenAligned | 50 | 50 | yes (round 5) |
 | 17 | approxLights | 110 | 110 | yes |
 | 18 | fog | 182 | 182 | yes |
-| 19 | shadowBuffer | 1,210 | 1,210 | yes (ShadowPass) |
+| 19 | shadowBuffer | 1,210 | 1,210 | **no -> fixed, 17** (the character self-shadow map; ShadowPass is a different shadow) |
 | 25 | billboard | 12 | 6 (with point lights only) | billboards yes; their point-light normal not checked |
 | 38 | enableAO | 12 | 10 | yes (retailAOFactors) |
 | 40-41 | numPoint | 1,798 | 272 | yes (retailPoint*) |
@@ -2322,3 +2322,116 @@ Two small retail differences are left, both untried:
   `1 − 0.75 · c69 · tf5.a · sat(N · c65)`. Native does not, and the
   multiplier only darkens.
 - Retail normalises V per vertex, across the floor's large triangles.
+
+## 17. Item 16 (a): the character self-shadow map, and faces (np-look16)
+
+Lane archive: dc3-decomp `archive/np-gfx-2026-11-14/lanes/sharp/item16/`.
+PLAN H-119.
+
+### 17.1 The survey row was a pose artifact
+
+Survey no. 5 was throneroom Tan's cheek, which lacks Xenia's orange rim. Its
+frames were not paired. On paired frozen frames (throneroom cu01, Tan and
+Oblio, post off), the faces agree within about 1-3 % per channel.
+
+The rim term, the box lights and the skin permutation's constants are as in
+§4. The question is then whether any feature bit the retail path does not
+implement is shipped on a character.
+
+### 17.2 Feature-bit census of the shipped character materials
+
+The census covers 95 character milos and 1,413 materials. It counts which
+bits `CalcShaderOpts` would set from the material fields:
+
+| bit | feature | materials | native |
+|---|---|---|---|
+| 0, 19 | per-pixel, and so eligible for the self-shadow | 915 | 19: **no -> fixed, 17.3** |
+| 37 | rim | 392 | yes |
+| variation 1 | skin | 390 | yes |
+| variation 2 | hair | 136 | yes |
+| 3 | environ map | 98 | yes |
+| 54 | flip normal | 87 | yes (§11.3) |
+| 49 | env spec mask | 38 | yes |
+| 7 | glow | 18 | yes |
+| 53 | intensify | 6 | yes |
+| 43 | env falloff | 2 | yes |
+| 20 | aniso | 1 | yes |
+| 48 | point cube | 0 | no; inert, since no light in the 7 venues has a cube texture |
+| 24 | normal detail | 0 | yes (§16) |
+| receive projected | | 0 | yes |
+
+Bit 19 is the only dancer feature bit native did not implement. It was
+listed as "yes (ShadowPass)" in §11.2. That was wrong: ShadowPass is the
+native floor-shadow map, a different thing.
+
+### 17.3 Bit 19: the character self-shadow (FIXED)
+
+Retail:
+- `Character::DrawShowing` calls `RndShadowMap::PrepShadow` when all of
+  these hold: `self_shadow` is set (TRUE by default on player0/1 and the
+  backups), draw mode 0, lod ≤ 1, `mDrawMode & 1`, new gfx, not offscreen.
+- PrepShadow picks the light: the first kFloorSpot in LightsApprox, else the
+  first point or directional light in LightsReal.
+- It aims a 45° camera at the character's bounding sphere from that light.
+  It draws the character's shadow lods in `kDrawExtrude` into a 512×512 map
+  (type 0x42).
+- It calls `SetShadowMap(tex, cam, 1 − floorSpotColour)`, which sets c107
+  (colour) and c108 (the camera's y axis). EndShadow clears the map after
+  the character's own draw.
+- The casters use the shadowmap shader, which `CheckForceCull` gives cull
+  mode 6 (counter-clockwise, as for a kCullBackwards material) whatever the
+  material asks. So the map holds the far faces.
+- The receivers' permutation has bit 19. It projects the pixel into the map,
+  takes four point fetches at ±0.5 texel, and weights them bilinearly
+  (`getWeights2D`): s is the lit fraction.
+- It then scales every point light's term by
+  `m(N) = 1 − 0.75 · c107 · sat(N · −c108) · (1 − s)`. That covers diffuse,
+  specular and the rim's back light; skin uses Nk for the wrapped diffuse
+  and Nf for the back light and specular.
+- The box light and the ambient are not shadowed.
+- The model was checked against an emulation of all five shipped receiver
+  permutations (skin, skin without rim, hair, plain with rim, plain) to
+  7.5e-8.
+
+Xenia (throneroom, default camera, `self_shadow` on vs off on one frozen
+frame): 17,314 px change, all darker. The median is −10.6 levels, p10 −34.8,
+min −174. The changes are on shoulders, upper chests, under the arms and
+Oblio's coat flap.
+
+Native before: PrepShadow already ran, about 1.8 texture passes a frame into
+the unnamed 512² target, each splitting the main MSAA pass. Nothing read the
+result: on vs off changed 0 px.
+
+Now (`rndshape::kSelfShadowMap`, DC3 true, RB3Wii false):
+- The 0x42 target's depth is created sampleable
+  (`GetGpuTexDepthSampleView`).
+- While `GetShadowCam()` is set and its target is not the pass being drawn,
+  `WriteSceneUniforms` binds that depth as group 0 binding 1. It writes the
+  shadow camera's clip matrix and the captured P constants 0x6B / 0x6C into
+  `SceneUniforms.selfShadow*`, with `.w = 1`.
+- A change of shadow camera re-writes the scene block.
+- `retailPixelShade` computes s with `textureLoad` at the image's taps and
+  applies m(N) in every point-light loop. This is only under
+  `retailLighting > 1.5`; RB3's form never sees it.
+- The caster pass (`kDrawExtrude`) is `MeshPassContext::selfShadowCaster`,
+  and the material key culls Backwards for it.
+
+Result on the same protocol (native, frozen frame): 5,376 px change, all
+darker. The median is −8.2, p10 −37.9, min −161, in the same places:
+shoulders, chest bands and under the arms.
+
+The poses and cameras are the two runs' own, so this is a class match, not
+a pixel pairing. Closeup shots (cu01-04) change 0 px on both Xenia and
+native when `self_shadow` is toggled; the cause was not traced.
+
+Cost: the texture passes were already being paid.
+
+Tests (each red under its sabotage, 11 of 11):
+- `RetailCharShadingTest` kinds 5-9: the five bit-19 permutations, 60 cases
+  from the microcode emulation, with a 2×2 depth map holding each case's
+  taps.
+- `RetailCharShadingTest.SelfShadowNeedsItsCamera`: no camera or RB3's form
+  means no shadow.
+- `SelfShadowCasterTest.*`: the casters cull backwards; only kDrawExtrude is
+  the caster pass.
+

@@ -22,6 +22,11 @@ struct MeshPassContext {
     bool hasDepth = true;     // false: the HUD overlay pass
     bool toTexture = false;   // a TexturePass (WgpuRnd::ActiveTargetTex)
     bool reflection = false;  // the reflection draw mode (cull flipped)
+    // The self-shadow casters (rndshape::kSelfShadowCasterDrawMode, DC3's
+    // kDrawExtrude): the image's shadowmap shader culls counter-clockwise
+    // whatever the material asks (RndShader::CheckForceCull's mode 6, which a
+    // kCullBackwards material also gets), so the map holds the far faces.
+    bool selfShadowCaster = false;
 };
 
 // The pass being drawn now.
