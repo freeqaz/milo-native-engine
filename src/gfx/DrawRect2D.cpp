@@ -9,6 +9,7 @@
 #include "math/Color.h"
 #include "rndobj/Mat.h"
 #include "rndobj/Rnd.h"
+#include "rndobj/Tex.h"
 #include "platform/rndshape/RndShape.h"
 #include "obj/Object.h"
 
@@ -250,6 +251,13 @@ void DrawRect2D::Draw(wgpu::RenderPassEncoder& pass, const Hmx::Rect& rect, RndM
     // Rnd pixel space (Width()×Height()), so we must map [0,Width] → NDC [-1,1].
     float w = (float)rndshape::TheRndRef().Width();
     float h = (float)rndshape::TheRndRef().Height();
+    // DC3: into a texture target, the target's own pixels (kRectTargetPixels).
+    if (rndshape::kRectTargetPixels && gWgpuRnd) {
+        if (RndTex* target = gWgpuRnd->ActiveTargetTex()) {
+            w = (float)target->Width();
+            h = (float)target->Height();
+        }
+    }
     if (w <= 0 || h <= 0) return;
 
     float x0 = rect.x / w * 2.0f - 1.0f;

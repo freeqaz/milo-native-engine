@@ -10,7 +10,10 @@
 //      `mul oC0, r0, r2`, with r2 the work material's white colour and the
 //      layer alpha), blend SrcAlpha / InvSrcAlpha, clamp sampling
 //      (SetupMaterial's kTexWrapClamp), no culling.
-// Each draw has its own parameter block and bind group.
+// Each draw has its own parameter block: a slot of one ring buffer, bound at
+// a dynamic offset, so a layer's bind group depends only on its texture. With
+// a BindGroupCache the groups are made once and reused frame to frame (no
+// per-frame CreateBindGroup); without one each Record makes its own.
 //
 // Rndobj-free: the caller (WgpuRnd) resolves textures and mesh buffers.
 #pragma once
@@ -20,6 +23,7 @@
 #include <vector>
 
 class GpuDevice;
+class BindGroupCache;
 
 class TexBlendPass {
 public:
@@ -40,7 +44,12 @@ public:
     bool Record(wgpu::CommandEncoder& encoder, const wgpu::TextureView& target,
                 wgpu::TextureFormat format, uint32_t w, uint32_t h,
                 const wgpu::TextureView& base, const Layer* layers, size_t count,
-                GpuDevice& gpu);
+                GpuDevice& gpu, BindGroupCache* cache = nullptr);
+    // Creates `format`'s pipelines now (a load-time warm, PLAN H-104);
+    // returns false on a pipeline failure.
+    bool Warm(wgpu::TextureFormat format, GpuDevice& gpu) { return EnsurePipelines(format, gpu) != nullptr; }
+    // A new command encoder: the slots the last one used have been submitted.
+    void BeginFrame() { mFrameUsed = 0; }
     void Terminate();
 
     // Byte offset of the UV in both mesh vertex layouts (gfx/VertexFormats.h).
@@ -60,4 +69,13 @@ private:
     wgpu::PipelineLayout mLayout;
     wgpu::Sampler mSampler;
     std::vector<Pipelines> mPipelines;
+    // Parameter ring: kParamStride-byte slots, used in order and wrapped. A
+    // slot is rewritten only after the command buffers recorded since its
+    // last write have been submitted (Queue::WriteBuffer is ordered with
+    // Submit): the slots one frame (BeginFrame to BeginFrame) uses never
+    // overlap, and a frame that needs more than the ring holds grows it.
+    wgpu::Buffer mParams;
+    uint32_t mParamSlots = 0;
+    uint32_t mParamNext = 0;
+    uint32_t mFrameUsed = 0;
 };
