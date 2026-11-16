@@ -6,6 +6,7 @@
 #include "platform/Rnd_Wgpu.h"
 #include "platform/TexGpu.h"
 #include "gfx/TextureConvert.h"
+#include <algorithm>
 #include "rndobj/Tex.h"
 #include "rndobj/CubeTex.h"
 #include "rndobj/Bitmap.h"
@@ -15,6 +16,7 @@
 #include "gfx/Screenshot.h"
 #include "gfx/FrameCost.h"
 
+#include <algorithm>
 #include <unordered_map>
 #include <vector>
 #include <cstdio>
@@ -42,6 +44,9 @@ struct GpuTexData {
     // byte-identical (sSharedTex below); `shareKey` names the entry.
     bool shared = false;
     uint64_t shareKey = 0;
+    // Bytes of the bitmap texture this holder created (0 for a share hit, a
+    // render target, or once the texture moved into sSharedTex).
+    uint64_t bytes = 0;
 };
 
 static std::unordered_map<RndTex*, GpuTexData> sTexGpuData;
@@ -91,9 +96,40 @@ struct SharedTex {
     const RndTex* owner = nullptr;   // the bitmap a hit is compared against
     UploadInputs inputs;
     int refs = 0;
+    uint64_t bytes = 0;  // the texture's, counted once for every holder
 };
 static std::unordered_map<uint64_t, SharedTex> sSharedTex;
 static unsigned long long sTexShareCount = 0;
+
+// GPU memory of a bitmap texture: every mip level of its format (BC1 8 bytes a
+// 4x4 block, BC2/BC3 16, otherwise 4 bytes a texel).
+static uint64_t BitmapTextureBytes(const wgpu::Texture& t) {
+    if (!t) return 0;
+    const wgpu::TextureFormat f = t.GetFormat();
+    const bool bc1 = f == wgpu::TextureFormat::BC1RGBAUnorm;
+    const bool bc = bc1 || f == wgpu::TextureFormat::BC2RGBAUnorm || f == wgpu::TextureFormat::BC3RGBAUnorm;
+    uint64_t total = 0;
+    uint32_t w = t.GetWidth(), h = t.GetHeight();
+    for (uint32_t level = 0; level < t.GetMipLevelCount(); level++) {
+        if (bc) total += (uint64_t)((w + 3) / 4) * ((h + 3) / 4) * (bc1 ? 8 : 16);
+        else total += (uint64_t)w * h * 4;
+        w = w > 1 ? w / 2 : 1;
+        h = h > 1 ? h / 2 : 1;
+    }
+    return total * t.GetDepthOrArrayLayers();
+}
+
+// Live bitmap-texture bytes (each distinct texture once) and the highest they
+// have been. Memory only grows at a create, so the peak is taken there.
+static uint64_t sBitmapBytesPeak = 0;
+uint64_t GpuTexBitmapBytes() {
+    uint64_t total = 0;
+    for (const auto& kv : sTexGpuData)
+        if (!kv.second.shared && !kv.second.renderTarget) total += kv.second.bytes;
+    for (const auto& kv : sSharedTex) total += kv.second.bytes;
+    return total;
+}
+uint64_t GpuTexBitmapBytesPeak() { return sBitmapBytesPeak; }
 
 static uint64_t HashBytes(uint64_t h, const void* data, size_t n) {
     // FNV-1a over 8-byte words, then the tail.
@@ -417,6 +453,7 @@ void RndTex::PresyncBitmap() {
         }
         data.texture = gpuTex;
         data.view = gpuTex.CreateView();
+        data.bytes = BitmapTextureBytes(gpuTex);
         sTexCreateCount++;
     }
     sPresyncOk++;
@@ -437,10 +474,13 @@ void RndTex::PresyncBitmap() {
         e.owner = this;
         e.inputs = inputs;
         e.refs = 1;
+        e.bytes = data.bytes;
+        data.bytes = 0;
         data.shared = true;
         data.shareKey = shareKey;
     }
     sTexGpuData[this] = data;
+    if (!hit) sBitmapBytesPeak = std::max(sBitmapBytesPeak, GpuTexBitmapBytes());
 }
 
 uint32_t GpuTexPixelFingerprint(const uint8_t* pixels, int size) {

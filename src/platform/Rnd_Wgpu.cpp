@@ -475,15 +475,12 @@ void WgpuRnd::InitGpuResources() {
     mPointTester.rnd = this;
     if (!getenv("MILO_NO_POINT_TESTS")) SetNativePointTester(&mPointTester);
     if (const char* path = getenv("MILO_FRAME_TIMES"); path && *path && !mFrameTimes) {
-        mFrameTimes = fopen(path, "w");
-        if (mFrameTimes)
-            fprintf(mFrameTimes,
-                    "frame,period_ms,cpu_ms,draw_ms,pt_wait_ms,pt_recorded,pt_answers,pt_age,"
-                    "pt_end_wait_ms,pt_after_submit,pt_standin,pipe_ms,tex_ms,mesh_ms,"
-                    "pipe_n,tex_n,mesh_n,bg_n,bg_ms,buf_n,buf_ms,gtex_n,gtex_ms,view_n,view_ms,"
-                    "acquire_ms,present_ms,file_n,file_ms,game_ms,game_cpu_ms,"
-                    "scene_bg_writes,scene_bg_creates,gpu_wait_ms,pace_ms,"
-                    "game_vcs,game_ivcs,draw_vcs,draw_ivcs\n");
+        // "-" writes the rows to stdout, each prefixed "[FT] ": on the web that
+        // is the browser console, where a test driver can read them (a file
+        // would stay in the page's MEMFS).
+        mFrameTimesStdout = strcmp(path, "-") == 0;
+        mFrameTimes = mFrameTimesStdout ? stdout : fopen(path, "w");
+        WriteFrameTimesHeader();
     }
 
     // Compose RndTexBlender outputs (TexBlendHook.h).
@@ -634,7 +631,7 @@ void WgpuRnd::Terminate() {
     mPointTestQueue.clear();
     mPointTestPass.Terminate(&mGpu);
     if (mFrameTimes) {
-        fclose(mFrameTimes);
+        if (!mFrameTimesStdout) fclose(mFrameTimes);
         mFrameTimes = nullptr;
     }
     mPostProcPass.Terminate();
@@ -2215,6 +2212,19 @@ void WgpuRnd::EndDrawing() {
     }
 }
 
+void WgpuRnd::WriteFrameTimesHeader() {
+    if (!mFrameTimes) return;
+    fprintf(mFrameTimes,
+            "%sframe,period_ms,cpu_ms,draw_ms,pt_wait_ms,pt_recorded,pt_answers,pt_age,"
+            "pt_end_wait_ms,pt_after_submit,pt_standin,pipe_ms,tex_ms,mesh_ms,"
+            "pipe_n,tex_n,mesh_n,bg_n,bg_ms,buf_n,buf_ms,gtex_n,gtex_ms,view_n,view_ms,"
+            "acquire_ms,present_ms,file_n,file_ms,game_ms,game_cpu_ms,"
+            "scene_bg_writes,scene_bg_creates,gpu_wait_ms,pace_ms,"
+            "game_vcs,game_ivcs,draw_vcs,draw_ivcs\n",
+            mFrameTimesStdout ? "[FT] " : "");
+    fflush(mFrameTimes);
+}
+
 void WgpuRnd::WriteFrameTimes() {
     if (!mFrameTimes) return;
     const double now = PerfNow(), cpu = ThreadCpuNow();
@@ -2234,6 +2244,7 @@ void WgpuRnd::WriteFrameTimes() {
         if (!framecost::RawCallsCounted())
             n[framecost::kBuffer] = n[framecost::kGpuTexture] = n[framecost::kView] = -1;
         using namespace framecost;
+        if (mFrameTimesStdout) fputs("[FT] ", mFrameTimes);
         fprintf(mFrameTimes,
                 "%d,%.3f,%.3f,%.3f,%.3f,%d,%d,%d,%.3f,%d,%d,%.3f,%.3f,%.3f,"
                 "%lld,%lld,%lld,%lld,%.3f,%lld,%.3f,%lld,%.3f,%lld,%.3f,"
@@ -3022,7 +3033,7 @@ void WgpuRnd::LogGpuCounters() {
             "[GPUCOUNT] frame=%d bindGroupsLive=%zu bgCreated=%llu bgHits=%llu bgEvicted=%llu "
             "bgUncached=%llu ringBuffers=4 ringBytes=%u ringGrows=%u/%u/%u/%u "
             "ringQueueWrites=%llu ringQueueBytes=%llu pipelines=%d pipelineCreates=%llu pipelineLoadCreates=%llu pipelineWarms=%llu warmsDrawn=%llu pipelineWaits=%llu gpuMeshes=%zu meshUploads=%llu "
-            "gpuTextures=%zu texHolders=%zu texCreates=%llu texShares=%llu "
+            "gpuTextures=%zu texHolders=%zu texCreates=%llu texShares=%llu texBytes=%llu texBytesPeak=%llu "
             "postBgLive=%zu postBgCreated=%llu postBgHits=%llu postBgEvicted=%llu postBgUncached=%llu "
             "ptBatches=%d ptCreated=%llu ptInFlight=%d "
             "bgCreatesAll=%llu bgCreatesRaw=%s sceneBgWrites=%llu sceneBgCreates=%llu\n",
@@ -3043,6 +3054,7 @@ void WgpuRnd::LogGpuCounters() {
             (unsigned long long)GpuMeshUploadCount(), GpuTexCount(), GpuTexHolderCount(),
             (unsigned long long)GetGpuTexDebugInfo(nullptr).createCount,
             (unsigned long long)GpuTexShareCount(),
+            (unsigned long long)GpuTexBitmapBytes(), (unsigned long long)GpuTexBitmapBytesPeak(),
             mPostBindGroupCache.Size(), (unsigned long long)mPostBindGroupCache.Creates(),
             (unsigned long long)mPostBindGroupCache.Hits(),
             (unsigned long long)mPostBindGroupCache.Evictions(),
