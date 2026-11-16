@@ -38,6 +38,10 @@ void ClearGpuTexCaches();
 size_t GpuTexCount();
 size_t GpuTexHolderCount();
 unsigned long long GpuTexShareCount();
+// Bytes of the live bitmap textures (PresyncBitmap's; a shared texture once;
+// render targets and cube maps not counted), and the most they have been.
+uint64_t GpuTexBitmapBytes();
+uint64_t GpuTexBitmapBytesPeak();
 
 // The content fingerprint RndTex::PresyncBitmap keys re-creation on (with the
 // pixel pointer): 8 evenly spaced bytes folded as h = h*31 + byte; 0 for a null

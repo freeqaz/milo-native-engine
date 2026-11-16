@@ -563,6 +563,8 @@ constexpr bool kRectModulatesMatColor = true;
 // The Xbox `standard`-shader rect colour model (RndShape_DC3.h) is not this
 // shape's; declared so that path compiles here.
 constexpr bool kRectXboxDrawRectShader = false;
+// Rects into a render target keep the virtual-screen mapping (RndShape_DC3.h).
+constexpr bool kRectTargetPixels = false;
 inline bool MatPrelit(RndMat *m) { return m->mPreLit; }
 
 // ---- post-processing -------------------------------------------------------

@@ -9797,3 +9797,251 @@ every comparison is between two binaries built from the same tree.
   at 12–23 ms a frame, the hitch this round set out to remove.
 - First-draw textures, the 76 warmed-but-undrawn keys and the late rect
   warm are out of scope for this round.
+
+## 42. First-draw textures, round 6: measured, not shipped (lane np-gfx spotperf, branch np-texwarm, 2026-11-16)
+
+Round 6 tried creating the game's textures at load instead of at their
+first draw, the way section 39 moved pipelines. It measured no win: not
+on desktop, and not enough on the web. The warm queue is reverted. What
+stays is two measurement aids, and the numbers below, so the next lane
+does not have to rebuild either.
+
+How it was measured:
+- Linux desktop: headless, Dawn/Vulkan, NVIDIA, `DC3_FPS_CAP=120`.
+  rollerrink/ymca and streetside/iceicebaby, boot to results.
+- Web: the web build in Chromium at 60 Hz.
+- mobile-gpu: dc3 `scripts/web/mobile-gpu.mjs --profile mobile`.
+- All runs used the shared GPU lock with other lanes running (box load 6-15).
+- Heads: engine np-gfx 4fd1dc0, dc3 np-gfx 75bf83ac7.
+- Tools and raw runs: dc3 `archive/np-gfx-2026-11-14/lanes/spotperf/round6/`
+  (`tools/`: the song runner, the load-time pairing, the per-screen texture
+  memory, the slow-frame classifier).
+
+### 42.1 What a first draw costs
+
+- `RndTex::PresyncBitmap` creates a texture at its first draw. The image
+  creates it as it loads (`DxTex::SyncBitmap`).
+- Base heads, desktop, 3 runs a venue:
+  - The `game_screen` Enter frame and the frame after it carry 16-35 ms of
+    creates. Those two frames take 89-126 ms in all.
+  - The `perform_endgame_screen` Enter frame takes 12.9-15.1 ms, 4.8-5.3 ms
+    of it creates.
+  - The rest of a song's creates are 7-11 ms over the song, and none is over
+    1.5 ms in one frame.
+- Web, 2 runs: the `game_screen` Enter frame takes 177 and 140 ms, of which
+  34.3 and 25.9 ms are creates. In a song, no frame has more than 0.4 ms of
+  creates.
+
+### 42.2 What was tried
+
+- **The engine part.** `QueueGpuTexWarm(tex)` queued a texture that was not
+  yet uploaded. `PumpGpuTexWarms()` ran from `BeginDrawing` and created
+  queued textures through `PresyncBitmap`, 2 ms a frame and at least one
+  texture a frame. The pump's creates had their own frame-cost kind,
+  `kTexWarm`, so they could be told from a draw's.
+- **The dc3 part.** The flag ran from `GamePanel::Load` to `GamePanel::Unload`:
+  - it queued each dir handed to the H-104 walk, plus the game screen's and
+    the win screen's panels and the preloaded fonts;
+  - the game screen was held until the queue was empty, at most 5 s. The
+    hold never fired, because the pump drains during the loading screen.
+- **Not the menus.** A first version queued every loaded dir. Every UI panel
+  loads at boot, so that put 41.3 MB of bitmap textures in GPU memory at the
+  web main menu, against 10.4 MB at base.
+
+### 42.3 Results
+
+**Desktop, song select to game: 6 pairs, base then warm, back to back.**
+
+| | base | warm | paired (warm - base) |
+|---|---|---|---|
+| load | 866-1149 ms | 915-1226 ms | median +124 ms, mean +63; slower in 4 of 6 |
+| first two game frames | 89-126 ms | 47-75 ms | median -42 ms; faster in 6 of 6 |
+| load + those two frames | | | median +81 ms, mean +20 |
+
+- The warm's own work inside the load is 40-66 ms (median 53 ms).
+- The loading screen's frame count does not change.
+- The other loads move by noise:
+  - boot -58 ms;
+  - title to main -9 ms;
+  - game to results -31 ms.
+
+**Desktop, in the song.**
+- No frame of 12 ms or more carried a texture cost at base, so the warm had
+  nothing there to remove.
+- The endgame Enter frame lost its 5 ms of creates. The pump paid 3-6 ms
+  for them, spread over the song's last frames, with at most 2-4 ms in one
+  frame.
+
+**Desktop, bitmap-texture memory** (`[GPUCOUNT] texBytes`):
+
+| | base | warm |
+|---|---|---|
+| peak, rollerrink | 48.2 MB | 60.9 MB |
+| peak, streetside | 58.6 MB | 71.1 MB |
+| main menu | 10.4 MB | 10.4 MB |
+| GPU textures at the game | 84 | 509-554 |
+
+**Web, 2 pairs.**
+- `game_screen` Enter frame (plus the next): base 177 and 140 ms, warm 114
+  and 132 ms.
+  - Paired, that is -63 and -8 ms.
+  - The full-warm runs before them read 158 and 132 ms at base, 108 and
+    148 ms warm.
+- Loading to game: 2416 and 2464 ms at base, 2215 and 2205 ms warm (44 ms of
+  warm work).
+- Endgame Enter frame: 42 ms at base, 37-38 ms warm.
+- Bitmap-texture peak: 43.5 MB at base, 59.7 MB warm.
+- GPU textures: 322 at base, 535 warm.
+
+**mobile-gpu, 2 runs each.**
+- Base passed both runs at 256 MB of live textures.
+- The warm build used 339.6 MB, which is +83 MB and 595 textures against
+  378. The `--profile mobile` path decodes DXT in software, so every texture
+  is rgba8unorm.
+- One of the two warm runs failed the check *"a song was started and
+  finished loading"*. The check runs at `DONE (state 4)`, and
+  `will enter 'game_screen'` came 40 ms later. The warm provoked that race;
+  base never showed it.
+
+**Decision.**
+- The bar was the web game Enter frame, or an in-song frame, improving by
+  more than about 30 ms, or an in-song frame over 16.7 ms going away.
+- The texture part of the web Enter frame is only 26-34 ms, so no warm of
+  any shape can clear 30 ms there by much. The measured gain was -63 and
+  -8 ms, which is not clear.
+- No in-song frame carries a texture cost to remove.
+- On desktop the load paid more than the first frames saved, and memory grew
+  on every platform.
+- So it is not shipped. The cheaper variant (queue only the textures that
+  are drawn, with no memory growth) is not worth building, because its gain
+  is bounded by the same 26-34 ms.
+
+### 42.4 What the warm created that was never drawn
+
+This was a diagnostic build, not committed: the patch is in the archive as
+`tmpdiag-texundrawn2-engine.patch`. The dump at frame 21600 is the song's
+end, just before the endgame screen. Of the 1334 (rollerrink) and 1384
+(streetside) warmed textures, 1064-1069 had not been drawn. That is 271-273
+creates; the rest are share hits.
+
+- Drawn later, by the endgame and results screens:
+  - `perform_endgame` (29 creates, 7.1 Mtexel);
+  - `xptoaster_left` (29);
+  - `results_cluster_left` (17);
+  - `xptoaster_rt` (3).
+- Never drawn in this flow:
+  - the flashcards of moves the song does not use (`flashcard_00`: 28
+    creates, 91 shares; `flashcard_01..05`: shares only);
+  - `move_data` (32);
+  - `flashcard_dock`, `fitness_hud_right`, `challenge_target_left`,
+    `vibration_numbers`, `peak_spiral0`, `hud_left`;
+  - `photo_display`, `freestyle_card`, `album_art` (2).
+- These 271-273 creates (18.6-18.9 Mtexel at the top mip) are where the
+  +12.5 MB of the desktop peak went.
+- A later dump after the results screen read freed textures: the game panel's
+  are deleted at unload, and the diagnostic held raw pointers. Its numbers
+  are not used here.
+
+### 42.5 What stays
+
+- **`MILO_FRAME_TIMES=-`** writes the frame-times header and rows to stdout,
+  each line prefixed `[FT] `. On the web that is the browser console. The
+  header has its own function, `WgpuRnd::WriteFrameTimesHeader`.
+  - dc3 `FrameTimesTest` checks that both carry the prefix on stdout,
+    neither does in a file, a row has the header's column count, and the
+    first call writes no row.
+- **`[GPUCOUNT] texBytes` / `texBytesPeak`** report the live bitmap-texture
+  bytes and their peak:
+  - every mip level at its format's size (BC1 8 bytes a 4x4 block, BC2/BC3
+    16, otherwise 4 bytes a texel);
+  - a shared texture counted once;
+  - render targets and cube maps not counted.
+  - dc3 `TexBytesTest` covers it.
+  - Both tests list their sabotages, and all 8 sabotages were caught.
+
+### 42.6 The 76 pipeline keys warmed and never drawn
+
+- Section 39's 76 keys: 34 overlay
+  variants of objects under a panel that this flow draws only in the world
+  pass, 26–27 world keys of objects this flow never shows (dialog,
+  letterbox, photo display, freestyle card), 12–13 reflection keys and 3
+  texture-pass keys. They are compiled on Dawn's workers; their main-thread
+  issue cost is about 2–10 ms a load against a song select → game of
+  0.84–1.03 s that moves ±0.1 s between runs. Not measurable, so not cut;
+  other flows draw them (pause, dialogs, photos, freestyle).
+## 43. DC3 TexBlender: the composer, and rects into a texture target (lane np-gfx sharp, item 15, branch np-texblend, 2026-11-16)
+
+dc3 PLAN H-117. Lane notes and evidence: dc3 `archive/np-gfx-2026-11-14/lanes/sharp/item15/`.
+
+### 43.1 What was wrong
+
+Dancers' cloth normal maps come from `RndTexBlender`: a 512² `kRenderedNoZ`
+output that `DrawShowing` composes from a base normal map and, per
+`RndTexBlendController`, the controller mesh's faces drawn at their UVs with the
+near/far (128²) or custom map at a pose-driven alpha. Native ran the decomp body,
+and two things went wrong (GPU readbacks of the output, houseparty
+lilt01/bodie01, every mode in one paused session):
+
+- **The base rect.** `DrawRect(0, 0, W, H)` went through `DrawRect2D`, which maps
+  against the 1280×720 virtual screen even when a texture is the bound target.
+  The base landed in the top-left 40 %×71 % (512/1280 × 512/720); the rest stayed
+  transparent black (28.5 % coverage). The image's `DxRnd::DrawRect` sets
+  `ViewportEnable 0`, so its rect is in the target's own pixels.
+- **The layers.** Native `RndMesh::DrawFacesInRange` draws nothing, so no
+  controller layer landed (0 texels in a layers-only readback).
+
+A black normal-map texel decodes to (−1, −1, 0) on the retail shading path,
+tilting the normal into the surface; the rim and box-map lights then lit the
+front of the cloth (rollerrink tops cyan/pink, houseparty leggings gold).
+It was not the clear, the blend state, the write mask or frame order: the
+output was composed every frame while a controller was active, as the image
+does.
+
+### 43.2 The fix
+
+- **dc3 `RndTexBlender::NativeCompose`** (`HX_NATIVE`) hands the image's two
+  steps to `NativeTexBlendComposer` (`platform/TexBlendHook.h`, the same hook
+  rb3 W16-SA uses): base with blend off over the whole target, then each layer
+  (near list, far list, custom list, sorted as `DrawBlendList` sorts) with
+  SrcAlpha blending. `mRenderedStates`/`unkc0` bookkeeping is the decomp's, so
+  the image's skip of a base-only redraw holds. Headless (no composer) the
+  decomp body runs.
+- **`TexBlendPass`**: parameters in a ring of 256-byte slots bound at a dynamic
+  offset (`BeginFrame` rewinds it), bind groups from the frame's
+  `BindGroupCache`, and `Warm(fmt, gpu)` for the load-time warm
+  (`WgpuRnd::WarmTexBlendPipelines`, called from dc3's `PipelineWarm.cpp`
+  QueueTexBlender). The shader and blend are unchanged, so rb3's output is the
+  same; `TexBlendPassTest` (rb3 ctest) reads it back against its model.
+- **`rndshape::kRectTargetPixels`** (DC3 = `kDC3RetailModel`, RB3Wii false):
+  `DrawRect2D` uses the bound target texture's size when a texture target is
+  active. Only dc3 changes; rb3/rb3-xenon keep the virtual mapping.
+
+### 43.3 Other render-to-texture rect users
+
+| User | Draws rects into a non-screen target? | Same defect? |
+|---|---|---|
+| TexProc | yes, its output | would have; never drawn at runtime (rect census, 4 venues + menus); now fixed by 42.2 |
+| SoftParticleBuffer | yes | as TexProc |
+| VelocityBuffer | `DrawRectDepth` | no: engine velocity path (§33) |
+| ShadowMap | no | engine `ShadowPass` |
+| Crowd impostors | mesh draws | no |
+| Spotlight blur (`NgSpotlightDrawer`) | `BlurRT` is `#ifndef HX_NATIVE` | no: `SpotBeamPass` (§36) |
+| StreamRenderer | CPU compose natively | no |
+| Post / HUD camera box | engine passes / the back buffer | no |
+
+TexBlender was the only runtime rect-into-target user in the census.
+
+### 43.4 Measured
+
+- On screen vs Xenia: rollerrink aubrey04/angel04 tops print white (retail
+  RMnrQemwIa8 agrees), houseparty Lilt's leggings dark and Bodie's sleeves red,
+  dclive Kerith's top no longer cyan in the awesome state. Outfits without a
+  TexBlender (taye04, emilia04, oblio04, tan04, the glitterati robots) do not
+  move; the throneroom cheek rim (survey no. 5) is not this cause.
+- In-run A/B, post off, composer vs the decomp body with the rect fix (layers
+  off): 552–6,091 px per shot, all on the blended cloth; fix-vs-fix control
+  0 px in 10 shots.
+- Cost, houseparty, two dancers: `TexBlendPass` 0.0136 ms GPU a frame (2 passes,
+  ≤ 2 draws each), no pipeline or per-frame bind-group create in the song.
+- Enhanced: no larger target. The image asserts the output is at most 512², the
+  base maps are 512² and the layers 128²; 4K closeups show no blockiness.

@@ -298,6 +298,9 @@ public:
     bool ComposeTexBlend(RndTex* output, RndTex* base, const NativeTexBlendLayer* layers,
                          int count);
     int TexBlendsComposed() const { return mTexBlendsComposed; }
+    // Creates the pipelines ComposeTexBlend draws `output` with (a load-time
+    // warm, PLAN H-104); returns how many were created.
+    int WarmTexBlendPipelines(RndTex* output);
 
     // Volumetric spotlight beams (platform/SpotBeamHook.h, gfx/SpotBeamPass.h):
     // retail NgSpotlightDrawer::DoPost. SubmitSpotBeams keeps this frame's
@@ -590,7 +593,11 @@ public:
     // involuntary context switches in the game window and in the draw (Linux;
     // -1 elsewhere): an involuntary switch is the box taking the CPU away.
     void WriteFrameTimes();
+    // The column-name line, written once when the log opens (and "[FT] "
+    // prefixed like the rows on stdout).
+    void WriteFrameTimesHeader();
     FILE* mFrameTimes = nullptr;
+    bool mFrameTimesStdout = false;  // MILO_FRAME_TIMES=- : rows on stdout, "[FT] " prefixed
     double mFrameTimesBegin = 0.0;    // wall s, BeginDrawing
     double mFrameTimesBeginCpu = 0.0; // thread CPU s, BeginDrawing
     double mFrameTimesLastEnd = 0.0;  // wall s, previous EndDrawing

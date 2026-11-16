@@ -594,6 +594,12 @@ constexpr bool kRenderTargetStoresLinear = false;
 constexpr bool kRectModulatesMatColor = false;
 constexpr bool kRectXboxDrawRectShader = true;
 inline bool MatPrelit(RndMat *m) { return m->Prelit(); }
+// A rect drawn while a texture is the render target is in that target's own
+// pixels: DxRnd::DrawRect sets D3DRS_VIEWPORTENABLE 0 (and HalfPixelOffset 1),
+// so its pre-transformed vertices are the bound surface's coordinates whatever
+// the virtual screen is (dc3-decomp src/system/rnddx9/Rnd.cpp). DC3 only:
+// rb3-xenon keeps the virtual-screen mapping it renders with today.
+constexpr bool kRectTargetPixels = kDC3RetailModel;
 
 // ---- post-processing -------------------------------------------------------
 // The grain strength the post-process shader adds per pixel, as authored. Only
