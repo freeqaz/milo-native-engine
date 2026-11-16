@@ -9797,3 +9797,80 @@ every comparison is between two binaries built from the same tree.
   at 12–23 ms a frame, the hitch this round set out to remove.
 - First-draw textures, the 76 warmed-but-undrawn keys and the late rect
   warm are out of scope for this round.
+
+## 42. DC3 TexBlender: the composer, and rects into a texture target (lane np-gfx sharp, item 15, branch np-texblend, 2026-11-16)
+
+dc3 PLAN H-117. Lane notes and evidence: dc3 `archive/np-gfx-2026-11-14/lanes/sharp/item15/`.
+
+### 42.1 What was wrong
+
+Dancers' cloth normal maps come from `RndTexBlender`: a 512² `kRenderedNoZ`
+output that `DrawShowing` composes from a base normal map and, per
+`RndTexBlendController`, the controller mesh's faces drawn at their UVs with the
+near/far (128²) or custom map at a pose-driven alpha. Native ran the decomp body,
+and two things went wrong (GPU readbacks of the output, houseparty
+lilt01/bodie01, every mode in one paused session):
+
+- **The base rect.** `DrawRect(0, 0, W, H)` went through `DrawRect2D`, which maps
+  against the 1280×720 virtual screen even when a texture is the bound target.
+  The base landed in the top-left 40 %×71 % (512/1280 × 512/720); the rest stayed
+  transparent black (28.5 % coverage). The image's `DxRnd::DrawRect` sets
+  `ViewportEnable 0`, so its rect is in the target's own pixels.
+- **The layers.** Native `RndMesh::DrawFacesInRange` draws nothing, so no
+  controller layer landed (0 texels in a layers-only readback).
+
+A black normal-map texel decodes to (−1, −1, 0) on the retail shading path,
+tilting the normal into the surface; the rim and box-map lights then lit the
+front of the cloth (rollerrink tops cyan/pink, houseparty leggings gold).
+It was not the clear, the blend state, the write mask or frame order: the
+output was composed every frame while a controller was active, as the image
+does.
+
+### 42.2 The fix
+
+- **dc3 `RndTexBlender::NativeCompose`** (`HX_NATIVE`) hands the image's two
+  steps to `NativeTexBlendComposer` (`platform/TexBlendHook.h`, the same hook
+  rb3 W16-SA uses): base with blend off over the whole target, then each layer
+  (near list, far list, custom list, sorted as `DrawBlendList` sorts) with
+  SrcAlpha blending. `mRenderedStates`/`unkc0` bookkeeping is the decomp's, so
+  the image's skip of a base-only redraw holds. Headless (no composer) the
+  decomp body runs.
+- **`TexBlendPass`**: parameters in a ring of 256-byte slots bound at a dynamic
+  offset (`BeginFrame` rewinds it), bind groups from the frame's
+  `BindGroupCache`, and `Warm(fmt, gpu)` for the load-time warm
+  (`WgpuRnd::WarmTexBlendPipelines`, called from dc3's `PipelineWarm.cpp`
+  QueueTexBlender). The shader and blend are unchanged, so rb3's output is the
+  same; `TexBlendPassTest` (rb3 ctest) reads it back against its model.
+- **`rndshape::kRectTargetPixels`** (DC3 = `kDC3RetailModel`, RB3Wii false):
+  `DrawRect2D` uses the bound target texture's size when a texture target is
+  active. Only dc3 changes; rb3/rb3-xenon keep the virtual mapping.
+
+### 42.3 Other render-to-texture rect users
+
+| User | Draws rects into a non-screen target? | Same defect? |
+|---|---|---|
+| TexProc | yes, its output | would have; never drawn at runtime (rect census, 4 venues + menus); now fixed by 42.2 |
+| SoftParticleBuffer | yes | as TexProc |
+| VelocityBuffer | `DrawRectDepth` | no: engine velocity path (§33) |
+| ShadowMap | no | engine `ShadowPass` |
+| Crowd impostors | mesh draws | no |
+| Spotlight blur (`NgSpotlightDrawer`) | `BlurRT` is `#ifndef HX_NATIVE` | no: `SpotBeamPass` (§36) |
+| StreamRenderer | CPU compose natively | no |
+| Post / HUD camera box | engine passes / the back buffer | no |
+
+TexBlender was the only runtime rect-into-target user in the census.
+
+### 42.4 Measured
+
+- On screen vs Xenia: rollerrink aubrey04/angel04 tops print white (retail
+  RMnrQemwIa8 agrees), houseparty Lilt's leggings dark and Bodie's sleeves red,
+  dclive Kerith's top no longer cyan in the awesome state. Outfits without a
+  TexBlender (taye04, emilia04, oblio04, tan04, the glitterati robots) do not
+  move; the throneroom cheek rim (survey no. 5) is not this cause.
+- In-run A/B, post off, composer vs the decomp body with the rect fix (layers
+  off): 552–6,091 px per shot, all on the blended cloth; fix-vs-fix control
+  0 px in 10 shots.
+- Cost, houseparty, two dancers: `TexBlendPass` 0.0136 ms GPU a frame (2 passes,
+  ≤ 2 draws each), no pipeline or per-frame bind-group create in the song.
+- Enhanced: no larger target. The image asserts the output is at most 512², the
+  base maps are 512² and the layers 128²; 4K closeups show no blockiness.
