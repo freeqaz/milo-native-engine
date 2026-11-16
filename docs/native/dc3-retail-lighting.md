@@ -2393,11 +2393,6 @@ Retail:
   permutations (skin, skin without rim, hair, plain with rim, plain) to
   7.5e-8.
 
-Xenia (throneroom, default camera, `self_shadow` on vs off on one frozen
-frame): 17,314 px change, all darker. The median is −10.6 levels, p10 −34.8,
-min −174. The changes are on shoulders, upper chests, under the arms and
-Oblio's coat flap.
-
 Native before: PrepShadow already ran, about 1.8 texture passes a frame into
 the unnamed 512² target, each splitting the main MSAA pass. Nothing read the
 result: on vs off changed 0 px.
@@ -2416,15 +2411,234 @@ Now (`rndshape::kSelfShadowMap`, DC3 true, RB3Wii false):
 - The caster pass (`kDrawExtrude`) is `MeshPassContext::selfShadowCaster`,
   and the material key culls Backwards for it.
 
-Result on the same protocol (native, frozen frame): 5,376 px change, all
-darker. The median is −8.2, p10 −37.9, min −161, in the same places:
-shoulders, chest bands and under the arms.
+- The load-time pipeline warm (`PipelineWarm.cpp`) also queues each
+  character dir in the caster context. Without it the backwards-culled
+  render-to-texture keys compiled at a draw in gameplay (one in iceicebaby,
+  two in ymca, up to 13.2 ms), and `PerformCrowdTest`'s
+  no-pipeline-after-`game_screen` guard went red.
 
-The poses and cameras are the two runs' own, so this is a class match, not
-a pixel pairing. Closeup shots (cu01-04) change 0 px on both Xenia and
-native when `self_shadow` is toggled; the cause was not traced.
+### 17.4 Paired against Xenia: area, depth, and who casts
 
-Cost: the texture passes were already being paid.
+The first comparison took one frozen frame per side with each side's own
+pose and camera. It read Xenia 17,314 px and native 5,376 px, and closeups
+0 px on both. Both numbers were artifacts of the protocol:
+- The frames were not paired: different pause times, poses and shots.
+- The closeup "0 px" came from re-forcing the shot after the toggle.
+  `HamCamShot::StartAnim` sets every target character's `self_shadow` from
+  the shot's Target bit (`HamCamShot.h`, `Target::mSelfShadow`, "should
+  character cast a self shadow", default 1; property `self_shadow` in a
+  shot's `targets`). So re-forcing the shot turned it back on.
+
+The paired protocol: Xenia's pause times are replayed on native. Per shot,
+force the shot, wait 1.5 s, take the frame, set `self_shadow` FALSE on every
+character, wait 1 s, and take the frame again without re-forcing. The
+on−off darkening mask counts pixels with max |d| > 2 and luma < −2, for
+y ≥ 60 and x < 1040 (the HUD excluded).
+
+| venue | post | shot | Xenia px | native px | N/X | IoU |
+|---|---|---|---|---|---|---|
+| throneroom | on | area1_far02 | 8,241 | 9,584 | 1.16 | 0.38 |
+| throneroom | on | area1_near01 | 9,714 | 11,515 | 1.19 | 0.37 |
+| throneroom | on | cu01 | 15,786 | 16,970 | 1.08 | 0.43 |
+| throneroom | on | cu02 | 10,367 | 11,221 | 1.08 | 0.48 |
+| throneroom | off | area1_far02 | 8,452 | 9,922 | 1.17 | 0.38 |
+| throneroom | off | area1_near01 | 9,886 | 11,735 | 1.19 | 0.37 |
+| throneroom | off | cu01 | 14,274 | 16,216 | 1.14 | 0.41 |
+| throneroom | off | cu02 | 8,952 | 10,231 | 1.14 | 0.47 |
+| houseparty | on | area1_far02 | 9,894 | 10,358 | 1.05 | 0.34 |
+| houseparty | on | area1_near01 | 11,496 | 12,355 | 1.07 | 0.34 |
+| houseparty | on | cu01 | 8,848 | 10,343 | 1.17 | 0.30 |
+| houseparty | on | cu02 | 16,755 | 16,127 | 0.96 | 0.37 |
+| houseparty | off | area1_far02 | 7,742 | 8,501 | 1.10 | 0.27 |
+| houseparty | off | area1_near01 | 9,397 | 10,407 | 1.11 | 0.28 |
+| houseparty | off | cu01 | 4,903 | 5,806 | 1.18 | 0.18 |
+| houseparty | off | cu02 | 9,225 | 10,376 | 1.12 | 0.22 |
+| dci | on | area1_far02 | 8,034 | 9,584 | 1.19 | 0.38 |
+| dci | on | area1_near01 | 9,990 | 11,377 | 1.14 | 0.39 |
+| dci | on | cu01 | 40,402 | 40,700 | 1.01 | 0.47 |
+| dci | on | cu02 | 16,380 | 18,749 | 1.14 | 0.40 |
+| dci | off | area1_far02 | 7,576 | 9,243 | 1.22 | 0.36 |
+| dci | off | area1_near01 | 9,067 | 10,985 | 1.21 | 0.37 |
+| dci | off | cu01 | 22,690 | 24,890 | 1.10 | 0.30 |
+| dci | off | cu02 | 11,637 | 14,254 | 1.22 | 0.31 |
+
+- Native covers 0.96–1.22× Xenia's area, so it does not cover less.
+- Every changed pixel is darker on both sides (3 native pixels brighter in
+  24 frames).
+- The masks have the same shapes. The non-overlap is bands offset by a few
+  pixels, for example the arm's shadow on Oblio's chest sits higher on
+  Xenia. On the zoomed frames, the forearms and hands are posed differently
+  by the same amount: Xenia's and native's animation at one song time are
+  not pose-identical. That pose difference is the offset; the shadow
+  placement relative to the limb agrees.
+- Depth, on pixels darkened on both sides:
+  - Throneroom, post on and off: median d within 2 levels (for example
+    cu01 −18.5 vs −20.3); on/off luma ratio within 0.07.
+  - Houseparty post on: within 1.4 levels.
+  - Houseparty post off: native shallower, −29.5 vs −36.9 (far02) and
+    −27.9 vs −37.6 (cu02); on/off ratio 0.715 vs 0.693 and 0.668 vs 0.567.
+    The overlap there is small (IoU 0.18–0.28), and the post-on frames of
+    the same pause agree.
+  - dci, all eight frames: native shallower by 1–2 levels (for example far02
+    post off, −20.4 vs −22.2; on/off ratio 0.644 vs 0.610).
+  - The cores agree. Over each whole mask, the 5th percentile of the on/off
+    ratio is within 0.01–0.04 of Xenia's in all 12 checked frames; only the
+    median is shallower, by 0.02–0.09.
+  - The median depends on the render size. Throneroom far02 reads 0.608 at
+    720p (`MILO_RENDER_SCALE=2`, box-downsampled), 0.548 at 1080p and 0.518
+    at 4K, against Xenia's 0.554. The 2× downsample turns edge pixels into
+    partial-shadow mid-tones. The median gap is consistent with that, and the
+    equal cores say the shadow term itself is not weaker. Only throneroom
+    was rendered at more than one size.
+- Who casts, and the same on both sides by construction (the decomp code
+  runs on native):
+  - Casters are the character itself: its shadow group, else its opaque
+    meshes (`DrawLodOrShadow(4)`). No other dancer and no prop is drawn
+    into a character's map.
+  - Receivers are that character's bit-19 materials only.
+  - The gates: `DrawMode() == 0`, lod ≤ 1, `mDrawMode & 1`, not offscreen.
+- Which characters, per shot (the Target bits, logged on both sides):
+  - area1_far02 and area1_near01: player0/1 on, backups off.
+  - cu01 and cu02: all four on.
+  - Crowd 3D characters: off while drawn in game (`WorldCrowd`'s draw
+    clears self, floor shadow and spot cutout around each `Draw()`).
+  Native logs the same values as Xenia for every shot.
+
+Speckle (acne), the share of darkened pixels with ≤ 2 of 8 darkened
+neighbours:
+- Xenia: 5.8–11.8 %.
+- Native at 720p (`MILO_RENDER_SCALE=2`): 4.2–7.0 %.
+- Native at 1920×1080: 3.7–6.7 %.
+- Native at 3840×2160: 1.6–4.4 %.
+- The area per 720p-equivalent pixel is the same at all three sizes.
+
+At 4K, crops of the closeup show smooth penumbrae with no stair-stepping and
+no acne. So no smoother filter was added for `DC3_LOOK=enhanced`.
+
+### 17.5 Item 16 (b): floor reflections of dancers and props (parity)
+
+Protocol: post off, on both sides, with paired frozen frames at 30 s and at
+the 66 s peak, for shots near01, far02 and cu02. Each frame is taken with
+reflections on, then off. Off means every `WorldReflection` and every
+`*reflect*`, `*refract*` or `*mirror*` mesh hidden. The measure is the
+positive-part sum of D = on − off, native/Xenia per channel:
+
+| venue | N/X | spatial luma correlation |
+|---|---|---|
+| dci | 98–100 % | 0.79–0.98 |
+| houseparty (peak) | 96–104 % | — |
+| rollerrink (peak) | 96–101 % | — |
+| throneroom | 92–105 % | 0.53–0.82 |
+| dclive | 94–102 % | — |
+
+- glitterati has no floor reflection on either side.
+- dclive's negative parts differ by 80–160 % in blue. The cause is the
+  animated LED stripes reflected in the floor, which are at different
+  phases on the two sides. The dancer and boombox reflections agree.
+- Placement: in dci the dancers' legs, the boombox and the stools reflect in
+  the same places on both sides and clip at the same floor edge.
+- Order: on both sides the reflection lies under the dancers and under the
+  floor's own pass (its shading, shadow and gobo). The on/off difference
+  maps have the same shape.
+
+No defect was found, and nothing was changed.
+
+### 17.6 Item 16 (c): venue screens, TVs and emissive surfaces (parity)
+
+Protocol: paired frozen frames, post off (r) and post on (c), with the
+retail look (q) too on native. Each shot waits 5 s after it is forced. That
+lets Xenia's "creating target cache" notify (`HamCamShot.cpp:653`, a dark
+band at the top of the frame) go away; an earlier crop had read it as a
+glow difference.
+
+Bloom is post on − post off, the red-channel mean over the crop. Pre-post
+is the crop's median luma:
+
+| surface | pre-post (X → N) | bloom X | N retail | N enhanced |
+|---|---|---|---|---|
+| dci purple screens, far02 | 72.5 → 71.6 | 7.9 | 6.8 | 7.6 |
+| dci purple screens, near01 | 60.7 → 60.8 | 10.1 | 9.0 | 9.6 |
+| rollerrink sign, far02 | 97.4 → 99.5 | 54.8 | 58.3 | 58.6 |
+| rollerrink sign, near01 | 95.7 → 98.0 | 51.1 | 52.3 | 52.4 |
+| dclive LED grid, near01 | 4.1 → 4.2 | 53.4 | 56.6 | 59.5 |
+| dclive logo wall, near01 | 149.4 → 133.6 | 52.3 | 56.8 | 56.8 |
+
+- The content is the same image on both sides (dci screens, rollerrink
+  sign, dclive logo and LED wall).
+- Bloom is within about ±10 %, so each surface writes a bloom mask of
+  about the image's strength.
+- dclive's logo wall reads 6–10 % darker pre-post on native, and Xenia has
+  a bright vertical strip on its left edge. Post on, the two match: red
+  mean 204 on Xenia, 199 on native.
+- glitterati: its milos hold no screen, TV or movie object. Six gameplay
+  shots (area1/area2 far, wide) at 30 s and the awesome state show none.
+  Whole frame: post off 17.0–20.4 on both sides (within 0.1), bloom N/X
+  0.96–0.97 retail and 0.98–1.00 enhanced.
+- houseparty: the family-room TV and the fridge are in the milo, but no
+  gameplay shot shows them (the same six shots plus near01). Whole frame:
+  post off within 0.5, bloom N/X 0.96–0.97 retail and 1.01–1.03 enhanced.
+
+### 17.7 Item 16 (d): native's glow on the dci tubes and the houseparty chandelier
+
+The question was whether native's glow, reported stronger than Xenia's in
+the survey, comes from the enhanced look's bloom. It does not: the retail
+look and the enhanced look give the same bloom on these surfaces, within
+1 %.
+
+Whole frame, on pixels whose post-off luma agrees within 4, bloom N/X with
+the retail look:
+
+| venue | far02 | near01 |
+|---|---|---|
+| dci | 1.01 | 1.044 |
+| houseparty | 0.97 | 0.985 |
+| dclive | 1.011 | 1.006 |
+| glitterati | 0.983 | 0.977 |
+
+rollerrink reads 0.74, which is the §35 Xenia artifact (its MAX blend
+without a factor). Native is right there.
+
+The surfaces themselves:
+- dci tubes (`look/d/dci_*_tight.png`): +4 % (far02) and +7 % (near01) over
+  Xenia, retail and enhanced alike. That is inside the ±5 % venue-to-venue
+  spread above, and in the direction opposite to the §35 artifact. No
+  defect is filed.
+- houseparty chandelier, on banner-free frames
+  (`look/d/chandelier_nobanner.png`): bloom 46.7 X, 46.8 retail, 47.2
+  enhanced on far02; 29.5 / 28.5 / 28.8 on near01; 40.9 / 40.3 / 40.8 on
+  wide. The survey's "larger glow" was the notify band darkening Xenia's
+  bulbs on unpaired frames.
+- Pre-post, native's chandelier globes are about 10 % darker (225 vs 249 on
+  the brightest 3 %). Xenia's globes are flat at the clip, and native's
+  keep a gradient. Post on, both saturate. Not traced; it is invisible
+  with post on, which is how the game is played.
+
+### 17.8 Cost of the self-shadow
+
+GPU time from `MILO_GPU_TIMERS=1` (`/api/gputime`), throneroom, frozen
+frame, 10 windows per row, desktop (RTX 3090, 1080p window). "on" and "off" are
+the shot's `self_shadow` toggled on the same frame. "before" is the engine
+without the sampling (it already ran `PrepShadow`'s caster passes); "after"
+is this section's engine. Sums of all labelled passes, ms per frame:
+
+| shot | scale | before on | before off | after on | after off | after − before, on − off |
+|---|---|---|---|---|---|---|
+| far02 | 1 (1080p) | 0.945 | 0.849 | 0.967 | 0.865 | +0.006 |
+| cu01 | 1 (1080p) | 1.114 | 0.912 | 1.142 | 0.927 | +0.013 |
+| far02 | 2 (2160p) | 2.550 | 2.402 | 2.674 | 2.502 | +0.024 |
+| cu01 | 2 (2160p) | 2.943 | 2.619 | 3.175 | 2.822 | +0.029 |
+
+- The last column is what the sampling adds: the depth bind and four taps
+  per pixel of every per-pixel dancer material. It is 0.006-0.029 ms a
+  frame, inside the run-to-run spread at scale 2 (sd 0.04-0.11). The
+  "off" columns move by 0.02-0.2 ms between the two binaries with the
+  feature not drawing, which is the drift between runs, not the feature.
+- Most of a self-shadow frame's cost was already being paid before this
+  change: the caster passes (`TexturePass` ×2 far, ×4 closeup,
+  0.05-0.11 ms) and the main pass splitting around them
+  (`MainPassResume` ×4 or ×6 instead of ×2), 0.1-0.3 ms in all.
+- The web build compiles the same `retailPixelShade`, so it runs the
+  self-shadow too. Its memory and fps are under §17.9.
 
 Tests (each red under its sabotage, 11 of 11):
 - `RetailCharShadingTest` kinds 5-9: the five bit-19 permutations, 60 cases
@@ -2434,4 +2648,7 @@ Tests (each red under its sabotage, 11 of 11):
   means no shadow.
 - `SelfShadowCasterTest.*`: the casters cull backwards; only kDrawExtrude is
   the caster pass.
+- The caster warm is guarded by `PerformCrowdTest`'s
+  no-pipeline-after-`game_screen` check, which goes red without it
+  (iceicebaby 53 creates vs 52 loads, ymca 54 vs 52).
 
