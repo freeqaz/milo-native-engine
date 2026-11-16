@@ -591,7 +591,10 @@ public:
     // the consumer's frame pacer's sleep (in the game window); `game_vcs` /
     // `game_ivcs` / `draw_vcs` / `draw_ivcs` the thread's voluntary and
     // involuntary context switches in the game window and in the draw (Linux;
-    // -1 elsewhere): an involuntary switch is the box taking the CPU away.
+    // -1 elsewhere): an involuntary switch is the box taking the CPU away;
+    // `end_s` this EndDrawing on the steady clock in seconds (CLOCK_MONOTONIC
+    // on Linux), so samples taken with `perf record -k CLOCK_MONOTONIC` can be put in
+    // their frame (the row's draw ran from end_s - draw_ms to end_s).
     void WriteFrameTimes();
     // The column-name line, written once when the log opens (and "[FT] "
     // prefixed like the rows on stdout).

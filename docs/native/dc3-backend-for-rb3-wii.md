@@ -10045,3 +10045,171 @@ TexBlender was the only runtime rect-into-target user in the census.
   ≤ 2 draws each), no pipeline or per-frame bind-group create in the song.
 - Enhanced: no larger target. The image asserts the output is at most 512², the
   base maps are 512² and the layers 128²; 4K closeups show no blockiness.
+
+## 44. Per-frame costs, round 7: what the draw-CPU spikes and the song-end frames are (lane np-gfx spotperf, branch np-framecost7, 2026-11-16)
+
+Round 6 left two kinds of in-song frame unattributed: draw-CPU spikes
+(6-14 ms of draw CPU, rollerrink 1.9 s, 3.8 s, 75-79 s, 84.6 s; streetside
+46.9 s and 83.6 s) and game-CPU frames at song end (149.7-151.8 s, 9-13 ms
+of game CPU, both venues). Round 7 put perf samples in their frames and
+named both. The spikes are the box: the same work, done slower. The song-end
+frames were two pieces of DC3's own code and a stream start. The two code
+pieces are fixed (dc3); the stream start is the image's and is left as it is.
+
+How it was measured:
+- Linux desktop, headless, Dawn/Vulkan, NVIDIA, `DC3_FPS_CAP=120`;
+  rollerrink/ymca and streetside/iceicebaby, boot to results; 4 base runs a
+  venue and one fix run, other lanes running.
+- Heads: engine np-gfx f277c9b, dc3 np-gfx aff6eeb61 for the attribution
+  (both with `end_s` added). Re-taken on int36 (engine b26fce9 = 2e9e933,
+  dc3 82f15913f, with np-texblend's per-frame TexBlender draws): base and
+  fix alternating, 2 pairs a venue, perf on one streetside pair. The fix
+  build is dc3 np-framecost7 on engine np-framecost7.
+- `perf record -e cpu-clock:u -F 2000 --call-graph fp --user-callchains
+  -k CLOCK_MONOTONIC -p <pid>`; a sample is put in its frame by the new
+  `end_s` column (below), and in the draw (`end_s - draw_ms` .. `end_s`) or
+  the game window before it. One run with `instructions`, `cycles` and
+  `cpu-clock` (1 M period / 2 kHz, no call graphs) for IPC; a 0.1 s
+  `/proc/stat` sampler for the box's busy CPUs.
+- Tools, reports and runs: dc3
+  `archive/np-gfx-2026-11-14/lanes/spotperf/round7/`.
+
+### 44.1 The new column
+
+- The frame-times log (`MILO_FRAME_TIMES`) has a last column, `end_s`: this
+  `EndDrawing` on the steady clock in seconds. On Linux that is
+  `CLOCK_MONOTONIC`, the clock `perf record -k CLOCK_MONOTONIC` stamps
+  samples with.
+- dc3 `FrameTimesTest.EndSIsTheSteadyClockAtEachRowsEnd`: the header's last
+  name is `end_s`, and each row's value lies between steady-clock readings
+  taken around the calls and rises row to row. Two sabotages caught (the
+  frame's begin written, 0 written).
+
+### 44.2 The draw-CPU spikes are the box
+
+- They do not recur. Across 4 base runs a venue, the named windows' draw CPU
+  peaks at 2-6 ms in some runs and 7-12 ms in others. The number of song
+  frames with draw CPU ≥6 ms is 30-235 (rollerrink) and 21-263 (streetside)
+  between runs of the same song.
+- They are not more work.
+  - Bind-group lookups (`[GPUCOUNT] bgHits`, about one a draw): slow frames
+    7% more than the rest (rollerrink 931-939 vs 875-878, streetside 814-822
+    vs 768-769), at 3.5-4x the time a lookup (7.5-8.1 µs vs 1.9-2.4 µs);
+    no mesh uploads in them.
+  - Inclusive perf of the slow draws: every function about 2x, none new.
+  - IPC run, streetside, 263 slow frames vs 16,827: 12.58 M vs 11.93 M
+    instructions (+5%), 39.1 M vs 10.1 M user cycles, IPC 0.32 vs 1.18, at
+    5.20 vs 5.14 GHz. The same instructions take 4x the cycles at the same
+    clock: the core is shared (SMT sibling, cache), not slowed or idle.
+- They follow the box's load. Two streetside runs, each frame against the
+  box's busy logical CPUs at its end (dc3 included):
+
+  | busy CPUs | frames (base / fix run) | draw CPU mean | frames ≥6 ms |
+  |---|---|---|---|
+  | 0-4 | 7,992 / 7,879 | 1.44 / 1.51 ms | 0.0% / 0.0% |
+  | 4-8 | 8,441 / 8,348 | 2.57 / 2.21 ms | 2.4% / 1.8% |
+  | 8-12 | 494 / 724 | 3.28 / 2.54 ms | 7.1% / 1.9% |
+  | 12-16 | 128 / 36 | 4.68 / 2.44 ms | 18.8% / 0.0% |
+  | 24-33 | - / 48 | - / 6.59 ms | - / 60.4% |
+
+  Slow frames also have 3-6x the involuntary context switches in their draw
+  (0.72-0.89 vs 0.15-0.22 a frame).
+- Over all 10 runs with the box sampled (the 8 int36 re-take runs too),
+  about 52,000 frames had 0-4 busy CPUs and none reached 6 ms of draw
+  CPU. Above 4 busy CPUs the share depends on what else is running: from 0%
+  to 60% between bands and runs. In every run the slow frames' box is
+  busier than the rest's (mean 5.8-29.8 against 4.6-5.6 busy CPUs).
+- The rollerrink 60-84 s section is the heaviest camera section (930-950
+  lookups a frame, against 193 at 85-89 s), so it is where a busy box shows
+  most. Its draw CPU is about 3 ms a frame when the box is quiet.
+- One 524 ms frame (streetside base run, 74.97 s): 519 ms of draw wall time
+  on 2.5 ms of CPU, while the 0.1 s load sampler itself missed 0.5 s. That
+  was a box-wide stall.
+- Nothing to fix in the engine or dc3.
+
+### 44.3 The song-end frames
+
+Streetside, perf, base: the 149.3-152.3 s window. In the base runs every run
+has 1-3 frames over 16.7 ms there (8 runs, both venues).
+
+- **One 17-19 ms frame (game CPU 9.9-11.6 ms in all runs) was
+  `MetaPerformer::CompleteSong`, 8.0 ms.**
+  - The chain: `HamSongMgr::GetCrewStars` → `GetOutfitCharacter` →
+    `GetEntriesForOutfit` → `GetOutfitRemap`, 5.5-6.0 ms.
+  - `GetCrewStars` resolves every available song's outfit, and the image's
+    `GetEntriesForOutfit` searched the whole `OUTFIT_REMAP` table once per
+    character.
+  - Fixed in dc3 (`HX_NATIVE`, `src/system/hamobj/HamGameData.cpp`): search
+    once a call. Unchanged: the result, and each `MILO_FAIL` of a failed
+    search with `fail` set.
+  - dc3 `OutfitRemapCostTest` (3 cases, 3 sabotages caught).
+- **The ~11 loader frames after it (5.8-6.5 ms) spent 3-6 ms each in the
+  H-104 warm walk, almost all `__dynamic_cast`, queueing nothing.**
+  - Each dir that loads re-walks every live reflection's draws
+    (`Warm::QueueDrawable`).
+  - The walk asked every object which of 16 classes it is with a cascade of
+    dynamic_casts: up to about 10 failing ones for an object that is none
+    of them, once per pass.
+  - Fixed in dc3 (`native/src/platform/PipelineWarm.{h,cpp}`):
+    `NativeWarmClassOf` asks each dynamic type once, and the cascades, in
+    the same order, cast only to the class already found.
+  - dc3 `PipelineWarmClassesTest` checks the bits against the casts for the
+    16 classes, a material and a texture, and that a type is asked once (2
+    sabotages caught).
+  - The keys queued are the same dir by dir in every base and fix run
+    (streetside 156 keys / 12 created, rollerrink 152 / 11, 44 dirs).
+- **Two frames had a mogg stream starting, 4.0-6.5 ms on the main thread.**
+  - The pieces: `StandardStream::Play` plus `PollStream` →
+    `VorbisReader::Poll` → `TryDecode`.
+  - The image gives a buffering stream at least 8 ms of decode a poll
+    (`minPoll`).
+  - Natively the decode runs on the main thread, in `Synth::Poll`.
+  - It reads no file in that frame: the stream is already open.
+
+Fix run against base, streetside, the same window:
+
+| | base | fix |
+|---|---|---|
+| `CompleteSong` | 8.0 ms | 3.0 ms (`GetOutfitRemap` 0) |
+| its frame's game CPU | 9.9 ms | 5.8 ms |
+| loader (`LoadMgr::Poll`) | 58.0 ms over 12 frames | 24.5 ms over 7 frames |
+| warm walk | 43.5 ms | 14.5 ms |
+| `__dynamic_cast`, whole window | 42.0 ms | 6.0 ms |
+| frames over 16.7 ms, 149.3-152.3 s | 1-3 a run (8 runs) | 0 (streetside, rollerrink) |
+| longest frame there | 17.5-20.3 ms | 14.6 ms (streetside), 16.7 ms (rollerrink) |
+
+Re-taken on int36, 149.3-152.3 s:
+
+| | base (4 runs) | fix (4 runs) |
+|---|---|---|
+| frames over 16.7 ms | 4, 1, 1, 1 | 0, 0, 0, 0 |
+| longest frame | 18.1-21.6 ms | 13.5-16.2 ms |
+| `CompleteSong` (perf, streetside) | 8.0 ms (`GetOutfitRemap` 7.0) | 3.5 ms (0) |
+| its frame's game CPU | 11.7 ms | 7.0 ms |
+| loader | 70.5 ms over 17 frames | 31.5 ms over 9 frames |
+| warm walk / `__dynamic_cast` | 54.5 / 53.0 ms | 15.5 / 8.5 ms |
+
+The keys queued are again the same dir by dir in all 8 runs (streetside 158
+keys / 14 created, rollerrink 154 / 13, with np-texblend's).
+
+- The fix run's longest song-end frame, streetside, is 12.0 ms of game CPU
+  (14.6 ms period). It is a stream start (`Play` 2.0 ms, buffering decode
+  4.5 ms) on a loader frame (2 ms).
+- At load, the walks' total is mostly synchronous rect and particle
+  creates, so the class cache moves it less: streetside 98-131 ms (3 base
+  runs) → 92 ms, rollerrink 80-133 ms → 58 ms (one fix run each, box-noisy).
+
+### 44.4 Left as it is: the stream starts
+
+The stream-start decode is the image's design. It can only be moved, at one
+of these costs:
+- **A native cap on the buffering budget** (e.g. 2 ms instead of 8).
+  - Gain: the 4-6.5 ms spreads over 2-3 frames.
+  - Cost: that sound starts 1-2 frames (8-17 ms at 120 fps) later.
+- **A decode thread for `VorbisReader`.**
+  - Gain: the main-thread cost is gone.
+  - Cost: the reader's decode state and ring buffer have to be shared
+    between threads.
+
+Neither is built. The frames are 14-15 ms at the 120 cap, under 16.7, and
+they come during the song-end fade.
