@@ -2652,3 +2652,23 @@ Tests (each red under its sabotage, 11 of 11):
   no-pipeline-after-`game_screen` check, which goes red without it
   (iceicebaby 53 creates vs 52 loads, ymca 54 vs 52).
 
+
+### 17.9 The web build
+
+The web build compiles the same `retailPixelShade` and scene block, with
+no platform branch, so it runs the self-shadow. `scripts/web/mobile-gpu.mjs
+--profile mobile` (the iPhone feature mask, 20 s of a song), this engine
+against the dc3 main web build before it:
+
+| | before | after |
+|---|---|---|
+| textures | 380 live, 256.1 MB | 381 live, 256.1 MB |
+| wasm heap peak | 390.8 MB | 395.0 MB |
+| in song | 59.8 frames/s | 58.6 frames/s |
+| checks | 10 of 10 | 10 of 10 |
+
+The difference is inside run-to-run spread (item 11 read 57.6 frames/s and
+390.5 MB on the same page). Binding 1 of the scene group is the map while a
+shadow camera is set, so a depth texture created without sampling usage
+would have raised a WebGPU validation error on the first self-shadowed
+shot; there is none.
