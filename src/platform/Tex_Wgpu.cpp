@@ -17,10 +17,7 @@
 #include "gfx/FrameCost.h"
 
 #include <algorithm>
-#include <chrono>
-#include <deque>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 #include <cstdio>
 #include <cstring>
@@ -217,22 +214,6 @@ static void ReleaseBitmapTexture(const RndTex* tex, GpuTexData& d) {
 // cache hit.
 static unsigned long long sTexCreateCount = 0;
 
-// Load-time texture warm (dc3 PLAN H-116). The image creates a texture when
-// it loads (DxTex::SyncBitmap); this backend creates it at the texture's first
-// draw (PresyncBitmap), which for a game screen is its first frame and for a
-// panel loaded ahead of time the frame it appears. A consumer that knows what
-// it loaded queues those textures (QueueGpuTexWarm) and the renderer creates
-// them a few at a time at the start of later frames (PumpGpuTexWarms, at most
-// the budget's worth of milliseconds a frame, one texture at least), through
-// the same PresyncBitmap the draw calls -- so a warmed texture is exactly the
-// one the draw would have made, and its draw finds it done. A texture deleted
-// before its turn leaves the queue (CleanupGpuTex).
-static std::deque<RndTex*> sWarmQueue;
-static std::unordered_set<RndTex*> sWarmQueued;
-static bool sInWarm = false;
-static unsigned long long sTexWarmCreateCount = 0;
-static double sWarmBudgetMs = 2.0;
-
 static bool NeedsDepthTarget(RndTex* tex) {
     if (!tex) return false;
     RndTex::Type type = tex->GetType();
@@ -400,9 +381,8 @@ void RndTex::PresyncBitmap() {
         // Data changed — re-upload
     }
 
-    // Create GPU texture from Milo bitmap (a warm's: kTexWarm, so the frame
-    // that pays for a draw's create can be told from one paying for a warm).
-    framecost::Scope cost(sInWarm ? framecost::kTexWarm : framecost::kTexture);
+    // Create GPU texture from Milo bitmap
+    framecost::Scope cost(framecost::kTexture);
     int numMips = 0;
     RndBitmap* mip = mBitmap.nextMip();
     while (mip) {
@@ -475,7 +455,6 @@ void RndTex::PresyncBitmap() {
         data.view = gpuTex.CreateView();
         data.bytes = BitmapTextureBytes(gpuTex);
         sTexCreateCount++;
-        if (sInWarm) sTexWarmCreateCount++;
     }
     sPresyncOk++;
     data.uploaded = true;
@@ -558,47 +537,7 @@ void RndTex::FinishDrawTarget() {
 // For Tier 1, leaked GPU textures are acceptable (cleaned up at shutdown).
 // TODO: Hook into RndTex destructor or add ref-counting.
 
-bool QueueGpuTexWarm(RndTex* tex) {
-    // What PresyncBitmap creates from a bitmap: a regular texture. The other
-    // kinds are render targets, or their bitmap is written at run time (a
-    // movie's planes, a camera frame), which a create now would only repeat.
-    if (!tex || tex->GetType() != RndTex::kRegular || tex->IsRenderTarget()) return false;
-    auto it = sTexGpuData.find(tex);
-    if (it != sTexGpuData.end() && (it->second.uploaded || it->second.renderTarget)) return false;
-    if (!sWarmQueued.insert(tex).second) return false;
-    sWarmQueue.push_back(tex);
-    return true;
-}
-
-int PumpGpuTexWarms() {
-    if (sWarmQueue.empty()) return 0;
-    const auto t0 = std::chrono::steady_clock::now();
-    int done = 0;
-    while (!sWarmQueue.empty()) {
-        if (done > 0 &&
-            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0)
-                    .count() >= sWarmBudgetMs)
-            break;
-        RndTex* tex = sWarmQueue.front();
-        sWarmQueue.pop_front();
-        if (!sWarmQueued.erase(tex)) continue;  // deleted while queued
-        sInWarm = true;
-        tex->PresyncBitmap();
-        sInWarm = false;
-        done++;
-    }
-    if (sWarmQueued.empty()) sWarmQueue.clear();
-    return done;
-}
-
-size_t GpuTexWarmsPending() { return sWarmQueued.size(); }
-unsigned long long GpuTexWarmCreateCount() { return sTexWarmCreateCount; }
-unsigned long long GpuTexCreateCount() { return sTexCreateCount; }
-void SetGpuTexWarmBudgetMs(double ms) { sWarmBudgetMs = ms > 0.0 ? ms : 0.0; }
-double GpuTexWarmBudgetMs() { return sWarmBudgetMs; }
-
 void CleanupGpuTex(RndTex* tex) {
-    sWarmQueued.erase(tex);
     auto it = sTexGpuData.find(tex);
     if (it == sTexGpuData.end()) return;
     // Cached bind groups pin the view (and through it the texture); drop them
@@ -679,8 +618,6 @@ void ClearGpuTexCaches() {
     sTexGpuData.clear();
     sSharedTex.clear();
     sCubeTexGpuData.clear();
-    sWarmQueue.clear();
-    sWarmQueued.clear();
 }
 
 size_t GpuTexCount() {

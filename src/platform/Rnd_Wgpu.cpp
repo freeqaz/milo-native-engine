@@ -487,7 +487,7 @@ void WgpuRnd::InitGpuResources() {
                     "pipe_n,tex_n,mesh_n,bg_n,bg_ms,buf_n,buf_ms,gtex_n,gtex_ms,view_n,view_ms,"
                     "acquire_ms,present_ms,file_n,file_ms,game_ms,game_cpu_ms,"
                     "scene_bg_writes,scene_bg_creates,gpu_wait_ms,pace_ms,"
-                    "game_vcs,game_ivcs,draw_vcs,draw_ivcs,texwarm_n,texwarm_ms\n",
+                    "game_vcs,game_ivcs,draw_vcs,draw_ivcs\n",
                     mFrameTimesStdout ? "[FT] " : "");
     }
 
@@ -1814,8 +1814,6 @@ void WgpuRnd::BeginDrawing() {
     // Load-time pipeline warm (PipelineManager::WarmAsync): take in what
     // finished, issue the next few. Nothing queued: one empty check.
     if (mPipelines.WarmsOutstanding()) mPipelines.PollWarms();
-    // Load-time texture warm (QueueGpuTexWarm): the next budget's worth.
-    PumpGpuTexWarms();
 
     // Frame capture: set target frame via MILO_CAPTURE_FRAME env var
     {
@@ -2245,7 +2243,7 @@ void WgpuRnd::WriteFrameTimes() {
         fprintf(mFrameTimes,
                 "%d,%.3f,%.3f,%.3f,%.3f,%d,%d,%d,%.3f,%d,%d,%.3f,%.3f,%.3f,"
                 "%lld,%lld,%lld,%lld,%.3f,%lld,%.3f,%lld,%.3f,%lld,%.3f,"
-                "%.3f,%.3f,%lld,%.3f,%.3f,%.3f,%llu,%llu,%.3f,%.3f,%ld,%ld,%ld,%ld,%lld,%.3f\n",
+                "%.3f,%.3f,%lld,%.3f,%.3f,%.3f,%llu,%llu,%.3f,%.3f,%ld,%ld,%ld,%ld\n",
                 (int)mFrameID, (now - mFrameTimesLastEnd) * 1000.0,
                 (cpu - mFrameTimesLastCpu) * 1000.0, (now - mFrameTimesBegin) * 1000.0,
                 mPointTestWaitMs, mPointTestsRecorded, mPointTestAnswers, mPointTestAgeMax,
@@ -2262,7 +2260,7 @@ void WgpuRnd::WriteFrameTimes() {
                 cs[0] < 0 ? -1L : mFrameTimesBeginCs[0] - mFrameTimesLastCs[0],
                 cs[1] < 0 ? -1L : mFrameTimesBeginCs[1] - mFrameTimesLastCs[1],
                 cs[0] < 0 ? -1L : cs[0] - mFrameTimesBeginCs[0],
-                cs[1] < 0 ? -1L : cs[1] - mFrameTimesBeginCs[1], n[kTexWarm], costMs[kTexWarm]);
+                cs[1] < 0 ? -1L : cs[1] - mFrameTimesBeginCs[1]);
         fflush(mFrameTimes);
     }
     mFrameTimesLastSceneWrites = mSceneBgWrites;
@@ -3030,7 +3028,7 @@ void WgpuRnd::LogGpuCounters() {
             "[GPUCOUNT] frame=%d bindGroupsLive=%zu bgCreated=%llu bgHits=%llu bgEvicted=%llu "
             "bgUncached=%llu ringBuffers=4 ringBytes=%u ringGrows=%u/%u/%u/%u "
             "ringQueueWrites=%llu ringQueueBytes=%llu pipelines=%d pipelineCreates=%llu pipelineLoadCreates=%llu pipelineWarms=%llu warmsDrawn=%llu pipelineWaits=%llu gpuMeshes=%zu meshUploads=%llu "
-            "gpuTextures=%zu texHolders=%zu texCreates=%llu texWarmCreates=%llu texWarmsPending=%zu texShares=%llu texBytes=%llu texBytesPeak=%llu "
+            "gpuTextures=%zu texHolders=%zu texCreates=%llu texShares=%llu texBytes=%llu texBytesPeak=%llu "
             "postBgLive=%zu postBgCreated=%llu postBgHits=%llu postBgEvicted=%llu postBgUncached=%llu "
             "ptBatches=%d ptCreated=%llu ptInFlight=%d "
             "bgCreatesAll=%llu bgCreatesRaw=%s sceneBgWrites=%llu sceneBgCreates=%llu\n",
@@ -3050,7 +3048,6 @@ void WgpuRnd::LogGpuCounters() {
             GpuMeshCount(),
             (unsigned long long)GpuMeshUploadCount(), GpuTexCount(), GpuTexHolderCount(),
             (unsigned long long)GetGpuTexDebugInfo(nullptr).createCount,
-            (unsigned long long)GpuTexWarmCreateCount(), GpuTexWarmsPending(),
             (unsigned long long)GpuTexShareCount(),
             (unsigned long long)GpuTexBitmapBytes(), (unsigned long long)GpuTexBitmapBytesPeak(),
             mPostBindGroupCache.Size(), (unsigned long long)mPostBindGroupCache.Creates(),
