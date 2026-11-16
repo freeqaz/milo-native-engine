@@ -2220,7 +2220,7 @@ void WgpuRnd::WriteFrameTimesHeader() {
             "pipe_n,tex_n,mesh_n,bg_n,bg_ms,buf_n,buf_ms,gtex_n,gtex_ms,view_n,view_ms,"
             "acquire_ms,present_ms,file_n,file_ms,game_ms,game_cpu_ms,"
             "scene_bg_writes,scene_bg_creates,gpu_wait_ms,pace_ms,"
-            "game_vcs,game_ivcs,draw_vcs,draw_ivcs\n",
+            "game_vcs,game_ivcs,draw_vcs,draw_ivcs,end_s\n",
             mFrameTimesStdout ? "[FT] " : "");
     fflush(mFrameTimes);
 }
@@ -2248,7 +2248,7 @@ void WgpuRnd::WriteFrameTimes() {
         fprintf(mFrameTimes,
                 "%d,%.3f,%.3f,%.3f,%.3f,%d,%d,%d,%.3f,%d,%d,%.3f,%.3f,%.3f,"
                 "%lld,%lld,%lld,%lld,%.3f,%lld,%.3f,%lld,%.3f,%lld,%.3f,"
-                "%.3f,%.3f,%lld,%.3f,%.3f,%.3f,%llu,%llu,%.3f,%.3f,%ld,%ld,%ld,%ld\n",
+                "%.3f,%.3f,%lld,%.3f,%.3f,%.3f,%llu,%llu,%.3f,%.3f,%ld,%ld,%ld,%ld,%.6f\n",
                 (int)mFrameID, (now - mFrameTimesLastEnd) * 1000.0,
                 (cpu - mFrameTimesLastCpu) * 1000.0, (now - mFrameTimesBegin) * 1000.0,
                 mPointTestWaitMs, mPointTestsRecorded, mPointTestAnswers, mPointTestAgeMax,
@@ -2265,7 +2265,7 @@ void WgpuRnd::WriteFrameTimes() {
                 cs[0] < 0 ? -1L : mFrameTimesBeginCs[0] - mFrameTimesLastCs[0],
                 cs[1] < 0 ? -1L : mFrameTimesBeginCs[1] - mFrameTimesLastCs[1],
                 cs[0] < 0 ? -1L : cs[0] - mFrameTimesBeginCs[0],
-                cs[1] < 0 ? -1L : cs[1] - mFrameTimesBeginCs[1]);
+                cs[1] < 0 ? -1L : cs[1] - mFrameTimesBeginCs[1], now);
         fflush(mFrameTimes);
     }
     mFrameTimesLastSceneWrites = mSceneBgWrites;
