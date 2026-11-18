@@ -721,6 +721,15 @@ void FillMeshApproxLighting(RndMesh *mesh, float box[6][4], float retail[4]);
 // Shadows: RB3 keeps WgpuRnd's generic shadow pre-pass and has no projected
 // shadow light (see RndShape_DC3.h for the shape that does).
 constexpr bool kGenericShadowPass = true;
+// No character self-shadow map (RndShape_DC3.h has the shape that draws one).
+constexpr bool kSelfShadowMap = false;
+constexpr int kSelfShadowCasterDrawMode = -1;
+constexpr int kSelfShadowTexType = -1;
+inline RndCam *SelfShadowCam() { return nullptr; }
+inline const float *CapturedPConstant(int) {
+    static const float kZero[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    return kZero;
+}
 constexpr bool kSelectDefaultEnvEachFrame = false;
 inline bool CollectProjShadowCasters(ProjShadowCasters &) { return false; }
 inline int CollectProjShadowCasterSets(std::vector<ProjShadowCasters> &) { return 0; }

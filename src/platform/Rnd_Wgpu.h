@@ -68,7 +68,14 @@ public:
     void SetVConstant(VShaderConstant, bool) override {}
     void SetPConstant(PShaderConstant, const Hmx::Matrix4&) override {}
     void SetPConstant(PShaderConstant, RndCubeTex*) override {}
-    void SetPConstant(PShaderConstant, const Vector4&) override {}
+    // Vector4 pixel constants are kept too, for the same reason: the DC3
+    // shape's self-shadow reads c107/c108 as NgRnd::SetShadowMap uploads them
+    // (rndshape::CapturedPConstant). Storing them changes no render on its own.
+    void SetPConstant(PShaderConstant reg, const Vector4& v) override {
+        if ((unsigned)reg < kNumPConstants) mPConstants[reg] = v;
+    }
+    const Vector4& PConstant(int reg) const { return mPConstants[reg]; }
+    static constexpr unsigned kNumPConstants = 256;
     void SetPConstant(PShaderConstant, RndTex*) override {}
     void SetPConstant(PShaderConstant, int) override {}
     void SetPConstant(PShaderConstant, bool) override {}
@@ -79,6 +86,7 @@ protected:
 
 private:
     Vector4 mVConstants[kNumVConstants] = {};
+    Vector4 mPConstants[kNumPConstants] = {};
 };
 #endif // MILO_RNDOBJ_SHAPE_HAS_NGRND
 
@@ -563,6 +571,14 @@ public:
     float mLastCamPosX = 0.0f; // detect same-pointer position changes
     float mLastCamPosY = 0.0f;
     float mLastCamPosZ = 0.0f;
+    // The self-shadow camera the scene block was written for, and its
+    // position (PrepShadow moves the one light camera per character), so a
+    // receiver never reads another character's map transform.
+    RndCam* mLastSelfShadowCam = nullptr;
+    float mLastSelfShadowPos[3] = {0.0f, 0.0f, 0.0f};
+    // The self-shadow map mSceneBindGroup binds (null: none). A texture pass
+    // into that texture must not bind the group (BeginTexturePass).
+    RndTex* mSceneGroupSelfShadowTex = nullptr;
 
     // Auto-screenshot capture (env-var controlled)
     std::string mScreenshotDir;
