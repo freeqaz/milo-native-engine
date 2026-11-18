@@ -808,7 +808,9 @@ wgpu::TextureView GpuDevice::AcquireNextFrame() {
         surfTex.status = wgpu::SurfaceGetCurrentTextureStatus::Error;
     } else {
         framecost::Scope cost(framecost::kAcquire);  // a swapchain wait shows here
+        if (mCompositorWaitHook) mCompositorWaitHook(true);
         mSurface.GetCurrentTexture(&surfTex);
+        if (mCompositorWaitHook) mCompositorWaitHook(false);
     }
     if (surfTex.status == wgpu::SurfaceGetCurrentTextureStatus::SuccessOptimal ||
         surfTex.status == wgpu::SurfaceGetCurrentTextureStatus::SuccessSuboptimal) {
@@ -869,7 +871,9 @@ void GpuDevice::PresentFrame() {
     } else {
         mPresentRect = {0, 0, (int)mSurfaceTex.GetWidth(), (int)mSurfaceTex.GetHeight()};
     }
+    if (mCompositorWaitHook) mCompositorWaitHook(true);
     mSurface.Present();
+    if (mCompositorWaitHook) mCompositorWaitHook(false);
     mSurfaceTex = nullptr;
     mInstance.ProcessEvents();
 }

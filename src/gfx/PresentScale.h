@@ -61,13 +61,20 @@ public:
     // filter, into an RGBA8Unorm/BGRA8Unorm target; off by default.
     void SetDither(bool on) { mDither = on; }
     bool Dither() const { return mDither; }
+    // The frame's alpha copied through, whichever filter runs: the one-tap
+    // case takes fs_copy instead of the opaque fs_present (the box filter has
+    // always averaged alpha). For a copy that is not the present. Off by
+    // default: a window is not composited through the frame's alpha.
+    void SetKeepAlpha(bool on) { mKeepAlpha = on; }
     // The render pass's label (GPU timers), when the copy is not the present.
     void SetPassLabel(const char* label) { mLabel = label; }
 
 private:
     bool mBoxFilter = false;
     bool mDither = false;
+    bool mKeepAlpha = false;
     wgpu::RenderPipeline mBoxDitherPipe;
+    wgpu::RenderPipeline mCopyPipe;
     const char* mLabel = "PresentScalePass";
     wgpu::RenderPipeline mBoxPipe;
     wgpu::ShaderModule mShader;
