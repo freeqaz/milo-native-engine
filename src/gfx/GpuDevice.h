@@ -368,6 +368,11 @@ public:
     void PollEvents();
     // Whether the window has input focus. True with no window (headless, web).
     bool IsWindowFocused() const;
+    // Called with true before, and false after, each call that can block on
+    // the compositor (acquiring the window's frame, presenting it). A hidden
+    // window waits there for about a second; the audio mute reads it
+    // (audio/BackgroundMute.h). Desktop windows only.
+    void SetCompositorWaitHook(void (*hook)(bool waiting)) { mCompositorWaitHook = hook; }
     int WindowWidth() const { return mWidth; }
     int WindowHeight() const { return mHeight; }
     // The size a frame leaves the renderer at (readback, presentation's
@@ -526,6 +531,7 @@ private:
 
     // Surface texture (stored for CopyTextureToTexture in web frame resolve)
     wgpu::Texture mSurfaceTex;
+    void (*mCompositorWaitHook)(bool waiting) = nullptr;
     // The fixed-size frame (GpuDeviceDesc::frameWidth), windowed only.
     wgpu::Texture mFrameTex;
     wgpu::TextureView mFrameView;
