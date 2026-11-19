@@ -46,6 +46,25 @@ struct CompUB {
     spot: vec4f,
 };
 
+// kQuant8 (DC3, whose sets are 8-bit, mBloomFormat): each pass writes a whole
+// 8-bit level, rounded half to even here, so the GPU's own float -> unorm8
+// conversion has nothing left to decide. That conversion is the
+// implementation's choice (Vulkan: either neighbour; nearest only "should"),
+// and GPUs differ: an RTX 3090 (NVIDIA 615.78) rounds many values 0.50-0.56
+// of a level down, which ones depending on the level (measured: 103 of 184
+// fields 0.505-0.545 past a level), where the Radeon 890M (RADV) and Apple M3
+// results match rounding at 0.5. Compounded over the chain's 8-bit passes
+// that moved retail's bloom term by 3% and its frame-edge glow by 3 levels
+// between the 3090 and the other two. RB3's sets are half float: false, its
+// passes untouched.
+override kQuant8: bool = false;
+fn set_write(c: vec4f) -> vec4f {
+    if (kQuant8) {
+        return round(clamp(c, vec4f(0.0), vec4f(1.0)) * 255.0) / 255.0;
+    }
+    return c;
+}
+
 @group(0) @binding(0) var srcTex: texture_2d<f32>;
 @group(0) @binding(1) var samp: sampler;
 @group(0) @binding(2) var<uniform> pu: PassUB;
@@ -85,7 +104,7 @@ struct VOut {
             acc += c.rgb * c.a;
         }
     }
-    return vec4f(acc / 16.0, 1.0);
+    return set_write(vec4f(acc / 16.0, 1.0));
 }
 
 // downsample_4x.ps: the 4x4 box under each target texel.
@@ -98,7 +117,7 @@ struct VOut {
             acc += textureLoad(srcTex, min(base + vec2i(i, j), dims - 1), 0);
         }
     }
-    return acc / 16.0;
+    return set_write(acc / 16.0);
 }
 
 // blur.ps, 15 taps, weights from SetBloomBlurWeights. Retail's offsets are
@@ -113,7 +132,7 @@ const kW = array<f32, 15>(0.0159283932, 0.0270778369, 0.0424231887, 0.0612547919
         let o = f32(i - 7) * pu.dir * pu.srcTexel;
         acc += kW[i] * textureSampleLevel(srcTex, samp, in.uv + o, 0.0);
     }
-    return acc;
+    return set_write(acc);
 }
 
 // The graded frame copied back over the main pass after the world-end flush
@@ -274,13 +293,20 @@ void RB3RetailPost::EnsurePipelines(GpuDevice& gpu) {
         mCompositePL = dev.CreatePipelineLayout(&d);
     }
 
-    auto make = [&](const char* fs, const wgpu::PipelineLayout& pl, wgpu::TextureFormat fmt) {
+    // An 8-bit set rounds its own writes (kQuant8, see the shader).
+    wgpu::ConstantEntry quant8{};
+    quant8.key = "kQuant8";
+    quant8.value = 1.0;
+    auto make = [&](const char* fs, const wgpu::PipelineLayout& pl, wgpu::TextureFormat fmt, bool set = false) {
         wgpu::ColorTargetState ct{};
         ct.format = fmt;
         ct.writeMask = wgpu::ColorWriteMask::All;
         wgpu::FragmentState frag{};
         frag.module = mShader;
         frag.entryPoint = fs;
+        const bool set8 = set && fmt == wgpu::TextureFormat::RGBA8Unorm;
+        frag.constantCount = set8 ? 1 : 0;
+        frag.constants = set8 ? &quant8 : nullptr;
         frag.targetCount = 1;
         frag.targets = &ct;
         wgpu::RenderPipelineDescriptor pd{};
@@ -293,9 +319,9 @@ void RB3RetailPost::EnsurePipelines(GpuDevice& gpu) {
     };
     const wgpu::TextureFormat kBloomFmt = wgpu::TextureFormat::RGBA16Float;
     // RB3: half float. DC3 (np-gfx-post): 8-bit, see mBloomFormat.
-    mBloomDownPipe = make("fs_bloom_down", mPassPL, mBloomFormat);
-    mDown4Pipe = make("fs_down4", mPassPL, mBloomFormat);
-    mBlurPipe = make("fs_blur", mPassPL, mBloomFormat);
+    mBloomDownPipe = make("fs_bloom_down", mPassPL, mBloomFormat, true);
+    mDown4Pipe = make("fs_down4", mPassPL, mBloomFormat, true);
+    mBlurPipe = make("fs_blur", mPassPL, mBloomFormat, true);
     mCompositePipe = make("fs_composite", mCompositePL, mFrameFormat);
 
     if (mBindGroups && mUniforms) mBindGroups->Forget(mUniforms.Get());
