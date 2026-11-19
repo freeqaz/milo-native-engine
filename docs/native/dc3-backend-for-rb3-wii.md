@@ -10213,3 +10213,64 @@ of these costs:
 
 Neither is built. The frames are 14-15 ms at the 120 cap, under 16.7, and
 they come during the song-end fade.
+
+## 45. DC3 post chain: the 8-bit bloom sets round in the shader (lane np-gfx sharp, item 17 (b), branch np-look17, 2026-11-19)
+
+Evidence: dc3-decomp `archive/np-gfx-2026-11-14/lanes/sharp/item17/b/`. dc3 PLAN H-121.
+
+### 45.1 Why two GPUs drew different retail bloom
+
+The retail look's bloom sets are RGBA8Unorm, as `NgPostProc::BloomTextureSet`'s
+are (§37.11 (a)). Each pass writes a float the target turns into an 8-bit
+level, and **that conversion is the implementation's choice**: Vulkan allows
+either neighbour and only says nearest "should" be used. GPUs differ:
+
+| GPU | what it does with a value between two levels |
+|---|---|
+| RTX 3090, NVIDIA 615.78 | rounds many values 0.50-0.56 of a level down; which ones depends on the level. With the passes' own rounding off, 103 of 184 uniform fields 0.505-0.545 past a level came out a level low. A probe writing (L + f)/255 first rounded up at f = 0.561 (L = 0), 0.549 (L = 3), 0.544 (L = 100) |
+| Radeon 890M (RADV), Apple M3 | round at 0.5: the 3090 with the passes rounding half-up in the shader reproduced the M3's numbers (plain-arm energy 468147 vs 468139, wobble 0.0228 vs 0.0228) and RADV's dead-zone term (0.225) within 1.5% |
+
+The chain has up to six 8-bit passes in a row, so the differences compound:
+retail's bloom term moved about 3% between the 3090 and the other two, and
+the glow of dots on the frame's border rows (clamp-to-edge) 3 levels against 6.
+
+### 45.2 The contract now
+
+Every pass that writes an **8-bit set** writes a whole level, rounded half to
+even in the shader, so the GPU's conversion has nothing left to decide:
+
+- the WGSL override constant `kQuant8` (`RB3RetailPost.cpp` `set_write`;
+  `RB3RetailPostDC3.cpp` `sat_set`);
+- set by the pipeline only when its target is `RGBA8Unorm` and it is a set
+  pass: `fs_bloom_down`, `fs_down4`, `fs_blur`, `fs_bloom_taps`, `fs_streak`,
+  `fs_glare`, and the enhanced family [0] (`kc[2]`);
+- RB3's sets are RGBA16Float, so its pipelines never set it and its output is
+  unchanged; the enhanced look's 16-bit sets (family [1]) do not set it either.
+
+Left to the GPU, each a single conversion, not compounded: the composite's
+frame write, the velocity target (`RndVelocityBuffer`, A8R8G8B8) and the
+motion-blur feedback target.
+
+**Real frames** (3090, frozen dci and houseparty, far02 and near01, 1920x1080,
+retail and enhanced in the same frame): the retail look's mean rises 0.25-0.66
+levels against the enhanced look's (retail - enhanced -0.11..-0.44 before,
++0.07..+0.23 after). That is the retail look as RADV and the M3 already drew it.
+
+### 45.3 Guards (dc3-decomp `native/tests/test_dc3_look_post.cpp`)
+
+- `RetailSetsRoundEveryPassToTheNearestLevel`: uniform fields colour x mask
+  0.455-0.495 and 0.505-0.545 of a level past a level (381 plain, 348 streak),
+  retail and enhFilter alone; on a uniform field every set holds an exact,
+  computable level. 0 off with the fix. Sabotages, each red in its own arm:
+  the RB3 set pipes unrounded (plain 101 off), the DC3 retail pipes (streak 15),
+  family [0] (enhFilter plain 101, streak 15). A single-field version of this
+  test was green under all three: the 3090 happened to round its fields right,
+  so the test sweeps.
+- `EnhancedBloomKeepsEnergyAndExtentAndStopsWobbling`: the wobble is the
+  centroid under a cos² window (120-240 px about the dot) of a merged exposure
+  whose tails are read at 1/16 of a level; the whole-frame centroid at the
+  bloom colour read the tails' rounding contour (0.010 px on the 3090, 0.025 on
+  RADV). Shipped 0.0047 px, retail 0.317, the tent flattened 0.046, under
+  either rounding; bound 0.1 x retail.
+- `SixteenBitSetsKeepRetailsDeadZone`: means 100 px inside the frame; a
+  0.05-level floor on the dots' tolerance.
