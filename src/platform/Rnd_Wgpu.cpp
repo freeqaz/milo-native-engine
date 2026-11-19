@@ -1860,7 +1860,11 @@ void WgpuRnd::BeginDrawing() {
     if (!mGpu.IsHeadless()) {
         mGpu.PollEvents();
 #ifndef __EMSCRIPTEN__
-        // The frame clock and focus the background mute decides from.
+        // The frame clock, focus and compositor waits the background mute
+        // decides from. The hook is set here, not at init: the window's
+        // device is created on more than one path.
+        mGpu.SetCompositorWaitHook(
+            [](bool waiting) { AudioDevice::GetInstance().NoteCompositorWait(waiting); });
         AudioDevice::GetInstance().NoteMainLoopFrame(mGpu.IsWindowFocused());
 #endif
         if (mGpu.ShouldClose()) {

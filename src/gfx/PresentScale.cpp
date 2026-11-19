@@ -31,6 +31,12 @@ struct VsOut {
     return vec4f(textureSampleLevel(frameTex, frameSampler, in.uv, 0.0).rgb, 1.0);
 }
 
+// The same one tap with the frame's alpha kept (SetKeepAlpha): a copy that is
+// not the present. DC3's bloom source is one, and its alpha is the bloom mask.
+@fragment fn fs_copy(in: VsOut) -> @location(0) vec4f {
+    return textureSampleLevel(frameTex, frameSampler, in.uv, 0.0);
+}
+
 // Downscale (render scale): four bilinear taps at +-1/4 of the output pixel's
 // footprint in frame texels. At exactly 2x each tap lands on a texel centre,
 // so the four are the 2x2 box; at 1.5x they cover the 1.5-texel footprint.
@@ -167,9 +173,33 @@ PresentRect PresentScale::Encode(wgpu::Device& device, wgpu::CommandEncoder& enc
         pd.label = "PresentScaleBox";
         mBoxPipe = CreateCountedRenderPipeline(device, &pd);
         mBoxDitherPipe = nullptr;
+        mCopyPipe = nullptr;
         mFormat = targetFormat;
     }
     const bool box = mBoxFilter && rect.w < fw && rect.h < fh;
+    if (mKeepAlpha && !box && !mCopyPipe) {
+        // Only once an alpha-keeping one-tap copy is asked for.
+        wgpu::PipelineLayoutDescriptor pld{};
+        pld.bindGroupLayoutCount = 1;
+        pld.bindGroupLayouts = &mBGL;
+        wgpu::PipelineLayout pl = device.CreatePipelineLayout(&pld);
+        wgpu::ColorTargetState ct{};
+        ct.format = targetFormat;
+        ct.writeMask = wgpu::ColorWriteMask::All;
+        wgpu::FragmentState frag{};
+        frag.module = mShader;
+        frag.entryPoint = "fs_copy";
+        frag.targetCount = 1;
+        frag.targets = &ct;
+        wgpu::RenderPipelineDescriptor pd{};
+        pd.label = "PresentScaleCopy";
+        pd.layout = pl;
+        pd.vertex.module = mShader;
+        pd.vertex.entryPoint = "vs_full";
+        pd.fragment = &frag;
+        pd.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+        mCopyPipe = CreateCountedRenderPipeline(device, &pd);
+    }
     const bool dither = box && mDither && DitherableFormat(targetFormat);
     if (dither && !mBoxDitherPipe) {
         // Only once a dithered box is asked for: with the dither off, none.
@@ -224,7 +254,7 @@ PresentRect PresentScale::Encode(wgpu::Device& device, wgpu::CommandEncoder& enc
     wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&rp);
     if (frame && rect.w > 0 && rect.h > 0) {
         pass.SetViewport((float)rect.x, (float)rect.y, (float)rect.w, (float)rect.h, 0.0f, 1.0f);
-        pass.SetPipeline(dither ? mBoxDitherPipe : box ? mBoxPipe : mPipe);
+        pass.SetPipeline(dither ? mBoxDitherPipe : box ? mBoxPipe : mKeepAlpha ? mCopyPipe : mPipe);
         pass.SetBindGroup(0, mBindGroup);
         pass.Draw(3);
     }

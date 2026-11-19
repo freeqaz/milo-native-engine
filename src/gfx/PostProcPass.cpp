@@ -468,7 +468,10 @@ void PostProcPass::RunDC3Retail(wgpu::CommandEncoder& encoder, P* pp, int mode,
         // A frame drawn at other than the logical size (a render scale, the
         // output's own resolution, or both): bloom from the scene resampled to
         // the logical size, so its targets are the original's 1280x720-based
-        // ones (RetailPostParams::renderScale).
+        // ones (RetailPostParams::renderScale). The copy keeps the scene's
+        // alpha, which is the bloom mask: a frame SMALLER than the logical
+        // size (a window under 1280x720) is enlarged, not box-filtered, and the
+        // present's opaque one-tap copy made every pixel bloom there.
         wgpu::TextureView bloomSrc = intermediateView;
         rp.renderScale = gpu.RenderScaleFor(w);
         if (rp.renderScale != 1.0f && rp.bloom && intermediateTex) {
@@ -484,6 +487,7 @@ void PostProcPass::RunDC3Retail(wgpu::CommandEncoder& encoder, P* pp, int mode,
                 mBloomSrcTex = gpu.CreateTexture(td);
                 mBloomSrcView = mBloomSrcTex.CreateView();
                 mBloomSrcScale.SetBoxFilter(true);
+                mBloomSrcScale.SetKeepAlpha(true);
                 mBloomSrcScale.SetPassLabel("DC3BloomSourceDownsample");
             }
             mBloomSrcScale.Encode(gpu.Device(), encoder, intermediateTex, mBloomSrcView, fmt, ow, oh);
