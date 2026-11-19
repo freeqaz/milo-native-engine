@@ -147,6 +147,9 @@ struct VOut {
 // measure the filters alone.
 override kSat: bool = false;
 override kDeadZone: bool = false;
+// kQuant8: the pass writes an 8-bit set (retail's, and family [0]), rounded
+// half to even here rather than by the GPU (RB3RetailPost.cpp's set_write).
+override kQuant8: bool = false;
 fn sat_set(c: vec4f) -> vec4f {
     if (kSat) {
         let s = clamp(c, vec4f(0.0), vec4f(1.0));
@@ -154,6 +157,9 @@ fn sat_set(c: vec4f) -> vec4f {
             return s * smoothstep(vec4f(0.25 / 255.0), vec4f(0.6 / 255.0), s);
         }
         return s;
+    }
+    if (kQuant8) {
+        return round(clamp(c, vec4f(0.0), vec4f(1.0)) * 255.0) / 255.0;
     }
     return c;
 }
@@ -713,13 +719,20 @@ void RB3RetailPost::EnsureDC3Pipelines(GpuDevice& gpu) {
         d.bindGroupLayouts = &mDC3VelBGL;
         mDC3VelPL = dev.CreatePipelineLayout(&d);
     }
-    auto make = [&](const char* fs, const wgpu::PipelineLayout& pl, wgpu::TextureFormat fmt) {
+    // The retail set passes write 8-bit sets (mBloomFormat): kQuant8.
+    wgpu::ConstantEntry quant8{};
+    quant8.key = "kQuant8";
+    quant8.value = 1.0;
+    auto make = [&](const char* fs, const wgpu::PipelineLayout& pl, wgpu::TextureFormat fmt, bool set = false) {
         wgpu::ColorTargetState ct{};
         ct.format = fmt;
         ct.writeMask = wgpu::ColorWriteMask::All;
         wgpu::FragmentState frag{};
         frag.module = mDC3Shader;
         frag.entryPoint = fs;
+        const bool set8 = set && fmt == wgpu::TextureFormat::RGBA8Unorm;
+        frag.constantCount = set8 ? 1 : 0;
+        frag.constants = set8 ? &quant8 : nullptr;
         frag.targetCount = 1;
         frag.targets = &ct;
         wgpu::RenderPipelineDescriptor pd{};
@@ -731,9 +744,9 @@ void RB3RetailPost::EnsureDC3Pipelines(GpuDevice& gpu) {
         pd.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
         return CreateCountedRenderPipeline(dev, &pd);
     };
-    mDC3BloomTapsPipe = make("fs_bloom_taps", mDC3PassPL, mBloomFormat);
-    mDC3StreakPipe = make("fs_streak", mDC3PassPL, mBloomFormat);
-    mDC3GlarePipe = make("fs_glare", mDC3PassPL, mBloomFormat);
+    mDC3BloomTapsPipe = make("fs_bloom_taps", mDC3PassPL, mBloomFormat, true);
+    mDC3StreakPipe = make("fs_streak", mDC3PassPL, mBloomFormat, true);
+    mDC3GlarePipe = make("fs_glare", mDC3PassPL, mBloomFormat, true);
     mDC3CompositePipe = make("fs_composite_dc3", mDC3CompositePL, mDC3FrameFormat);
     // RndVelocityBuffer::AllocateData: SetBitmap(w / 2, h / 2, TheRnd.Bpp() =
     // 32, kRendered): A8R8G8B8.
@@ -779,9 +792,11 @@ void RB3RetailPost::EnsureDC3Family(int idx, GpuDevice& gpu) {
     wgpu::ConstantEntry sat{};
     sat.key = "kSat";
     sat.value = idx ? 1.0 : 0.0;
-    wgpu::ConstantEntry kc[2] = {sat, {}};
+    wgpu::ConstantEntry kc[3] = {sat, {}, {}};
     kc[1].key = "kDeadZone";
     kc[1].value = idx == 1 ? 1.0 : 0.0;
+    kc[2].key = "kQuant8";   // [0]'s sets are 8-bit
+    kc[2].value = idx == 0 ? 1.0 : 0.0;
     auto make = [&](const char* fs, const char* label) {
         wgpu::ColorTargetState ct{};
         ct.format = fmt;
@@ -789,7 +804,7 @@ void RB3RetailPost::EnsureDC3Family(int idx, GpuDevice& gpu) {
         wgpu::FragmentState frag{};
         frag.module = mDC3Shader;
         frag.entryPoint = fs;
-        frag.constantCount = 2;
+        frag.constantCount = 3;
         frag.constants = kc;
         frag.targetCount = 1;
         frag.targets = &ct;
