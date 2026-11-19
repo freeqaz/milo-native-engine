@@ -66,7 +66,10 @@ struct GpuDeviceDesc {
     // defined in: LogicalWidth/Height, and the frame's scale from it is
     // drawn / logical (FrameScaleX/Y), which need not be whole. Unset: the
     // frame is the target (headless) or frameWidth x frameHeight (windowed),
-    // as before, and the logical size is the output size.
+    // as before. The logical size is then still the consumer's when it gives
+    // one (a frame that does not follow, drawn at the target's size, keeps its
+    // viewports in the virtual resolution: dc3's retail headless at
+    // MILO_WIDTH x MILO_HEIGHT), and the output size when it gives none.
     bool outputFollowsTarget = false;
     int logicalWidth = 0;
     int logicalHeight = 0;

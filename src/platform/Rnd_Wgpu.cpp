@@ -329,13 +329,21 @@ void WgpuRnd::Init() {
     // (GpuDeviceDesc::outputFollowsTarget). Under the look's switch
     // (LookSettings::outputFollowsTarget): Retail keeps the original's
     // 1280x720 frame, scaled into the window or the canvas's box.
+    //
+    // The virtual resolution goes to the device in either look: DC3's
+    // RndCam::Select builds every viewport from TheRnd.Width/Height, and a
+    // frame that does not follow is still drawn at the target's size headless
+    // (retail at MILO_WIDTH x MILO_HEIGHT). Without it the logical size was the
+    // output's, so a Select made mid-frame (RndShadowMap::PrepShadow reselects
+    // the camera after each self-shadowed character) set a 1280x720 viewport
+    // on a 1268x713 frame: the world after it drawn 1% large from the top-left
+    // corner, at 640x360 a quarter of it at twice the size, the HUD gone.
     auto FollowTheTarget = [this](GpuDeviceDesc& d) {
-        if (!rndshape::kOutputFollowsTarget || !milo::Look().outputFollowsTarget ||
-            mWidth <= 0 || mHeight <= 0)
-            return;
-        d.outputFollowsTarget = true;
+        if (!rndshape::kOutputFollowsTarget || mWidth <= 0 || mHeight <= 0) return;
         d.logicalWidth = mWidth;
         d.logicalHeight = mHeight;
+        if (!milo::Look().outputFollowsTarget) return;
+        d.outputFollowsTarget = true;
         // The output's row cap (an integrated adapter's default, a web adapter
         // without BC's, or MILO_OUTPUT_MAX_ROWS anywhere): OutputRowCap and
         // WebOutputRowCap, gfx/GpuDevice.h.

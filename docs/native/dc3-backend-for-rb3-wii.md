@@ -10274,3 +10274,81 @@ levels against the enhanced look's (retail - enhanced -0.11..-0.44 before,
   either rounding; bound 0.1 x retail.
 - `SixteenBitSetsKeepRetailsDeadZone`: means 100 px inside the frame; a
   0.05-level floor on the dots' tolerance.
+
+## 46. The virtual resolution reaches the device in either look (lane np-gfx sharp, item 17 (a), branch np-look17, 2026-11-19)
+
+Evidence: dc3-decomp `archive/np-gfx-2026-11-14/lanes/sharp/item17/a/viewport/`. dc3 PLAN H-122.
+
+### 46.1 The symptom: "retail moves while paused"
+
+The pairs looked like this: headless, 1268x713, iceicebaby, paused, a shot forced, a frame, then
+`self_shadow FALSE` on every Character and a second frame. Under the enhanced look the two frames
+differed only by the self-shadow (about 8,000 px over 2 levels). Under the retail look they
+differed by 500,000-660,000 px, with every edge displaced. Nothing was moving. Twenty-five frames
+0.25 s apart after the forced shot (about 2,000 engine frames) were identical (0-4 px over 2). The
+displacement field between the two retail frames was a scale of 1280/1268 about the top-left
+corner: 0 px at the left edge, -8 px at x = 900, -6 px at y = 580. The frame with self-shadow on
+was the wrong one. With self-shadow off, the frame lines up with the enhanced frame.
+
+### 46.2 Cause
+
+DC3's `RndCam::Select` (`rndobj/Cam.cpp`, HX_NATIVE block) builds its viewport from
+`TheRnd.Width()/Height()`, which are 1280x720 (`Rnd::PreInit`). `WgpuRnd::FrameViewport` maps a
+frame pass's viewport from the logical size to the drawn frame (`FrameScaleX/Y`: drawn over
+logical). Before the fix, a device whose frame does not follow its target got no logical size,
+and `LogicalWidth/Height` then fell back to the output. Under the retail look, which keeps the
+1280x720 frame windowed, a headless frame is MILO_WIDTH x MILO_HEIGHT, so logical was 1268x713,
+`FrameScaled()` was false, and a 1280x720 viewport went onto a 1268x713 frame unscaled. A pass
+begin (`MakeDrawTarget`) sets its viewport from `LogicalWidth`, so the first camera of a frame
+drew correctly. Any `Select` later in the same pass did not:
+
+- `RndShadowMap::PrepShadow` reselects the scene camera after each self-shadowed character
+  (`curCam->Select()`), so the rest of the world drew 1% too large from the top-left corner.
+- The menu's UI cameras reselect too. At 640x360 the menu showed its top-left quarter at twice
+  the size; at 1920x1080 it filled only the top-left 1280x720.
+
+That is also item 17 (a)'s "retail at 640x360 reads 38-39 where 1280x720 reads 46". The same
+mismatch caused the zoomed dci framing, the missing HUD at 640/960 and the 1920 frame filling
+only its corner. No player saw it: retail windowed and web draw the 1280x720 frame, where
+logical equals the frame. Headless captures at any other size, the GPD self-shadow protocol and
+the size sweep all did see it.
+
+### 46.3 Fix and contract
+
+- `GpuDevice::Init` (and `GpuDevice_Web`) keep `GpuDeviceDesc::logicalWidth/Height` whenever they
+  are given. `outputFollowsTarget` now decides only the output's size (`ResolveFrameSizes`) and
+  the row cap.
+- `WgpuRnd::Init` passes the Rnd's virtual resolution whenever the shape has
+  `rndshape::kOutputFollowsTarget` (DC3), in either look. It sets `outputFollowsTarget` only when
+  the look follows.
+- RB3's shape has `kOutputFollowsTarget = false` and never sets a logical size, so its frames are
+  unchanged by construction. `MILO_PRESENT_SCALE=0` still skips the block, as H-18 intends.
+
+The contract: **a frame pass's viewport is in the consumer's virtual resolution in every look and
+at every size**. Headless retail at a size other than 1280x720 now draws the scene, the UI and
+the post chain the way the enhanced look does at scale 1 (bloom source resampled to 1280x720,
+`RenderScaleFor` = drawn/logical). Retail at 1280x720, windowed or headless, and every enhanced
+frame are unchanged, because their logical size was already the Rnd's.
+
+Measured (fast-boot menu, frame 290, against the 1280x720 frame resampled):
+
+| size | before, mean \|d\| | after, mean \|d\| |
+|---|---|---|
+| 640x360 | 44.5 | 2.4 |
+| 1920x1080 | 42.7 | 1.7 |
+
+The protocol in 46.1 now gives 5,851 px over 2 levels (mean 0.14) under retail and 5,614
+(mean 0.13) under enhanced.
+
+### 46.4 Guard
+
+dc3 `HeadlessBootTest.RetailHeadlessAtAnotherSizeKeepsViewportsInTheVirtualResolution` runs
+retail headless at 1920x1080 and checks two things:
+
+- the device reports `(1920x1080 drawn, logical 1280x720)`;
+- the menu reaches past x = 1280 and y = 720 (lit shares 0.942 / 0.572).
+
+Two sabotages each turn it red (lit 0.014 / 0.000):
+
+- `GpuDevice::Init` keeping the logical size only when the frame follows;
+- `WgpuRnd` passing the size only when the look follows.

@@ -62,8 +62,10 @@ bool GpuDevice::Init(const GpuDeviceDesc& desc) {
     // does not follow keeps the canvas's own buffer size, as before.
     mSizeDesc = WebFrameDesc(desc);
     mFollowsTarget = desc.outputFollowsTarget && desc.logicalWidth > 0 && desc.logicalHeight > 0;
-    mLogicalWidth = mFollowsTarget ? desc.logicalWidth : 0;
-    mLogicalHeight = mFollowsTarget ? desc.logicalHeight : 0;
+    // The virtual resolution whether or not the frame follows (GpuDevice.cpp).
+    const bool hasLogical = desc.logicalWidth > 0 && desc.logicalHeight > 0;
+    mLogicalWidth = hasLogical ? desc.logicalWidth : 0;
+    mLogicalHeight = hasLogical ? desc.logicalHeight : 0;
 
     // Create instance (no TimedWaitAny — browser doesn't support sync wait)
     mInstance = wgpu::CreateInstance(nullptr);
