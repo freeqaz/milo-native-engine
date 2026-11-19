@@ -127,8 +127,12 @@ bool GpuDevice::Init(const GpuDeviceDesc& desc) {
     mSizeDesc = desc;
     mSizeDesc.title = nullptr;  // not kept past Init
     mFollowsTarget = desc.outputFollowsTarget && desc.logicalWidth > 0 && desc.logicalHeight > 0;
-    mLogicalWidth = mFollowsTarget ? desc.logicalWidth : 0;
-    mLogicalHeight = mFollowsTarget ? desc.logicalHeight : 0;
+    // The virtual resolution whether or not the frame follows its target: a
+    // frame drawn at the target's own size (dc3's retail look headless at
+    // 1268x713) still gets viewports in it from every RndCam::Select.
+    const bool hasLogical = desc.logicalWidth > 0 && desc.logicalHeight > 0;
+    mLogicalWidth = hasLogical ? desc.logicalWidth : 0;
+    mLogicalHeight = hasLogical ? desc.logicalHeight : 0;
     mRowCap = mFollowsTarget ? OutputRowCap(desc, mDiscreteGpu, !mHeadless) : 0;
     if (mHeadless)
         ApplyFrameSizes(ResolveFrameSizes(desc, mDiscreteGpu, false, desc.width, desc.height), true);

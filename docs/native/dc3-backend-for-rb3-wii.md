@@ -10213,3 +10213,142 @@ of these costs:
 
 Neither is built. The frames are 14-15 ms at the 120 cap, under 16.7, and
 they come during the song-end fade.
+
+## 45. DC3 post chain: the 8-bit bloom sets round in the shader (lane np-gfx sharp, item 17 (b), branch np-look17, 2026-11-19)
+
+Evidence: dc3-decomp `archive/np-gfx-2026-11-14/lanes/sharp/item17/b/`. dc3 PLAN H-121.
+
+### 45.1 Why two GPUs drew different retail bloom
+
+The retail look's bloom sets are RGBA8Unorm, as `NgPostProc::BloomTextureSet`'s
+are (§37.11 (a)). Each pass writes a float the target turns into an 8-bit
+level, and **that conversion is the implementation's choice**: Vulkan allows
+either neighbour and only says nearest "should" be used. GPUs differ:
+
+| GPU | what it does with a value between two levels |
+|---|---|
+| RTX 3090, NVIDIA 615.78 | rounds many values 0.50-0.56 of a level down; which ones depends on the level. With the passes' own rounding off, 103 of 184 uniform fields 0.505-0.545 past a level came out a level low. A probe writing (L + f)/255 first rounded up at f = 0.561 (L = 0), 0.549 (L = 3), 0.544 (L = 100) |
+| Radeon 890M (RADV), Apple M3 | round at 0.5: the 3090 with the passes rounding half-up in the shader reproduced the M3's numbers (plain-arm energy 468147 vs 468139, wobble 0.0228 vs 0.0228) and RADV's dead-zone term (0.225) within 1.5% |
+
+The chain has up to six 8-bit passes in a row, so the differences compound:
+retail's bloom term moved about 3% between the 3090 and the other two, and
+the glow of dots on the frame's border rows (clamp-to-edge) 3 levels against 6.
+
+### 45.2 The contract now
+
+Every pass that writes an **8-bit set** writes a whole level, rounded half to
+even in the shader, so the GPU's conversion has nothing left to decide:
+
+- the WGSL override constant `kQuant8` (`RB3RetailPost.cpp` `set_write`;
+  `RB3RetailPostDC3.cpp` `sat_set`);
+- set by the pipeline only when its target is `RGBA8Unorm` and it is a set
+  pass: `fs_bloom_down`, `fs_down4`, `fs_blur`, `fs_bloom_taps`, `fs_streak`,
+  `fs_glare`, and the enhanced family [0] (`kc[2]`);
+- RB3's sets are RGBA16Float, so its pipelines never set it and its output is
+  unchanged; the enhanced look's 16-bit sets (family [1]) do not set it either.
+
+Left to the GPU, each a single conversion, not compounded: the composite's
+frame write, the velocity target (`RndVelocityBuffer`, A8R8G8B8) and the
+motion-blur feedback target.
+
+**Real frames** (3090, frozen dci and houseparty, far02 and near01, 1920x1080,
+retail and enhanced in the same frame): the retail look's mean rises 0.25-0.66
+levels against the enhanced look's (retail - enhanced -0.11..-0.44 before,
++0.07..+0.23 after). That is the retail look as RADV and the M3 already drew it.
+
+### 45.3 Guards (dc3-decomp `native/tests/test_dc3_look_post.cpp`)
+
+- `RetailSetsRoundEveryPassToTheNearestLevel`: uniform fields colour x mask
+  0.455-0.495 and 0.505-0.545 of a level past a level (381 plain, 348 streak),
+  retail and enhFilter alone; on a uniform field every set holds an exact,
+  computable level. 0 off with the fix. Sabotages, each red in its own arm:
+  the RB3 set pipes unrounded (plain 101 off), the DC3 retail pipes (streak 15),
+  family [0] (enhFilter plain 101, streak 15). A single-field version of this
+  test was green under all three: the 3090 happened to round its fields right,
+  so the test sweeps.
+- `EnhancedBloomKeepsEnergyAndExtentAndStopsWobbling`: the wobble is the
+  centroid under a cos² window (120-240 px about the dot) of a merged exposure
+  whose tails are read at 1/16 of a level; the whole-frame centroid at the
+  bloom colour read the tails' rounding contour (0.010 px on the 3090, 0.025 on
+  RADV). Shipped 0.0047 px, retail 0.317, the tent flattened 0.046, under
+  either rounding; bound 0.1 x retail.
+- `SixteenBitSetsKeepRetailsDeadZone`: means 100 px inside the frame; a
+  0.05-level floor on the dots' tolerance.
+
+## 46. The virtual resolution reaches the device in either look (lane np-gfx sharp, item 17 (a), branch np-look17, 2026-11-19)
+
+Evidence: dc3-decomp `archive/np-gfx-2026-11-14/lanes/sharp/item17/a/viewport/`. dc3 PLAN H-122.
+
+### 46.1 The symptom: "retail moves while paused"
+
+The pairs looked like this: headless, 1268x713, iceicebaby, paused, a shot forced, a frame, then
+`self_shadow FALSE` on every Character and a second frame. Under the enhanced look the two frames
+differed only by the self-shadow (about 8,000 px over 2 levels). Under the retail look they
+differed by 500,000-660,000 px, with every edge displaced. Nothing was moving. Twenty-five frames
+0.25 s apart after the forced shot (about 2,000 engine frames) were identical (0-4 px over 2). The
+displacement field between the two retail frames was a scale of 1280/1268 about the top-left
+corner: 0 px at the left edge, -8 px at x = 900, -6 px at y = 580. The frame with self-shadow on
+was the wrong one. With self-shadow off, the frame lines up with the enhanced frame.
+
+### 46.2 Cause
+
+DC3's `RndCam::Select` (`rndobj/Cam.cpp`, HX_NATIVE block) builds its viewport from
+`TheRnd.Width()/Height()`, which are 1280x720 (`Rnd::PreInit`). `WgpuRnd::FrameViewport` maps a
+frame pass's viewport from the logical size to the drawn frame (`FrameScaleX/Y`: drawn over
+logical). Before the fix, a device whose frame does not follow its target got no logical size,
+and `LogicalWidth/Height` then fell back to the output. Under the retail look, which keeps the
+1280x720 frame windowed, a headless frame is MILO_WIDTH x MILO_HEIGHT, so logical was 1268x713,
+`FrameScaled()` was false, and a 1280x720 viewport went onto a 1268x713 frame unscaled. A pass
+begin (`MakeDrawTarget`) sets its viewport from `LogicalWidth`, so the first camera of a frame
+drew correctly. Any `Select` later in the same pass did not:
+
+- `RndShadowMap::PrepShadow` reselects the scene camera after each self-shadowed character
+  (`curCam->Select()`), so the rest of the world drew 1% too large from the top-left corner.
+- The menu's UI cameras reselect too. At 640x360 the menu showed its top-left quarter at twice
+  the size; at 1920x1080 it filled only the top-left 1280x720.
+
+That is also item 17 (a)'s "retail at 640x360 reads 38-39 where 1280x720 reads 46". The same
+mismatch caused the zoomed dci framing, the missing HUD at 640/960 and the 1920 frame filling
+only its corner. No player saw it: retail windowed and web draw the 1280x720 frame, where
+logical equals the frame. Headless captures at any other size, the GPD self-shadow protocol and
+the size sweep all did see it.
+
+### 46.3 Fix and contract
+
+- `GpuDevice::Init` (and `GpuDevice_Web`) keep `GpuDeviceDesc::logicalWidth/Height` whenever they
+  are given. `outputFollowsTarget` now decides only the output's size (`ResolveFrameSizes`) and
+  the row cap.
+- `WgpuRnd::Init` passes the Rnd's virtual resolution whenever the shape has
+  `rndshape::kOutputFollowsTarget` (DC3), in either look. It sets `outputFollowsTarget` only when
+  the look follows.
+- RB3's shape has `kOutputFollowsTarget = false` and never sets a logical size, so its frames are
+  unchanged by construction. `MILO_PRESENT_SCALE=0` still skips the block, as H-18 intends.
+
+The contract: **a frame pass's viewport is in the consumer's virtual resolution in every look and
+at every size**. Headless retail at a size other than 1280x720 now draws the scene, the UI and
+the post chain the way the enhanced look does at scale 1 (bloom source resampled to 1280x720,
+`RenderScaleFor` = drawn/logical). Retail at 1280x720, windowed or headless, and every enhanced
+frame are unchanged, because their logical size was already the Rnd's.
+
+Measured (fast-boot menu, frame 290, against the 1280x720 frame resampled):
+
+| size | before, mean \|d\| | after, mean \|d\| |
+|---|---|---|
+| 640x360 | 44.5 | 2.4 |
+| 1920x1080 | 42.7 | 1.7 |
+
+The protocol in 46.1 now gives 5,851 px over 2 levels (mean 0.14) under retail and 5,614
+(mean 0.13) under enhanced.
+
+### 46.4 Guard
+
+dc3 `HeadlessBootTest.RetailHeadlessAtAnotherSizeKeepsViewportsInTheVirtualResolution` runs
+retail headless at 1920x1080 and checks two things:
+
+- the device reports `(1920x1080 drawn, logical 1280x720)`;
+- the menu reaches past x = 1280 and y = 720 (lit shares 0.942 / 0.572).
+
+Two sabotages each turn it red (lit 0.014 / 0.000):
+
+- `GpuDevice::Init` keeping the logical size only when the frame follows;
+- `WgpuRnd` passing the size only when the look follows.
