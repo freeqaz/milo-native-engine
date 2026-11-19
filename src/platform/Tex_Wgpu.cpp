@@ -31,6 +31,9 @@ struct GpuTexData {
     wgpu::TextureView view;
     wgpu::Texture depthTexture;
     wgpu::TextureView depthView;
+    // A self-shadow map's depth as a binding (depth aspect only); null for
+    // every other target (rndshape::kSelfShadowTexType).
+    wgpu::TextureView depthSampleView;
     bool uploaded = false;
     bool renderTarget = false;
     const uint8_t* lastPixelPtr = nullptr;  // detect bitmap data changes
@@ -277,13 +280,23 @@ static GpuTexData* EnsureRenderTargetData(RndTex* tex) {
         gWgpuRnd->Gpu().Queue().WriteTexture(&dest, black.data(), sz, &layout, &extent);
     }
     if (needDepth) {
+        const bool sampled = rndshape::kSelfShadowMap
+            && (int)tex->GetType() == rndshape::kSelfShadowTexType;
         data.depthTexture = TextureConvert::CreateDepthTarget(
-            gWgpuRnd->Gpu(), texW, texH, (label + " depth").c_str()
+            gWgpuRnd->Gpu(), texW, texH, (label + " depth").c_str(), sampled
         );
         data.depthView = data.depthTexture.CreateView();
+        data.depthSampleView = nullptr;
+        if (sampled) {
+            wgpu::TextureViewDescriptor vd{};
+            vd.label = "SelfShadowMap";
+            vd.aspect = wgpu::TextureAspect::DepthOnly;
+            data.depthSampleView = data.depthTexture.CreateView(&vd);
+        }
     } else if (!NeedsDepthTarget(tex)) {
         data.depthTexture = nullptr;
         data.depthView = nullptr;
+        data.depthSampleView = nullptr;
     }
     data.uploaded = true;
     data.renderTarget = true;
@@ -310,6 +323,12 @@ wgpu::TextureView GetGpuTexDepthView(RndTex* tex) {
     if (!tex || !tex->IsRenderTarget()) return wgpu::TextureView();
     GpuTexData* rt = EnsureRenderTargetData(tex);
     return rt ? rt->depthView : wgpu::TextureView();
+}
+
+wgpu::TextureView GetGpuTexDepthSampleView(RndTex* tex) {
+    if (!tex || !tex->IsRenderTarget()) return wgpu::TextureView();
+    GpuTexData* rt = EnsureRenderTargetData(tex);
+    return rt ? rt->depthSampleView : wgpu::TextureView();
 }
 
 bool IsGpuTexRenderable(RndTex* tex) {

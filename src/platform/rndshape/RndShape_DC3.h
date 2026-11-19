@@ -901,6 +901,32 @@ const float *CapturedVConstant(int reg);
 // rb3-xenon keeps the generic pre-pass. Defined in DC3SceneLighting.cpp.
 constexpr bool kGenericShadowPass = !kDC3RetailModel;
 
+// The character self-shadow (standard.ps option bit 19). Character::
+// DrawShowing calls RndShadowMap::PrepShadow, which selects a light camera
+// whose target is a 512x512 RndTex::kShadowMap texture, draws the character's
+// shadow group into it in Rnd::kDrawExtrude (the shadowmap shader, culling
+// counter-clockwise: CheckForceCull's mode 6, the reverse of a regular
+// material's 2, so the map holds the casters' far faces), reselects the view
+// camera and calls TheRnd.SetShadowMap(tex, lightCam, colour); the
+// character's own draws then read the map (GetShadowCam() non-null) until
+// EndShadow. The native form keeps that order in the same frame: the light
+// camera's pass is WgpuRnd's texture pass, its depth attachment is the map,
+// and the scene block written for the receivers carries the light camera's
+// clip transform and c107/c108 (SceneUniforms.selfShadow*), with the map at
+// group 0 binding 1. dc3-decomp only; rb3-xenon (which also runs PrepShadow)
+// keeps its renders as they were.
+constexpr bool kSelfShadowMap = kDC3RetailModel;
+// The draw mode PrepShadow draws the casters in (Rnd::kDrawExtrude).
+constexpr int kSelfShadowCasterDrawMode = 2;
+// The texture type of PrepShadow's map (RndTex::kShadowMap): its depth target
+// is created sampleable.
+constexpr int kSelfShadowTexType = 0x42;
+// TheRnd.GetShadowCam() (null outside PrepShadow..EndShadow), and the pixel
+// constants NgRnd::SetShadowMap uploaded with it: c107 = kPS_ShadowColor
+// (0x6B), c108 = kPS_ShadowCamDir (0x6C). Defined in Rnd_Wgpu.cpp.
+RndCam *SelfShadowCam();
+const float *CapturedPConstant(int reg);
+
 // Rnd::BeginDrawing selects mDefaultEnv every frame (rndobj/Rnd.cpp), so a
 // draw that selects no environ of its own -- the UI after EndWorld -- gets the
 // default environ. WgpuRnd::BeginDrawing used to select it only when none was

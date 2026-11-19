@@ -115,6 +115,14 @@ const float* CapturedVConstant(int reg) {
     if (reg < 0 || (unsigned)reg >= WgpuShaderMgr::kNumVConstants) return kZero;
     return &gWgpuShaderMgr.VConstant(reg).x;
 }
+const float* CapturedPConstant(int reg) {
+    static const float kZero[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    if (reg < 0 || (unsigned)reg >= WgpuShaderMgr::kNumPConstants) return kZero;
+    return &gWgpuShaderMgr.PConstant(reg).x;
+}
+RndCam* SelfShadowCam() {
+    return kSelfShadowMap ? TheNgRnd.GetShadowCam() : nullptr;
+}
 } // namespace rndshape
 #else
 // RB3-Wii's rndobj/Rnd.h declares `extern Rnd* TheRnd`, and has no NG layer.
@@ -1740,6 +1748,9 @@ void WgpuRnd::BeginTexturePass(RndTex* tex, const TexturePassLoad& load) {
             mCurrentTargetHeight
         );
     }
+    // The last scene block may bind this texture's depth as the self-shadow
+    // map (the previous character's receivers); this pass draws into it.
+    if (mSceneGroupSelfShadowTex == tex) WriteSceneUniforms();
     mPass.SetBindGroup(0, mSceneBindGroup);
     RndCam* cam = RndCam::Current();
     const Viewport& prevVp = GetViewport();
@@ -2063,6 +2074,14 @@ void WgpuRnd::EnsureSceneUniformsCurrent() {
     bool camChanged = (cam != mLastSceneCam || env != mLastSceneEnv
         || camPos.x != mLastCamPosX || camPos.y != mLastCamPosY || camPos.z != mLastCamPosZ
         || (rndshape::kRenderTargetStoresLinear && mActiveTargetTex != mLastSceneTarget));
+    // The self-shadow camera is part of the scene block (WriteSceneUniforms).
+    RndCam* shadowCam = rndshape::kSelfShadowMap ? rndshape::SelfShadowCam() : nullptr;
+    const Vector3& shadowPos = shadowCam ? shadowCam->WorldXfm().v : Vector3(0, 0, 0);
+    if (rndshape::kSelfShadowMap
+        && (shadowCam != mLastSelfShadowCam || shadowPos.x != mLastSelfShadowPos[0]
+            || shadowPos.y != mLastSelfShadowPos[1] || shadowPos.z != mLastSelfShadowPos[2])) {
+        camChanged = true;
+    }
     if (camChanged) {
         if (HasTransparentDraws() && !IsFlushingTransparentDraws()) {
             FlushTransparentDraws();
@@ -2080,6 +2099,10 @@ void WgpuRnd::EnsureSceneUniformsCurrent() {
         mLastCamPosX = camPos.x;
         mLastCamPosY = camPos.y;
         mLastCamPosZ = camPos.z;
+        mLastSelfShadowCam = shadowCam;
+        mLastSelfShadowPos[0] = shadowPos.x;
+        mLastSelfShadowPos[1] = shadowPos.y;
+        mLastSelfShadowPos[2] = shadowPos.z;
     }
 }
 
@@ -2866,6 +2889,32 @@ void WgpuRnd::WriteSceneUniforms() {
         scene.shadowStrength = 0.3f;  // minimum brightness in shadow
     }
 
+    // The character self-shadow (rndshape::kSelfShadowMap): while the shape
+    // reports a shadow camera (PrepShadow..EndShadow), the receivers' scene
+    // block carries that camera's clip transform and c107/c108, and binding 1
+    // is the map -- the depth its texture pass just drew. Never inside that
+    // pass itself: a texture cannot be an attachment and a binding of one pass.
+    wgpu::TextureView selfShadowView;
+    mSceneGroupSelfShadowTex = nullptr;
+    if (rndshape::kSelfShadowMap) {
+        RndCam* shadowCam = rndshape::SelfShadowCam();
+        RndTex* shadowTex = shadowCam ? shadowCam->TargetTex() : nullptr;
+        if (shadowTex && shadowTex != mActiveTargetTex) {
+            selfShadowView = GetGpuTexDepthSampleView(shadowTex);
+        }
+        if (selfShadowView) {
+            float vp[16];
+            CamSceneMatrices(shadowCam, vp, nullptr);
+            memcpy(scene.selfShadowClip, vp, sizeof(vp));
+            const float* color = rndshape::CapturedPConstant(0x6B);   // kPS_ShadowColor
+            const float* dir = rndshape::CapturedPConstant(0x6C);     // kPS_ShadowCamDir
+            memcpy(scene.selfShadowColor, color, 3 * sizeof(float));
+            scene.selfShadowColor[3] = 1.0f;
+            memcpy(scene.selfShadowDir, dir, 4 * sizeof(float));
+            mSceneGroupSelfShadowTex = shadowTex;
+        }
+    }
+
     // Upload scene uniforms at a new ring buffer offset (allows mid-frame camera switches —
     // each camera gets its own data in the ring, so queue.WriteBuffer doesn't overwrite earlier values)
     uint32_t sceneOffset = mSceneRing.Write(mGpu.Queue(), &scene, sizeof(scene));
@@ -2880,7 +2929,8 @@ void WgpuRnd::WriteSceneUniforms() {
     entries[0].size = sizeof(SceneUniforms);
 
     entries[1].binding = 1;
-    entries[1].textureView = mShadowPass.DepthView();  // always valid after Init
+    // Always valid after Init; the self-shadow map instead while it applies.
+    entries[1].textureView = selfShadowView ? selfShadowView : mShadowPass.DepthView();
 
     entries[2].binding = 2;
     entries[2].sampler = mShadowPass.Sampler();  // comparison sampler

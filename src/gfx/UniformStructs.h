@@ -72,8 +72,19 @@ struct SceneUniforms {
     float aoStrength;              // f32
     float colorAdjust;             // f32
     float colorXfm[3][4];          // array<vec4f, 3>
+    // DC3 character self-shadow (standard.ps option bit 19, RndShadowMap::
+    // PrepShadow; zero elsewhere, and always zero for RB3 and rb3-xenon).
+    // selfShadowClip: the light camera's view-projection, as the shadow pass
+    // drew the casters with it (row-major, row vectors, like viewProj). The
+    // map is the depth of that pass, bound at group 0 binding 1.
+    // selfShadowColor: c107 (one minus the floor spot's colour, else white);
+    // .w = 1 when the map applies to this scene block. selfShadowDir: c108,
+    // the light camera's view axis (WorldXfm().m.y).
+    float selfShadowClip[16];      // mat4x4f
+    float selfShadowColor[4];      // vec4f
+    float selfShadowDir[4];        // vec4f
 };
-static_assert(sizeof(SceneUniforms) == 704, "SceneUniforms must match WGSL layout");
+static_assert(sizeof(SceneUniforms) == 800, "SceneUniforms must match WGSL layout");
 
 struct MaterialUniforms {
     float color[4];             // vec4f
