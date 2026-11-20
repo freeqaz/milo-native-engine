@@ -433,8 +433,6 @@ void DrawMeshImmediate(RndMesh* mesh) {
     wgpu::RenderPipeline pipeline = gWgpuRnd->Pipelines().GetPipeline(key);
     if (!pipeline) return;
 
-    pass.SetPipeline(pipeline);
-
     // --- Material (group 1) ---
     MaterialParams matParams = BuildMaterialParams(mat, isTextMesh);
     matParams.uniforms.bloomMaskScale = bloomMaskScale;
@@ -453,6 +451,22 @@ void DrawMeshImmediate(RndMesh* mesh) {
         matParams.heuristics &= ~(uint32_t)kHeuristicTextAlphaAsRGB;
     }
     heuristics |= matParams.heuristics;
+
+    // A draw that cannot change a pixel is not sent (DrawChangesNothing). The
+    // mesh is uploaded and its pipeline made above all the same, so the frame
+    // it fades in on pays nothing new. A NextPass chain draws with this pass's
+    // geometry bindings, so a material with one always draws.
+    // MILO_DRAW_INVISIBLE=1 sends them as before.
+    if (rndshape::kSkipInvisibleDraws && !mat->NextPass() &&
+        DrawChangesNothing(key, matParams.uniforms.color[3], matParams.uniforms.bloomMaskScale)) {
+        if (!DrawInvisibleMeshes()) {
+            NoteInvisibleMeshDrawSkipped();
+            if (capturing) FrameCapture::Get().AddSkip(MeshLabel(mesh), "alpha 0, writes nothing");
+            return;
+        }
+    }
+
+    pass.SetPipeline(pipeline);
 
     uint32_t matOffset = gWgpuRnd->MaterialRing().Write(
         gWgpuRnd->Gpu().Queue(), &matParams.uniforms, sizeof(matParams.uniforms));

@@ -31,11 +31,37 @@ static std::unordered_set<RndMesh*> sTextGlyphMeshes;
 // ============================================================================
 
 static int sDrawCallsThisFrame = 0;
+static int sInvisibleSkippedThisFrame = 0;
 static int sFrameCounter = 0;
 
 void RndMesh_ResetFrameStats() {
     sDrawCallsThisFrame = 0;
+    sInvisibleSkippedThisFrame = 0;
     sFrameCounter++;
+}
+
+void NoteInvisibleMeshDrawSkipped() {
+    sInvisibleSkippedThisFrame++;
+}
+
+int GetInvisibleMeshDrawsSkippedThisFrame() {
+    return sInvisibleSkippedThisFrame;
+}
+
+static bool& DrawInvisibleFlag() {
+    static bool on = [] {
+        const char* e = getenv("MILO_DRAW_INVISIBLE");
+        return e && e[0] && e[0] != '0';
+    }();
+    return on;
+}
+
+bool DrawInvisibleMeshes() {
+    return DrawInvisibleFlag();
+}
+
+void SetDrawInvisibleMeshes(bool on) {
+    DrawInvisibleFlag() = on;
 }
 
 void IncrementMeshDrawCalls() {

@@ -2175,6 +2175,20 @@
     "default": "off",
     "read": "truthy"
   },
+  "MILO_GPU_PASS_TRACE": {
+    "class": "perf",
+    "owner": "render/perf",
+    "faithfulStatus": "n/a: log-only. MILO_GPU_PASS_TRACE=N (with MILO_GPU_TIMERS) prints, every Nth timed frame, one [GPUPASS] line listing the frame's render passes in the order they were opened with each pass's colour/depth load and store ops (the cost of a pass break on a tile-based GPU is its load and store); unset or 0 = no line. No draw change [gfx/GpuTimers.cpp]",
+    "default": "off",
+    "read": "value"
+  },
+  "MILO_DRAW_INVISIBLE": {
+    "class": "perf",
+    "owner": "render/perf",
+    "faithfulStatus": "n/a: MILO_DRAW_INVISIBLE=1 (truthy) sends the mesh draws DrawChangesNothing would leave out (material alpha exactly 0 under SrcAlpha/SrcAlphaAdd, no depth or stencil write, no bloom mask: a menu's hidden layers, 161 of song select's 433 draws). The image is the same either way (dc3 test_invisible_draw_skip.cpp draws one scene both ways); the switch is the A/B for it and for the GPU time (Apple M3, 1710x962: 2.4-2.9 ms a menu frame). Unset = not sent on DC3 (rndshape::kSkipInvisibleDraws); RB3 always sends them [platform/MeshGpuCache.cpp, Mesh_Wgpu.cpp DrawMeshImmediate]",
+    "default": "off",
+    "read": "truthy"
+  },
   "MILO_PIPELINE_CACHE": {
     "class": "perf",
     "owner": "render/perf",

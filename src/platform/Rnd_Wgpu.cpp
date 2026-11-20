@@ -2238,6 +2238,7 @@ void WgpuRnd::EndDrawing() {
         if (frameMs > 16.67f) mPerfBudgetViolations++;
         mPerfAccumTime += (now - mFrameStartTime);
         mPerfDrawCallAccum += GetMeshDrawCallsThisFrame();
+        mPerfInvisibleAccum += GetInvisibleMeshDrawsSkippedThisFrame();
         mPerfFrameCount++;
 
         // Log every 5 seconds
@@ -2245,12 +2246,19 @@ void WgpuRnd::EndDrawing() {
             float avgMs = (float)(mPerfAccumTime / mPerfFrameCount * 1000.0);
             float fps = (float)(mPerfFrameCount / mPerfAccumTime);
             float avgDraws = (float)mPerfDrawCallAccum / mPerfFrameCount;
-            fprintf(stderr, "[PERF] %.1f fps | avg %.2fms | max %.2fms | %d violations (>16.67ms) | %.0f draws/frame\n",
-                    fps, avgMs, mPerfMaxFrameMs, mPerfBudgetViolations, avgDraws);
+            // "draws" counts the meshes asked for; the ones that could change
+            // nothing and were not sent follow in brackets.
+            char notSent[48] = "";
+            if (mPerfInvisibleAccum > 0)
+                snprintf(notSent, sizeof(notSent), " (%.0f not sent: invisible)",
+                         (float)mPerfInvisibleAccum / mPerfFrameCount);
+            fprintf(stderr, "[PERF] %.1f fps | avg %.2fms | max %.2fms | %d violations (>16.67ms) | %.0f draws/frame%s\n",
+                    fps, avgMs, mPerfMaxFrameMs, mPerfBudgetViolations, avgDraws, notSent);
             mPerfAccumTime = 0.0;
             mPerfFrameCount = 0;
             mPerfMaxFrameMs = 0.0f;
             mPerfDrawCallAccum = 0;
+            mPerfInvisibleAccum = 0;
             mPerfBudgetViolations = 0;
         }
     }

@@ -87,3 +87,12 @@ void RndMesh_ResetFrameStats();
 void IncrementMeshDrawCalls();
 int GetMeshFrameCounter();
 int GetMeshDrawCallsThisFrame();
+// Mesh draws not sent this frame because they could change nothing
+// (DrawChangesNothing, platform/MeshPipelineKey.h).
+void NoteInvisibleMeshDrawSkipped();
+int GetInvisibleMeshDrawsSkippedThisFrame();
+// Whether those draws are sent after all: MILO_DRAW_INVISIBLE=1, read once,
+// until SetDrawInvisibleMeshes says otherwise (a test drawing a scene both
+// ways in one process).
+bool DrawInvisibleMeshes();
+void SetDrawInvisibleMeshes(bool on);

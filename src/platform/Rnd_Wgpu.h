@@ -645,6 +645,7 @@ public:
     int mPerfFrameCount = 0;
     float mPerfMaxFrameMs = 0.0f;
     int mPerfDrawCallAccum = 0;
+    int mPerfInvisibleAccum = 0;   // draws not sent (DrawChangesNothing)
     int mPerfBudgetViolations = 0;
 
     // Video recording (MILO_VIDEO env var)
