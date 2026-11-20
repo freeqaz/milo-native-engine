@@ -543,6 +543,13 @@ constexpr bool kAlphaTestGreater = kDC3RetailModel;
 // The Rnd::Mode WorldReflection::DrawShowing sets while it draws the mirrored
 // world (DC3 world/Reflection.cpp: SetDrawMode((Rnd::Mode)8)).
 constexpr int kDrawModeReflection = 8;
+// What culling a draw gets inside that mode. DC3's RndShader::CheckForceCull
+// (rndobj/Shader.cpp) sets D3D cull mode 6 -- the reverse of a regular
+// material's 2 -- for EVERY material while DrawMode() == 8, whatever its own
+// cull: a two-sided (kCullNone) material loses its far faces in the mirror and
+// a kCullBackwards one keeps mode 6 rather than being flipped. dc3-decomp
+// follows that; rb3-xenon keeps the flip of the material's own cull it had.
+constexpr bool kReflectionForcesReverseCull = kDC3RetailModel;
 
 // ---- camera select ---------------------------------------------------------
 // DC3's RndCam::Select ends by handing the renderer the camera's viewport --
