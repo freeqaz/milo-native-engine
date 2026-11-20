@@ -446,13 +446,20 @@ void WgpuRnd::InitGpuResources() {
     // Initialize pipeline manager. The mesh path binds its material, object
     // and bone uniforms with dynamic offsets into cached bind groups (H-30).
     mPipelines.SetDynamicUniformOffsets(true);
-    // Look profile: material texture LOD bias (0 unless the profile sets one).
-    mPipelines.SetMaterialLodBias(milo::Look().lodBias);
+    // Look profile: whether world pipelines take a material texture LOD bias
+    // (none unless the profile has one). Its value is per pass, in the scene
+    // block (WriteSceneUniforms), so it can follow the render scale.
+    mPipelines.SetMaterialTakesLodBias(milo::LookTakesLodBias(milo::Look()));
     // The consumer's alpha fringe fade (off for DC3: no retail counterpart).
     mPipelines.SetAlphaFringeFade(rndshape::kAlphaFringeFade);
     // A render-scaled frame's text and HUD sample at output-pixel centres
     // (again each frame, BeginDrawing: a resize can change the scale).
     mPipelines.SetOutputPixelScale(mGpu.SupersampleScale());
+    {
+        float lo = 1.0f, hi = 1.0f;
+        mGpu.RenderScaleRange(lo, hi);
+        mPipelines.SetOutputPixelScaleRange(lo, hi);
+    }
     mPipelines.Init(&mGpu);
     mPipelines.SetAlphaBlendMax(rndshape::kAlphaBlendMax);
     // Create per-draw ring buffers (64KB each — enough for ~250 draws/frame at 256-byte alignment)
@@ -2113,6 +2120,11 @@ void WgpuRnd::BeginDrawing() {
     BeginFramePass(true);
 }
 
+float WgpuRnd::PassMaterialLodBias() const {
+    return milo::PassMaterialLodBias(milo::Look(), mActiveTargetTex != nullptr,
+                                     mGpu.SupersampleScale());
+}
+
 void WgpuRnd::EnsureSceneUniformsCurrent() {
     RndCam* cam = RndCam::Current();
     RndEnviron* env = rndshape::CurrentEnv();
@@ -2123,7 +2135,10 @@ void WgpuRnd::EnsureSceneUniformsCurrent() {
     const Vector3 &camPos = cam ? cam->WorldXfm().v : Vector3(0, 0, 0);
     bool camChanged = (cam != mLastSceneCam || env != mLastSceneEnv
         || camPos.x != mLastCamPosX || camPos.y != mLastCamPosY || camPos.z != mLastCamPosZ
-        || (rndshape::kRenderTargetStoresLinear && mActiveTargetTex != mLastSceneTarget));
+        || (rndshape::kRenderTargetStoresLinear && mActiveTargetTex != mLastSceneTarget)
+        // A texture target after the frame (or back), a resize across a
+        // render-scale step, or an inspection switch: the bias moved.
+        || PassMaterialLodBias() != mLastSceneMaterialLodBias);
     // The self-shadow camera is part of the scene block (WriteSceneUniforms).
     RndCam* shadowCam = rndshape::kSelfShadowMap ? rndshape::SelfShadowCam() : nullptr;
     const Vector3& shadowPos = shadowCam ? shadowCam->WorldXfm().v : Vector3(0, 0, 0);
@@ -2977,12 +2992,21 @@ void WgpuRnd::WriteSceneUniforms() {
         }
     }
 
+    // The world material LOD bias for the scale this pass draws at: the
+    // frame's render scale, or 1 for a texture target (never supersampled).
+    // Read only by pipelines that take it (kTakesLodBias), so 0 in effect for
+    // text, HUD and every look without a bias. A uniform, not a pipeline
+    // constant: a window resized across a render-scale step changes it on the
+    // next frame and compiles nothing.
+    scene.materialLodBias = PassMaterialLodBias();
+
     // Upload scene uniforms at a new ring buffer offset (allows mid-frame camera switches —
     // each camera gets its own data in the ring, so queue.WriteBuffer doesn't overwrite earlier values)
     uint32_t sceneOffset = mSceneRing.Write(mGpu.Queue(), &scene, sizeof(scene));
     mLastSceneOffset = sceneOffset;
     memcpy(mLastSceneViewProj, scene.viewProj, sizeof(mLastSceneViewProj));
     mLastSceneSpecularAA = scene.specularAA;
+    mLastSceneMaterialLodBias = scene.materialLodBias;
 
     // Create scene bind group (group 0) — shadow map + projected light texture
     wgpu::BindGroupEntry entries[5] = {};

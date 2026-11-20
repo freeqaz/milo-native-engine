@@ -302,8 +302,8 @@ void ApplyLookSampling(SamplerDesc& desc, bool uiClass, const milo::LookSettings
     }
 }
 
-bool MaterialDrawTakesLodBias(bool uiClass, float materialLodBias) {
-    return !uiClass && materialLodBias != 0.0f;
+bool MaterialDrawTakesLodBias(bool uiClass, bool lookTakesLodBias) {
+    return !uiClass && lookTakesLodBias;
 }
 
 bool MaterialDrawSamplesAtOutputPixels(bool uiClass, bool toTextureTarget, float outputPixelScale) {

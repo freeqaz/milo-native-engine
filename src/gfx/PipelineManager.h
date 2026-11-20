@@ -50,15 +50,22 @@ struct PipelineKey {
     // (standard_wgsl.inc kCutoutCoverage). Only in a multisampled pass.
     bool cutoutCoverage = false;
     int32_t depthBias = 0;  // positive = push away from camera (loses z-test vs unbiased)
-    // The standard shader samples its 2D material textures with
-    // PipelineManager::MaterialLodBias (kLodBias); false: unbiased. Only a
-    // look that sets a bias (DC3's enhanced look) sets this, for world draws;
-    // text and HUD keep the original's unbiased samples.
+    // The standard shader's 2D material texture samples take the look's LOD
+    // bias (kTakesLodBias; the value is the scene block's materialLodBias,
+    // per pass); false: unbiased. Only a look that has a bias (DC3's
+    // enhanced look, PipelineManager::MaterialTakesLodBias) sets this, for
+    // world draws; text and HUD keep the original's unbiased samples.
     bool lodBias = false;
     // Text/HUD draw into a render-scaled frame: the standard shader samples
     // its diffuse texture at output-pixel centres (kOutputPixelScale =
     // PipelineManager::OutputPixelScale); false: at the fragment.
     bool outputPixelSampling = false;
+    // The kOutputPixelScale such a pipeline bakes, part of the cache key so a
+    // pipeline made at one render scale is kept, not dropped, when the window
+    // is resized across the step. 1 unless outputPixelSampling; a sampling
+    // key left at 1 takes OutputPixelScale() when it comes in (GetPipeline,
+    // WarmAsync: CacheKey), and the warm gives the other scale explicitly.
+    float outputPixelScale = 1.0f;
 
     bool operator==(const PipelineKey& o) const {
         return shaderType == o.shaderType && blend == o.blend && zMode == o.zMode &&
@@ -68,7 +75,8 @@ struct PipelineKey {
                alphaWrite == o.alphaWrite && alphaToCoverage == o.alphaToCoverage &&
                cutoutCoverage == o.cutoutCoverage &&
                depthBias == o.depthBias && lodBias == o.lodBias &&
-               outputPixelSampling == o.outputPixelSampling;
+               outputPixelSampling == o.outputPixelSampling &&
+               outputPixelScale == o.outputPixelScale;
     }
 };
 
@@ -89,6 +97,7 @@ struct PipelineKeyHash {
         h ^= std::hash<int32_t>{}(k.depthBias) + 0x9e3779b9 + (h << 6) + (h >> 2);
         h ^= std::hash<bool>{}(k.lodBias) + 0x9e3779b9 + (h << 6) + (h >> 2);
         h ^= std::hash<bool>{}(k.outputPixelSampling) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        h ^= std::hash<float>{}(k.outputPixelScale) + 0x9e3779b9 + (h << 6) + (h >> 2);
         return h;
     }
 };
@@ -233,30 +242,48 @@ public:
     bool AlphaFringeFade() const { return mAlphaFringeFade; }
     // The kSkipFringeFade a pipeline under `blend` is created with.
     bool SkipsFringeFade(int blend) const { return !mAlphaFringeFade || BlendSkipsFringeFade(blend); }
-    // LOD bias added to the standard shader's 2D material texture samples
-    // (standard_wgsl.inc kLodBias; cube, projector and shadow samples are not
-    // biased) in pipelines whose key asks for it (PipelineKey::lodBias). 0 by
-    // default -- every consumer's original samples unbiased. Set once, before
-    // any pipeline exists; the caches key on PipelineKey::lodBias, not on the
-    // value.
-    void SetMaterialLodBias(float bias) { mMaterialLodBias = bias; }
-    float MaterialLodBias() const { return mMaterialLodBias; }
-    // The kLodBias a pipeline for `key` is created with.
-    float LodBiasFor(const PipelineKey& key) const { return key.lodBias ? mMaterialLodBias : 0.0f; }
+    // Whether world draws' pipelines take a LOD bias on the standard shader's
+    // 2D material texture samples (standard_wgsl.inc kTakesLodBias; cube,
+    // projector and shadow samples are never biased): the look has one
+    // (milo::LookTakesLodBias). False by default -- every consumer's
+    // original samples unbiased. Set once, before any pipeline exists. The
+    // bias's VALUE is not a pipeline constant: it is the scene block's
+    // materialLodBias, written per pass, so it can follow the render scale
+    // without a pipeline being made.
+    void SetMaterialTakesLodBias(bool takes) { mMaterialTakesLodBias = takes; }
+    bool MaterialTakesLodBias() const { return mMaterialTakesLodBias; }
+    // The kTakesLodBias a pipeline for `key` is created with (1 or 0).
+    float LodBiasFlagFor(const PipelineKey& key) const { return key.lodBias ? 1.0f : 0.0f; }
     // A render-scaled frame's pixels per output pixel (1 = not scaled; the
     // renderer sets it from GpuDevice each frame), and the kOutputPixelScale a
-    // pipeline for `key` is created with. A change (a window resized across a
-    // render-scale step) drops the cached pipelines that bake the old one.
-    void SetOutputPixelScale(float scale) {
-        if (scale == mOutputPixelScale) return;
-        mOutputPixelScale = scale;
-        for (auto it = mPipelineCache.begin(); it != mPipelineCache.end();)
-            it = it->first.outputPixelSampling ? mPipelineCache.erase(it) : std::next(it);
-    }
+    // pipeline for `key` is created with now. A change (a window resized
+    // across a render-scale step) drops nothing: the scale is part of the
+    // cache key (PipelineKey::outputPixelScale), so the pipelines made at the
+    // other scale are still there when the window comes back to it.
+    void SetOutputPixelScale(float scale) { mOutputPixelScale = scale; }
     float OutputPixelScale() const { return mOutputPixelScale; }
     float OutputPixelScaleFor(const PipelineKey& key) const {
         return key.outputPixelSampling ? mOutputPixelScale : 1.0f;
     }
+    // `key` as the cache holds it: a sampling key's outputPixelScale as given
+    // (> 1), else the scale now; 1 for every other key.
+    PipelineKey CacheKey(const PipelineKey& key) const {
+        PipelineKey k = key;
+        k.outputPixelScale = !key.outputPixelSampling ? 1.0f
+                           : key.outputPixelScale > 1.0f ? key.outputPixelScale : mOutputPixelScale;
+        return k;
+    }
+    // The output-pixel scales a resize of the frame can give (GpuDevice::
+    // RenderScaleRange; both 1 until set): a text or HUD key is warmed at
+    // each (Mesh_Wgpu's warm), so a window resized across the render-scale
+    // step finds those pipelines made, not only the ones of the size it
+    // started at.
+    void SetOutputPixelScaleRange(float lo, float hi) {
+        mOutputPixelScaleLo = lo;
+        mOutputPixelScaleHi = hi;
+    }
+    float OutputPixelScaleLo() const { return mOutputPixelScaleLo; }
+    float OutputPixelScaleHi() const { return mOutputPixelScaleHi; }
 
 private:
     struct DescStorage;
@@ -310,8 +337,10 @@ private:
     bool mPreWarmStarted = false;
     bool mAlphaBlendMax = false;   // SetAlphaBlendMax
     bool mDynamicUniformOffsets = false;  // SetDynamicUniformOffsets
-    float mMaterialLodBias = 0.0f;        // SetMaterialLodBias
+    bool mMaterialTakesLodBias = false;   // SetMaterialTakesLodBias
     bool mAlphaFringeFade = true;         // SetAlphaFringeFade
     float mOutputPixelScale = 1.0f;       // SetOutputPixelScale
+    float mOutputPixelScaleLo = 1.0f;     // SetOutputPixelScaleRange
+    float mOutputPixelScaleHi = 1.0f;
     void BuildPreWarmKeys(wgpu::TextureFormat mainFmt, wgpu::TextureFormat rtFmt);
 };

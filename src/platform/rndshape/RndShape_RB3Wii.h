@@ -418,6 +418,8 @@ inline const Hmx::Matrix4 &CamViewProjMatrix(RndCam *) {
 }
 inline const Vector2 &CamZRange(RndCam *c) { return c->mZRange; }
 inline const Hmx::Rect &CamScreenRect(RndCam *c) { return c->mScreenRect; }
+// DofPass::Run's planes (see the DC3 shape): RB3 keeps the current camera's.
+inline bool DofSetCamPlanes(float &, float &, Vector2 &) { return false; }
 
 // ---- mesh ------------------------------------------------------------------
 inline RndMesh *MeshGeomOwner(RndMesh *m) { return m->GeomOwner(); }

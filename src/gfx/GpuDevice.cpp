@@ -811,6 +811,16 @@ FrameSizes GpuDevice::ResolveSizesNow(int targetW, int targetH) {
     return s;
 }
 
+void GpuDevice::RenderScaleRange(float& lo, float& hi) const {
+    if (!mFollowsTarget) {
+        lo = hi = SupersampleScale();
+        return;
+    }
+    lo = ResolveRenderScale(mSizeDesc, mDiscreteGpu, !mHeadless, kRenderScaleCapWidth,
+                            kRenderScaleCapHeight);
+    hi = ResolveRenderScale(mSizeDesc, mDiscreteGpu, !mHeadless, 0, 0);
+}
+
 int GpuDevice::BaseOutputRows() const {
     if (!mFollowsTarget) return 0;
     return ResolveFrameSizesWithCap(mSizeDesc, mDiscreteGpu, !mHeadless,

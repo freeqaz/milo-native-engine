@@ -55,9 +55,25 @@ struct LookSettings {
     // (0 = no limit). Enhanced uploads whole chains, so this keeps glyphs at
     // the original's min(NumMips()+1, 2) -- see MaterialSetup.cpp.
     int uiMipLevels = 0;
-    // LOD bias added to material texture samples (standard shader kLodBias).
-    // The original's fetch constants carry lod_bias 0.
-    float lodBias = 0.0f;
+    // LOD bias added to world material texture samples, as a function of the
+    // render scale the pass draws at (MaterialLodBiasAt): lodBiasScale1 at 1x,
+    // lodBiasScale2 at 2x, linear in log2(scale) between. The value reaches
+    // the shader through the scene uniforms (SceneUniforms::materialLodBias,
+    // written per pass), so a scale change at run time -- a window resized
+    // across a step -- compiles no pipeline. The original's fetch constants
+    // carry lod_bias 0.
+    float lodBiasScale1 = 0.0f;
+    float lodBiasScale2 = 0.0f;
+    // World material draws read that bias from the scene uniforms
+    // (PipelineKey::lodBias), whatever its value. Enhanced sets it so the
+    // inspection tokens below can move the bias live even while the rule is 0
+    // at every scale; retail and Native leave it off, so their pipelines
+    // sample exactly as before.
+    bool materialLodBias = false;
+    // Inspection ({rnd native_look lod_bias_...}): this bias at every scale
+    // while lodBiasInspected; the rule above otherwise.
+    bool lodBiasInspected = false;
+    float lodBiasInspect = 0.0f;
     // Cube maps upload their whole authored mip chain, as DC3's
     // DxCubeTex::Sync creates them (numMips = mNumMips + 1). Native's one
     // level was a port shortcut; both DC3 profiles fix it, Native keeps it.
@@ -183,6 +199,26 @@ bool SetLookPostForInspection(bool enhanced);
 // frozen frame can be measured both ways (shimmer, GPU cost). False under the
 // Native profile.
 bool SetLookSpecularAAForInspection(bool on);
+// Whether world material draws take a LOD bias at all under `look`
+// (PipelineKey::lodBias): the look reads the bias (materialLodBias), or the
+// rule is non-zero at some scale. False for the retail and Native looks, whose
+// pipelines then sample exactly as before.
+bool LookTakesLodBias(const LookSettings &look);
+// The world material LOD bias for a pass drawn at `scale` (the frame's render
+// scale; 1 for a texture target, which is never supersampled). See
+// LookSettings::lodBiasScale1.
+float MaterialLodBiasAt(const LookSettings &look, float scale);
+// The bias a pass's scene block carries (SceneUniforms::materialLodBias): the
+// rule at the frame's render scale, or at 1 for a texture target, which is
+// drawn at its own size and never box-filtered down.
+float PassMaterialLodBias(const LookSettings &look, bool toTextureTarget, float frameRenderScale);
+// {rnd native_look lod_bias_0|lod_bias_m05|lod_bias_m1|lod_bias_rule}: one bias
+// at every scale, or back to the rule, so one frozen frame is measured under
+// each. Takes effect on the next frame (a uniform, not a pipeline). False
+// under the Native profile. Only a run that started in a look that takes a
+// bias (enhanced) made its world pipelines biasable; in a run started retail
+// this changes nothing on screen.
+bool SetLookLodBiasForInspection(bool useRule, float bias);
 // One post field at a time (the per-item cost A/B: each enhancement against
 // retail in the same run); the fields not named are set retail.
 bool SetLookPostFieldsForInspection(bool precision, bool bloomFilter, bool dofFilter);
