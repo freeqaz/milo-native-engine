@@ -10568,3 +10568,75 @@ Nine sabotages each turn a guard red:
   are fixed in the bind group, so a step would rebuild world bind groups once; no pipeline
   changes. On the 3090 the far02 main pass is 0.8–0.9 ms SLOWER at anisotropy 1 (cu01 equal),
   which is unexplained and has to be understood, and measured on the GPD, before building.
+
+## 49. The reflection's cull, dci's pale reflected stars (a state, not a pass), and world anisotropy by inspection (lane np-gfx sharp, item 20, branch np-look20, 2026-11-20)
+
+Item 19 (c) ranked dci's reflected boombox stars as paler and less saturated in native than on the
+hardware still. This round pins the cause: a profile state the hardware player had and native did
+not. Along the way the mirrored redraw's cull is made the retail rule. It also adds an inspection
+switch for the world samplers' anisotropy, so its GPU cost can be measured in one launch.
+
+### 49.1 The mirrored redraw culls every material Backwards (DC3)
+
+- `WorldReflection::DrawShowing` mirrors the camera and draws its list in DrawMode 8.
+  DC3's `RndShader::CheckForceCull` (rndobj/Shader.cpp) then calls `SetCullMode(6)` for every
+  material, whatever the material asks. Mode 6 is what a `kCullBackwards` material gets in a normal
+  draw.
+- The native key used to flip only a non-None cull: a two-sided material stayed two-sided, and
+  Backwards became Regular.
+- `ReflectionCull(materialCull, inReflection)` (Mesh_Wgpu.cpp, declared in MeshPipelineKey.h) now
+  returns Backwards for every material in the reflection when
+  `rndshape::kReflectionForcesReverseCull` is true (DC3), for the first pass and the NextPass alike.
+  The RB3Wii shape is false and keeps the old flip; rb3 and rb3-xenon frames are byte-identical.
+- Inspection: `SetReflectionCullForInspection(-1 rule, 0 flip, 1 force)`, reached from DC3 as
+  `{rnd native_look refl_cull_rule|refl_cull_flip|refl_cull_force}`. A switch selects another
+  cached pipeline; nothing is rebuilt per frame.
+- Effect per venue (one launch each, same frozen frame, both looks): the two rules differ only for a
+  material that is not Regular. Every venue's world materials are Regular except dclive's palm trees
+  and scaffolding, houseparty's streamers, rollerrink's BrownSkate and streetside's eightiesCar
+  (two-sided). dclive is the only visible change, about 6,700 px at 1920x1080: the palm fronds
+  reflected in the stage floor are drawn front faces only. Elsewhere 0–46 px, the dancers' own
+  reflections. Evidence: dc3 archive `lanes/sharp/item20/b/`.
+
+### 49.2 dci's pale reflected stars were the Golden Boomy
+
+- `ui/global.dta` `initialize_gameplay_data` sets `hamprovider golden_boomy` from
+  `{profile_mgr is_content_unlocked boomygold}`. `score_star_display.milo` keys `gold_stars.anim` and
+  `gold_beat.anim` on it.
+- The hardware still has a gold boombox body; native ran with the unlock off, so its body is silver.
+  In the silver state the reflected `speaker_concentrics` discs (`z_mode 2`, test without write) fail
+  the depth test against the speaker cone, which sits a few hundredths of a unit away and is seen
+  from below by the mirrored camera. The `SrcAlphaAdd` stars on top of them are as pale as the disc.
+- With `golden_boomy` on, native matches the gain-calibrated hardware still in both looks:
+  reflected/direct value 0.62 (hardware 0.61), hue shift +3.2° (hardware +2.8°). Saturation ratio
+  0.78–0.79 against 0.90 is left; native's direct stars clip at V = 1, so it is not like for like.
+  Nothing was tuned.
+- Retail's depth state is the same as native's: the image's `tf2cf` table (`lbl_8208A0F8`) is
+  `{7,1,3,2,5,4,6,0, 7,4,6,2,5,1,3,0}` (Transparent = LESSEQUAL, GREATEREQUAL under reverse Z).
+  The decomp's `RenderState.cpp` source table has index 2 as EQUAL; that is an Xbox-only data defect
+  and is not read natively.
+- Open: whether retail's silver state also shows pale reflected discs. There is no hardware still of
+  it; Xenia at OMG 170 s with `boomygold` locked would answer it.
+
+### 49.3 World anisotropy by inspection
+
+- `SetLookAnisotropyForInspection(n)` (LookProfile.cpp) puts the world material samplers' max
+  anisotropy at n (1, 4, 16), or back to the look's value with 0. Text and HUD samplers are untouched.
+  Samplers are fixed in the bind group, so the first frame after a switch takes one sampler and
+  bind-group cache miss per material (said in the code); after that the cache serves it. No pipeline
+  changes. Not available under the Native profile.
+- DC3 tokens: `{rnd native_look aniso_1|aniso_4|aniso_16|aniso_rule}`.
+- Cost on the 3090 (615.78.08), houseparty, enhanced, 1920x1080 scale 1, one launch alternating 16 and 1
+  three times per frozen shot: the main pass is 0.443 / 0.436 ms at far02 and 0.490 / 0.483 ms at cu01,
+  so 16 costs about 0.007 ms (≈1.5 %). §48.6's "far02 0.8–0.9 ms slower at 1" does not reproduce; it
+  was most likely another GPU user, as one dropped cu01 pair here was. The GPD figure is what decides a
+  scale-1 rule; the capture recipe is in the dc3 archive `item20/e/GPD_CAPTURE.txt`.
+
+### 49.4 Guards (dc3-decomp)
+
+- `ReflectionCullTest.EveryMaterialCullsBackwardsInTheReflection`: sabotage (`ReflectionCull`
+  ignoring the shape constant) turns it red.
+- `ReflectionCullTest.GlyphPagesStayTwoSidedInTheReflection`,
+  `ReflectionCullTest.OnlyDrawModeEightIsTheReflection`.
+- `ReflectionCullTest.InspectionSwitchSelectsFlipForceOrRule`: sabotage (the switch ignored) turns
+  it red.
