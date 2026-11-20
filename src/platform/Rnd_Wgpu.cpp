@@ -2596,6 +2596,10 @@ void WgpuRnd::WriteSceneUniforms() {
         // material, so without this the view was null, slot 3 fell back to
         // white, and every blend-0 light lit its whole cone at full colour
         // instead of its pool (docs/native/dc3-retail-lighting.md 8.1).
+        // Specular AA (LookSettings::specularAA) is for scene materials: the
+        // HUD overlay's lit meshes (DC3's player-photo frame) keep the shipped
+        // exponent in every look.
+        if (mFrameInOverlay) scene.specularAA = 0.0f;
         RndTex* gobo = rndshape::SceneProjTexture();
         if (gobo) gobo->PresyncBitmap();
         mProjLightTexView = gobo ? GetGpuTexView(gobo) : nullptr;
@@ -2928,6 +2932,7 @@ void WgpuRnd::WriteSceneUniforms() {
     uint32_t sceneOffset = mSceneRing.Write(mGpu.Queue(), &scene, sizeof(scene));
     mLastSceneOffset = sceneOffset;
     memcpy(mLastSceneViewProj, scene.viewProj, sizeof(mLastSceneViewProj));
+    mLastSceneSpecularAA = scene.specularAA;
 
     // Create scene bind group (group 0) — shadow map + projected light texture
     wgpu::BindGroupEntry entries[5] = {};

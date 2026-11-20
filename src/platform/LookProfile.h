@@ -142,6 +142,18 @@ struct LookSettings {
     bool postPrecision = false;
     bool postBloomFilter = false;
     bool postDofFilter = false;
+
+    // ---- shading (np-gfx item 18 c) ------------------------------------------
+    // Specular antialiasing on the scene's per-pixel retail lighting (DC3's
+    // standard, skin and hair specular): the Phong exponent widened by the
+    // normal's change over the pixel (standard_wgsl.inc specularAAPower), so a
+    // highlight narrower than a pixel stops blinking as the camera moves. The
+    // lobes are normalised, so the light they reflect stays; only the peak of
+    // a sub-pixel highlight comes down. Scene materials only: written by the
+    // DC3 shape's scene lighting into the scene uniforms and read only by the
+    // per-pixel retail lighting, which HUD and text never take. Retail: the
+    // shipped exponent, per pixel as the 360 shades it.
+    bool specularAA = false;
 };
 
 // MILO_RENDER_SCALE's value -> LookSettings::renderScaleExplicit: 0 for unset,
@@ -167,6 +179,10 @@ bool SetLookProfileForInspection(LookProfile p);
 // postDofFilter), the rest of the profile untouched: an A/B of the post look
 // without the other enhancements (alpha-cut coverage) changing too.
 bool SetLookPostForInspection(bool enhanced);
+// {rnd native_look specular_aa_on|specular_aa_off}: specularAA alone, so one
+// frozen frame can be measured both ways (shimmer, GPU cost). False under the
+// Native profile.
+bool SetLookSpecularAAForInspection(bool on);
 // One post field at a time (the per-item cost A/B: each enhancement against
 // retail in the same run); the fields not named are set retail.
 bool SetLookPostFieldsForInspection(bool precision, bool bloomFilter, bool dofFilter);

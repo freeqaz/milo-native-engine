@@ -190,6 +190,8 @@ public:
     uint32_t SceneOffset() const { return mLastSceneOffset; }
     // SceneUniforms.viewProj as last written (column-major), for the draw log.
     const float* LastSceneViewProj() const { return mLastSceneViewProj; }
+    // SceneUniforms.specularAA as last written (0 in the HUD overlay phase).
+    float LastSceneSpecularAA() const { return mLastSceneSpecularAA; }
     void EnsureSceneUniformsCurrent();  // call before drawing — re-uploads if camera changed
 
     // Default textures
@@ -568,6 +570,7 @@ public:
     RndTex* mLastSceneTarget = nullptr;   // render target the scene uniforms were written for
     uint32_t mLastSceneOffset = 0;
     float mLastSceneViewProj[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    float mLastSceneSpecularAA = 0.0f;
     float mLastCamPosX = 0.0f; // detect same-pointer position changes
     float mLastCamPosY = 0.0f;
     float mLastCamPosZ = 0.0f;
