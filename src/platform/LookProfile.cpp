@@ -20,12 +20,22 @@ LookSettings SettingsFor(LookProfile p) {
         s.bitmapMipLevels = 0;  // whole authored chain ...
         s.maxAnisotropy = 16;   // ... filtered anisotropically
         s.uiMipLevels = 2;      // text/HUD keep the original's two levels
-        // World textures: the LOD bias by render scale (MaterialLodBiasAt).
-        // PROVISIONAL (item 19 a, to be set from its measurements): -1 at
-        // both scales, the round-2 value. Text and HUD stay unbiased
+        // World textures: the LOD bias by render scale (MaterialLodBiasAt):
+        // 0 at both ends (item 19 a, measured on the 3090 with the drift
+        // protocol, three venues). At scale 1, -1 raised frame shimmer
+        // x1.145 / x1.079 / x1.036 / x1.010 at 720 / 1080 / 1440 / 2160
+        // rows for x1.10 / x1.06 / x1.03 / x1.01 still sharpness, and at 0
+        // the look is already as sharp as the retail cap (boombox 1.025-
+        // 1.048x, frame 1.12-1.24x). At scale 2 the 2x2 box averages one
+        // level, and -1 bought +0.2-0.8% sharpness for +0.6-1.8% shimmer
+        // (boombox +7-11%). Round 2's -1 was picked against the aliased cap
+        // with a near-still camera. The rule stays per scale and the
+        // pipelines stay biasable (materialLodBias) so it can be moved, and
+        // inspected live, without a compile. Text and HUD stay unbiased
         // (PipelineKey::lodBias).
-        s.lodBiasScale1 = -1.0f;
-        s.lodBiasScale2 = -1.0f;
+        s.lodBiasScale1 = 0.0f;
+        s.lodBiasScale2 = 0.0f;
+        s.materialLodBias = true;
         // 2x2 supersampling on a discrete GPU (~4x the main pass's fill);
         // none on an integrated one, where the main pass alone is ~2 ms.
         s.renderScale = 2.0f;
@@ -151,7 +161,7 @@ bool SetLookSpecularAAForInspection(bool on) {
 }
 
 bool LookTakesLodBias(const LookSettings &look) {
-    return look.lodBiasScale1 != 0.0f || look.lodBiasScale2 != 0.0f;
+    return look.materialLodBias || look.lodBiasScale1 != 0.0f || look.lodBiasScale2 != 0.0f;
 }
 
 float MaterialLodBiasAt(const LookSettings &look, float scale) {

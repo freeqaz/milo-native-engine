@@ -64,6 +64,12 @@ struct LookSettings {
     // carry lod_bias 0.
     float lodBiasScale1 = 0.0f;
     float lodBiasScale2 = 0.0f;
+    // World material draws read that bias from the scene uniforms
+    // (PipelineKey::lodBias), whatever its value. Enhanced sets it so the
+    // inspection tokens below can move the bias live even while the rule is 0
+    // at every scale; retail and Native leave it off, so their pipelines
+    // sample exactly as before.
+    bool materialLodBias = false;
     // Inspection ({rnd native_look lod_bias_...}): this bias at every scale
     // while lodBiasInspected; the rule above otherwise.
     bool lodBiasInspected = false;
@@ -194,8 +200,9 @@ bool SetLookPostForInspection(bool enhanced);
 // Native profile.
 bool SetLookSpecularAAForInspection(bool on);
 // Whether world material draws take a LOD bias at all under `look`
-// (PipelineKey::lodBias): the rule is non-zero at some scale. False for the
-// retail and Native looks, whose pipelines then sample exactly as before.
+// (PipelineKey::lodBias): the look reads the bias (materialLodBias), or the
+// rule is non-zero at some scale. False for the retail and Native looks, whose
+// pipelines then sample exactly as before.
 bool LookTakesLodBias(const LookSettings &look);
 // The world material LOD bias for a pass drawn at `scale` (the frame's render
 // scale; 1 for a texture target, which is never supersampled). See
