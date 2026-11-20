@@ -219,6 +219,12 @@ float PassMaterialLodBias(const LookSettings &look, bool toTextureTarget, float 
 // bias (enhanced) made its world pipelines biasable; in a run started retail
 // this changes nothing on screen.
 bool SetLookLodBiasForInspection(bool useRule, float bias);
+// {rnd native_look aniso_1|aniso_4|aniso_16|aniso_rule}: the world samplers'
+// max anisotropy (ApplyLookSampling; text and HUD never take it), or 0 for the
+// profile's own value, so one run measures the GPU cost at each. Takes effect
+// on the next frame through new samplers and bind groups (inspection only).
+// False under the Native profile.
+bool SetLookAnisotropyForInspection(unsigned short maxAnisotropy);
 // One post field at a time (the per-item cost A/B: each enhancement against
 // retail in the same run); the fields not named are set retail.
 bool SetLookPostFieldsForInspection(bool precision, bool bloomFilter, bool dofFilter);
