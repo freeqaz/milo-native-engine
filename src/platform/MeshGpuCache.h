@@ -87,3 +87,7 @@ void RndMesh_ResetFrameStats();
 void IncrementMeshDrawCalls();
 int GetMeshFrameCounter();
 int GetMeshDrawCallsThisFrame();
+// Mesh draws not sent this frame because they could change nothing
+// (DrawChangesNothing, platform/MeshPipelineKey.h).
+void NoteInvisibleMeshDrawSkipped();
+int GetInvisibleMeshDrawsSkippedThisFrame();

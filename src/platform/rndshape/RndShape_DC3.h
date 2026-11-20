@@ -900,6 +900,10 @@ const float *CapturedVConstant(int reg);
 // ShadowPass's map, which the next frame samples.
 // rb3-xenon keeps the generic pre-pass. Defined in DC3SceneLighting.cpp.
 constexpr bool kGenericShadowPass = !kDC3RetailModel;
+// A mesh draw that cannot change a pixel is not sent (DrawChangesNothing,
+// platform/MeshPipelineKey.h). dc3-decomp; rb3-xenon keeps every draw, as its
+// per-draw log's readers expect.
+constexpr bool kSkipInvisibleDraws = kDC3RetailModel;
 
 // The character self-shadow (standard.ps option bit 19). Character::
 // DrawShowing calls RndShadowMap::PrepShadow, which selects a light camera

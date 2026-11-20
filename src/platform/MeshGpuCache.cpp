@@ -31,11 +31,21 @@ static std::unordered_set<RndMesh*> sTextGlyphMeshes;
 // ============================================================================
 
 static int sDrawCallsThisFrame = 0;
+static int sInvisibleSkippedThisFrame = 0;
 static int sFrameCounter = 0;
 
 void RndMesh_ResetFrameStats() {
     sDrawCallsThisFrame = 0;
+    sInvisibleSkippedThisFrame = 0;
     sFrameCounter++;
+}
+
+void NoteInvisibleMeshDrawSkipped() {
+    sInvisibleSkippedThisFrame++;
+}
+
+int GetInvisibleMeshDrawsSkippedThisFrame() {
+    return sInvisibleSkippedThisFrame;
 }
 
 void IncrementMeshDrawCalls() {
