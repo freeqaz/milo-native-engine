@@ -17,6 +17,7 @@
 #include "gfx/FrameCost.h"
 #include "gfx/PipelineManager.h"
 #include "platform/LookProfile.h"
+#include "platform/ThermalState.h"  // the thermal governor, run from BeginDrawing
 #include "gfx/Screenshot.h"
 #include "rndobj/Cam.h"
 #include "rndobj/Env.h"
@@ -1942,6 +1943,11 @@ void WgpuRnd::BeginDrawing() {
 #ifndef __EMSCRIPTEN__
     // The surface follows the window inside GpuDevice::AcquireNextFrame (its
     // framebuffer size, so HiDPI; a fixed frame stays the Rnd virtual size).
+    // The thermal governor (platform/ThermalState.h) moves the output's row
+    // cap here, between frames: the frame acquired below, and the depth, MSAA
+    // and post targets sized from it after, are then already the new size,
+    // as after a window resize.
+    milo::ThermalGovernorFrame(mGpu);
 #else
     // Web: poll canvas buffer size and sync GPU surface.
     // The JS ResizeObserver may fire before WASM is ready, leaving the

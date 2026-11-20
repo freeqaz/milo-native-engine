@@ -134,6 +134,7 @@ bool GpuDevice::Init(const GpuDeviceDesc& desc) {
     mLogicalWidth = hasLogical ? desc.logicalWidth : 0;
     mLogicalHeight = hasLogical ? desc.logicalHeight : 0;
     mRowCap = mFollowsTarget ? OutputRowCap(desc, mDiscreteGpu, !mHeadless) : 0;
+    mBaseRowCap = mRowCap;
     if (mHeadless)
         ApplyFrameSizes(ResolveFrameSizes(desc, mDiscreteGpu, false, desc.width, desc.height), true);
     if (!mHeadless) {
@@ -788,13 +789,56 @@ void GpuDevice::ResizeSurface(int width, int height) {
     } else if (mFollowsTarget) {
         // The frame follows the window: its output is the window's fitted
         // rectangle, re-scaled under the same rule as at Init.
-        ApplyFrameSizes(ResolveFrameSizes(mSizeDesc, mDiscreteGpu, true, width, height));
+        ApplyFrameSizes(ResolveSizesNow(width, height));
         if ((int)mFrameTex.GetWidth() != mWidth || (int)mFrameTex.GetHeight() != mHeight)
             CreateFrameTexture();
     }
     if (mSurface) {
         ConfigureSurface();
     }
+}
+
+// A following frame's sizes for a target of targetW x targetH under the rules'
+// cap and the runtime one (ResolveFrameSizesThermal), noting which cap is in
+// force for ApplyFrameSizes' line. With no runtime cap this is the Init rule.
+FrameSizes GpuDevice::ResolveSizesNow(int targetW, int targetH) {
+    const FrameSizes s = ResolveFrameSizesThermal(mSizeDesc, mDiscreteGpu, !mHeadless, targetW,
+                                                  targetH, mBaseRowCap, mRuntimeRowCap);
+    const FrameSizes base = ResolveFrameSizesWithCap(mSizeDesc, mDiscreteGpu, !mHeadless, targetW,
+                                                     targetH, mBaseRowCap);
+    mRowCapIsRuntime = mRuntimeRowCap > 0 && s.outputH < base.outputH;
+    mRowCap = mRowCapIsRuntime ? TighterRowCap(mBaseRowCap, mRuntimeRowCap) : mBaseRowCap;
+    return s;
+}
+
+int GpuDevice::BaseOutputRows() const {
+    if (!mFollowsTarget) return 0;
+    return ResolveFrameSizesWithCap(mSizeDesc, mDiscreteGpu, !mHeadless,
+                                    mHeadless ? mSizeDesc.width : mSurfaceWidth,
+                                    mHeadless ? mSizeDesc.height : mSurfaceHeight, mBaseRowCap)
+        .outputH;
+}
+
+bool GpuDevice::SetRuntimeRowCap(int rows) {
+    if (rows < 0) rows = 0;
+    if (rows == mRuntimeRowCap) return false;
+    mRuntimeRowCap = rows;
+    if (!mFollowsTarget) return false;
+    if (!mHeadless && !mFrameTex) return false;
+    const int prevW = mWidth, prevH = mHeight, prevOutW = OutputWidth(), prevOutH = OutputHeight();
+    ApplyFrameSizes(ResolveSizesNow(mHeadless ? mSizeDesc.width : mSurfaceWidth,
+                                    mHeadless ? mSizeDesc.height : mSurfaceHeight));
+    if (mWidth == prevW && mHeight == prevH && OutputWidth() == prevOutW &&
+        OutputHeight() == prevOutH)
+        return false;
+    if (mHeadless) {
+        // AcquireHeadlessFrame makes the target again, at the new size.
+        mHeadlessTex = nullptr;
+        mHeadlessView = nullptr;
+    } else if ((int)mFrameTex.GetWidth() != mWidth || (int)mFrameTex.GetHeight() != mHeight) {
+        CreateFrameTexture();
+    }
+    return true;
 }
 
 wgpu::TextureView GpuDevice::AcquireNextFrame() {
