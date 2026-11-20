@@ -391,6 +391,7 @@ set(MILO_ENGINE_PLATFORM_SOURCES
     src/platform/TexBlendHook.cpp
     src/platform/Joypad_Native.cpp
     src/platform/Keyboard_Native.cpp
+    src/platform/TextInput_Native.cpp   # text-editing input queue (chars + edit keys), capture vs the pad map
     src/platform/Keygen_Stub.cpp
     src/platform/MapFile_Stub.cpp
     src/platform/Memory_Native.cpp
