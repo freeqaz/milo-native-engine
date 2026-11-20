@@ -10352,3 +10352,88 @@ Two sabotages each turn it red (lit 0.014 / 0.000):
 
 - `GpuDevice::Init` keeping the logical size only when the frame follows;
 - `WgpuRnd` passing the size only when the look follows.
+
+## 47. Specular antialiasing under DC3's enhanced look (lane np-gfx sharp, item 18 (c), branch np-look18, 2026-11-20)
+
+At render scale 1 a highlight narrower than a pixel (a denim seam, a shoe's toe cap, a strand of
+hair) lands between pixel centres on one frame and on one the next, so it blinks as the camera
+drifts. The enhanced look now widens the Phong exponent of DC3's per-pixel retail lighting by the
+shading normal's change over the pixel. The retail look keeps the shipped exponent.
+
+### 47.1 What it does
+
+- `specularAAPower` (`standard_wgsl.inc`) follows Tokuyoshi and Kaplanyan 2019. A Phong exponent
+  p is read as roughness² = 2 / (4p + 2). The normal's variance over the pixel adds
+  min(2 σ² |dN|², κ) to it, with σ² = 1 / 2π and κ = 0.18. The result maps back to an exponent,
+  which is never raised and never taken under retail's 0.5 floor. At variance 0 it returns p.
+- The variance is |dN/dx|² + |dN/dy|² of the interpolated world normal (`retailShade`). When the
+  material has a normal map it also includes the map's x and y slopes, at the strength
+  `retailPixelShade` gives them.
+- The standard, skin and hair lobes are normalised ((p + 2) / 2π), so a widened lobe keeps its
+  light and lowers its peak. Hair's strand term is a band, whose light goes as n(p) / sqrt(m).
+  When the exponent comes down, the band keeps the retail lobe's normalisation times
+  sqrt(p' / p).
+- Gate: `SceneUniforms.specularAA` (the former `_padN1`). Only the DC3 shape's
+  `WriteDC3Retail` writes it, from `LookSettings::specularAA`, which is on under enhanced and off
+  under retail. RB3 and rb3-xenon never write it, so it is 0 for them by construction.
+  `WgpuRnd::WriteSceneLighting` writes 0 while the frame is in the HUD overlay
+  (`mFrameInOverlay`). Before that rule, the lit photo frame on DC3's player HUD moved by more
+  than one level at 47 px (cu01) and 72 px (near01). With the rule it is 4 and 19 px, and those
+  are bloom from the scene behind its translucent edge.
+- A/B: `{rnd native_look specular_aa_on|specular_aa_off}` (`SetLookSpecularAAForInspection`)
+  changes this field alone. `DC3_LOOK=retail` turns it off along with the rest of the look.
+  No new environment variable.
+
+### 47.2 Measured (RTX 3090, 615.78.08, dci-houseparty "OMG", first pause)
+
+Shimmer is measured over 24 frames of a frozen frame, with the camera drifted by a sub-pixel
+amount each frame. Each frame is shifted back by its drift (Fourier) before the per-pixel temporal
+standard deviation of luma is taken. Only pixels whose mean the change touched
+(|Δmean| > 0.5) are counted.
+
+| shot, 1920x1080 scale 1 | shimmer on / off | its worst 10 % | mean luma on / off |
+|---|---|---|---|
+| cu01 | x0.945 | x0.884 | x1.0099 |
+| near01 | x0.921 | x0.843 | x1.0101 |
+| cu01 at 1600x900 (thermal step) | x0.964 | x0.897 | x1.0149 |
+
+- At |Δmean| > 2 the worst 10 % reads x0.817 (cu01) and x0.739 (near01).
+- By region: denim x0.975 and shoes x0.92–0.98. Streamers, crowd hands and HUD cards read
+  x1.000, because none of them takes the per-pixel retail lighting.
+- The light is kept: the mean rises about 1 % (the clamp at the 0.5 floor).
+
+GPU cost is frame GPU ms, on minus off, over 3 alternations:
+
+| size | cu01 | near01 |
+|---|---|---|
+| 1920x1080 | +0.054 ms | +0.043 ms |
+| 1280x800 | +0.068 ms | +0.010 ms |
+
+Pairs spread about ±0.1 ms, so the cost is within noise.
+
+Retail is unchanged. Frames of the retail look from builds before and after, at the same first
+pause, are byte-identical (0 px of 1920x1080, cu01 and near01). The enhanced frames of the same
+pair differ by 217k and 236k px, so the comparison can see a change. A second pause, 1/60 s
+earlier, also differed under retail (43k and 11k px), but only inside the projected-light
+(gobo) pools, whose animation phase is not pinned at that pause.
+
+### 47.3 What is left
+
+Most of the shimmer that remains at scale 1 is geometric: silhouettes, the carpet's texture
+edges, and the edges of alpha-cut cards. Specular AA does not touch it, by construction. An
+FXAA-class pass was not built this round.
+
+### 47.4 Guards (dc3-decomp)
+
+- `RetailCharShadingTest.SpecularAAWidensTheLobeAndKeepsItsLight` (light ratio 0.95–1.1, peak
+  under 0.75x).
+- `RetailLightingTest.SpecularAAFollowsTheLook` (enhanced 1, retail 0, from a struct filled with
+  0xff).
+- `RetailLightingTest.SpecularAAStaysOffTheHudOverlay` (world pass 1, overlay 0).
+
+Four sabotages each turn a guard red:
+
+- the exponent left unwidened;
+- the band left at the widened lobe;
+- the shape not writing the field;
+- the overlay rule removed.
