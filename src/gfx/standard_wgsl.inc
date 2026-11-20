@@ -1718,69 +1718,91 @@ fn shadeStandard(surfaceInput: VertexOutput) -> vec4f {
         discard;
     }
 
-    let surfaceNormal = sampleSurfaceNormal(surfaceInput);
-    let viewDir = normalize(scene.cameraPos - surfaceInput.worldPos);
-    let specularSample = textureSampleBias(specularMapTex, mapSampler, surfaceInput.uv, kLodBias);
+    // Which light model shades this fragment. All three conditions are
+    // uniforms, so the texture fetches below stay in uniform control flow.
+    //   flatShade  prelit or unlit: the register colour alone
+    //   nativeLit  the native model: the only reader of the shadow map's nine
+    //              compare taps, the light loops and the gobo
+    //   otherwise  a retail model (retailShade), which fetches its own maps
+    // The native rim and reflection adds (scene.retailLighting < 1.5) read the
+    // normal, the view vector and the specular texel, for a material that has
+    // a rim colour or an environment map; they return zero for any other.
+    // A fragment that needs none of it skips it: before, every fragment (a
+    // menu quad, a DC3 character lit by retailShade) paid the nine compare
+    // taps and the specular fetch for values no branch then read.
+    let flatShade = (isEnabled(material.prelit) && !prelitAmbient) || isEnabled(material.unlit);
+    let nativeLit = !retailLight && !flatShade;
+    let nativeAdds = scene.retailLighting < 1.5 &&
+        (length(material.rimColor.rgb) > 0.0 || isEnabled(material.environMapStrength));
     let isSkinMaterial = shaderVariationIs(material.shaderVariation, kShaderVariationSkin);
     let isHairMaterial = shaderVariationIs(material.shaderVariation, kShaderVariationHair);
-    let isWorldProjection = shaderVariationIs(material.shaderVariation, kShaderVariationWorldProjection);
-    let shadowFactor = sampleShadowFactor(surfaceInput.worldPos);
-
+    var surfaceNormal = vec3f(0.0, 0.0, 1.0);
+    var viewDir = vec3f(0.0, 0.0, 1.0);
+    var specularSample = vec4f(0.0);
+    if (nativeLit || nativeAdds) {
+        surfaceNormal = sampleSurfaceNormal(surfaceInput);
+        viewDir = normalize(scene.cameraPos - surfaceInput.worldPos);
+        specularSample = textureSampleBias(specularMapTex, mapSampler, surfaceInput.uv, kLodBias);
+    }
+    var shadowFactor = 1.0;
     var totalLighting = emptyLightingTerms();
-    let directionalLightCount = i32(scene.numLights);
-    for (var directionalLightIndex = 0; directionalLightIndex < 4; directionalLightIndex++) {
-        if (directionalLightIndex >= directionalLightCount) {
-            break;
+    if (nativeLit) {
+        shadowFactor = sampleShadowFactor(surfaceInput.worldPos);
+        let directionalLightCount = i32(scene.numLights);
+        for (var directionalLightIndex = 0; directionalLightIndex < 4; directionalLightIndex++) {
+            if (directionalLightIndex >= directionalLightCount) {
+                break;
+            }
+
+            let lightDir = normalize(-scene.lightDirs[directionalLightIndex].xyz);
+            let lightColor = scene.lightColors[directionalLightIndex].rgb;
+            let lightContribution = computeDirectionalLight(
+                surfaceNormal,
+                viewDir,
+                lightDir,
+                lightColor,
+                surfaceInput.worldTangent,
+                specularSample,
+                isSkinMaterial,
+                isHairMaterial
+            );
+            totalLighting.diffuse += lightContribution.diffuse;
+            totalLighting.specular += lightContribution.specular;
         }
 
-        let lightDir = normalize(-scene.lightDirs[directionalLightIndex].xyz);
-        let lightColor = scene.lightColors[directionalLightIndex].rgb;
-        let lightContribution = computeDirectionalLight(
-            surfaceNormal,
-            viewDir,
-            lightDir,
-            lightColor,
-            surfaceInput.worldTangent,
-            specularSample,
-            isSkinMaterial,
-            isHairMaterial
-        );
-        totalLighting.diffuse += lightContribution.diffuse;
-        totalLighting.specular += lightContribution.specular;
-    }
+        let pointLightCount = i32(scene.numPointLights);
+        for (var pointLightIndex = 0; pointLightIndex < 4; pointLightIndex++) {
+            if (pointLightIndex >= pointLightCount) {
+                break;
+            }
 
-    let pointLightCount = i32(scene.numPointLights);
-    for (var pointLightIndex = 0; pointLightIndex < 4; pointLightIndex++) {
-        if (pointLightIndex >= pointLightCount) {
-            break;
+            let lightContribution = computePointLight(
+                surfaceNormal,
+                viewDir,
+                surfaceInput.worldPos,
+                pointLightIndex,
+                specularSample
+            );
+            totalLighting.diffuse += lightContribution.diffuse;
+            totalLighting.specular += lightContribution.specular;
         }
 
-        let lightContribution = computePointLight(
-            surfaceNormal,
-            viewDir,
-            surfaceInput.worldPos,
-            pointLightIndex,
-            specularSample
-        );
-        totalLighting.diffuse += lightContribution.diffuse;
-        totalLighting.specular += lightContribution.specular;
-    }
-
-    // Projected light (kFakeSpot with gobo texture)
-    if (scene.numProjLights > 0.5) {
-        let projLightDir = normalize(-scene.projLightDir.xyz);
-        let projNdotL = max(dot(surfaceNormal, projLightDir), 0.0);
-        // Project world position to gobo UV
-        let projU = dot(surfaceInput.worldPos, scene.projLightProjRow0.xyz) + scene.projLightProjRow0.w;
-        let projV = dot(surfaceInput.worldPos, scene.projLightProjRow1.xyz) + scene.projLightProjRow1.w;
-        let projUV = vec2f(projU, projV);
-        // textureSample must be in uniform control flow (numProjLights is uniform),
-        // so sample unconditionally here and gate the contribution with the UV check.
-        let goboSample = textureSample(projLightTex, projLightSampler, projUV);
-        // Only light surfaces within the projection cone (UV in [0,1])
-        if (projU >= 0.0 && projU <= 1.0 && projV >= 0.0 && projV <= 1.0) {
-            let projContrib = scene.projLightColor.rgb * goboSample.rgb * projNdotL;
-            totalLighting.diffuse += projContrib;
+        // Projected light (kFakeSpot with gobo texture)
+        if (scene.numProjLights > 0.5) {
+            let projLightDir = normalize(-scene.projLightDir.xyz);
+            let projNdotL = max(dot(surfaceNormal, projLightDir), 0.0);
+            // Project world position to gobo UV
+            let projU = dot(surfaceInput.worldPos, scene.projLightProjRow0.xyz) + scene.projLightProjRow0.w;
+            let projV = dot(surfaceInput.worldPos, scene.projLightProjRow1.xyz) + scene.projLightProjRow1.w;
+            let projUV = vec2f(projU, projV);
+            // textureSample must be in uniform control flow (numProjLights is uniform),
+            // so sample unconditionally here and gate the contribution with the UV check.
+            let goboSample = textureSample(projLightTex, projLightSampler, projUV);
+            // Only light surfaces within the projection cone (UV in [0,1])
+            if (projU >= 0.0 && projU <= 1.0 && projV >= 0.0 && projV <= 1.0) {
+                let projContrib = scene.projLightColor.rgb * goboSample.rgb * projNdotL;
+                totalLighting.diffuse += projContrib;
+            }
         }
     }
 
@@ -1790,7 +1812,7 @@ fn shadeStandard(surfaceInput: VertexOutput) -> vec4f {
     // CPU side forces a white vertexTint (non-prelit static mesh), so baseColor.rgb
     // is material.color × texture — the Wii GX_SRC_REG / mUseEnviron==0 look.
     // Emissive/rim/reflection adds still apply below (night-city glow stays).
-    if ((isEnabled(material.prelit) && !prelitAmbient) || isEnabled(material.unlit)) {
+    if (flatShade) {
         finalColor = baseColor.rgb;
         if (retailLight && isEnabled(material.unlit)) {
             // use_environ=0 keeps an ambient of 1 (NgMat::SetupAmbient), and
@@ -1811,7 +1833,6 @@ fn shadeStandard(surfaceInput: VertexOutput) -> vec4f {
             totalLighting.specular * shadowFactor;
     }
 
-    let emissiveSample = textureSampleBias(emissiveMapTex, mapSampler, surfaceInput.uv, kLodBias);
     // Emissive (self-illumination). The diffuse base color tints the emissive map
     // for materials that intend it (white-base buildings/signs stay neutral;
     // colour-base venue streaks/neons keep their hue). But a (near-)black base
@@ -1834,7 +1855,11 @@ fn shadeStandard(surfaceInput: VertexOutput) -> vec4f {
     if (gammaShading) {
         emissiveTint = vec3f(1.0);
     }
-    finalColor += emissiveTint * material.emissiveMultiplier * emissiveSample.rgb;
+    // A zero multiplier adds nothing, whatever the map holds (uniform branch).
+    if (material.emissiveMultiplier != 0.0) {
+        let emissiveSample = textureSampleBias(emissiveMapTex, mapSampler, surfaceInput.uv, kLodBias);
+        finalColor += emissiveTint * material.emissiveMultiplier * emissiveSample.rgb;
+    }
     // DC3's retail model has its rim inside retailShade and its environment
     // map in the texel (above); the native rim and reflection adds are the
     // other models'.
