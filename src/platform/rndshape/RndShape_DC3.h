@@ -42,6 +42,13 @@ struct RetailPostParams;   // gfx/RB3RetailPost.h (the DC3 retail post chain)
 // WgpuRnd derives from the shape's renderer base.
 using WgpuRndBase = NgRnd;
 
+// The camera planes DC3's NativeDOFProc kept at Set (dc3-decomp
+// src/system/rndobj/DOFProc.cpp defines it). rb3-xenon also compiles this
+// shape and has no such function, so the engine carries a weak default that
+// answers false (DC3PostChain.cpp): rb3-xenon's depth of field keeps reading
+// the current camera, as before.
+bool NativeDOFSetCamPlanes(float &nearPlane, float &farPlane, float &zNear, float &zFar);
+
 namespace rndshape {
 
 // ---- renderer singleton (DC3 declares `Rnd& TheRnd`) ----------------------

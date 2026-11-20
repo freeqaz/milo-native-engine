@@ -27,6 +27,14 @@
 #include <type_traits>
 #include <utility>
 
+// rndshape::DofSetCamPlanes's source in the DC3 shape. dc3-decomp's
+// NativeDOFProc (src/system/rndobj/DOFProc.cpp) defines the strong symbol;
+// rb3-xenon defines none and gets this answer: no Set camera, so DofPass reads
+// the current camera as it always has.
+__attribute__((weak)) bool NativeDOFSetCamPlanes(float &, float &, float &, float &) {
+    return false;
+}
+
 namespace rndshape {
 
 namespace {
