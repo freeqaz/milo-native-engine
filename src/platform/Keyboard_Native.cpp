@@ -42,6 +42,11 @@ static bool PopKeyEvent(KeyEvent &out) {
 // The callback installed before ours (GpuDevice's F11 / Alt+Enter fullscreen
 // toggle), chained so installing the keyboard does not take it away.
 static GLFWkeyfun sPrevKeyCallback = nullptr;
+// The window GlfwKeyCallback is installed on (null: none). KeyboardInit
+// installs once per window: by a second call TextInput's hook sits on top of
+// ours and chains to ours, so taking "whatever is installed" as the previous
+// callback again would make the two call each other without end.
+static GLFWwindow *sKeyHookWindow = nullptr;
 
 static void GlfwKeyCallback(GLFWwindow *win, int key, int scancode, int action, int mods) {
     if (action == GLFW_PRESS || action == GLFW_RELEASE) {
@@ -55,9 +60,10 @@ void KeyboardInit() {
     MILO_LOG("[Native] KeyboardInit\n");
     KeyboardInitCommon();
 #ifndef __EMSCRIPTEN__
-    if (gNativeWindow) {
+    if (gNativeWindow && sKeyHookWindow != gNativeWindow) {
         GLFWkeyfun prev = glfwSetKeyCallback(gNativeWindow, GlfwKeyCallback);
         if (prev != GlfwKeyCallback) sPrevKeyCallback = prev;
+        sKeyHookWindow = gNativeWindow;
     }
 #endif
     // Text-editing input (platform/TextInput_Native.h) hooks the same window,
@@ -74,6 +80,7 @@ void KeyboardTerminate() {
         glfwSetKeyCallback(gNativeWindow, sPrevKeyCallback);
         sPrevKeyCallback = nullptr;
     }
+    sKeyHookWindow = nullptr;
 #endif
     KeyboardTerminateCommon();
 }
