@@ -10,6 +10,7 @@ const ShippedWgslModule* ShippedWgslModules(int* count) {
         {"gfx/BloomPass.cpp", BloomPassWgslSource()},
         {"gfx/DofPass.cpp", DofPassWgslSource()},
         {"gfx/DrawRect2D.cpp", DrawRect2DWgslSource()},
+        {"gfx/Canvas2D.cpp", Canvas2DWgslSource()},
         {"gfx/PostProcPass.cpp", PostProcPassWgslSource()},
         {"gfx/RB3RetailPost.cpp", RB3RetailPostWgslSource()},
         {"gfx/RB3RetailPostDC3.cpp", DC3RetailPostWgslSource()},
