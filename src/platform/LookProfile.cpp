@@ -2,6 +2,7 @@
 #include "platform/LookProfile.h"
 #include "platform/rndshape/RndShape.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -19,11 +20,12 @@ LookSettings SettingsFor(LookProfile p) {
         s.bitmapMipLevels = 0;  // whole authored chain ...
         s.maxAnisotropy = 16;   // ... filtered anisotropically
         s.uiMipLevels = 2;      // text/HUD keep the original's two levels
-        // World textures one level sharper: with the whole chain under 16x
-        // aniso this is as sharp as the original's two-level texture (which
-        // stays at its base level, aliasing) and steadier frame to frame.
-        // Text and HUD stay unbiased (PipelineKey::lodBias).
-        s.lodBias = -1.0f;
+        // World textures: the LOD bias by render scale (MaterialLodBiasAt).
+        // PROVISIONAL (item 19 a, to be set from its measurements): -1 at
+        // both scales, the round-2 value. Text and HUD stay unbiased
+        // (PipelineKey::lodBias).
+        s.lodBiasScale1 = -1.0f;
+        s.lodBiasScale2 = -1.0f;
         // 2x2 supersampling on a discrete GPU (~4x the main pass's fill);
         // none on an integrated one, where the main pass alone is ~2 ms.
         s.renderScale = 2.0f;
@@ -145,6 +147,35 @@ bool SetLookSpecularAAForInspection(bool on) {
     if (s.profile == LookProfile::Native) return false;
     s.specularAA = on;
     fprintf(stderr, "[look] specular AA %d (inspection, profile %s)\n", (int)on, LookProfileName(s.profile));
+    return true;
+}
+
+bool LookTakesLodBias(const LookSettings &look) {
+    return look.lodBiasScale1 != 0.0f || look.lodBiasScale2 != 0.0f;
+}
+
+float MaterialLodBiasAt(const LookSettings &look, float scale) {
+    if (look.lodBiasInspected) return look.lodBiasInspect;
+    // !(scale > 1) also catches NaN: an unknown scale is the unscaled frame.
+    const float t = !(scale > 1.0f) ? 0.0f : scale >= 2.0f ? 1.0f : log2f(scale);
+    return look.lodBiasScale1 + (look.lodBiasScale2 - look.lodBiasScale1) * t;
+}
+
+float PassMaterialLodBias(const LookSettings &look, bool toTextureTarget, float frameRenderScale) {
+    return MaterialLodBiasAt(look, toTextureTarget ? 1.0f : frameRenderScale);
+}
+
+bool SetLookLodBiasForInspection(bool useRule, float bias) {
+    LookSettings &s = Mutable();
+    if (s.profile == LookProfile::Native) return false;
+    s.lodBiasInspected = !useRule;
+    s.lodBiasInspect = useRule ? 0.0f : bias;
+    if (useRule)
+        fprintf(stderr, "[look] lod bias: the rule, %.2f at 1x / %.2f at 2x (inspection, profile %s)\n",
+                s.lodBiasScale1, s.lodBiasScale2, LookProfileName(s.profile));
+    else
+        fprintf(stderr, "[look] lod bias %.2f at every scale (inspection, profile %s)\n", bias,
+                LookProfileName(s.profile));
     return true;
 }
 

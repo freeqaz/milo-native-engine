@@ -402,6 +402,10 @@ public:
     bool RenderScaled() const { return mOutputWidth > 0 && (mOutputWidth != mWidth || mOutputHeight != mHeight); }
     // Drawn over output: the whole-number supersampling factor (1 if none).
     float SupersampleScale() const { return (float)mHeight / (float)OutputHeight(); }
+    // The render scales a resize of this frame can give (ResolveRenderScale
+    // over every output size): lo at the largest output, hi at the smallest.
+    // Both the scale now for a frame that does not follow its target.
+    void RenderScaleRange(float& lo, float& hi) const;
     // The consumer's virtual resolution (GpuDeviceDesc::logicalWidth), which
     // viewports, UI layout and post-chain pixel measures are defined in; the
     // output size when it gave none.

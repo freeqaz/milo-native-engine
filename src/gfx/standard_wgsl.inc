@@ -29,8 +29,15 @@ const kAlphaFringeFadeStart = 0.1;
 // darken, which the image never draws (its NgMat Multiply is src Zero / dst
 // SrcColor and its Darken One/One Min, neither reads alpha).
 override kSkipFringeFade: bool = false;
-// LOD bias on the 2D material texture samples (PipelineManager::SetMaterialLodBias).
-override kLodBias: f32 = 0.0;
+// 1: this pipeline's 2D material texture samples take the look's LOD bias
+// (PipelineKey::lodBias; world draws under a look that has one), whose value
+// is the scene block's materialLodBias (per pass: it follows the render
+// scale, LookProfile MaterialLodBiasAt). 0: unbiased (text, HUD, and every
+// draw of a look without a bias).
+override kTakesLodBias: f32 = 0.0;
+fn materialLodBias() -> f32 {
+    return kTakesLodBias * scene.materialLodBias;
+}
 // A text/HUD draw into a render-scaled frame (GpuDeviceDesc::renderScale):
 // the frame's pixels per output pixel, else 1. The diffuse sample is then
 // taken at the centre of the output pixel the fragment falls in, with that
@@ -110,7 +117,9 @@ struct SceneUniforms {
     // 1: specular antialiasing (LookSettings::specularAA; DC3 enhanced, set
     // by the DC3 shape's scene lighting). 0 everywhere else.
     specularAA: f32,
-    _padN2: f32,
+    // The world material LOD bias for this pass (kTakesLodBias,
+    // materialLodBias()): LookSettings' rule at the scale the pass draws at.
+    materialLodBias: f32,
     _padN3: f32,
     // Point lights (up to 4)
     pointLightPos: array<vec4f, 4>,
@@ -370,7 +379,7 @@ fn srgbToLinear(color: vec3f) -> vec3f {
 // material uses them as stored, a linear one decodes them first.
 fn refractScreen(worldPos: vec3f, uv: vec2f, strength: f32, gammaShading: bool) -> vec3f {
     let c = scene.viewProj * vec4f(worldPos, 1.0);
-    let ns = textureSampleBias(refractNormalTex, diffuseSampler, uv, kLodBias);
+    let ns = textureSampleBias(refractNormalTex, diffuseSampler, uv, materialLodBias());
     let n = vec2f(ns.g * 2.0 - 1.0, ns.r * 2.0 - 1.0);
     let suv = (c.xy + n * strength) * vec2f(0.5, -0.5) / c.w + vec2f(0.5);
     let screen = textureSampleLevel(screenTex, screenSampler, suv, 0.0).rgb;
@@ -527,7 +536,7 @@ fn blendDetailNormal(baseNormal: vec3f, uv: vec2f) -> vec3f {
     }
 
     let detailUV = uv * material.normDetailTiling;
-    let detailSample = textureSampleBias(normDetailMapTex, mapSampler, detailUV, kLodBias);
+    let detailSample = textureSampleBias(normDetailMapTex, mapSampler, detailUV, materialLodBias());
     let detailNormal = detailSample.xyz * 2.0 - 1.0;
     return normalize(vec3f(
         baseNormal.x + detailNormal.x * material.normDetailStrength,
@@ -542,7 +551,7 @@ fn sampleSurfaceNormal(surfaceInput: VertexOutput) -> vec3f {
         return worldNormal;
     }
 
-    let normalSample = textureSampleBias(normalMapTex, mapSampler, surfaceInput.uv, kLodBias);
+    let normalSample = textureSampleBias(normalMapTex, mapSampler, surfaceInput.uv, materialLodBias());
     var tangentSpaceNormal = decodeTangentSpaceNormal(normalSample);
     tangentSpaceNormal = applyDeNormal(tangentSpaceNormal);
     tangentSpaceNormal = blendDetailNormal(tangentSpaceNormal, surfaceInput.uv);
@@ -779,7 +788,7 @@ fn computeRimLighting(surfaceNormal: vec3f, viewDir: vec3f, uv: vec2f) -> vec3f 
         return vec3f(0.0);
     }
 
-    let rimMapSample = textureSampleBias(rimMapTex, mapSampler, uv, kLodBias);
+    let rimMapSample = textureSampleBias(rimMapTex, mapSampler, uv, materialLodBias());
     let rimDot = 1.0 - max(dot(surfaceNormal, viewDir), 0.0);
     let rimExponent = max(rimPower * rimMapSample.a, 0.5);
     var rimColor =
@@ -1582,16 +1591,16 @@ fn retailShade(surfaceInput: VertexOutput, base: vec3f, ambientLight: vec3f, raw
     px.normal = surfaceInput.worldNormal;
     px.tangent = surfaceInput.worldTangent;
     px.bitangent = surfaceInput.worldBitangent;
-    px.normalSample = textureSampleBias(normalMapTex, diffuseSampler, uv, kLodBias);
+    px.normalSample = textureSampleBias(normalMapTex, diffuseSampler, uv, materialLodBias());
     px.detailSample = vec4f(0.5, 0.5, 1.0, 1.0);
     if (retailHasNormDetail()) {
         // Repeating (MaterialSetup keeps mapSampler on Repeat for a material
         // with a detail map; retail's tf14 clamp is 0, wrap).
         px.detailSample = textureSampleBias(normDetailMapTex, mapSampler,
-                                            uv * material.normDetailTiling, kLodBias);
+                                            uv * material.normDetailTiling, materialLodBias());
     }
-    px.specSample = textureSampleBias(specularMapTex, diffuseSampler, uv, kLodBias);
-    px.rimSample = textureSampleBias(rimMapTex, diffuseSampler, uv, kLodBias);
+    px.specSample = textureSampleBias(specularMapTex, diffuseSampler, uv, materialLodBias());
+    px.rimSample = textureSampleBias(rimMapTex, diffuseSampler, uv, materialLodBias());
     px.ao = ao;
     if (scene.specularAA > 0.5) {
         // The interpolated normal's change across the pixel, and the normal
@@ -1621,7 +1630,7 @@ fn diffuseSample(uv: vec2f, fragPos: vec2f) -> vec4f {
         return textureSampleGrad(diffuseTex, diffuseSampler, uv + dx * d.x + dy * d.y,
                                  dx * kOutputPixelScale, dy * kOutputPixelScale);
     }
-    return textureSampleBias(diffuseTex, diffuseSampler, uv, kLodBias);
+    return textureSampleBias(diffuseTex, diffuseSampler, uv, materialLodBias());
 }
 
 // === Fragment Shader ===
@@ -1742,7 +1751,7 @@ fn shadeStandard(surfaceInput: VertexOutput) -> vec4f {
             envWeight *= 1.0 - saturate(envNdotV);
         }
         if (isEnabled(material.environMapSpecMask)) {
-            envWeight *= textureSampleBias(specularMapTex, mapSampler, surfaceInput.uv, kLodBias).a;
+            envWeight *= textureSampleBias(specularMapTex, mapSampler, surfaceInput.uv, materialLodBias()).a;
         }
         baseColor = vec4f(baseColor.rgb + matRgb * vertexTint * envSample.rgb * envWeight,
                           baseColor.a);
@@ -1795,7 +1804,7 @@ fn shadeStandard(surfaceInput: VertexOutput) -> vec4f {
     if (nativeLit || nativeAdds) {
         surfaceNormal = sampleSurfaceNormal(surfaceInput);
         viewDir = normalize(scene.cameraPos - surfaceInput.worldPos);
-        specularSample = textureSampleBias(specularMapTex, mapSampler, surfaceInput.uv, kLodBias);
+        specularSample = textureSampleBias(specularMapTex, mapSampler, surfaceInput.uv, materialLodBias());
     }
     var shadowFactor = 1.0;
     var totalLighting = emptyLightingTerms();
@@ -1910,7 +1919,7 @@ fn shadeStandard(surfaceInput: VertexOutput) -> vec4f {
     }
     // A zero multiplier adds nothing, whatever the map holds (uniform branch).
     if (material.emissiveMultiplier != 0.0) {
-        let emissiveSample = textureSampleBias(emissiveMapTex, mapSampler, surfaceInput.uv, kLodBias);
+        let emissiveSample = textureSampleBias(emissiveMapTex, mapSampler, surfaceInput.uv, materialLodBias());
         finalColor += emissiveTint * material.emissiveMultiplier * emissiveSample.rgb;
     }
     // DC3's retail model has its rim inside retailShade and its environment

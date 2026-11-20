@@ -542,10 +542,10 @@ void PipelineManager::BuildDescriptor(const PipelineKey& key, DescStorage& st) {
     constants[1].value = cutoutCoverage ? 1.0 : 0.0;
     constants[2].key = "kCutoutSamples";
     constants[2].value = (double)key.sampleCount;
-    constants[3].key = "kLodBias";
-    constants[3].value = LodBiasFor(key);
+    constants[3].key = "kTakesLodBias";
+    constants[3].value = LodBiasFlagFor(key);
     constants[4].key = "kOutputPixelScale";
-    constants[4].value = OutputPixelScaleFor(key);
+    constants[4].value = key.outputPixelSampling ? key.outputPixelScale : 1.0f;
     fragment.constantCount = 5;
     fragment.constants = constants;
 
@@ -567,12 +567,12 @@ void PipelineManager::BuildDescriptor(const PipelineKey& key, DescStorage& st) {
     char* label = st.label;
     snprintf(label, sizeof(st.label),
              "%s shader=%u blend=%d z=%d cull=%d stencil=%d fmt=%d samples=%u depth=%d "
-             "cut=%d awrite=%d a2c=%d cover=%d bias=%d lod=%d opx=%d",
+             "cut=%d awrite=%d a2c=%d cover=%d bias=%d lod=%d opx=%g",
              key.layout == VertexLayoutType::Skinned ? "MainSkinned" : "MainStatic", key.shaderType,
              (int)key.blend, (int)key.zMode, (int)key.cull, (int)key.stencil, (int)key.targetFormat,
              key.sampleCount, key.hasDepth ? 1 : 0, key.alphaCut ? 1 : 0, key.alphaWrite ? 1 : 0,
              key.alphaToCoverage ? 1 : 0, key.cutoutCoverage ? 1 : 0, (int)key.depthBias,
-             key.lodBias ? 1 : 0, key.outputPixelSampling ? 1 : 0);
+             key.lodBias ? 1 : 0, key.outputPixelSampling ? (double)key.outputPixelScale : 0.0);
     pipeDesc.label = label;
     pipeDesc.layout = mPipelineLayout;
     pipeDesc.vertex.module = shader;
@@ -702,7 +702,7 @@ void PipelineManager::BuildPreWarmKeys(wgpu::TextureFormat mainFmt,
                     key.depthBias = 0;
                     // World draws in the depth passes take the look's LOD
                     // bias (Mesh_Wgpu); the RT pass's overlay-class draws do not.
-                    key.lodBias = pass.hasDepth && mMaterialLodBias != 0.0f;
+                    key.lodBias = pass.hasDepth && mMaterialTakesLodBias;
                     mPreWarmKeys.push_back(key);
                 }
             }
@@ -738,7 +738,8 @@ int PipelineManager::PreWarmStep(wgpu::TextureFormat mainFmt,
     return total - mPreWarmCursor;  // remaining
 }
 
-bool PipelineManager::WarmAsync(const PipelineKey& key) {
+bool PipelineManager::WarmAsync(const PipelineKey& keyIn) {
+    const PipelineKey key = CacheKey(keyIn);
     if (!mDevice || mPipelineCache.count(key) || mWarmPending.count(key) ||
         !mWarmQueued.insert(key).second)
         return false;
@@ -828,7 +829,8 @@ void PipelineManager::PollWarms() {
     mWarmQueue.erase(mWarmQueue.begin(), mWarmQueue.begin() + (ptrdiff_t)i);
 }
 
-wgpu::RenderPipeline PipelineManager::GetPipeline(const PipelineKey& key) {
+wgpu::RenderPipeline PipelineManager::GetPipeline(const PipelineKey& keyIn) {
+    const PipelineKey key = CacheKey(keyIn);
     auto it = mPipelineCache.find(key);
     if (it != mPipelineCache.end()) {
         if (!mWarmedUndrawn.empty() && mWarmedUndrawn.erase(key)) mWarmStats.drawn++;
