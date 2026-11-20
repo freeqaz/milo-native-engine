@@ -517,6 +517,8 @@ constexpr bool kAlphaTestGreater = false;  // native ">= threshold" kept
 // (world/Reflection.cpp: SetDrawMode((Mode)7)); DC3 renumbered it to 8 when it
 // added kDrawOcclusionDepth and kDrawVelocity.
 constexpr int kDrawModeReflection = 7;
+// RB3 flips each material's own cull in the mirror (see RndShape_DC3.h).
+constexpr bool kReflectionForcesReverseCull = false;
 
 // ---- camera select ---------------------------------------------------------
 // RB3's shared RndCam::Select sets no viewport. On the Wii the platform camera

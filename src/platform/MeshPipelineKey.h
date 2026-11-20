@@ -38,6 +38,9 @@ PipelineKey MeshPipelineKey(RndMesh* mesh, RndMat* rawMat, bool skinned, int32_t
 // read the mesh (whether it is a glyph page, whether it shades as text).
 PipelineKey MaterialPipelineKey(RndMat* rawMat, bool skinned, bool isGlyphMesh, bool isTextMesh,
                                 int32_t depthBias, const MeshPassContext& ctx);
+// The cull a material with cull `materialCull` draws with when inReflection
+// (a WorldReflection's mirrored redraw). See rndshape::kReflectionForcesReverseCull.
+WgpuCull ReflectionCull(WgpuCull materialCull, bool inReflection);
 PipelineKey MeshNextPassPipelineKey(const PipelineKey& first, BaseMaterial* nextPass,
                                     const MeshPassContext& ctx);
 
