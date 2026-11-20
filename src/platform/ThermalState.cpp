@@ -64,7 +64,8 @@ ThermalStatus ThermalGetStatus() {
     std::lock_guard<std::mutex> lock(sStatusMutex);
     if (!sStatusPublished) {
         // The governor has not run (no level yet): say what it would be given.
-        sStatus.enabled = ParseThermalGovernorKnob(getenv("MILO_THERMAL_GOVERNOR"));
+        static const bool sEnabled = ParseThermalGovernorKnob(getenv("MILO_THERMAL_GOVERNOR"));
+        sStatus.enabled = sEnabled;  // read once: a consumer may ask every frame
         sStatus.level = ThermalInjectedLevel();
         sStatus.injected = sStatus.level != kThermalUnknown;
         sStatus.targetFps = sTargetFps.load();
