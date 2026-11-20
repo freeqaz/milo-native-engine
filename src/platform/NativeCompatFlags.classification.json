@@ -2287,6 +2287,27 @@
     "default": "off",
     "read": "value"
   },
+  "MILO_THERMAL_GOVERNOR": {
+    "class": "perf",
+    "owner": "render",
+    "faithfulStatus": "live: the thermal governor (gfx/ThermalGovernor.h, platform/ThermalState.h). Unset or on: when the OS reports thermal pressure (fair or worse) AND frames are late against the consumer's target rate, the output row cap steps down 1080 -> 900 -> 720 rows (never below 720) and steps back up one step per cool dwell; 0/off/false/no = never. Acts only for a consumer that sets a target rate (ThermalSetTargetFps) on a renderer that calls the driver (WgpuRnd); with no thermal level reported the sizes are exactly the frame-size rules' own. Same picture at a smaller size [platform/ThermalState.cpp]",
+    "default": "on",
+    "read": "value"
+  },
+  "MILO_THERMAL_STATE": {
+    "class": "debug",
+    "owner": "render",
+    "faithfulStatus": "n/a: test injection. 0..3 (nominal, fair, serious, critical) stands in for the OS thermal level, headless runs included; unset = the OS's level in windowed runs (macOS NSProcessInfo.thermalState; unknown elsewhere) and none headless [platform/ThermalState.cpp]",
+    "default": "unset",
+    "read": "value"
+  },
+  "MILO_THERMAL_COOL_SECONDS": {
+    "class": "debug",
+    "owner": "render",
+    "faithfulStatus": "n/a: test knob. Seconds of unbroken nominal level before the thermal governor gives one step back (default 90); a test shortens it so it need not wait minutes [platform/ThermalState.cpp]",
+    "default": "90",
+    "read": "value"
+  },
   "MILO_BACKGROUND_AUDIO": {
     "class": "feature",
     "owner": "audio",
