@@ -10,6 +10,7 @@
 #include "platform/MeshDrawShowing.h"
 #include "platform/MeshFilter.h"
 #include "platform/MeshPipelineKey.h"
+#include "platform/LookProfile.h"
 #include "platform/TransformUtils.h"
 #include "platform/TexGpu.h"
 #include "gfx/FrameCapture.h"
@@ -230,7 +231,8 @@ PipelineKey MeshPipelineKey(RndMesh* mesh, RndMat* rawMat, bool skinned, int32_t
 // shapes flip the material's own cull and leave a two-sided one two-sided.
 WgpuCull ReflectionCull(WgpuCull materialCull, bool inReflection) {
     if (!inReflection) return materialCull;
-    if (rndshape::kReflectionForcesReverseCull) return WgpuCull::Backwards;
+    const int inspect = milo::ReflectionCullInspection();
+    if (inspect < 0 ? rndshape::kReflectionForcesReverseCull : inspect == 1) return WgpuCull::Backwards;
     if (materialCull == WgpuCull::None) return materialCull;
     return materialCull == WgpuCull::Regular ? WgpuCull::Backwards : WgpuCull::Regular;
 }

@@ -202,6 +202,14 @@ bool SetLookAnisotropyForInspection(unsigned short maxAnisotropy) {
     return true;
 }
 
+static int sReflectionCullInspection = -1;
+void SetReflectionCullForInspection(int mode) {
+    sReflectionCullInspection = mode < 0 ? -1 : (mode ? 1 : 0);
+    fprintf(stderr, "[look] reflection cull %s (inspection)\n",
+            sReflectionCullInspection < 0 ? "rule" : sReflectionCullInspection ? "force" : "flip");
+}
+int ReflectionCullInspection() { return sReflectionCullInspection; }
+
 bool SetLookProfileForInspection(LookProfile p) {
     if (Mutable().profile == LookProfile::Native || p == LookProfile::Native) return false;
     Mutable() = SettingsFor(p);
