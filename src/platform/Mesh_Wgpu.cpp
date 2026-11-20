@@ -22,7 +22,6 @@
 #include "rndobj/Rnd.h"
 #include "math/Mtx.h"
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 
 // Forward declaration — draws a mesh immediately (called for both opaque and deferred).
@@ -460,11 +459,7 @@ void DrawMeshImmediate(RndMesh* mesh) {
     // MILO_DRAW_INVISIBLE=1 sends them as before.
     if (rndshape::kSkipInvisibleDraws && !mat->NextPass() &&
         DrawChangesNothing(key, matParams.uniforms.color[3], matParams.uniforms.bloomMaskScale)) {
-        static const bool sDrawInvisible = [] {
-            const char* e = getenv("MILO_DRAW_INVISIBLE");
-            return e && e[0] && e[0] != '0';
-        }();
-        if (!sDrawInvisible) {
+        if (!DrawInvisibleMeshes()) {
             NoteInvisibleMeshDrawSkipped();
             if (capturing) FrameCapture::Get().AddSkip(MeshLabel(mesh), "alpha 0, writes nothing");
             return;
