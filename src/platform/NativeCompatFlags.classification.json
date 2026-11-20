@@ -2175,6 +2175,20 @@
     "default": "off",
     "read": "truthy"
   },
+  "MILO_GPU_PASS_TRACE": {
+    "class": "perf",
+    "owner": "render/perf",
+    "faithfulStatus": "n/a: log-only. MILO_GPU_PASS_TRACE=N (with MILO_GPU_TIMERS) prints, every Nth timed frame, one [GPUPASS] line listing the frame's render passes in the order they were opened with each pass's colour/depth load and store ops (the cost of a pass break on a tile-based GPU is its load and store); unset or 0 = no line. No draw change [gfx/GpuTimers.cpp]",
+    "default": "off",
+    "read": "value"
+  },
+  "MILO_DRAW_INVISIBLE": {
+    "class": "perf",
+    "owner": "render/perf",
+    "faithfulStatus": "n/a: MILO_DRAW_INVISIBLE=1 (truthy) sends the mesh draws DrawChangesNothing would leave out (material alpha exactly 0 under SrcAlpha/SrcAlphaAdd, no depth or stencil write, no bloom mask: a menu's hidden layers, 161 of song select's 433 draws). The image is the same either way (dc3 test_invisible_draw_skip.cpp draws one scene both ways); the switch is the A/B for it and for the GPU time (Apple M3, 1710x962: 2.4-2.9 ms a menu frame). Unset = not sent on DC3 (rndshape::kSkipInvisibleDraws); RB3 always sends them [platform/MeshGpuCache.cpp, Mesh_Wgpu.cpp DrawMeshImmediate]",
+    "default": "off",
+    "read": "truthy"
+  },
   "MILO_PIPELINE_CACHE": {
     "class": "perf",
     "owner": "render/perf",
@@ -2271,6 +2285,27 @@
     "owner": "render",
     "faithfulStatus": "live: the cap, in rows, on the enhanced look's output resolution (the frame drawn at the window's fitted 16:9 size, or on the web the canvas's box in device pixels fitted to 16:9; platform/LookProfile.h, LookSettings::outputMaxRowsExplicit), read once with DC3_LOOK. Unset = the profile default (enhanced: 1080 rows on a non-discrete adapter presenting to a window, so a handheld's 2560x1600 panel gets a 1920x1080 frame scaled up into it; no cap on a discrete adapter or headless; on the web, where a browser does not say whether its adapter is discrete, 720 rows on an adapter without texture-compression-bc (a phone or tablet), else 1080 -- the boot line says which and why). A whole number overrides that in both directions on any adapter, headless and web (?env=MILO_OUTPUT_MAX_ROWS=N) included: 0 = no cap, 1440 = try 1440p on a handheld, 720 = a 1280x720 frame anywhere; the output keeps its 16:9 shape and the present path (or the browser) scales it into the window. A frame presented to a window or canvas is never under 360 rows (640x360, kOutputMinRows), the knob included. Not a whole number >= 0: warns, profile default. No effect under DC3_LOOK=retail (its frame is the original's 1280x720). DC3 retail model only (rndshape::kDC3RetailModel); rb3 and rb3-xenon never read it [platform/LookProfile.cpp; gfx/FrameSizes.cpp OutputRowCap, WebOutputRowCap, ResolveFrameSizes]",
     "default": "off",
+    "read": "value"
+  },
+  "MILO_THERMAL_GOVERNOR": {
+    "class": "perf",
+    "owner": "render",
+    "faithfulStatus": "live: the thermal governor (gfx/ThermalGovernor.h, platform/ThermalState.h). Unset or on: when the OS reports thermal pressure (fair or worse) AND frames are late against the consumer's target rate, the output row cap steps down 1080 -> 900 -> 720 rows (never below 720) and steps back up one step per cool dwell; 0/off/false/no = never. Acts only for a consumer that sets a target rate (ThermalSetTargetFps) on a renderer that calls the driver (WgpuRnd); with no thermal level reported the sizes are exactly the frame-size rules' own. Same picture at a smaller size [platform/ThermalState.cpp]",
+    "default": "on",
+    "read": "value"
+  },
+  "MILO_THERMAL_STATE": {
+    "class": "debug",
+    "owner": "render",
+    "faithfulStatus": "n/a: test injection. 0..3 (nominal, fair, serious, critical) stands in for the OS thermal level, headless runs included; unset = the OS's level in windowed runs (macOS NSProcessInfo.thermalState; unknown elsewhere) and none headless [platform/ThermalState.cpp]",
+    "default": "unset",
+    "read": "value"
+  },
+  "MILO_THERMAL_COOL_SECONDS": {
+    "class": "debug",
+    "owner": "render",
+    "faithfulStatus": "n/a: test knob. Seconds of unbroken nominal level before the thermal governor gives one step back (default 90); a test shortens it so it need not wait minutes [platform/ThermalState.cpp]",
+    "default": "90",
     "read": "value"
   },
   "MILO_BACKGROUND_AUDIO": {

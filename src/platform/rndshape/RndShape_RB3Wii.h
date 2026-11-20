@@ -721,6 +721,9 @@ void FillMeshApproxLighting(RndMesh *mesh, float box[6][4], float retail[4]);
 // Shadows: RB3 keeps WgpuRnd's generic shadow pre-pass and has no projected
 // shadow light (see RndShape_DC3.h for the shape that does).
 constexpr bool kGenericShadowPass = true;
+// RB3 sends every mesh draw: its per-draw log (RB3_DRAWLOG) has readers that
+// count them (see RndShape_DC3.h kSkipInvisibleDraws).
+constexpr bool kSkipInvisibleDraws = false;
 // No character self-shadow map (RndShape_DC3.h has the shape that draws one).
 constexpr bool kSelfShadowMap = false;
 constexpr int kSelfShadowCasterDrawMode = -1;

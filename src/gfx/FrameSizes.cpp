@@ -70,6 +70,29 @@ FrameSizes ResolveFrameSizesWithCap(const GpuDeviceDesc& desc, bool discreteGpu,
     return s;
 }
 
+int TighterRowCap(int a, int b) {
+    if (a <= 0) return b > 0 ? b : 0;
+    if (b <= 0) return a;
+    return a < b ? a : b;
+}
+
+FrameSizes ResolveFrameSizesThermal(const GpuDeviceDesc& desc, bool discreteGpu,
+                                    bool presentsToSurface, int targetW, int targetH,
+                                    int baseCap, int runtimeCap) {
+    const FrameSizes base =
+        ResolveFrameSizesWithCap(desc, discreteGpu, presentsToSurface, targetW, targetH, baseCap);
+    if (runtimeCap <= 0) return base;
+    FrameSizes s = ResolveFrameSizesWithCap(desc, discreteGpu, presentsToSurface, targetW, targetH,
+                                            TighterRowCap(baseCap, runtimeCap));
+    if (s.outputH >= base.outputH) return base;  // the runtime cap does not bind
+    if (s.scale > base.scale) {
+        s.scale = base.scale;
+        s.drawnW = (int)(s.outputW * s.scale + 0.5f);
+        s.drawnH = (int)(s.outputH * s.scale + 0.5f);
+    }
+    return s;
+}
+
 // The frame's sizes (ResolveFrameSizes): drawn = WindowWidth/Height, output
 // kept only when it differs (OutputWidth falls back to the drawn size), and
 // the box filter on exactly when the frame is drawn larger than its output.
@@ -91,7 +114,8 @@ void GpuDevice::ApplyFrameSizes(const FrameSizes& s, bool atInit) {
     char capText[48] = "";
     if (rowCap > 0)
         snprintf(capText, sizeof(capText), ", output capped at %d rows%s", rowCap,
-                 mSizeDesc.outputMaxRowsExplicit >= 0 ? " (asked for)" : "");
+                 mRowCapIsRuntime ? " (thermal)"
+                 : mSizeDesc.outputMaxRowsExplicit >= 0 ? " (asked for)" : "");
     printf("GpuDevice: frame %dx%d out, render scale %.2f%s on a %s GPU (%dx%d drawn, logical "
            "%dx%d%s)\n",
            OutputWidth(), OutputHeight(), s.scale,

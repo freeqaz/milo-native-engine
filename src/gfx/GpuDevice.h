@@ -138,6 +138,21 @@ FrameSizes ResolveFrameSizes(const GpuDeviceDesc& desc, bool discreteGpu, bool p
 // OutputRowCap's: the web build, whose cap is WebOutputRowCap's.
 FrameSizes ResolveFrameSizesWithCap(const GpuDeviceDesc& desc, bool discreteGpu,
                                     bool presentsToSurface, int targetW, int targetH, int rowCap);
+// A row cap set while running (the thermal governor's, gfx/ThermalGovernor.h)
+// on top of the rules' own (baseCap, as OutputRowCap gives it). Pure.
+//   TighterRowCap  the smaller of two caps, 0 on either side meaning none
+//   ResolveFrameSizesThermal  runtimeCap 0, or one that does not make the
+//       output shorter than baseCap alone does: exactly
+//       ResolveFrameSizesWithCap(baseCap). Otherwise the output under the
+//       tighter cap, at a render scale no larger than the uncapped frame's --
+//       on a discrete adapter a 2560x1440 window draws 1x (2x would pass the
+//       3840x2160 limit), and capped to 1920x1080 the default rule would
+//       supersample it 2x: 3840x2160 drawn, more pixels than before the "step
+//       down". A thermal cap never draws more than the frame it replaces.
+int TighterRowCap(int a, int b);
+FrameSizes ResolveFrameSizesThermal(const GpuDeviceDesc& desc, bool discreteGpu,
+                                    bool presentsToSurface, int targetW, int targetH,
+                                    int baseCap, int runtimeCap);
 // The smallest following output presented to a window or canvas, in rows
 // (the logical shape kept): a collapsed panel or a tiny embedded page must not
 // make a 40x22 frame (the post chain's quarter- and bloom-size targets would
@@ -449,6 +464,22 @@ public:
 #endif
     // The frame follows its target (GpuDeviceDesc::outputFollowsTarget).
     bool FollowsTarget() const { return mFollowsTarget; }
+#ifndef __EMSCRIPTEN__
+    // A row cap on top of the rules' own, changeable while running (the
+    // thermal governor's, platform/ThermalState.h; 0 = none): the tighter of
+    // the two is in force (ResolveFrameSizesThermal). The frame's sizes are
+    // re-resolved and re-applied at once, as at a window resize, so call it
+    // between frames (WgpuRnd::BeginDrawing does, before it acquires the
+    // frame); everything sized from WindowWidth/OutputWidth follows on that
+    // frame as it follows a resize. True when a size changed. Only a frame
+    // that follows its target has a row cap; any other is left alone. The
+    // web build has no such cap (a browser reports no thermal state).
+    bool SetRuntimeRowCap(int rows);
+    int RuntimeRowCap() const { return mRuntimeRowCap; }
+    // The output's height under the rules alone, without the runtime cap
+    // (what the governor steps down from); 0 for a frame that does not follow.
+    int BaseOutputRows() const;
+#endif
 
 private:
 #ifndef __EMSCRIPTEN__
@@ -509,8 +540,13 @@ private:
     int mLogicalHeight = 0;
     bool mFollowsTarget = false;
     GpuDeviceDesc mSizeDesc;
-    // The output's row cap in force (OutputRowCap; WebOutputRowCap on web).
+    // The output's row cap in force (OutputRowCap; WebOutputRowCap on web),
+    // the rules' own cap (mBaseRowCap), the cap set while running
+    // (SetRuntimeRowCap; 0 = none) and whether that one is the cap in force.
     int mRowCap = 0;
+    int mBaseRowCap = 0;
+    int mRuntimeRowCap = 0;
+    bool mRowCapIsRuntime = false;
 #ifdef __EMSCRIPTEN__
     RowCapChoice mWebRowCap;
     SettledSize mCanvasSize{kWebResizeSettleMs};
@@ -519,6 +555,9 @@ private:
     bool CanvasTargetSize(int& w, int& h) const;
 #endif
     void ApplyFrameSizes(const FrameSizes& s, bool atInit = false);
+#ifndef __EMSCRIPTEN__
+    FrameSizes ResolveSizesNow(int targetW, int targetH);
+#endif
     PresentScale mReadbackScale;
     wgpu::Texture mReadbackTex;
     bool ReadbackScaled(const wgpu::Texture& src, wgpu::TextureFormat fmt, uint8_t* outPixels,

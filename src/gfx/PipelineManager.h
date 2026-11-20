@@ -202,8 +202,10 @@ public:
         mDevice = nullptr;
     }
 
-    // State mapping (public for DrawRect)
+    // State mapping (public for DrawRect; the depth-stencil one for the test
+    // that holds DrawChangesNothing to the states a pipeline is built with)
     wgpu::BlendState MapBlend(WgpuBlend blend);
+    wgpu::DepthStencilState MapDepthStencil(WgpuZMode z, WgpuStencil s);
 
     // Blend the destination alpha with MAX for every blended mode, as RB3's
     // and DC3's retail DxRnd::SetDefaultRenderStates set it (BlendOpAlpha 3).
@@ -293,7 +295,6 @@ private:
     std::unordered_set<PipelineKey, PipelineKeyHash> mWarmedUndrawn;  // made by a warm, not yet asked for
     WarmStats mWarmStats;
     wgpu::ShaderModule GetOrCreateShader(uint32_t shaderType);
-    wgpu::DepthStencilState MapDepthStencil(WgpuZMode z, WgpuStencil s);
     wgpu::CullMode MapCull(WgpuCull cull);
 
     GpuDevice* mDevice = nullptr;

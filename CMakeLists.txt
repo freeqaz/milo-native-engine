@@ -276,8 +276,11 @@ endif()
 # -----------------------------------------------------------------------------
 if(APPLE)
     set(MILO_ENGINE_METAL_SOURCE src/gfx/MetalSurface.mm)
+    # NSProcessInfo.thermalState for platform/ThermalState.cpp
+    set(MILO_ENGINE_THERMAL_MAC_SOURCE src/platform/ThermalState_Mac.mm)
 else()
     set(MILO_ENGINE_METAL_SOURCE "")
+    set(MILO_ENGINE_THERMAL_MAC_SOURCE "")
 endif()
 
 # Tier 1 — rndobj-FREE gfx core. These include only gfx/ headers (+ os/utl); no
@@ -288,6 +291,7 @@ set(MILO_ENGINE_GFX_SOURCES
     src/gfx/GpuDevice.cpp
     src/gfx/WgpuCallCount.cpp   # buffer/texture/view/bind-group create counters (Linux: --wrap)
     src/gfx/FrameSizes.cpp      # the frame-size rules, shared with GpuDevice_Web.cpp
+    src/gfx/ThermalGovernor.cpp # the thermal governor's rule (pure; dc3 PLAN H-128)
     src/gfx/PresentScale.cpp    # GpuDevice's fixed-frame present (dc3 PLAN H-18)
     src/gfx/PipelineDiskCache.cpp # GpuDevice's persistent Dawn blob cache (native only)
     ${MILO_ENGINE_METAL_SOURCE}
@@ -298,6 +302,7 @@ set(MILO_ENGINE_GFX_SOURCES
     src/gfx/BloomPass.cpp
     src/gfx/GpuResourceRegistry.cpp
     src/gfx/UniformRingBuffer.cpp
+    src/gfx/Canvas2DBatch.cpp   # the 2D canvas's CPU half: no GPU or rndobj dependency
     src/gfx/VideoEncoder.cpp
     src/gfx/mikktspace.c
     src/gfx/ImGuiBackend.cpp
@@ -311,6 +316,7 @@ set(MILO_ENGINE_GFX_SOURCES
 # BandRnd does its own DXT decompress + static vert layout inline for now.)
 set(MILO_ENGINE_GFX_RNDOBJ_SOURCES
     src/gfx/DrawRect2D.cpp
+    src/gfx/Canvas2D.cpp        # batched 2D canvas (RndTex -> GPU texture, WgpuRnd's pass)
     src/gfx/DofPass.cpp
     src/gfx/VertexFormats.cpp
     src/gfx/ShadowPass.cpp
@@ -342,6 +348,8 @@ set(MILO_ENGINE_CHAR_SOURCES
 # lacks; Rnd_Wgpu's WgpuRnd derives from NgRnd while RB3's Rnd is older/unrelated).
 set(MILO_ENGINE_GPU_PLATFORM_SOURCES
     src/platform/LookProfile.cpp     # DC3_LOOK retail|enhanced (LookProfile.h)
+    src/platform/ThermalState.cpp    # the thermal level and the governor's driver (WgpuRnd::BeginDrawing)
+    ${MILO_ENGINE_THERMAL_MAC_SOURCE}
     src/platform/MaterialSetup.cpp
     src/platform/MeshGpuCache.cpp
     src/platform/Mesh_Wgpu.cpp
@@ -389,6 +397,7 @@ set(MILO_ENGINE_PLATFORM_SOURCES
     src/platform/TexBlendHook.cpp
     src/platform/Joypad_Native.cpp
     src/platform/Keyboard_Native.cpp
+    src/platform/TextInput_Native.cpp   # text-editing input queue (chars + edit keys), capture vs the pad map
     src/platform/Keygen_Stub.cpp
     src/platform/MapFile_Stub.cpp
     src/platform/Memory_Native.cpp
@@ -612,6 +621,7 @@ if(MILO_ENGINE_HAVE_CONTEXT)
     if(APPLE)
         set_source_files_properties(
             ${CMAKE_CURRENT_SOURCE_DIR}/src/gfx/MetalSurface.mm
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/ThermalState_Mac.mm
             ${CMAKE_CURRENT_SOURCE_DIR}/src/gfx/GpuDevice.cpp
             ${CMAKE_CURRENT_SOURCE_DIR}/src/audio/AudioDevice.cpp
             PROPERTIES SKIP_PRECOMPILE_HEADERS ON

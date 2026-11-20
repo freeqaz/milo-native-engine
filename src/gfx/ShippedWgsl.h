@@ -26,6 +26,7 @@ const char* StandardWgslSource();      // gfx/PipelineManager.cpp (compiled-in c
 const char* BloomPassWgslSource();     // gfx/BloomPass.cpp
 const char* DofPassWgslSource();       // gfx/DofPass.cpp, depth of field
 const char* DrawRect2DWgslSource();    // gfx/DrawRect2D.cpp
+const char* Canvas2DWgslSource();      // gfx/Canvas2D.cpp, the batched 2D canvas
 const char* PostProcPassWgslSource();  // gfx/PostProcPass.cpp
 const char* RB3RetailPostWgslSource(); // gfx/RB3RetailPost.cpp
 const char* DC3RetailPostWgslSource(); // gfx/RB3RetailPostDC3.cpp, DC3's retail post chain
