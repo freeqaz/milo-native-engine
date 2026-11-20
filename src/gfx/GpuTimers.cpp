@@ -98,6 +98,7 @@ struct GpuTimers::Impl {
         State state = State::Idle;
         int count = 0;
         std::vector<std::string> names;
+        std::vector<std::string> ops;  // MILO_GPU_PASS_TRACE: load/store of each pass, in order
     };
 
     wgpu::Device device;
@@ -195,6 +196,47 @@ void GpuTimers::Shutdown() {
     mSnap.active = false;
 }
 
+// MILO_GPU_PASS_TRACE=N (with MILO_GPU_TIMERS): every Nth timed frame, one
+// "[GPUPASS]" line with the frame's render passes in the order they were
+// begun, each with what it does to its attachments: c=<load><store>[+r]
+// (colour 0; +r = it also resolves) and d=<load><store> (depth), where L =
+// load, C = clear, S = store, D = discard. On a tile-based GPU every L and S
+// of a frame-sized attachment is a full copy between memory and the tiles.
+static int PassTraceEvery() {
+    static const int sEvery = [] {
+        const char* v = getenv("MILO_GPU_PASS_TRACE");
+        if (!v || !*v) return 0;
+        const int n = atoi(v);
+        return n > 0 ? n : 0;
+    }();
+    return sEvery;
+}
+
+static char LoadTag(wgpu::LoadOp op) {
+    return op == wgpu::LoadOp::Load ? 'L' : op == wgpu::LoadOp::Clear ? 'C' : '-';
+}
+static char StoreTag(wgpu::StoreOp op) {
+    return op == wgpu::StoreOp::Store ? 'S' : op == wgpu::StoreOp::Discard ? 'D' : '-';
+}
+
+static std::string PassOps(const wgpu::RenderPassDescriptor& desc) {
+    std::string o;
+    if (desc.colorAttachmentCount > 0 && desc.colorAttachments) {
+        const wgpu::RenderPassColorAttachment& c = desc.colorAttachments[0];
+        o += "c=";
+        o += LoadTag(c.loadOp);
+        o += StoreTag(c.storeOp);
+        if (c.resolveTarget) o += "+r";
+    }
+    if (desc.depthStencilAttachment) {
+        if (!o.empty()) o += ' ';
+        o += "d=";
+        o += LoadTag(desc.depthStencilAttachment->depthLoadOp);
+        o += StoreTag(desc.depthStencilAttachment->depthStoreOp);
+    }
+    return o;
+}
+
 void GpuTimers::InstrumentPass(wgpu::RenderPassDescriptor& desc, const char* file, int line) {
     Impl* im = mImpl;
     if (!im) {
@@ -210,6 +252,7 @@ void GpuTimers::InstrumentPass(wgpu::RenderPassDescriptor& desc, const char* fil
             s.state = Impl::State::Recording;
             s.count = 0;
             s.names.clear();
+            s.ops.clear();
         }
     }
     if (!im->frameTimed || s.count >= kMaxPasses) {
@@ -236,6 +279,7 @@ void GpuTimers::InstrumentPass(wgpu::RenderPassDescriptor& desc, const char* fil
         snprintf(buf, sizeof(buf), "unnamed@%s:%d", base, line);
         s.names.emplace_back(buf);
     }
+    if (PassTraceEvery() > 0) s.ops.emplace_back(PassOps(desc));
 }
 
 void GpuTimers::EndFrame(const wgpu::Queue& queue) {
@@ -245,6 +289,20 @@ void GpuTimers::EndFrame(const wgpu::Queue& queue) {
     if (im->frameDecided) {
         if (!im->frameTimed || im->frameOverflow) im->skipped++;
         if (im->frameTimed && s.count > 0 && !im->frameOverflow) {
+            if (const int every = PassTraceEvery()) {
+                static long long sTimedFrames = 0;
+                if (sTimedFrames++ % every == 0) {
+                    std::string line = "[GPUPASS] passes=" + std::to_string(s.count) + ":";
+                    for (int i = 0; i < s.count && i < (int)s.ops.size(); ++i) {
+                        line += ' ';
+                        line += s.names[i];
+                        line += '(';
+                        line += s.ops[i];
+                        line += ')';
+                    }
+                    fprintf(stderr, "%s\n", line.c_str());
+                }
+            }
             const uint64_t bytes = kBytesPerPass * (uint64_t)s.count;
             wgpu::CommandEncoderDescriptor ed{};
             ed.label = "GpuTimersResolve";
