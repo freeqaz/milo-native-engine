@@ -3,6 +3,7 @@
 
 #include "os/Keyboard.h"
 #include "os/Debug.h"
+#include "platform/TextInput_Native.h"
 
 #ifndef __EMSCRIPTEN__
 #include <GLFW/glfw3.h>
@@ -59,9 +60,15 @@ void KeyboardInit() {
         if (prev != GlfwKeyCallback) sPrevKeyCallback = prev;
     }
 #endif
+    // Text-editing input (platform/TextInput_Native.h) hooks the same window,
+    // on top of the callback above and chained to it. It queues nothing and
+    // suppresses nothing until a consumer turns capture on.
+    TextInputInit();
 }
 
 void KeyboardTerminate() {
+    // Installed after ours, so removed first.
+    TextInputTerminate();
 #ifndef __EMSCRIPTEN__
     if (gNativeWindow) {
         glfwSetKeyCallback(gNativeWindow, sPrevKeyCallback);

@@ -637,6 +637,7 @@ void WgpuRnd::Terminate() {
 
     // Render passes
     mDrawRect2D.Terminate();
+    mCanvas2D.Terminate();
     if (GetNativePointTester() == &mPointTester) SetNativePointTester(nullptr);
     if (GetNativeTexBlendComposer() == &mTexBlendComposer) SetNativeTexBlendComposer(nullptr);
     if (GetNativeSpotBeamRenderer() == &mSpotBeamRenderer) SetNativeSpotBeamRenderer(nullptr);
@@ -746,6 +747,9 @@ void WgpuRnd::EndActivePass() {
     }
     FlushTextDraws();
     FlushTransparentDraws();
+    // The 2D canvas records what it still holds and closes: a canvas session
+    // does not outlive its pass (gfx/Canvas2D.h).
+    mCanvas2D.OnPassEnd();
     mPass.End();
     mInPass = false;
     mClipScissorSet = false; // the next pass starts with a full scissor
@@ -1424,16 +1428,27 @@ WgpuRndBase::Viewport WgpuRnd::FrameViewport(const Viewport& v) const {
     return o;
 }
 
+void WgpuRnd::PassViewportPixels(float out[4]) const {
+    const Viewport vp = FrameViewport(GetViewport());
+    out[0] = (float)vp.X;
+    out[1] = (float)vp.Y;
+    out[2] = (float)(vp.Width ? vp.Width : mCurrentTargetWidth);
+    out[3] = (float)(vp.Height ? vp.Height : mCurrentTargetHeight);
+}
+
 void WgpuRnd::ApplyViewport() {
     if (!mInPass) {
         return;
     }
+    // Canvas quads still pending were placed for the viewport being replaced.
+    if (mCanvas2D.HasPending()) mCanvas2D.Flush();
     const Viewport vp = FrameViewport(GetViewport());
-    uint32_t width = vp.Width ? vp.Width : mCurrentTargetWidth;
-    uint32_t height = vp.Height ? vp.Height : mCurrentTargetHeight;
-    mPass.SetViewport((float)vp.X, (float)vp.Y, (float)width, (float)height, vp.MinZ, vp.MaxZ);
+    float px[4];
+    PassViewportPixels(px);
+    mPass.SetViewport(px[0], px[1], px[2], px[3], vp.MinZ, vp.MaxZ);
     // A pass begun while clip planes are pushed starts with a full scissor.
     if (!mClipStack.empty()) ApplyClipScissor();
+    mCanvas2D.OnViewportChanged();
 }
 
 // ----------------------------------------------------------------------------
@@ -1538,8 +1553,29 @@ bool WgpuRnd::ClipScissor(int rect[4]) const {
     return true;
 }
 
+void WgpuRnd::PassScissor(int out[4]) const {
+    const uint32_t tw = mCurrentTargetWidth, th = mCurrentTargetHeight;
+    int r[4];
+    if (mClipScissorSet && ClipScissor(r)) {
+        // As ApplyClipScissor set it.
+        const uint32_t x = std::min((uint32_t)r[0], tw), y = std::min((uint32_t)r[1], th);
+        out[0] = (int)x;
+        out[1] = (int)y;
+        out[2] = (int)std::min((uint32_t)r[2], tw - x);
+        out[3] = (int)std::min((uint32_t)r[3], th - y);
+        return;
+    }
+    out[0] = 0;
+    out[1] = 0;
+    out[2] = (int)tw;
+    out[3] = (int)th;
+}
+
 void WgpuRnd::ApplyClipScissor() {
     if (!mInPass) return;
+    // Canvas quads still pending carry their own scissors and end by restoring
+    // the renderer's: record them before it changes.
+    if (mCanvas2D.HasPending()) mCanvas2D.Flush();
     const uint32_t tw = mCurrentTargetWidth, th = mCurrentTargetHeight;
     int r[4];
     if (!ClipScissor(r)) {
@@ -3091,6 +3127,11 @@ uint64_t WgpuRnd::PrewarmFixedKeyPipelines() {
     mPostProcPass.PrewarmDC3Enhanced(look.postPrecision, look.postBloomFilter, mGpu);
     mSpotBeamPass.Prewarm(mGpu);
     mPointTestPass.Prewarm(wgpu::TextureFormat::Depth24PlusStencil8, kMSAASamples, mGpu);
+    // The 2D canvas (gfx/Canvas2D.h) in each pass a UI can draw in: the HUD
+    // overlay, the world, and a render target with and without depth.
+    for (const MeshPassContext& c : {OverlayPassContext(), WorldPassContext(false),
+                                     TexturePassContext(false), TexturePassContext(true)})
+        mCanvas2D.Warm((uint32_t)c.targetFormat, c.hasDepth, c.toTexture, c.sampleCount);
     return GpuPipelineCreateCount() - before;
 }
 
@@ -3256,6 +3297,8 @@ void WgpuRnd::DrawRect(const Hmx::Rect& rect, RndMat* mat, ShaderType,
                         const Hmx::Color& color, const Hmx::Color* topRight,
                         const Hmx::Color* botLeft) {
     if (!mInPass) return;
+    // In call order with the 2D canvas (gfx/Canvas2D.h).
+    if (mCanvas2D.HasPending()) mCanvas2D.Flush();
     mDrawRect2D.Draw(mPass, rect, mat, color, topRight, botLeft,
                      mGpu, mPipelines, mWhiteTexView, mDefaultSampler);
     // DrawRect2D uses its own pipeline/bind group at slot 0.

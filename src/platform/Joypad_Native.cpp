@@ -28,6 +28,7 @@
 #include "ui/UI.h"
 #include "platform/JoypadScriptHook.h"
 #include "platform/JoypadKeyMap.h"
+#include "platform/TextInput_Native.h"
 #ifdef DC3_HTTP_SERVER
 #include "platform/HttpServer.h"
 #endif
@@ -107,6 +108,12 @@ static void InitWebInput() {
     sWebInputInitialized = true;
 
     // Install JS keydown/keyup listeners that maintain a bitmask.
+    // While text input has capture (platform/TextInput_Native.h sets
+    // window._miloTextCapture), a key that types or edits text -- a one
+    // character event.key, or Backspace -- sets no bit: it is text, not a pad
+    // button. Arrows, Enter, Escape and Tab still do. A key pressed under
+    // capture therefore never becomes a pad press when capture ends, and
+    // keyup clears bits whatever the capture state.
     // Bit positions match JoypadButton enum:
     //   L2=0 R2=1 L1=2 R1=3 Tri=4 Circle=5 X=6 Square=7
     //   Select=8 L3=9 R3=10 Start=11 DUp=12 DRight=13 DDown=14 DLeft=15
@@ -156,7 +163,8 @@ static void InitWebInput() {
         document.addEventListener('keydown', function(e) {
             var bit = m[e.key];
             if (bit) {
-                window._dc3Keys |= bit;
+                var text = window._miloTextCapture && (e.key.length == 1 || e.key == 'Backspace');
+                if (!text) window._dc3Keys |= bit;
                 if (consume[e.key]) e.preventDefault();
             }
         }, true);
@@ -261,9 +269,15 @@ unsigned int JoypadKeyboardButtons(JoypadKeyDownFn keyDown, void *ctx) {
     // what consumes a tap, so a key tapped inside a host chord and left
     // unread stays "pressed" and lands on the first poll after the modifier
     // is let go (Alt+Enter toggled fullscreen and then pressed A, dc3 H-18).
+    // While text input has capture (platform/TextInput_Native.h) a key that
+    // types or edits text is not a pad button, and stays not one until it is
+    // released: TextInputPadKeyAllowed. With capture never turned on it
+    // returns `down` unchanged.
     unsigned int buttons = 0;
     for (int i = 0; i < kNumKeyBindings; i++) {
-        if (keyDown(kKeyBindings[i].key, ctx)) buttons |= (1u << kKeyBindings[i].button);
+        const bool down = keyDown(kKeyBindings[i].key, ctx);
+        if (TextInputPadKeyAllowed(i, kKeyBindings[i].key, down))
+            buttons |= (1u << kKeyBindings[i].button);
     }
     if (HostModifierHeld(keyDown, ctx)) return 0;
     return buttons;

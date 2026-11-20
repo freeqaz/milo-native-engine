@@ -11,6 +11,7 @@
 #include "gfx/PostProcPass.h"
 #include "gfx/DisplayRamp.h"
 #include "gfx/DrawRect2D.h"
+#include "gfx/Canvas2D.h"
 #include "gfx/PointTestPass.h"
 #include "gfx/PointTestStandIns.h"
 #include "gfx/SpotBeamPass.h"
@@ -150,7 +151,23 @@ public:
     using FrameReadyCallback = void (*)();
     void SetFrameReadyCallback(FrameReadyCallback cb) { mFrameReadyCallback = cb; }
     PipelineManager& Pipelines() { return mPipelines; }
-    wgpu::RenderPassEncoder& CurrentPass() { return mPass; }
+    // The open pass, for a draw about to be recorded into it. Pending 2D
+    // canvas quads (gfx/Canvas2D.h) are recorded first, so the canvas and
+    // every other draw land in the pass in call order.
+    wgpu::RenderPassEncoder& CurrentPass() {
+        if (mCanvas2D.HasPending()) mCanvas2D.Flush();
+        return mPass;
+    }
+    // The 2D canvas (gfx/Canvas2D.h; TheCanvas2D() returns this one).
+    Canvas2D& Canvas() { return mCanvas2D; }
+    // For Canvas2D's own draws: the pass without the flush above.
+    wgpu::RenderPassEncoder& PassForCanvas2D() { return mPass; }
+    // The open pass's viewport as ApplyViewport set it, in pixels of the
+    // pass's target: x, y, w, h.
+    void PassViewportPixels(float out[4]) const;
+    // The scissor the renderer keeps on the open pass, in pixels of its
+    // target (x, y, w, h): the clip-plane rectangle, or the whole target.
+    void PassScissor(int out[4]) const;
     bool IsInPass() const { return mInPass; }
     wgpu::TextureFormat CurrentTargetFormat() const { return mCurrentTargetFormat; }
     uint32_t CurrentSampleCount() const { return mCurrentSampleCount; }
@@ -415,6 +432,7 @@ public:
     PostProcPass mPostProcPass;
     DisplayRamp mDisplayRamp;   // rndshape::DisplayGamma(): the RB3 Xbox 360 display ramp
     DrawRect2D mDrawRect2D;
+    Canvas2D mCanvas2D;
     PointTestPass mPointTestPass;
 
     // Point tests queued this frame, and whether this frame's world end ran.

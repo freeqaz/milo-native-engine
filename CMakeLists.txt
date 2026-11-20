@@ -298,6 +298,7 @@ set(MILO_ENGINE_GFX_SOURCES
     src/gfx/BloomPass.cpp
     src/gfx/GpuResourceRegistry.cpp
     src/gfx/UniformRingBuffer.cpp
+    src/gfx/Canvas2DBatch.cpp   # the 2D canvas's CPU half: no GPU or rndobj dependency
     src/gfx/VideoEncoder.cpp
     src/gfx/mikktspace.c
     src/gfx/ImGuiBackend.cpp
@@ -311,6 +312,7 @@ set(MILO_ENGINE_GFX_SOURCES
 # BandRnd does its own DXT decompress + static vert layout inline for now.)
 set(MILO_ENGINE_GFX_RNDOBJ_SOURCES
     src/gfx/DrawRect2D.cpp
+    src/gfx/Canvas2D.cpp        # batched 2D canvas (RndTex -> GPU texture, WgpuRnd's pass)
     src/gfx/DofPass.cpp
     src/gfx/VertexFormats.cpp
     src/gfx/ShadowPass.cpp
@@ -389,6 +391,7 @@ set(MILO_ENGINE_PLATFORM_SOURCES
     src/platform/TexBlendHook.cpp
     src/platform/Joypad_Native.cpp
     src/platform/Keyboard_Native.cpp
+    src/platform/TextInput_Native.cpp   # text-editing input queue (chars + edit keys), capture vs the pad map
     src/platform/Keygen_Stub.cpp
     src/platform/MapFile_Stub.cpp
     src/platform/Memory_Native.cpp
