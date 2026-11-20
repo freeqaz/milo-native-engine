@@ -10521,7 +10521,10 @@ in gameplay (20.2 ms measured).
   `NgDOFProc::Set` computes its scale and bias from the camera it is given.
 - The pass now asks the rndshape seam, `rndshape::DofSetCamPlanes`:
   - the DC3 shape answers with the planes of the camera `NativeDOFProc::Set` kept;
-  - the RB3 shape answers false, so RB3 reads the current camera as before.
+  - the RB3 shape answers false, so RB3 reads the current camera as before;
+  - rb3-xenon compiles the DC3 shape too but has no `NativeDOFProc`, so `DC3PostChain.cpp` carries
+    a weak `NativeDOFSetCamPlanes` that answers false, and dc3-decomp's `DOFProc.cpp` defines the
+    strong one. Without it rb3-xenon did not compile (found by this item's consumer build).
 - `DofPass::LastCompositeConstants` exposes the four constants for the test.
 - Measured: the `WgpuRnd::EndDrawing` fallback (H-131's theoretical gap) never ran the post chain,
   with DOF enabled or not. A per-frame diagnostic, never committed, checked about 23–25k frames
