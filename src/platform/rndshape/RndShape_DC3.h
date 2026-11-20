@@ -42,6 +42,13 @@ struct RetailPostParams;   // gfx/RB3RetailPost.h (the DC3 retail post chain)
 // WgpuRnd derives from the shape's renderer base.
 using WgpuRndBase = NgRnd;
 
+// The camera planes DC3's NativeDOFProc kept at Set (dc3-decomp
+// src/system/rndobj/DOFProc.cpp defines it). rb3-xenon also compiles this
+// shape and has no such function, so the engine carries a weak default that
+// answers false (DC3PostChain.cpp): rb3-xenon's depth of field keeps reading
+// the current camera, as before.
+bool NativeDOFSetCamPlanes(float &nearPlane, float &farPlane, float &zNear, float &zFar);
+
 namespace rndshape {
 
 // ---- renderer singleton (DC3 declares `Rnd& TheRnd`) ----------------------
@@ -298,6 +305,14 @@ inline void CamViewProjectXfms(RndCam *c, Transform &view, Hmx::Matrix4 &proj) {
 inline const Hmx::Matrix4 &CamViewProjMatrix(RndCam *c) { return c->GetViewProjMatrix(); }
 inline const Vector2 &CamZRange(RndCam *c) { return c->ZRange(); }
 inline const Hmx::Rect &CamScreenRect(RndCam *c) { return c->GetScreenRect(); }
+// The planes the depth of field's constants come from (DofPass::Run). DC3's
+// NgDOFProc::Set computes its scale and bias from the camera it is given, at
+// Set (DOFProc_NG.cpp); dc3's NativeDOFProc keeps that camera's planes
+// (rndobj/DOFProc.cpp). False when Set had no camera: the caller reads the
+// current camera, as before.
+inline bool DofSetCamPlanes(float &nearPlane, float &farPlane, Vector2 &zRange) {
+    return NativeDOFSetCamPlanes(nearPlane, farPlane, zRange.x, zRange.y);
+}
 
 // ---- mesh ------------------------------------------------------------------
 inline RndMesh *MeshGeomOwner(RndMesh *m) { return m->GetGeomOwner(); }

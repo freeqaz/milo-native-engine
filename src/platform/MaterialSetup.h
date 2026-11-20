@@ -103,10 +103,10 @@ MaterialParams BuildPassMaterialParams(BaseMaterial* pass);
 // the whole chain is uploaded.
 void ApplyLookSampling(SamplerDesc& desc, bool uiClass, const milo::LookSettings& look);
 // Whether one material draw's pipeline takes the material LOD bias
-// (PipelineKey::lodBias, PipelineManager::MaterialLodBias): world draws do
-// when a bias is set; text and HUD-overlay draws (uiClass) never do -- a
-// negative bias would alias their minified glyph strokes.
-bool MaterialDrawTakesLodBias(bool uiClass, float materialLodBias);
+// (PipelineKey::lodBias, PipelineManager::MaterialTakesLodBias): world draws
+// do when the look has a bias; text and HUD-overlay draws (uiClass) never do
+// -- a negative bias would alias their minified glyph strokes.
+bool MaterialDrawTakesLodBias(bool uiClass, bool lookTakesLodBias);
 // Whether one material draw samples its diffuse texture at output-pixel
 // centres (PipelineKey::outputPixelSampling): a text or HUD-overlay draw
 // (uiClass) into the frame (not a texture target) when the frame is

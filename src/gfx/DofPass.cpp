@@ -450,13 +450,21 @@ bool DofPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& sceneV
         queue.WriteBuffer(mBlurUB[k], 0, &bu, sizeof(bu));
     }
 
-    RndCam* cam = RndCam::Current();
-    const float nearPlane = cam ? cam->NearPlane() : 1.0f;
-    const float farPlane = cam ? cam->FarPlane() : 1000.0f;
-    const Vector2 zr = cam ? rndshape::CamZRange(cam) : Vector2(0.0f, 1.0f);
+    // The planes of the camera the shot gave NgDOFProc::Set (DC3), else the
+    // current camera's (RB3, or a Set with no camera).
+    float nearPlane = 1.0f, farPlane = 1000.0f;
+    Vector2 zr(0.0f, 1.0f);
+    if (!rndshape::DofSetCamPlanes(nearPlane, farPlane, zr)) {
+        if (RndCam* cam = RndCam::Current()) {
+            nearPlane = cam->NearPlane();
+            farPlane = cam->FarPlane();
+            zr = rndshape::CamZRange(cam);
+        }
+    }
     DofUniforms du{};
     RetailConstants(TheDOFProc->FocalPlane(), TheDOFProc->BlurDepth(), TheDOFProc->MaxBlur(),
                     TheDOFProc->MinBlur(), nearPlane, farPlane, zr.x, zr.y, du.c24);
+    for (int i = 0; i < 4; i++) mLastConstants[i] = du.c24[i];
     queue.WriteBuffer(mCompositeUB, 0, &du, sizeof(du));
 
     auto passBG = [&](const wgpu::TextureView& src, const wgpu::Buffer& ub) {

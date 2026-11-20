@@ -30,7 +30,8 @@ struct SceneUniforms {
     float ambientColor[4];    // vec4f
     float numLights;          // f32
     float specularAA;         // f32: 1 = specular antialiasing (DC3 enhanced; standard_wgsl.inc)
-    float _padN[2];
+    float materialLodBias;    // f32: world material LOD bias for this pass (LookProfile MaterialLodBiasAt)
+    float _padN;
     // Point lights (up to 4)
     float pointLightPos[4][4];    // array<vec4f, 4> — world position (.w unused)
     float pointLightColors[4][4]; // array<vec4f, 4> — color per light

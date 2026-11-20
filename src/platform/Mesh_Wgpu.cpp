@@ -267,11 +267,11 @@ PipelineKey MaterialPipelineKey(RndMat* rawMat, bool skinned, bool isGlyphMesh, 
     key.alphaToCoverage = cutCov == CutCoverage::AlphaToCoverage;
     key.cutoutCoverage = cutCov == CutCoverage::Sharpened;
     key.depthBias = depthBias;
-    // The look's texture LOD bias (LookSettings::lodBias) is for world
-    // textures; text and HUD keep the original's unbiased samples, as their
-    // samplers keep its two mip levels (MaterialSetup ApplyLookSampling).
+    // The look's texture LOD bias (LookSettings::lodBiasScale1/2) is for
+    // world textures; text and HUD keep the original's unbiased samples, as
+    // their samplers keep its two mip levels (MaterialSetup ApplyLookSampling).
     key.lodBias = MaterialDrawTakesLodBias(isTextMesh || isOverlayPass,
-                                           gWgpuRnd->Pipelines().MaterialLodBias());
+                                           gWgpuRnd->Pipelines().MaterialTakesLodBias());
     key.outputPixelSampling = MaterialDrawSamplesAtOutputPixels(
         isTextMesh || isOverlayPass, ctx.toTexture,
         gWgpuRnd->Pipelines().OutputPixelScale());
@@ -310,9 +310,26 @@ namespace {
 // for a material that allows it, in the main frame, but only while the frame
 // has a current post-proc and no environment fade -- state of the frame, not
 // of the content -- so such a material is warmed both ways in the main frame.
-int WarmVariant(PipelineKey key, RndMat* rawMat, bool glyph, const MeshPassContext& ctx,
-                const MatKeyVariant& v) {
+// A text or HUD key (textMesh, or an overlay pass, into the frame) is queued
+// at each output-pixel scale a resize can give the frame
+// (PipelineManager::OutputPixelScaleLo/Hi), so a window resized across the
+// render-scale step draws its text with no pipeline made.
+int WarmAtEachScale(PipelineManager& pm, PipelineKey key, bool uiOutput) {
+    const float lo = pm.OutputPixelScaleLo(), hi = pm.OutputPixelScaleHi();
+    if (!uiOutput || lo == hi) return pm.WarmAsync(key) ? 1 : 0;
+    int queued = 0;
+    for (float s : {lo, hi}) {
+        key.outputPixelSampling = MaterialDrawSamplesAtOutputPixels(true, false, s);
+        key.outputPixelScale = key.outputPixelSampling ? s : 1.0f;
+        queued += pm.WarmAsync(key) ? 1 : 0;
+    }
+    return queued;
+}
+
+int WarmVariant(PipelineKey key, RndMat* rawMat, bool glyph, bool textMesh,
+                const MeshPassContext& ctx, const MatKeyVariant& v) {
     PipelineManager& pm = gWgpuRnd->Pipelines();
+    const bool uiOutput = (textMesh || !ctx.hasDepth) && !ctx.toTexture;
     auto mat = rndshape::Mat(rawMat);
     const int blend = v.blend >= 0 ? v.blend : (int)mat->GetBlend();
     const bool alphaWrite = v.alphaWrite >= 0 ? v.alphaWrite != 0 : (bool)mat->GetAlphaWrite();
@@ -322,14 +339,14 @@ int WarmVariant(PipelineKey key, RndMat* rawMat, bool glyph, const MeshPassConte
     if (rndshape::kRenderTargetForcesAlphaWrite && ctx.toTexture
         && !rndshape::MatPinsAlphaWrite(rawMat))
         key.alphaWrite = true;
-    int queued = pm.WarmAsync(key) ? 1 : 0;
+    int queued = WarmAtEachScale(pm, key, uiOutput);
     if (ctx.hasDepth && !ctx.toTexture && rndshape::AllowsBloomMaskFor(mat, blend, alphaWrite)) {
         PipelineKey masked = key;
         masked.alphaWrite = true;
-        queued += pm.WarmAsync(masked) ? 1 : 0;
+        queued += WarmAtEachScale(pm, masked, uiOutput);
     }
     for (BaseMaterial* np = mat->NextPass(); np; np = rndshape::Mat(np)->NextPass())
-        queued += pm.WarmAsync(MeshNextPassPipelineKey(key, np, ctx)) ? 1 : 0;
+        queued += WarmAtEachScale(pm, MeshNextPassPipelineKey(key, np, ctx), uiOutput);
     return queued;
 }
 } // namespace
@@ -345,9 +362,10 @@ int WarmMeshPipelines(RndMesh* mesh, const MeshPassContext& ctx, const MatKeyVar
     const bool skinned = mesh->IsSkinned();
     const PipelineKey key = MeshPipelineKey(mesh, rawMat, skinned, gd ? gd->depthBias : 0, ctx);
     const bool glyph = MeshDrawsAsGlyph(mesh, skinned);
-    int queued = WarmVariant(key, rawMat, glyph, ctx, MatKeyVariant{});
+    const bool textMesh = MeshShadesAsText(mesh);
+    int queued = WarmVariant(key, rawMat, glyph, textMesh, ctx, MatKeyVariant{});
     for (int i = 0; i < numVariants; ++i)
-        queued += WarmVariant(key, rawMat, glyph, ctx, variants[i]);
+        queued += WarmVariant(key, rawMat, glyph, textMesh, ctx, variants[i]);
     return queued;
 }
 
@@ -357,8 +375,9 @@ int WarmMaterialPipelines(RndMat* rawMat, bool skinned, const MeshPassContext& c
     auto mat = rndshape::Mat(rawMat);
     if (!mat || ShouldSkipMesh("", mat)) return 0;  // a runtime mesh: named at its first draw
     const PipelineKey key = MaterialPipelineKey(rawMat, skinned, false, false, 0, ctx);
-    int queued = WarmVariant(key, rawMat, false, ctx, MatKeyVariant{});
-    for (int i = 0; i < numVariants; ++i) queued += WarmVariant(key, rawMat, false, ctx, variants[i]);
+    int queued = WarmVariant(key, rawMat, false, false, ctx, MatKeyVariant{});
+    for (int i = 0; i < numVariants; ++i)
+        queued += WarmVariant(key, rawMat, false, false, ctx, variants[i]);
     return queued;
 }
 
@@ -369,7 +388,7 @@ int WarmTextPagePipelines(RndMat* fontMat, const MeshPassContext& ctx) {
     // A glyph page (MeshDrawsAsGlyph and MeshShadesAsText both hold for a page
     // the game marks) of an unskinned mesh, as FontMap::AllocateMeshes makes.
     const PipelineKey key = MaterialPipelineKey(fontMat, false, true, true, 0, ctx);
-    return WarmVariant(key, fontMat, true, ctx, MatKeyVariant{});
+    return WarmVariant(key, fontMat, true, true, ctx, MatKeyVariant{});
 }
 
 void DrawMeshImmediate(RndMesh* mesh) {

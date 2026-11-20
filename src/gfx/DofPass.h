@@ -61,6 +61,10 @@ public:
     static float EnhancedTapScale(float v);
     const wgpu::TextureView& OutputView() const { return mOutView; }
     const wgpu::Texture& OutputTexture() const { return mOutTex; }
+    // The composite's four constants (range, -scale * range, minBlur,
+    // maxBlur) the last Run wrote: which camera's planes they came from is
+    // the rndshape seam's choice (DofSetCamPlanes).
+    const float* LastCompositeConstants() const { return mLastConstants; }
     void Terminate();
     // Compiles the three pipelines for a `format` scene now, so the first
     // Run() that finds the depth of field on does not (they used to compile on
@@ -108,4 +112,5 @@ private:
     wgpu::TextureView mOutView;
     int mW = 0, mH = 0;
     bool mWarnedSamples = false;
+    float mLastConstants[4] = {};
 };

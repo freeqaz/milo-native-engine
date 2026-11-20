@@ -10437,3 +10437,134 @@ Four sabotages each turn a guard red:
 - the band left at the widened lobe;
 - the shape not writing the field;
 - the overlay rule removed.
+
+## 48. The world texture LOD bias by render scale, a scale step that compiles nothing, and DC3's depth of field from Set's camera (lane np-gfx sharp, item 19, branch np-look19, 2026-11-20)
+
+Round 2 (§37) gave DC3's enhanced look a −1 LOD bias on world material textures. It was measured
+at render scale 1 against the retail two-level cap, on near-still bursts. Item 18's drift
+protocol, where the camera moves by a sub-pixel amount each frame, showed that −1 aliases at
+scale 1. This round makes the bias a function of the render scale, measures it at both ends and
+sets both to 0. It also stops a window resize across the scale step from compiling pipelines,
+and makes DC3's depth of field read the camera `Set` was given.
+
+### 48.1 The bias is a uniform, keyed by the render scale
+
+- `LookSettings::lodBiasScale1` / `lodBiasScale2` give the bias at render scale 1 and 2.
+  `MaterialLodBiasAt(look, scale)` is linear in log2(scale) between them and clamped at the ends.
+- `PassMaterialLodBias(look, toTextureTarget, frameRenderScale)` gives a render-to-texture pass
+  the scale-1 value. Such a pass draws at the texture's size, never supersampled.
+- The value is no longer a pipeline constant. It is `SceneUniforms.materialLodBias` (a former pad
+  float), written per pass by `WriteSceneUniforms`, so it follows the scale with no pipeline
+  made. The block is rewritten when only the bias moves.
+- The pipeline constant `kTakesLodBias` (1/0, from `PipelineKey::lodBias`) says whether a draw
+  takes it:
+  - world draws in a look that takes a bias do;
+  - text and HUD (`uiClass`) never do, and keep the original's two unbiased levels.
+  The 13 sample sites in `standard_wgsl.inc` read `kTakesLodBias * scene.materialLodBias`.
+- `LookTakesLodBias(look)` = `look.materialLodBias || scale1 != 0 || scale2 != 0`. Enhanced sets
+  `materialLodBias`, so its world pipelines stay biasable at a 0/0 rule and the inspection tokens
+  work. Retail, RB3 and rb3-xenon (the Native look) have it false, so every pipeline they make
+  has `kTakesLodBias` 0. Their sampling does not change.
+- Inspection: `{rnd native_look lod_bias_0 | lod_bias_m05 | lod_bias_m1 | lod_bias_rule}`
+  (`SetLookLodBiasForInspection`). No new environment variable.
+
+### 48.2 Measured, and the values picked: 0 at scale 1 and 0 at scale 2
+
+The drift protocol is as in §47.2: 24 frames, Fourier unshift, per-pixel temporal standard
+deviation of luma. Sharpness is the mean |Laplacian| of the still, over the native retail look on
+the same frame. Each value is the mean over area1_far02 and cu01 at houseparty, rollerrink and
+streetside (houseparty only at 2160 and 720s2), at OMG's first pause, on an RTX 3090.
+
+| output, render scale | frame shimmer at −0.5 / −1 (over 0) | frame sharpness over retail at 0 / −0.5 / −1 |
+|---|---|---|
+| 1280x720 (1280x800 asked), 1 | x1.075 / x1.145 | 1.191 / 1.262 / 1.313 |
+| 1920x1080, 1 | x1.054 / x1.079 | 1.171 / 1.225 / 1.242 |
+| 2560x1440, 1 | x1.026 / x1.036 | 1.160 / 1.184 / 1.190 |
+| 3840x2160, 1 | x1.007 / x1.010 | 1.157 / 1.163 / 1.165 |
+| 1280x720, 2 | x1.014 / x1.018 | 1.123 / 1.131 / 1.132 |
+| 1920x1080, 2 | x1.004 / x1.006 | 1.093 / 1.095 / 1.095 |
+
+- The −1 at scale 1 was round 2's goal, "as sharp as the cap". Bias 0 already meets it: 1.16–1.19x
+  retail over the frame and 1.025–1.048x on round 2's boombox at every size.
+- What −1 adds is sharpness bought at least 1:1 in shimmer. On the textures it reaches (denim,
+  brick, the boombox) it adds +12 % to +62 % shimmer. The cassette window and brick mortar
+  alias in the still itself at 1280x720.
+- At scale 2 the 2x2 resolve averages one level, so a bias beyond that is aliasing that survives
+  the resolve: +0.2–0.8 % sharpness for +0.6–1.8 % shimmer.
+- A discrete 3840x2160 window resolves to scale 1 (the 3840x2160 cap), so it takes the scale-1
+  value, 0.
+- GPU cost, frame ms −1 minus 0 over 3 alternations: +0.17 / +0.12 ms at 1920x1080 scale 1,
+  +0.05 / +0.12 at 2560x1440, +0.07 / −0.10 at 3840x2160, within noise at scale 2. So 0 is also
+  the cheaper value.
+- The post chain does not explain the gap to round 2's 0.87x. With the post fields set back to
+  retail, the boombox reads 1.021x (houseparty far02) and 0.999x (dci far01, round 2's shot).
+  The cause of the gap is open. Round 2 averaged moving live frames per launch, and this round
+  used one frozen frame.
+
+### 48.3 A resize across the render-scale step compiles nothing
+
+Before, `PipelineManager::SetOutputPixelScale` erased every cached pipeline that bakes the
+output-pixel scale (`kOutputPixelScale`, text and HUD drawn at output pixels). A discrete-GPU
+window resized from 1920x1080 (scale 2) to 2560x1440 (scale 1) recompiled the text page pipeline
+in gameplay (20.2 ms measured).
+
+- `PipelineKey::outputPixelScale` is now part of the cache key, so nothing is erased.
+- `GpuDevice::RenderScaleRange` gives the scales a resize can reach, and
+  `PipelineManager::SetOutputPixelScaleRange` records them.
+- The mesh warm (`Mesh_Wgpu.cpp`, `WarmAtEachScale`) queues each text and HUD key at both, so
+  the pipelines of the other scale are made at load.
+- The bias needs no rewarm (48.1).
+
+### 48.4 DC3's depth of field reads the camera Set was given
+
+- `DofPass::Run` took the near and far planes from `RndCam::Current()` at run time. DC3's
+  `NgDOFProc::Set` computes its scale and bias from the camera it is given.
+- The pass now asks the rndshape seam, `rndshape::DofSetCamPlanes`:
+  - the DC3 shape answers with the planes of the camera `NativeDOFProc::Set` kept;
+  - the RB3 shape answers false, so RB3 reads the current camera as before;
+  - rb3-xenon compiles the DC3 shape too but has no `NativeDOFProc`, so `DC3PostChain.cpp` carries
+    a weak `NativeDOFSetCamPlanes` that answers false, and dc3-decomp's `DOFProc.cpp` defines the
+    strong one. Without it rb3-xenon did not compile (found by this item's consumer build).
+- `DofPass::LastCompositeConstants` exposes the four constants for the test.
+- Measured: the `WgpuRnd::EndDrawing` fallback (H-131's theoretical gap) never ran the post chain,
+  with DOF enabled or not. A per-frame diagnostic, never committed, checked about 23–25k frames
+  each of:
+  - menus;
+  - gameplay with intro and outro;
+  - a full practice session;
+  - the results screen in both looks.
+  Every frame took the flush path.
+
+### 48.5 Guards (dc3-decomp)
+
+- `LookSamplingTest.TheLodBiasFollowsTheRenderScale`
+- `LookSamplingTest.TheLodBiasIsForWorldDrawsOnly`
+- `LookSamplingTest.RetailIsTheOriginalAndEnhancedDepartsAsDocumented`: 0/0, still biasable.
+- `PipelineWarmTest.ARenderScaleStepCompilesNoPipeline`: 0 creates or waits on a bias step, a
+  1x→2x step and back.
+- `DC3LookPostTest.DofTakesThePlanesOfTheCameraSetWasGiven`.
+
+Nine sabotages each turn a guard red:
+
+- the rule always at its 2x value;
+- a texture target at the frame's scale;
+- the bias ignoring `uiClass`;
+- text warmed at the current scale only;
+- the scale change erasing the cache;
+- the bias value in the pipeline key;
+- the scene block not rewritten when only the bias moves;
+- enhanced not biasable at 0;
+- the DC3 seam returning false.
+
+### 48.6 What is left at scale 1 (measured, not changed)
+
+- At bias 0, by class (1920x1080, 3 venues x 2 shots): edges carry 38–52 % of the world's
+  shimmer at x1.01–1.09 retail, minified texture 6–12 % at x0.99–1.06, and the rest ("flat":
+  carpets, rugs, the dci floor) 42–51 % at x1.12–1.35. The excess over retail is in "flat".
+- It is the enhanced world samplers' anisotropy (16; retail 1). With it forced to 1 the world
+  reads x1.013 retail in shimmer and 1.04x in sharpness, against x1.121 and 1.18x at 16: about
+  91 % of the excess. 4 reads as 16.
+- Candidate, not built: anisotropy 1 at scale 1, 16 at scale 2, chosen like the bias. Samplers
+  are fixed in the bind group, so a step would rebuild world bind groups once; no pipeline
+  changes. On the 3090 the far02 main pass is 0.8–0.9 ms SLOWER at anisotropy 1 (cu01 equal),
+  which is unexplained and has to be understood, and measured on the GPD, before building.
