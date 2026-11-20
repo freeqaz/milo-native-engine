@@ -41,6 +41,7 @@
 
 #include "platform/rndshape/RndShape.h"
 #include "gfx/UniformStructs.h"
+#include "platform/LookProfile.h"
 
 #include "char/Character.h"
 #include "obj/Dir.h"
@@ -347,6 +348,7 @@ bool CollectDC3Casters(rndshape::ProjShadowCasters &out, L *light, const Frustum
 template <class E>
 void WriteDC3Retail(SceneUniforms &s, E *env, RndCam *cam) {
     s.retailLighting = 2.0f;      // 2: DC3's form of the retail model
+    s.specularAA = milo::Look().specularAA ? 1.0f : 0.0f;  // LookSettings::specularAA
     s.pointFalloffMode = 2.0f;
     s.venueHighlightLumaMode = 0.0f;
     s.numLights = 0.0f;

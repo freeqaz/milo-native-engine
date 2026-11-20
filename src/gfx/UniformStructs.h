@@ -29,7 +29,8 @@ struct SceneUniforms {
     float lightColors[4][4];  // array<vec4f, 4> — color per light
     float ambientColor[4];    // vec4f
     float numLights;          // f32
-    float _padN[3];
+    float specularAA;         // f32: 1 = specular antialiasing (DC3 enhanced; standard_wgsl.inc)
+    float _padN[2];
     // Point lights (up to 4)
     float pointLightPos[4][4];    // array<vec4f, 4> — world position (.w unused)
     float pointLightColors[4][4]; // array<vec4f, 4> — color per light
