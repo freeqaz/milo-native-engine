@@ -298,6 +298,14 @@ inline void CamViewProjectXfms(RndCam *c, Transform &view, Hmx::Matrix4 &proj) {
 inline const Hmx::Matrix4 &CamViewProjMatrix(RndCam *c) { return c->GetViewProjMatrix(); }
 inline const Vector2 &CamZRange(RndCam *c) { return c->ZRange(); }
 inline const Hmx::Rect &CamScreenRect(RndCam *c) { return c->GetScreenRect(); }
+// The planes the depth of field's constants come from (DofPass::Run). DC3's
+// NgDOFProc::Set computes its scale and bias from the camera it is given, at
+// Set (DOFProc_NG.cpp); dc3's NativeDOFProc keeps that camera's planes
+// (rndobj/DOFProc.cpp). False when Set had no camera: the caller reads the
+// current camera, as before.
+inline bool DofSetCamPlanes(float &nearPlane, float &farPlane, Vector2 &zRange) {
+    return NativeDOFSetCamPlanes(nearPlane, farPlane, zRange.x, zRange.y);
+}
 
 // ---- mesh ------------------------------------------------------------------
 inline RndMesh *MeshGeomOwner(RndMesh *m) { return m->GetGeomOwner(); }
