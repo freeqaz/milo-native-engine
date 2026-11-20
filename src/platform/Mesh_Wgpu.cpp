@@ -10,6 +10,7 @@
 #include "platform/MeshDrawShowing.h"
 #include "platform/MeshFilter.h"
 #include "platform/MeshPipelineKey.h"
+#include "platform/LookProfile.h"
 #include "platform/TransformUtils.h"
 #include "platform/TexGpu.h"
 #include "gfx/FrameCapture.h"
@@ -224,6 +225,18 @@ PipelineKey MeshPipelineKey(RndMesh* mesh, RndMat* rawMat, bool skinned, int32_t
     return MaterialPipelineKey(rawMat, skinned, isGlyphMesh, isTextMesh, depthBias, ctx);
 }
 
+// The cull a material draws with inside a WorldReflection (the mirrored camera
+// reverses the winding). The DC3 shape forces the reverse of a regular
+// material's cull on every material, as DC3's CheckForceCull does; the other
+// shapes flip the material's own cull and leave a two-sided one two-sided.
+WgpuCull ReflectionCull(WgpuCull materialCull, bool inReflection) {
+    if (!inReflection) return materialCull;
+    const int inspect = milo::ReflectionCullInspection();
+    if (inspect < 0 ? rndshape::kReflectionForcesReverseCull : inspect == 1) return WgpuCull::Backwards;
+    if (materialCull == WgpuCull::None) return materialCull;
+    return materialCull == WgpuCull::Regular ? WgpuCull::Backwards : WgpuCull::Regular;
+}
+
 PipelineKey MaterialPipelineKey(RndMat* rawMat, bool skinned, bool isGlyphMesh, bool isTextMesh,
                                 int32_t depthBias, const MeshPassContext& ctx) {
     auto mat = rndshape::Mat(rawMat);
@@ -242,9 +255,7 @@ PipelineKey MaterialPipelineKey(RndMat* rawMat, bool skinned, bool isGlyphMesh, 
     WgpuCull matCull = (isGlyphMesh || isOverlayPass) ? WgpuCull::None : (WgpuCull)mat->GetCull();
     // Reflection mode (rndshape::kDrawModeReflection) flips the camera, reversing winding order.
     // Flip cull mode so front faces aren't discarded.
-    if (ctx.reflection && matCull != WgpuCull::None) {
-        matCull = (matCull == WgpuCull::Regular) ? WgpuCull::Backwards : WgpuCull::Regular;
-    }
+    matCull = ReflectionCull(matCull, ctx.reflection && !isGlyphMesh && !isOverlayPass);
     if (ctx.selfShadowCaster && !isGlyphMesh && !isOverlayPass) matCull = WgpuCull::Backwards;
     key.cull = matCull;
     key.stencil = (WgpuStencil)mat->GetStencil();
@@ -285,9 +296,7 @@ PipelineKey MeshNextPassPipelineKey(const PipelineKey& first, BaseMaterial* next
     npKey.blend = (WgpuBlend)rndshape::Mat(nextPass)->GetBlend();
     npKey.zMode = (WgpuZMode)rndshape::Mat(nextPass)->GetZMode();
     WgpuCull npCull = (WgpuCull)rndshape::Mat(nextPass)->GetCull();
-    if (ctx.reflection && npCull != WgpuCull::None) {
-        npCull = (npCull == WgpuCull::Regular) ? WgpuCull::Backwards : WgpuCull::Regular;
-    }
+    npCull = ReflectionCull(npCull, ctx.reflection);
     if (ctx.selfShadowCaster) npCull = first.cull;
     npKey.cull = npCull;
     npKey.stencil = (WgpuStencil)rndshape::Mat(nextPass)->GetStencil();

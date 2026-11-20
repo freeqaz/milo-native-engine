@@ -189,6 +189,27 @@ bool SetLookLodBiasForInspection(bool useRule, float bias) {
     return true;
 }
 
+bool SetLookAnisotropyForInspection(unsigned short maxAnisotropy) {
+    LookSettings &s = Mutable();
+    if (s.profile == LookProfile::Native) return false;
+    // 0: the profile's own value. Inspection only: the world samplers are
+    // looked up per material setup (ApplyLookSampling), so the next frame's
+    // draws find a sampler, and a bind group, for the new value -- one cache
+    // miss per material on the switch, which a shipped path never takes.
+    s.maxAnisotropy = maxAnisotropy ? maxAnisotropy : SettingsFor(s.profile).maxAnisotropy;
+    fprintf(stderr, "[look] world max anisotropy %u%s (inspection, profile %s)\n", (unsigned)s.maxAnisotropy,
+            maxAnisotropy ? "" : " (the rule)", LookProfileName(s.profile));
+    return true;
+}
+
+static int sReflectionCullInspection = -1;
+void SetReflectionCullForInspection(int mode) {
+    sReflectionCullInspection = mode < 0 ? -1 : (mode ? 1 : 0);
+    fprintf(stderr, "[look] reflection cull %s (inspection)\n",
+            sReflectionCullInspection < 0 ? "rule" : sReflectionCullInspection ? "force" : "flip");
+}
+int ReflectionCullInspection() { return sReflectionCullInspection; }
+
 bool SetLookProfileForInspection(LookProfile p) {
     if (Mutable().profile == LookProfile::Native || p == LookProfile::Native) return false;
     Mutable() = SettingsFor(p);

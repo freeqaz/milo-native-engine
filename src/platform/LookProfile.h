@@ -219,6 +219,21 @@ float PassMaterialLodBias(const LookSettings &look, bool toTextureTarget, float 
 // bias (enhanced) made its world pipelines biasable; in a run started retail
 // this changes nothing on screen.
 bool SetLookLodBiasForInspection(bool useRule, float bias);
+// {rnd native_look aniso_1|aniso_4|aniso_16|aniso_rule}: the world samplers'
+// max anisotropy (ApplyLookSampling; text and HUD never take it), or 0 for the
+// profile's own value, so one run measures the GPU cost at each. Takes effect
+// on the next frame through new samplers and bind groups (inspection only).
+// False under the Native profile.
+bool SetLookAnisotropyForInspection(unsigned short maxAnisotropy);
+// {rnd native_look refl_cull_force|refl_cull_flip|refl_cull_rule}: the cull a
+// WorldReflection's mirrored redraw gives its materials (ReflectionCull,
+// Mesh_Wgpu.cpp): force = every material culls Backwards (DC3's CheckForceCull),
+// flip = the material's own cull reversed and two-sided kept two-sided (the
+// pre-item-20 native rule), rule = the shape's constant
+// (rndshape::kReflectionForcesReverseCull). Inspection only: one frozen frame
+// compared both ways. Not tied to the look profile.
+void SetReflectionCullForInspection(int mode);  // -1 rule, 0 flip, 1 force
+int ReflectionCullInspection();
 // One post field at a time (the per-item cost A/B: each enhancement against
 // retail in the same run); the fields not named are set retail.
 bool SetLookPostFieldsForInspection(bool precision, bool bloomFilter, bool dofFilter);
