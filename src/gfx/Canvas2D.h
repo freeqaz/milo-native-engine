@@ -52,13 +52,21 @@
 //   UV rectangle: a sub-rectangle of an atlas never bleeds its neighbours, and
 //   UVs do not wrap. u0,v0 is the texture coordinate at the quad's top-left
 //   corner and u1,v1 at its bottom-right (v down, 0..1 across the texture).
-//     kColor       texel RGBA x colour (album art, icons, pre-coloured art).
+//     kColor       texel RGBA x colour (album art, icons, pre-coloured art,
+//                  and a font atlas whose RGB is part of the glyph).
 //     kCoverageA   the texel's ALPHA is coverage, the colour comes from the
-//                  quad: out = (colour.rgb, colour.a * texel.a). This is what
-//                  the game's own font atlases need (RndFont pages; the
-//                  engine's text path reads the same channel).
-//     kCoverageR/G/B  the same from another channel (single-channel atlases
-//                  uploaded as red, MSDF-less glyph caches, masks).
+//                  quad alone: out = (colour.rgb, colour.a * texel.a). The
+//                  texel's RGB is ignored.
+//     kCoverageR/G/B  the same from another channel (a single-channel atlas
+//                  uploaded as red, a glyph cache, a mask).
+//   The game's font atlases (RndFont pages), measured on the 12 atlases
+//   embedded in DC3's ui/resource/fonts/gen/*.milo_xbox: all DXT5 (8 bpp,
+//   order 0x18; 256x256 or 512x512, with mips), glyph coverage in ALPHA. Their
+//   RGB is white in some (default, dev, money) and part of the glyph in others
+//   (grey in the shadowed and number fonts, coloured in icons and
+//   button_icon). So kCoverageA draws any of them as a flat tint, and kColor
+//   draws them as the game does (atlas RGB x colour, atlas alpha as coverage)
+//   -- for a white atlas the two give the same pixels.
 //
 // ORDER, BATCHING AND FLUSHING
 //   Quads are drawn in submission order; later quads are on top. Consecutive
@@ -115,7 +123,7 @@ enum class Canvas2DTexMode : uint8_t {
     kCoverageR = 1, // texel channel is coverage; colour from the quad
     kCoverageG = 2,
     kCoverageB = 3,
-    kCoverageA = 4, // the game's font atlases
+    kCoverageA = 4, // a font atlas as a flat tint (see TEXTURES)
 };
 
 struct Canvas2DQuad {
