@@ -107,7 +107,9 @@ struct SceneUniforms {
     // Ambient
     ambientColor: vec4f,
     numLights: f32,
-    _padN1: f32,
+    // 1: specular antialiasing (LookSettings::specularAA; DC3 enhanced, set
+    // by the DC3 shape's scene lighting). 0 everywhere else.
+    specularAA: f32,
     _padN2: f32,
     _padN3: f32,
     // Point lights (up to 4)
@@ -1352,7 +1354,7 @@ fn dc3SkinLight(worldPos: vec3f, Nk: vec3f, Nf: vec3f, V: vec3f, ao: vec4f,
 // The box reflection is not tinted by c2; only the map tints it.
 fn dc3HairLight(worldPos: vec3f, N: vec3f, nRaw: vec3f, V: vec3f, ao: vec4f,
                 ambientTerm: vec3f, proj: Dc3Proj, specMap: vec3f, power: f32,
-                hasSpec: bool) -> Dc3CharLight {
+                retailPower: f32, hasSpec: bool) -> Dc3CharLight {
     var r: Dc3CharLight;
     let boxN = ao.x * boxLightSample(N);
     var light = boxN + (proj.mult - vec3f(1.0)) * boxN + proj.add;
@@ -1363,6 +1365,14 @@ fn dc3HairLight(worldPos: vec3f, N: vec3f, nRaw: vec3f, V: vec3f, ao: vec4f,
     let aniso = material.retailSpec.rgb * l1 +
         material.specular2Color.rgb * pow(s, 2.0 * power) * (1.0 - l1);
     let lobe = power * 0.1591549 + 0.3183099;
+    // The strand lobe is a band (s^m across the strand, m = 4p and 2p), whose
+    // light goes as n(p) / sqrt(m): a specular-antialiased exponent (power
+    // under retailPower) keeps the retail band's light with n(retail p)
+    // sqrt(p / retail p). The same lobe when the exponent is retail's.
+    var bandLobe = lobe;
+    if (power < retailPower) {
+        bandLobe = (retailPower * 0.1591549 + 0.3183099) * sqrt(power / retailPower);
+    }
     var spec = vec3f(0.0);
     let pointLightCount = i32(scene.numPointLights);
     for (var i = 0; i < 4; i++) {
@@ -1375,7 +1385,7 @@ fn dc3HairLight(worldPos: vec3f, N: vec3f, nRaw: vec3f, V: vec3f, ao: vec4f,
             c *= dc3SelfShadowMult(N);
         }
         light += c * saturate(dot(N, L) * vec3f(0.75, 0.8, 0.85) + vec3f(0.25, 0.2, 0.15));
-        spec += c * saturate(dot(L, Re)) * lobe * aniso;
+        spec += c * saturate(dot(L, Re)) * bandLobe * aniso;
     }
     let rimb = (1.0 - saturate(dot(V, N))) * (0.5 * N.z + 0.5);
     spec += (0.25 + rimb) * lobe * ao.x * boxLightPow(Re, power);
@@ -1398,6 +1408,32 @@ struct RetailPixel {
     specSample: vec4f,
     rimSample: vec4f,
     ao: vec4f,            // retailAOFactors
+    // Specular antialiasing (scene.specularAA): the normal's variance over the
+    // pixel's footprint, |dN/dx|^2 + |dN/dy|^2 (retailShade). 0: off (and a
+    // compute caller that leaves it zeroed gets the retail lobe).
+    normalVar: f32,
+}
+
+// Specular antialiasing (Tokuyoshi and Kaplanyan 2019, "Improved Geometric
+// Specular Antialiasing"): a Phong exponent p about the reflected vector is a
+// Blinn-Phong one of about 4p about the half vector, roughness^2 = 2 / (4p + 2)
+// (Walter et al. 2007's Beckmann equivalence); the normal's variance over the
+// pixel adds 2 sigma^2 |dN|^2 (sigma^2 = 1 / 2 pi) to it, clamped at kappa,
+// so a lobe narrower than the pixel's spread of normals widens to that spread.
+// The callers' lobes are normalised ((p + 2) / 2 pi), so the widened lobe keeps
+// its energy and lowers its peak: a highlight that falls between pixel centres
+// from one frame to the next stops blinking. Returns p unchanged at
+// normalVar 0, never raises it, and never goes under retail's 0.5 floor.
+const kSpecAASigma2 = 0.15915494;
+const kSpecAAKappa = 0.18;
+fn specularAAPower(power: f32, normalVar: f32) -> f32 {
+    if (normalVar <= 0.0) {
+        return power;
+    }
+    let r2 = 2.0 / (4.0 * power + 2.0);
+    let k = min(2.0 * kSpecAASigma2 * normalVar, kSpecAAKappa);
+    let wide = (2.0 / min(r2 + k, 1.0) - 2.0) * 0.25;
+    return max(min(power, wide), min(power, 0.5));
 }
 
 // DC3's normal detail map: RndShaderStandard::CalcShaderOpts sets bit 24 for
@@ -1453,13 +1489,15 @@ fn retailPixelShade(p: RetailPixel, base: vec3f, ambientTerm: vec3f, proj: Dc3Pr
             specColor *= specSample.rgb;
             power = max(power * specSample.a, 0.5);
         }
+        let retailPower = power;
+        power = specularAAPower(power, p.normalVar);
         var c: Dc3CharLight;
         if (skin) {
             c = dc3SkinLight(worldPos, N, Nfull, V, ao, ambientTerm, proj, specColor, power,
                              retailHasSpecular());
         } else {
             c = dc3HairLight(worldPos, N, p.normal, V, ao, ambientTerm, proj,
-                             specMap, power, retailHasSpecular());
+                             specMap, power, retailPower, retailHasSpecular());
         }
         return base * c.diffuse + c.spec;
     }
@@ -1480,6 +1518,7 @@ fn retailPixelShade(p: RetailPixel, base: vec3f, ambientTerm: vec3f, proj: Dc3Pr
             specColor *= specSample.rgb;
             power = max(power * specSample.a, 0.5);
         }
+        power = specularAAPower(power, p.normalVar);
         spec = specColor * retailSpecular(worldPos, N, V, ao, power);
     }
 
@@ -1554,6 +1593,20 @@ fn retailShade(surfaceInput: VertexOutput, base: vec3f, ambientLight: vec3f, raw
     px.specSample = textureSampleBias(specularMapTex, diffuseSampler, uv, kLodBias);
     px.rimSample = textureSampleBias(rimMapTex, diffuseSampler, uv, kLodBias);
     px.ao = ao;
+    if (scene.specularAA > 0.5) {
+        // The interpolated normal's change across the pixel, and the normal
+        // map's (its x, y slopes, at the strength retailPixelShade uses).
+        let n = normalize(surfaceInput.worldNormal);
+        let dnx = dpdx(n);
+        let dny = dpdy(n);
+        var v = dot(dnx, dnx) + dot(dny, dny);
+        if (isEnabled(material.retailFlags.y)) {
+            let mx = 2.0 * dpdx(px.normalSample.rg);
+            let my = 2.0 * dpdy(px.normalSample.rg);
+            v += dot(mx, mx) + dot(my, my);
+        }
+        px.normalVar = v;
+    }
     return retailPixelShade(px, base, ambientTerm, proj);
 }
 

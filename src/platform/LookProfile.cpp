@@ -43,6 +43,7 @@ LookSettings SettingsFor(LookProfile p) {
     s.postPrecision = enh;
     s.postBloomFilter = enh;
     s.postDofFilter = enh;
+    s.specularAA = enh;
     return s;
 }
 
@@ -137,6 +138,14 @@ bool SetLookPostFieldsForInspection(bool precision, bool bloomFilter, bool dofFi
 
 bool SetLookPostForInspection(bool enhanced) {
     return SetLookPostFieldsForInspection(enhanced, enhanced, enhanced);
+}
+
+bool SetLookSpecularAAForInspection(bool on) {
+    LookSettings &s = Mutable();
+    if (s.profile == LookProfile::Native) return false;
+    s.specularAA = on;
+    fprintf(stderr, "[look] specular AA %d (inspection, profile %s)\n", (int)on, LookProfileName(s.profile));
+    return true;
 }
 
 bool SetLookProfileForInspection(LookProfile p) {
