@@ -43,6 +43,13 @@
 //   gets src.a + dst.a*(1-src.a), except in the world pass of a frame whose
 //   alpha is the bloom mask, where alpha is left alone (as Rnd::DrawRect with
 //   no material does). The four corner colours are interpolated bilinearly.
+//   These are FRAME colours: whatever the renderer does to the finished frame
+//   happens to them too. Measured in a DC3 window: the display gamma ramp
+//   (rndshape::DisplayGamma, presenting runs only) shows a 0.10/0.10/0.12 card
+//   as 35,35,42, not the 26,26,31 it was given; components of 0 and 1 come
+//   back unchanged. A render target holds every colour as given (the unit
+//   tests read mid-tones back exactly). Rnd::DrawRect and the game's own UI
+//   get the same treatment.
 //
 // TEXTURES
 //   A quad's `tex` is the game's RndTex* (null: untextured). It is resolved to
