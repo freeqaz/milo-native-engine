@@ -117,33 +117,43 @@ const kTentW = array<f32, 4>(0.125, 0.375, 0.375, 0.125);
 }
 
 // np-look23 (c), the enhanced look's LookSettings::postDofDepthWeight: the
-// same 8x8 tent, but each scene texel weighted by its own blur factor
-// squared (DepthWeight), premultiplied, the weight sum in alpha. An in-focus
-// texel (factor ~0) then adds nothing to the blur, so the blurred background
-// next to an in-focus figure is background only: retail's depth-blind
-// downsample spreads the figure's colour into it, a bright fringe ~12 px
-// wide at 720 (Xenia and the hardware show it too). The blur passes average
-// the weighted colour and the weight alike; the composite divides
-// (fs_composite_bspline_dw). The quarter targets are RGBA16Float here, so the
-// division does not amplify 8-bit rounding.
+// same 8x8 tent, each tap weighted by the blur factor squared there,
+// premultiplied, the weight sum in alpha. An in-focus texel (factor ~0) then
+// adds nothing to the blur, so the blurred background next to an in-focus
+// figure is background only: retail's depth-blind downsample spreads the
+// figure's colour into it, a bright fringe ~12 px wide at 720 (Xenia and the
+// hardware show it too). The blur passes average the weighted colour and the
+// weight alike; the composite divides (fs_composite_bspline_dw). The quarter
+// targets are RGBA16Float here, so the division does not amplify 8-bit
+// rounding.
 fn dof_factor(z: f32) -> f32 {
     let t = z * dof.c24.x + dof.c24.y;
     return clamp(min(max(abs(t), dof.c24.z), dof.c24.w), 0.0, 1.0);
 }
-// fs_down_tent's 16 bilinear taps, each weighted by the factor at the
-// heavier texel of its pair (one depth load per tap): a quarter of the loads
-// of weighting all 64 texels (0.187 -> 0.083 ms at 1080 on a 3090), the weight
-// resolved to 2 scene texels at an edge.
-@fragment fn fs_down_tent_dw(in: VOut) -> @location(0) vec4f {
+// np-look23 (c2): the weight comes from a half-size pre-pass. It writes the
+// factor squared from one depth load per half-size texel (scene texel 2p + 1:
+// each multisampled depth texel read at most once, the reads coherent) into
+// an R16Float target, and the downsample samples that bilinearly at each of
+// its 16 taps (factor texel p under scene texels 2p and 2p + 1, read at the
+// tap's scene position / 2, so an odd size maps exactly). One depth load per tap in the downsample itself (16 per quarter
+// texel, scattered) cost +0.84 ms at 1920x1080 on a Radeon 890M; this costs
+// +0.25 ms there.
+@fragment fn fs_dw_factor_half(in: VOut) -> @location(0) vec4f {
+    let dmax = vec2i(textureDimensions(depthTex)) - 1;
+    let p = vec2i(in.pos.xy) * 2 + 1;
+    let f = dof_factor(textureLoad(depthTex, min(p, dmax), 0));
+    return vec4f(f * f, 0.0, 0.0, 1.0);
+}
+@group(0) @binding(7) var factorTex: texture_2d<f32>;
+@fragment fn fs_down_tent_dwh(in: VOut) -> @location(0) vec4f {
     let size = vec2f(textureDimensions(srcTex));
-    let ddims = vec2i(textureDimensions(depthTex));
+    let fsize = vec2f(textureDimensions(factorTex)) * 2.0;
     let c = floor(in.pos.xy) * 4.0 + 2.0;
     var acc = vec4f(0.0);
     for (var j = 0; j < 4; j++) {
         for (var i = 0; i < 4; i++) {
             let q = c + vec2f(kTentO[i], kTentO[j]);
-            let f = dof_factor(textureLoad(depthTex, clamp(vec2i(floor(q)), vec2i(0), ddims - 1), 0));
-            let w = kTentW[i] * kTentW[j] * f * f;
+            let w = kTentW[i] * kTentW[j] * textureSampleLevel(factorTex, samp, q / fsize, 0.0).r;
             acc += vec4f(textureSampleLevel(srcTex, samp, q / size, 0.0).rgb * w, w);
         }
     }
@@ -322,12 +332,18 @@ void DofPass::EnsurePipelines(wgpu::TextureFormat format, GpuDevice& gpu) {
             mCompositeBGL = dev.CreateBindGroupLayout(&d);
         }
         {
-            // np-look23 (c): the depth-weighted downsample (src, sampler, depth, params).
-            wgpu::BindGroupLayoutEntry e[4] = {tex(0), samp, depth, ub(6, sizeof(DofUniforms))};
+            // np-look23 (c): the depth weight's half-size factor pre-pass (depth, params) and
+            // the downsample that samples it (src, sampler, factor).
+            wgpu::BindGroupLayoutEntry e[2] = {depth, ub(6, sizeof(DofUniforms))};
             wgpu::BindGroupLayoutDescriptor d{};
-            d.label = "DofDownDepthWeightBGL";
-            d.entryCount = 4;
+            d.label = "DofDepthWeightFactorHalfBGL";
+            d.entryCount = 2;
             d.entries = e;
+            mFactorHalfBGL = dev.CreateBindGroupLayout(&d);
+            wgpu::BindGroupLayoutEntry e2[3] = {tex(0), samp, tex(7)};
+            d.label = "DofDownDepthWeightHalfBGL";
+            d.entryCount = 3;
+            d.entries = e2;
             mDownDwBGL = dev.CreateBindGroupLayout(&d);
         }
         wgpu::PipelineLayoutDescriptor pl{};
@@ -336,6 +352,8 @@ void DofPass::EnsurePipelines(wgpu::TextureFormat format, GpuDevice& gpu) {
         mPassPL = dev.CreatePipelineLayout(&pl);
         pl.bindGroupLayouts = &mCompositeBGL;
         mCompositePL = dev.CreatePipelineLayout(&pl);
+        pl.bindGroupLayouts = &mFactorHalfBGL;
+        mFactorHalfPL = dev.CreatePipelineLayout(&pl);
         pl.bindGroupLayouts = &mDownDwBGL;
         mDownDwPL = dev.CreatePipelineLayout(&pl);
 
@@ -359,7 +377,7 @@ void DofPass::EnsurePipelines(wgpu::TextureFormat format, GpuDevice& gpu) {
     mCompositePipe = make(mCompositePL, "fs_composite", "DofComposite");
     mDownTentPipe = nullptr;           // `enhanced`: Prewarm or the first Run
     mCompositeBSplinePipe = nullptr;
-    mDownDwPipe = mBlurDwPipe = mCompositeDwPipe = nullptr;
+    mFactorHalfPipe = mDownDwPipe = mBlurDwPipe = mCompositeDwPipe = nullptr;
     // The quarter and output textures are in `format` too.
     mW = mH = 0;
 }
@@ -393,7 +411,9 @@ void DofPass::EnsureEnhancedPipelines(GpuDevice& gpu) {
 
 void DofPass::EnsureDepthWeightPipelines(GpuDevice& gpu) {
     if (mDownDwPipe) return;
-    mDownDwPipe = MakePipe(mDownDwPL, "fs_down_tent_dw", "DofDownsampleTentDepthWeight", gpu,
+    mFactorHalfPipe = MakePipe(mFactorHalfPL, "fs_dw_factor_half", "DofDepthWeightFactorHalf", gpu,
+                               kDepthWeightFactorFormat);
+    mDownDwPipe = MakePipe(mDownDwPL, "fs_down_tent_dwh", "DofDownsampleTentDepthWeightHalf", gpu,
                            kDepthWeightFormat);
     mBlurDwPipe = MakePipe(mPassPL, "fs_blur", "DofBlurDepthWeight", gpu, kDepthWeightFormat);
     mCompositeDwPipe = MakePipe(mCompositePL, "fs_composite_bspline_dw", "DofCompositeDepthWeight", gpu);
@@ -401,6 +421,24 @@ void DofPass::EnsureDepthWeightPipelines(GpuDevice& gpu) {
 
 void DofPass::EnsureDepthWeightTextures(int w, int h, GpuDevice& gpu) {
     const int qw = std::max(1, w >> 2), qh = std::max(1, h >> 2);
+    // Rounded up: an odd width or height keeps its last scene column / row
+    // under a factor texel of its own (fs_down_tent_dwh reads it in scene
+    // texels, so the mapping is exact at any size).
+    const int hw = std::max(1, (w + 1) >> 1), hh = std::max(1, (h + 1) >> 1);
+    if (mDwFactorW != hw || mDwFactorH != hh || !mDwFactorView) {
+        // np-look23 (c2): the half factor's target (made with the quarters;
+        // unused by the other gathers).
+        if (mBindGroups && mDwFactorView) mBindGroups->Forget(mDwFactorView.Get());
+        wgpu::TextureDescriptor td{};
+        td.label = "DofDepthWeightFactorHalf";
+        td.size = {(uint32_t)hw, (uint32_t)hh, 1};
+        td.format = kDepthWeightFactorFormat;
+        td.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding;
+        mDwFactor = gpu.CreateTexture(td);
+        mDwFactorView = mDwFactor.CreateView();
+        mDwFactorW = hw;
+        mDwFactorH = hh;
+    }
     if (mDwW == qw && mDwH == qh && mDwView[0]) return;
     if (mBindGroups)
         for (int k = 0; k < 2; k++)
@@ -581,21 +619,35 @@ bool DofPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& sceneV
     // 1. downsample_4x: scene -> A.  2. blur, horizontal taps: A -> B.
     // 3. blur, vertical taps: B -> A.
     if (dw) {
-        wgpu::BindGroupEntry e[4] = {};
-        e[0].binding = 0;
-        e[0].textureView = sceneView;
-        e[1].binding = 1;
-        e[1].sampler = mSampler;
-        e[2].binding = 5;
-        e[2].textureView = depthView;
-        e[3].binding = 6;
-        e[3].buffer = mCompositeUB;
-        e[3].size = sizeof(DofUniforms);
-        wgpu::BindGroupDescriptor d{};
-        d.layout = mDownDwBGL;
-        d.entryCount = 4;
-        d.entries = e;
-        Pass(encoder, mDownDwPipe, Group(dev, d), q[0], "DofDownsampleTentDepthWeight");
+        // np-look23 (c): the half-size factor, then the downsample that
+        // samples it.
+        {
+            wgpu::BindGroupEntry e[2] = {};
+            e[0].binding = 5;
+            e[0].textureView = depthView;
+            e[1].binding = 6;
+            e[1].buffer = mCompositeUB;
+            e[1].size = sizeof(DofUniforms);
+            wgpu::BindGroupDescriptor d{};
+            d.layout = mFactorHalfBGL;
+            d.entryCount = 2;
+            d.entries = e;
+            Pass(encoder, mFactorHalfPipe, Group(dev, d), mDwFactorView, "DofDepthWeightFactorHalf");
+        }
+        {
+            wgpu::BindGroupEntry e[3] = {};
+            e[0].binding = 0;
+            e[0].textureView = sceneView;
+            e[1].binding = 1;
+            e[1].sampler = mSampler;
+            e[2].binding = 7;
+            e[2].textureView = mDwFactorView;
+            wgpu::BindGroupDescriptor d{};
+            d.layout = mDownDwBGL;
+            d.entryCount = 3;
+            d.entries = e;
+            Pass(encoder, mDownDwPipe, Group(dev, d), q[0], "DofDownsampleTentDepthWeightHalf");
+        }
         Pass(encoder, mBlurDwPipe, passBG(q[0], mBlurUB[0]), q[1], "DofBlurH");
         Pass(encoder, mBlurDwPipe, passBG(q[1], mBlurUB[1]), q[0], "DofBlurV");
     } else if (enhanced) {
@@ -648,9 +700,12 @@ void DofPass::Terminate() {
     mCompositePipe = nullptr;
     mDownTentPipe = nullptr;
     mCompositeBSplinePipe = nullptr;
-    mDownDwPipe = mBlurDwPipe = mCompositeDwPipe = nullptr;
-    mDownDwBGL = nullptr;
-    mDownDwPL = nullptr;
+    mFactorHalfPipe = mDownDwPipe = mBlurDwPipe = mCompositeDwPipe = nullptr;
+    mFactorHalfBGL = mDownDwBGL = nullptr;
+    mFactorHalfPL = mDownDwPL = nullptr;
+    mDwFactor = nullptr;
+    mDwFactorView = nullptr;
+    mDwFactorW = mDwFactorH = 0;
     mDw[0] = mDw[1] = nullptr;
     mDwView[0] = mDwView[1] = nullptr;
     mDwW = mDwH = 0;
