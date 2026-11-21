@@ -72,15 +72,18 @@ fn cutoutCoverage(a: f32, threshold: f32, w: f32) -> f32 {
     return saturate((a - threshold) / max(w, 1e-4) + 0.5);
 }
 
-// np-look26 d, the enhanced look's cutout edge (LookSettings::
-// cutoutSampleTest, scene.cutoutSampleTest): the original's alpha test taken
+// np-look26 d, an inspection mode of the enhanced look's cutout edge
+// (LookSettings::cutoutSampleTest, scene.cutoutSampleTest; no look turns it
+// on, np-look26 g): the original's alpha test taken
 // at each of the pass's four samples, the sample mask being the four results.
-// Why: the enhanced look uploads the whole mip chain and filters it 16x
-// anisotropically, so a strand thinner than a texel of the level it reads is
-// averaged with its transparent surround and falls under the cut, and
-// cutoutCoverage above tests that averaged alpha once per pixel: the strand
-// dots out. Retail reads its two top levels only, so its strands alias but do
-// not dissolve. Each sample here reads the texel alpha at its own position
+// Why it was built: the enhanced look uploads the whole mip chain and filters
+// it 16x anisotropically, so a strand thinner than a texel of the level it
+// reads is averaged with its transparent surround and falls under the cut,
+// and cutoutCoverage above tests that averaged alpha once per pixel: a strand
+// tip fades out. Retail reads its two top levels only: its strands alias and
+// break up more than that, not less (measured on a retail launch; the retail
+// token in an enhanced run had hidden it). Each sample here reads the texel
+// alpha at its own position
 // (the standard 4x pattern, in pixels from the pixel centre: WebGPU's fixed
 // sample positions (6,2) (14,6) (2,10) (10,14) sixteenths, samples 0..3,
 // which are the sample mask's bits 0..3), with one bilinear fetch at the
@@ -104,8 +107,9 @@ fn cutoutCoverage(a: f32, threshold: f32, w: f32) -> f32 {
 // sample position, so content under the cut stays invisible); 3 E, B where
 // retail's level resolves the alpha (unclamped lod <= 1), C above; 4 centre
 // only (diagnostic: retail's cut shape). Each mode is one line of the
-// centre-first rule below. The enhanced look's default is E (np-look26 f;
-// kCutoutModeDefault), the others are inspection tokens.
+// centre-first rule below. hair_edge_on selects E (np-look26 f;
+// kCutoutModeDefault); every mode is an inspection token, and with the scene
+// value 0 (every look) the landed coverage above is the cut.
 var<private> gCutSampleTest: bool = false;
 var<private> gCutMask: u32 = 0u;
 fn cutoutSampleTestApplies() -> bool {
