@@ -705,6 +705,9 @@ constexpr bool kIntensifyScalesAlpha = false;
 // rndshape/RB3WiiPostChain.cpp; applied by WgpuRnd::EndDrawing
 // (gfx/DisplayRamp) to the whole frame, after everything else is drawn.
 float DisplayGamma(bool presenting);
+// RB3 scans the ramp out as given (DisplayRamp::kDisplaySRGB, the formula
+// per pixel, unchanged); the display correction is DC3's (RndShape_DC3.h).
+inline int DisplayGammaType() { return 1; }
 
 // ---- scene lighting --------------------------------------------------------
 // RB3 lights with its own (Xbox 360 retail) model, not DC3's venue rig:

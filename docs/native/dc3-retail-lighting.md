@@ -69,9 +69,20 @@ and no linear-to-sRGB encode, all of which retail lacks. The scan-out ramp
 dc3-backend-for-rb3-wii.md section 31), `rndshape::DisplayGamma` returns the
 system config's 0.85 for dc3-decomp, and `WgpuRnd::EndDrawing` applies it once
 after the UI on every output, headless included. Native captures are therefore
-post-ramp, like retail hardware captures; `DC3_DISPLAY_GAMMA=off` gives the
-pre-ramp frame. rb3-xenon still gets 0, so no ramp. Captures quoted in this
-document before that change are pre-ramp.
+post-ramp; `DC3_DISPLAY_GAMMA=off` gives the pre-ramp frame. rb3-xenon still
+gets 0, so no ramp. Captures quoted in this document before that change are
+pre-ramp.
+
+Since np-look31 (2026-11-21; dc3-decomp PLAN H-160) the ramp is no longer
+written out as the game set it. The console's D3D corrects the game's ramp for
+the display before it reaches the hardware (`D3DDevice_SetGammaRamp` ->
+`D3D::GammaRampCorrected`), and for a television that correction is BT.709's
+encode of the sRGB decode, which undoes most of the ramp's lift (frame byte 16
+goes out as 11, not 24; 54 as 52, not 68). `gfx/DisplayRamp` builds that table
+and DC3 uses it by default, so a native capture now matches a capture-card
+recording of a console on HDMI or component. `DC3_DISPLAY_GAMMA=srgb` gives the
+ramp alone (a VGA-cabled console, and every native capture from np-gfx-post
+until np-look31), and `off` the pre-ramp frame as before.
 
 ## 3. Dancer floor shadows (projected_blend 1)
 
