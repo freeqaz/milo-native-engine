@@ -394,7 +394,8 @@ static void WantedGpuSize(RndTex* tex, const GpuTexData& data, int& w, int& h) {
     w = tex->Width() > 0 ? tex->Width() : 256;
     h = tex->Height() > 0 ? tex->Height() : 256;
     const milo::LookSettings& look = milo::Look();
-    if (data.cpuWritten || !TexPassDrawnLikeFrame(tex)
+    // The kept answer (set by this clearing pass), never the rule itself.
+    if (data.cpuWritten || !data.likeFrame
         || !milo::LookTexPassScale(look, gWgpuRnd->Gpu().IsDiscreteGpu()))
         return;
     const int rows = sTexPassOutputRowsForTest > 0 ? sTexPassOutputRowsForTest : gWgpuRnd->Gpu().OutputHeight();
