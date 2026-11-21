@@ -3005,10 +3005,11 @@ void WgpuRnd::WriteSceneUniforms() {
     // constant: a window resized across a render-scale step changes it on the
     // next frame and compiles nothing.
     scene.materialLodBias = PassMaterialLodBias();
-    // Enhanced cutout alpha test per sample (LookSettings::cutoutSampleTest;
-    // the value is the CutoutSampleMode, 0 = off): world cutouts only, never the HUD overlay phase. Read only by fs_cutout
-    // pipelines that take the LOD bias. 0 for rb3 and rb3-xenon (Native) and
-    // the retail look.
+    // Cutout alpha test per sample (LookSettings::cutoutSampleTest; the value
+    // is the CutoutSampleMode, 0 = off): world cutouts only, never the HUD
+    // overlay phase. Read only by fs_cutout pipelines that take the LOD bias.
+    // 0 in every look unless a hair_edge inspection token turned it on, and
+    // always 0 for rb3 and rb3-xenon (Native) and the retail look.
     scene.cutoutSampleTest = PassCutoutSampleTest();
 
     // Upload scene uniforms at a new ring buffer offset (allows mid-frame camera switches —

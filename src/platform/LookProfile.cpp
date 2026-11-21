@@ -61,10 +61,9 @@ LookSettings SettingsFor(LookProfile p) {
     s.noiseSnapsToOutputRows = enh;
     // np-look23 (c): the depth of field gathers by depth (LookProfile.h).
     s.postDofDepthWeight = enh;
-    // np-look26 d: the cutout's alpha test at each of the four samples
-    // (LookProfile.h). Four bilinear alpha fetches in the cutout pipelines'
-    // fragments, nothing elsewhere.
-    s.cutoutSampleTest = enh;
+    // np-look26 g: cutoutSampleTest stays off in every look. Measured against
+    // the landed sharpened coverage it is a trade, not a gain (LookProfile.h);
+    // the hair_edge inspection tokens turn it on.
     return s;
 }
 

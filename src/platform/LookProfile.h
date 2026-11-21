@@ -196,7 +196,8 @@ struct LookSettings {
     bool specularAA = false;
 
     // ---- alpha-tested cutouts (np-look26 d) --------------------------------------
-    // The enhanced cutout (MaterialCutCoverage == Sharpened: hair, crowd
+    // Inspection only: no look sets this (np-look26 g, below). When on, the
+    // enhanced cutout (MaterialCutCoverage == Sharpened: hair, crowd
     // clothing, palms, a SrcAlpha floor line) in a 4x multisampled pass takes
     // the original's alpha test at each of the pass's four samples, and the
     // sample mask is the four results (standard_wgsl.inc cutoutSampleMask).
@@ -213,27 +214,38 @@ struct LookSettings {
     // footprint). World draws only, through the scene block (SceneUniforms::
     // cutoutSampleTest, 0 in the overlay phase), in pipelines that take the
     // LOD bias (text and HUD never do), with a diffuse texture, 4 samples.
-    // Retail and Native: off (and no retail pipeline is fs_cutout).
-    // np-look26 f: under that test the default is mode E (CutoutSampleMode):
+    // Retail and Native: always off (no retail pipeline is fs_cutout, and the
+    // tokens refuse the Native profile).
+    // np-look26 f: the mode hair_edge_on selects is E (CutoutSampleMode):
     // where retail's level resolves the alpha (lod <= 1: palms, fences up
     // close) the per-sample mask alone (B, as smooth as the landed coverage);
     // where the texture is minified past retail's level 1 (hair at a
     // distance) retail's test at the pixel centre first, so every pixel
     // retail draws is drawn solid, and the per-sample mask only where the
     // centre fails (C; B alone was faithful but noisy there: four point
-    // samples of sub-pixel strand alpha). Round 2 (np-look26 e) shipped C as
-    // the default; C stays selectable by token. Inspection:
+    // samples of sub-pixel strand alpha). Inspection:
     // {rnd native_look hair_edge_on|hair_edge_off|hair_edge_rule}, and
     // hair_edge_b|hair_edge_c|hair_edge_e|hair_edge_centre for the modes.
     // (Item 26's boost of the tested alpha by mip level, rejected: it drew
     // content authored under the cut, dclive's PeakLine floor fades.)
+    // np-look26 g, why no look turns it on: a retail launch (two mip levels
+    // uploaded) shows hair more broken than the landed coverage, not less --
+    // the comparison that started this used the retail token in an enhanced
+    // run, which sampled whole chains. Against the landed coverage, E fills
+    // strand tips (oblio04's strands at dclive, 1268x713: solid share .519
+    // against .489) and removes a faint dotted floor line the landed coverage
+    // draws and retail does not, but it draws retail's aliased dots solid
+    // (a dotted silhouette where the landed coverage is smooth), steps floor
+    // stripe edges, and costs four alpha fetches per cut-out fragment. A
+    // trade, so the look is unchanged; one line in SettingsFor adopts it.
     bool cutoutSampleTest = false;
 };
 
 // The cut-out modes the scene block carries (SceneUniforms::cutoutSampleTest,
-// a float holding one of these; standard_wgsl.inc cutoutSampleMask). Only
-// kCutoutModeDefault is the look's: the others are inspection tokens
-// (np-look26 e), kept so one held frame can be measured under each.
+// a float holding one of these; standard_wgsl.inc cutoutSampleMask). All are
+// inspection tokens, kept so one held frame can be measured under each;
+// kCutoutModeDefault is the one hair_edge_on (and a look that sets
+// cutoutSampleTest, none today) selects.
 //   0 off: the landed sharpened coverage (cutoutCoverage).
 //   1 B: retail's test at each of the four samples, the mask the four results.
 //   2 C: retail's test at the pixel centre first; pass = full mask (everything
@@ -250,7 +262,7 @@ enum CutoutSampleMode : int {
     kCutoutModeE = 3,
     kCutoutModeCentre = 4,
 };
-constexpr int kCutoutModeDefault = kCutoutModeE;  // np-look26 f (was C in e)
+constexpr int kCutoutModeDefault = kCutoutModeE;  // hair_edge_on's mode (np-look26 f; was C in e)
 
 // The value the scene block carries (SceneUniforms::cutoutSampleTest): 0
 // while the look has no cutoutSampleTest, else kCutoutModeDefault, or the
@@ -350,8 +362,9 @@ bool SetLookNoiseRowsForInspection(int mode);
 // the Native profile.
 bool SetLookDofDepthWeightForInspection(int mode);
 // {rnd native_look hair_edge_on|hair_edge_off|hair_edge_rule}: cutoutSampleTest
-// on (the default mode), off, or the profile's own value (mode 1 / 0 / -1), so
-// one frozen frame is measured both ways; each clears a mode token. A uniform:
+// on (mode E, kCutoutModeDefault), off, or the profile's own value, which is
+// off in every look (mode 1 / 0 / -1), so one frozen frame is measured both
+// ways; each clears a mode token. A uniform:
 // takes effect on the next frame and compiles nothing. False under the Native
 // profile.
 bool SetLookCutoutSampleTestForInspection(int mode);
