@@ -535,13 +535,13 @@ static bool DepthWeightedDof(const P*, bool worldGrade) {
     }
 }
 // np-look36: the near field's rule (LookSettings::postDofNearField / Spread),
-// with DepthWeightedDof only. The spread is decided by adapter class
-// (milo::LookDofNearSpread).
+// with DepthWeightedDof only. Both are decided by adapter class
+// (milo::LookDofNearField / LookDofNearSpread).
 template <class P>
 static bool NearFieldDof(const P*, bool worldGrade, bool spread, bool discreteGpu) {
     if constexpr (rndshape::kDC3RetailPost && sizeof(P) > 0) {
         return worldGrade && (spread ? milo::LookDofNearSpread(milo::Look(), discreteGpu)
-                                     : milo::Look().postDofNearField);
+                                     : milo::LookDofNearField(milo::Look(), discreteGpu));
     } else {
         return false;
     }

@@ -191,13 +191,19 @@ struct LookSettings {
     // object's blur over the in-focus pixels beside it. Retail and Native: off.
     // Inspection: {rnd native_look dof_near_on|_off|_rule,
     // dof_near_spread_on|_off|_rule}.
-    // The spread is decided by adapter class, as supersampling is
-    // (renderScale / renderScaleIntegrated): it costs one more texture read at
-    // every full-size pixel of the composite. postDofNearSpread is the value
-    // on a discrete GPU, postDofNearSpreadIntegrated on anything else
-    // (integrated, CPU, unknown, the web build). Enhanced: on / off, the
-    // second until a handheld's timing says it fits. LookDofNearSpread picks.
+    // Both are decided by adapter class, as supersampling is (renderScale /
+    // renderScaleIntegrated). The field adds a second quarter target to the
+    // downsample and the two blurs (8 more reads per quarter texel in each)
+    // and 4 reads in the composite inside the near field; the spread one more
+    // read at every full-size pixel of the composite. postDofNearField and
+    // postDofNearSpread are the values on a discrete GPU, the ...Integrated
+    // pair on anything else (integrated, CPU, unknown, the web build).
+    // Enhanced: on / off, the second until a handheld's timing says each fits
+    // (dc3 PLAN H-165). LookDofNearField / LookDofNearSpread pick, and with the
+    // field off the depth of field runs exactly the passes it ran before
+    // np-look36. LogLookAdapterClass prints the choice once.
     bool postDofNearField = false;
+    bool postDofNearFieldIntegrated = false;
     bool postDofNearSpread = false;
     bool postDofNearSpreadIntegrated = false;
     // np-look23 (a): DC3's post noise map (noise_mono.tex) re-tiled so each
@@ -424,13 +430,19 @@ bool SetLookDofDepthWeightForInspection(int mode);
 // {rnd native_look dof_near_on|_off|_rule} / {dof_near_spread_on|_off|_rule}:
 // postDofNearField / postDofNearSpread on, off or the profile's (1 / 0 / -1).
 // The first switch of the near field on in a run that did not start with it
-// compiles three pipelines; the spread is a uniform. False under Native.
-// The spread tokens write both adapter classes' values (on and off force it
-// on any GPU; the rule returns each class to the profile's).
+// compiles four pipelines; the spread is a uniform. False under Native.
+// Each token writes both adapter classes' values: on and off force it on any
+// GPU, and the rule returns each class to the profile's.
 bool SetLookDofNearForInspection(int mode, bool spread = false);
-// The near field's spread for this adapter class: postDofNearSpread on a
-// discrete GPU, postDofNearSpreadIntegrated on anything else.
+// The near field and its spread for this adapter class: postDofNearField /
+// postDofNearSpread on a discrete GPU, the ...Integrated pair on anything else.
+bool LookDofNearField(const LookSettings &look, bool discreteGpu);
 bool LookDofNearSpread(const LookSettings &look, bool discreteGpu);
+// Prints, once per process, the adapter class the device reported and what the
+// class-decided settings came to on it ("[look] adapter class ..."). Nothing
+// under the Native profile, which has no class-decided setting here. The
+// renderer calls it when its device is up.
+void LogLookAdapterClass(bool discreteGpu);
 // {rnd native_look hair_edge_on|hair_edge_off|hair_edge_rule}: cutoutSampleTest
 // on (mode E, kCutoutModeDefault), off, or the profile's own value, which is
 // off in every look (mode 1 / 0 / -1), so one frozen frame is measured both

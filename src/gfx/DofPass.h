@@ -78,11 +78,19 @@ public:
     // +0.84 ms at 1920x1080 on a Radeon 890M (np-look23 c2); this +0.25 ms.
     // Retail and `enhanced` without it: exactly as before.
     static constexpr wgpu::TextureFormat kDepthWeightFormat = wgpu::TextureFormat::RGBA16Float;
-    // RG: the factor squared, and the near field (np-look36; unread without it).
-    static constexpr wgpu::TextureFormat kDepthWeightFactorFormat = wgpu::TextureFormat::RG16Float;
+    // The half factor target: the factor squared (R16Float), and with the near
+    // field (np-look36) the near field beside it (RG16Float). Without the near
+    // field the pre-pass, its target and every pass after it are exactly what
+    // they were before np-look36: the same shaders, formats and reads.
+    static constexpr wgpu::TextureFormat kDepthWeightFactorFormat = wgpu::TextureFormat::R16Float;
+    static constexpr wgpu::TextureFormat kDepthWeightFactorNearFormat = wgpu::TextureFormat::RG16Float;
     // Whether the last Run took the depth-weighted path (tests).
     bool LastRunDepthWeighted() const { return mLastDepthWeighted; }
     bool LastRunNearField() const { return mLastNearField; }
+    // The half factor target's own format, as the device made it (tests).
+    wgpu::TextureFormat FactorTargetFormat() const {
+        return mDwFactor ? mDwFactor.GetFormat() : wgpu::TextureFormat::Undefined;
+    }
     // The enhanced path's tap scale per axis: the tent adds 1.5 scene texel^2
     // (3/32 quarter texel^2) and the B-spline 1/6 quarter texel^2 of variance
     // over the box and bilinear, taken back out of the two Poisson passes'
@@ -125,7 +133,7 @@ private:
     void EnsureNearPipelines(GpuDevice& gpu);
     void EnsureNearTextures(int w, int h, GpuDevice& gpu);
     void EnsureDepthWeightPipelines(GpuDevice& gpu);
-    void EnsureDepthWeightTextures(int w, int h, GpuDevice& gpu);
+    void EnsureDepthWeightTextures(int w, int h, GpuDevice& gpu, bool nearField = false);
     void EnsureTextures(int w, int h, wgpu::TextureFormat format, GpuDevice& gpu);
     void Pass(wgpu::CommandEncoder& encoder, const wgpu::RenderPipeline& pipe,
               const wgpu::BindGroup& bg, const wgpu::TextureView& dst, const char* label,
@@ -158,11 +166,13 @@ private:
     wgpu::BindGroupLayout mBlurNearBGL;      // src, sampler, offsets, src2
     wgpu::BindGroupLayout mCompositeNearBGL; // the composite's + the near quarter
     wgpu::PipelineLayout mBlurNearPL, mCompositeNearPL;
-    wgpu::RenderPipeline mDownNearPipe, mBlurNearPipe, mCompositeNearPipe;
+    wgpu::RenderPipeline mFactorHalfNearPipe, mDownNearPipe, mBlurNearPipe, mCompositeNearPipe;
     wgpu::Texture mNear[2];
     wgpu::TextureView mNearView[2];
     int mNearW = 0, mNearH = 0;
     bool mLastNearField = false;
+    // Whether the half factor target was made with the near field's channel.
+    bool mDwFactorNear = false;
     wgpu::Sampler mSampler;               // linear, clamp
     // One buffer per pass: Queue::WriteBuffer lands at Submit, ahead of every
     // pass in the frame, so passes sharing a buffer would read the same data.

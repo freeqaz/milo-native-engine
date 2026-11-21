@@ -442,6 +442,9 @@ void WgpuRnd::Init() {
 void WgpuRnd::InitGpuResources() {
     if (mGpuResourcesReady) return; // idempotent — already initialized
     mGpuResourcesReady = true;
+    // The device is up: say once which adapter class it is and what the
+    // look's class-decided settings came to on it.
+    milo::LogLookAdapterClass(mGpu.IsDiscreteGpu());
 
     // Initialize pipeline manager. The mesh path binds its material, object
     // and bone uniforms with dynamic offsets into cached bind groups (H-30).
@@ -3243,8 +3246,9 @@ uint64_t WgpuRnd::PrewarmFixedKeyPipelines() {
     // The enhanced look's post pipelines join the warm when the look starts
     // with them on; Retail warms exactly what it did before.
     const milo::LookSettings& look = milo::Look();
-    if (kMSAASamples >= 2) mPostProcPass.PrewarmDof(mGpu.SurfaceFormat(), mGpu, look.postDofFilter,
-                                                     look.postDofDepthWeight, look.postDofNearField);
+    if (kMSAASamples >= 2)
+        mPostProcPass.PrewarmDof(mGpu.SurfaceFormat(), mGpu, look.postDofFilter, look.postDofDepthWeight,
+                                 milo::LookDofNearField(look, mGpu.IsDiscreteGpu()));
     mPostProcPass.PrewarmDC3Enhanced(look.postPrecision, look.postBloomFilter, mGpu);
     mSpotBeamPass.Prewarm(mGpu);
     mPointTestPass.Prewarm(wgpu::TextureFormat::Depth24PlusStencil8, kMSAASamples, mGpu);

@@ -10778,13 +10778,22 @@ Enhanced DC3 look only (`LookSettings::postDofNearField`, `postDofNearSpread`). 
 and the Native profile take neither, and `DofPass::Run`'s two new arguments default off, so no
 other caller changes.
 
-The field is on for every adapter. The spread is decided by adapter class, as supersampling is
-(`renderScale` / `renderScaleIntegrated`): `postDofNearSpread` is the value on a discrete GPU (on),
-`postDofNearSpreadIntegrated` the value on anything else (integrated, CPU, unknown, the web build;
-off). `LookDofNearSpread(look, discreteGpu)` picks, and `PostProcPass::Run` asks it with
-`GpuDevice::IsDiscreteGpu()`. The reason is cost: the spread is one more texture read at every
-full-size pixel of the composite, and a handheld's integrated GPU had not been timed with it when
-this landed. If that timing fits, `postDofNearSpreadIntegrated` goes on in `SettingsFor`.
+Both are decided by adapter class, as supersampling is (`renderScale` / `renderScaleIntegrated`):
+`postDofNearField` and `postDofNearSpread` are the values on a discrete GPU (on),
+`postDofNearFieldIntegrated` and `postDofNearSpreadIntegrated` the values on anything else
+(integrated, CPU, unknown, the web build; off). `LookDofNearField(look, discreteGpu)` and
+`LookDofNearSpread(look, discreteGpu)` pick; `PostProcPass::Run` and the pre-warm ask them with
+`GpuDevice::IsDiscreteGpu()`, which is `AdapterInfo::adapterType == DiscreteGPU` as the device
+reported it. The reason is cost: the field adds texture reads to both blurs and the spread one
+more at every full-size pixel of the composite (52.2), and a handheld's integrated GPU had not
+been timed with either when this landed. With the field off the depth of field runs exactly the
+passes it ran before this section: the same shaders, the same target formats, the same reads.
+When that timing fits, the `...Integrated` values go on in `SettingsFor`.
+
+`LogLookAdapterClass(discreteGpu)` prints the outcome once, when the renderer's device is up
+(`WgpuRnd::InitGpuResources`): `[look] adapter class: discrete GPU; depth of field near field 1,
+near spread 1 (profile enhanced)`, or `not a discrete GPU ... 0 ... 0`. Nothing under the Native
+profile.
 
 ### 52.1 The rule
 
@@ -10801,8 +10810,10 @@ this landed. If that timing fits, `postDofNearSpreadIntegrated` goes on in `Sett
 
 ### 52.2 The passes (`DofPass.cpp`, only with the depth weight on)
 
-- The half-size factor target is RG16Float: R = `f^2` as before, G = `dof_near`. The weighted path
-  without the near rule reads only R.
+- The half-size factor pre-pass has two forms. Without the near field it is what it was:
+  `fs_dw_factor_half` into an R16Float target (`f^2`). With it, `fs_dw_factor_half_near` writes
+  `f^2` and `dof_near` into an RG16Float target (`DofDepthWeightFactorHalfNear`). The target is
+  remade once when the near field is switched (`EnsureDepthWeightTextures(.., nearField)`).
 - `fs_down_tent_dwn` (two targets): the weighted quarter as before, and a second RGBA16Float
   quarter holding the plain tent (depth-blind) with the tent-averaged near field in alpha. The
   same 16 + 16 reads.
@@ -10810,13 +10821,13 @@ this landed. If that timing fits, `postDofNearSpreadIntegrated` goes on in `Sett
 - `fs_composite_bspline_dwn`: the depth-blind B-spline is read only inside the near field (a
   branch); the spread's coverage is one bilinear read per pixel, taken only when the uniform
   `DofUniforms::near.x` is set. `DofUniforms` is 32 bytes.
-- Three pipelines, `DofDownsampleTentNear`, `DofBlurNear`, `DofCompositeNear`, warmed by
-  `DofPass::Prewarm(format, gpu, enhanced, depthWeighted, nearField)` from
-  `WgpuRnd::PrewarmFixedKeyPipelines` when the look starts with the near field on. The spread is a
-  uniform and compiles nothing.
+- Four pipelines, `DofDepthWeightFactorHalfNear`, `DofDownsampleTentNear`, `DofBlurNear`,
+  `DofCompositeNear`, warmed by `DofPass::Prewarm(format, gpu, enhanced, depthWeighted, nearField)`
+  from `WgpuRnd::PrewarmFixedKeyPipelines` when the look starts with the near field on for this
+  adapter class. The spread is a uniform and compiles nothing.
 - Reads added per pixel: the two blurs +8 per quarter texel each; the composite +4 inside the
   near field, and with the spread +1 everywhere. Memory: two more RGBA16Float quarter targets, and
-  the half factor target grows from 2 to 4 bytes per texel.
+  the half factor target grows from 2 to 4 bytes per texel. All of it only with the near field on.
 
 ### 52.3 Measured (3090, held frames, each rule switched by token on the same frame; dc3 archive `lanes/sharp/item36/`)
 
@@ -10836,17 +10847,20 @@ this landed. If that timing fits, `postDofNearSpreadIntegrated` goes on in `Sett
 
 - `SetLookDofNearForInspection(mode, spread)` (1 / 0 / -1 for on, off, the profile's; refused
   under Native); DC3 tokens `{rnd native_look dof_near_on|dof_near_off|dof_near_rule}` and
-  `dof_near_spread_on|dof_near_spread_off|dof_near_spread_rule`. The spread's on and off tokens
-  write both adapter classes' values, so they mean the same on any GPU; its rule token returns
-  each class to the profile's. The switch back to the picture before this section is
-  `dof_near_off`.
+  `dof_near_spread_on|dof_near_spread_off|dof_near_spread_rule`. The on and off tokens write
+  both adapter classes' values, so they mean the same on any GPU; a rule token returns each
+  class to the profile's. There is no environment variable. The switch back to the picture
+  before this section is `dof_near_off`, and on a non-discrete adapter that is the default.
 - `DC3LookPostTest.DofNearFieldSoftensANearObjectsEdgeAndLeavesTheFarField`: a bright in-focus
   half beside a dark half in front of the focus. Largest edge step in levels per pixel: retail
   107, weighted 209, field 108, field and spread 13. The same scene mirrored behind the focus
-  changes no pixel, and no switch compiles a pipeline after the pre-warm.
+  changes no pixel, no switch compiles a pipeline after the pre-warm, and the factor target the
+  device made is R16Float without the near field and RG16Float with it.
   `DC3LookDofNear.FollowsTheLookAndItsSwitch`: the profiles' values and the tokens.
-  `DC3LookDofNear.TheSpreadFollowsTheAdapterClass`: the class rule and the tokens over it. Seven
-  sabotages, each caught. The one line no test reaches is `PostProcPass::Run` passing the
-  device's class: this machine has no non-discrete adapter to draw with.
+  `DC3LookDofNear.TheNearFieldFollowsTheAdapterClass`: the class rule for the field and the
+  spread, and the tokens over it. Ten sabotages, each caught (the last three: the off path
+  writing the two-channel target, the field's helper ignoring the class, the field's on token
+  writing the discrete value only). The one line no native test reaches is `PostProcPass::Run`
+  passing the device's class: the build machine has no non-discrete adapter.
 - Not addressed: an edge between two blurred surfaces that are both behind the focus (the far
   field's rule).

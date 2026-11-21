@@ -150,6 +150,14 @@ fn dof_near(z: f32) -> f32 {
 @fragment fn fs_dw_factor_half(in: VOut) -> @location(0) vec4f {
     let dmax = vec2i(textureDimensions(depthTex)) - 1;
     let p = vec2i(in.pos.xy) * 2 + 1;
+    let f = dof_factor(textureLoad(depthTex, min(p, dmax), 0));
+    return vec4f(f * f, 0.0, 0.0, 1.0);
+}
+// np-look36: the same pre-pass with the near field in G, into an RG16Float
+// target (DofDepthWeightFactorHalfNear). Only the near field's passes read G.
+@fragment fn fs_dw_factor_half_near(in: VOut) -> @location(0) vec4f {
+    let dmax = vec2i(textureDimensions(depthTex)) - 1;
+    let p = vec2i(in.pos.xy) * 2 + 1;
     let z = textureLoad(depthTex, min(p, dmax), 0);
     let f = dof_factor(z);
     return vec4f(f * f, dof_near(z), 0.0, 1.0);
@@ -506,7 +514,7 @@ void DofPass::EnsurePipelines(wgpu::TextureFormat format, GpuDevice& gpu) {
     mDownTentPipe = nullptr;           // `enhanced`: Prewarm or the first Run
     mCompositeBSplinePipe = nullptr;
     mFactorHalfPipe = mDownDwPipe = mBlurDwPipe = mCompositeDwPipe = nullptr;
-    mDownNearPipe = mBlurNearPipe = mCompositeNearPipe = nullptr;
+    mFactorHalfNearPipe = mDownNearPipe = mBlurNearPipe = mCompositeNearPipe = nullptr;
     // The quarter and output textures are in `format` too.
     mW = mH = 0;
 }
@@ -553,6 +561,8 @@ void DofPass::EnsureDepthWeightPipelines(GpuDevice& gpu) {
 
 void DofPass::EnsureNearPipelines(GpuDevice& gpu) {
     if (mDownNearPipe) return;
+    mFactorHalfNearPipe = MakePipe(mFactorHalfPL, "fs_dw_factor_half_near", "DofDepthWeightFactorHalfNear",
+                                   gpu, kDepthWeightFactorNearFormat);
     mDownNearPipe = MakePipe(mDownDwPL, "fs_down_tent_dwn", "DofDownsampleTentNear", gpu,
                              kDepthWeightFormat, 2);
     mBlurNearPipe = MakePipe(mBlurNearPL, "fs_blur_near", "DofBlurNear", gpu, kDepthWeightFormat, 2);
@@ -578,25 +588,27 @@ void DofPass::EnsureNearTextures(int w, int h, GpuDevice& gpu) {
     mNearH = qh;
 }
 
-void DofPass::EnsureDepthWeightTextures(int w, int h, GpuDevice& gpu) {
+void DofPass::EnsureDepthWeightTextures(int w, int h, GpuDevice& gpu, bool nearField) {
     const int qw = std::max(1, w >> 2), qh = std::max(1, h >> 2);
     // Rounded up: an odd width or height keeps its last scene column / row
     // under a factor texel of its own (fs_down_tent_dwh reads it in scene
     // texels, so the mapping is exact at any size).
     const int hw = std::max(1, (w + 1) >> 1), hh = std::max(1, (h + 1) >> 1);
-    if (mDwFactorW != hw || mDwFactorH != hh || !mDwFactorView) {
+    if (mDwFactorW != hw || mDwFactorH != hh || !mDwFactorView || mDwFactorNear != nearField) {
         // np-look23 (c2): the half factor's target (made with the quarters;
-        // unused by the other gathers).
+        // unused by the other gathers). One channel, or two with the near
+        // field (np-look36): switching the near field remakes it, once.
         if (mBindGroups && mDwFactorView) mBindGroups->Forget(mDwFactorView.Get());
         wgpu::TextureDescriptor td{};
         td.label = "DofDepthWeightFactorHalf";
         td.size = {(uint32_t)hw, (uint32_t)hh, 1};
-        td.format = kDepthWeightFactorFormat;
+        td.format = nearField ? kDepthWeightFactorNearFormat : kDepthWeightFactorFormat;
         td.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding;
         mDwFactor = gpu.CreateTexture(td);
         mDwFactorView = mDwFactor.CreateView();
         mDwFactorW = hw;
         mDwFactorH = hh;
+        mDwFactorNear = nearField;
     }
     if (mDwW == qw && mDwH == qh && mDwView[0]) return;
     if (mBindGroups)
@@ -710,7 +722,7 @@ bool DofPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& sceneV
         EnsureEnhancedPipelines(gpu);
         if (depthWeighted) {
             EnsureDepthWeightPipelines(gpu);
-            EnsureDepthWeightTextures(sceneW, sceneH, gpu);
+            EnsureDepthWeightTextures(sceneW, sceneH, gpu, nearField);
             if (nearField) {
                 EnsureNearPipelines(gpu);
                 EnsureNearTextures(sceneW, sceneH, gpu);
@@ -801,7 +813,10 @@ bool DofPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& sceneV
             d.layout = mFactorHalfBGL;
             d.entryCount = 2;
             d.entries = e;
-            Pass(encoder, mFactorHalfPipe, Group(dev, d), mDwFactorView, "DofDepthWeightFactorHalf");
+            if (nf)
+                Pass(encoder, mFactorHalfNearPipe, Group(dev, d), mDwFactorView, "DofDepthWeightFactorHalfNear");
+            else
+                Pass(encoder, mFactorHalfPipe, Group(dev, d), mDwFactorView, "DofDepthWeightFactorHalf");
         }
         {
             wgpu::BindGroupEntry e[3] = {};
@@ -904,7 +919,7 @@ void DofPass::Terminate() {
     mFactorHalfPipe = mDownDwPipe = mBlurDwPipe = mCompositeDwPipe = nullptr;
     mFactorHalfBGL = mDownDwBGL = nullptr;
     mFactorHalfPL = mDownDwPL = nullptr;
-    mDownNearPipe = mBlurNearPipe = mCompositeNearPipe = nullptr;
+    mFactorHalfNearPipe = mDownNearPipe = mBlurNearPipe = mCompositeNearPipe = nullptr;
     mBlurNearBGL = mCompositeNearBGL = nullptr;
     mBlurNearPL = mCompositeNearPL = nullptr;
     mNear[0] = mNear[1] = nullptr;

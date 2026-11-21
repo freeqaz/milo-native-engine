@@ -72,9 +72,10 @@ LookSettings SettingsFor(LookProfile p) {
     // np-look23 (c): the depth of field gathers by depth (LookProfile.h).
     s.postDofDepthWeight = enh;
     // np-look36: the depth weight's near field (LookProfile.h).
+    // The near field and its spread by adapter class: on a discrete GPU; off
+    // on anything else until a handheld's timing says each fits there.
     s.postDofNearField = enh;
-    // The spread by adapter class: on a discrete GPU; off on anything else
-    // until a handheld's timing says the composite's extra read fits there.
+    s.postDofNearFieldIntegrated = false;
     s.postDofNearSpread = enh;
     s.postDofNearSpreadIntegrated = false;
     // np-look26 g: cutoutSampleTest stays off in every look. Measured against
@@ -292,14 +293,16 @@ bool SetLookDofNearForInspection(int mode, bool spread) {
     LookSettings &s = Mutable();
     if (s.profile == LookProfile::Native) return false;
     const LookSettings &r = SettingsFor(s.profile);
+    // Each has a value per adapter class. On and off force both, so the token
+    // means the same on any GPU; the rule returns each to the profile's.
     if (!spread) {
         s.postDofNearField = mode < 0 ? r.postDofNearField : mode != 0;
-        fprintf(stderr, "[look] depth of field near field %d%s (inspection, profile %s)\n",
-                (int)s.postDofNearField, mode < 0 ? " (the rule)" : "", LookProfileName(s.profile));
+        s.postDofNearFieldIntegrated = mode < 0 ? r.postDofNearFieldIntegrated : mode != 0;
+        fprintf(stderr, "[look] depth of field near field %d, %d on a non-discrete GPU%s (inspection, profile %s)\n",
+                (int)s.postDofNearField, (int)s.postDofNearFieldIntegrated, mode < 0 ? " (the rule)" : "",
+                LookProfileName(s.profile));
         return true;
     }
-    // The spread has a value per adapter class. On and off force both, so the
-    // token means the same on any GPU; the rule returns each to the profile's.
     s.postDofNearSpread = mode < 0 ? r.postDofNearSpread : mode != 0;
     s.postDofNearSpreadIntegrated = mode < 0 ? r.postDofNearSpreadIntegrated : mode != 0;
     fprintf(stderr, "[look] depth of field near spread %d, %d on a non-discrete GPU%s (inspection, profile %s)\n",
@@ -308,8 +311,22 @@ bool SetLookDofNearForInspection(int mode, bool spread) {
     return true;
 }
 
+bool LookDofNearField(const LookSettings &look, bool discreteGpu) {
+    return discreteGpu ? look.postDofNearField : look.postDofNearFieldIntegrated;
+}
+
 bool LookDofNearSpread(const LookSettings &look, bool discreteGpu) {
     return discreteGpu ? look.postDofNearSpread : look.postDofNearSpreadIntegrated;
+}
+
+void LogLookAdapterClass(bool discreteGpu) {
+    static bool sLogged = false;
+    const LookSettings &s = Look();
+    if (sLogged || s.profile == LookProfile::Native) return;
+    sLogged = true;
+    fprintf(stderr, "[look] adapter class: %s; depth of field near field %d, near spread %d (profile %s)\n",
+            discreteGpu ? "discrete GPU" : "not a discrete GPU", (int)LookDofNearField(s, discreteGpu),
+            (int)LookDofNearSpread(s, discreteGpu), LookProfileName(s.profile));
 }
 
 bool SetLookDofDepthWeightForInspection(int mode) {
