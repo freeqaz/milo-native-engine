@@ -160,23 +160,16 @@ struct LookSettings {
     bool postDofFilter = false;
     // np-look23 (c): the depth of field's blur gathers by depth (DofPass::Run
     // `depthWeighted`, with postDofFilter): each downsample tap weighs into the
-    // quarter-size blur by its blur factor squared, so an in-focus figure
-    // adds nothing to the blurred background beside it. The original's
+    // quarter-size blur by its blur factor squared, read from a half-size
+    // factor pre-pass, so an in-focus figure adds nothing to the blurred
+    // background beside it. (A depth load per tap instead cost +0.84 ms at
+    // 1920x1080 on a Radeon 890M; the half-size factor +0.25 ms.) The original's
     // downsample_4x is depth-blind: the figure's colour spreads ~3 quarter
     // texels into the background, a bright fringe around every in-focus
     // figure in a close-up (~12 px at 720; Xenia and the hardware show it).
     // Retail and Native: the depth-blind blur. Inspection:
     // {rnd native_look dof_depth_weight_on|_off|_rule}.
     bool postDofDepthWeight = false;
-    // np-look23 (c2), inspection only, every profile 16: how that downsample
-    // gathers its weight (DofPass::kDepthWeightLoads*), depth loads per quarter
-    // texel: 16 (one per tap), 4 (one per 2x2 group of taps), 1 (one at the
-    // block's centre), or 0 (none: a half-size pre-pass writes the factor
-    // squared and the downsample samples it). Only acts with
-    // postDofDepthWeight, so retail and Native are unchanged at every value.
-    // Inspection: {rnd native_look dof_depth_weight_loads_16|_4|_1|
-    // dof_depth_weight_half_factor}.
-    int postDofDepthWeightLoads = 16;
     // np-look23 (a): DC3's post noise map (noise_mono.tex) re-tiled so each
     // texel covers whole OUTPUT rows, read at one fixed place in the texel
     // (gfx/NoiseRows.h): the same fine lines on every row at every size and
@@ -265,15 +258,9 @@ bool SetLookNoiseRowsForInspection(int mode);
 // {rnd native_look dof_depth_weight_on|dof_depth_weight_off|dof_depth_weight_rule}:
 // postDofDepthWeight on, off or the profile's (1 / 0 / -1). Takes effect on
 // the next frame; the first switch on in a run that started retail compiles
-// three pipelines. Only reaches the screen with postDofFilter on. False under
+// four pipelines. Only reaches the screen with postDofFilter on. False under
 // the Native profile.
 bool SetLookDofDepthWeightForInspection(int mode);
-// {rnd native_look dof_depth_weight_loads_16|dof_depth_weight_loads_4|
-// dof_depth_weight_loads_1|dof_depth_weight_half_factor}: postDofDepthWeightLoads
-// 16, 4, 1 or 0, so one frozen frame is timed with each gather. Takes effect on
-// the next frame; the first use of 4, 1 or 0 compiles its pipeline(s) then.
-// False under the Native profile or for any other value.
-bool SetLookDofDepthWeightLoadsForInspection(int loads);
 // {rnd native_look refl_cull_force|refl_cull_flip|refl_cull_rule}: the cull a
 // WorldReflection's mirrored redraw gives its materials (ReflectionCull,
 // Mesh_Wgpu.cpp): force = every material culls Backwards (DC3's CheckForceCull),

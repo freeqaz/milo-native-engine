@@ -225,16 +225,6 @@ bool SetLookDofDepthWeightForInspection(int mode) {
     return true;
 }
 
-bool SetLookDofDepthWeightLoadsForInspection(int loads) {
-    LookSettings &s = Mutable();
-    if (s.profile == LookProfile::Native) return false;
-    if (loads != 16 && loads != 4 && loads != 1 && loads != 0) return false;
-    s.postDofDepthWeightLoads = loads;
-    fprintf(stderr, "[look] depth of field depth-weight gather %d%s (inspection, profile %s)\n", loads,
-            loads ? " depth loads per quarter texel" : ": the half-size factor", LookProfileName(s.profile));
-    return true;
-}
-
 static int sReflectionCullInspection = -1;
 void SetReflectionCullForInspection(int mode) {
     sReflectionCullInspection = mode < 0 ? -1 : (mode ? 1 : 0);

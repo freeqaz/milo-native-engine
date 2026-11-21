@@ -53,36 +53,20 @@ public:
     bool Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& sceneView,
              wgpu::TextureFormat sceneFormat, const wgpu::TextureView& depthView,
              uint32_t depthSamples, int sceneW, int sceneH, GpuDevice& gpu,
-             bool enhanced = false, bool depthWeighted = false,
-             int depthWeightLoads = kDepthWeightLoads16);
+             bool enhanced = false, bool depthWeighted = false);
     // np-look23 (c), with `enhanced` only (LookSettings::postDofDepthWeight):
-    // the downsample weights each of the tent's 16 bilinear taps by the blur
-    // factor squared at the heavier texel of its pair (premultiplied, the
-    // weight in alpha, RGBA16Float quarter targets) and
-    // the composite divides it back out, so an in-focus figure's colour no
-    // longer spreads into the blurred background beside it (retail's bright
-    // fringe, which Xenia and the hardware show). Retail and `enhanced`
-    // without it: exactly as before.
+    // a half-size pre-pass writes the blur factor squared (one depth load per
+    // half-size texel, R16Float; DofDepthWeightFactorHalf), the downsample
+    // weights each of the tent's 16 bilinear taps by it, sampled bilinearly
+    // at the tap (premultiplied, the weight in alpha, RGBA16Float quarter
+    // targets; DofDownsampleTentDepthWeightHalf), and the composite divides it
+    // back out, so an in-focus figure's colour no longer spreads into the
+    // blurred background beside it (retail's bright fringe, which Xenia and
+    // the hardware show). A depth load per tap in the downsample itself cost
+    // +0.84 ms at 1920x1080 on a Radeon 890M (np-look23 c2); this +0.25 ms.
+    // Retail and `enhanced` without it: exactly as before.
     static constexpr wgpu::TextureFormat kDepthWeightFormat = wgpu::TextureFormat::RGBA16Float;
-    // np-look23 (c2), inspection only (LookSettings::postDofDepthWeightLoads):
-    // how the depth-weighted downsample gathers its weight, so each can be
-    // timed. Depth loads per quarter texel:
-    //   16  one per bilinear tap (fs_down_tent_dw, the default);
-    //    4  one per 2x2 group of the taps, at the group's centre texel, shared
-    //       by its four colour taps (fs_down_tent_dw4);
-    //    1  one at the block's centre: the plain tent times that one weight
-    //       (fs_down_tent_dw1);
-    //    0  none: a half-size pre-pass writes the blur factor squared, one
-    //       load per half-size texel (fs_dw_factor_half), and the downsample
-    //       samples it bilinearly at each tap (fs_down_tent_dwh).
-    // 4, 1 and 0 compile their pipelines on first use.
-    static constexpr int kDepthWeightLoads16 = 16;
-    static constexpr int kDepthWeightLoads4 = 4;
-    static constexpr int kDepthWeightLoads1 = 1;
-    static constexpr int kDepthWeightHalfFactor = 0;
     static constexpr wgpu::TextureFormat kDepthWeightFactorFormat = wgpu::TextureFormat::R16Float;
-    // The gather the last depth-weighted Run took (tests).
-    int LastRunDepthWeightLoads() const { return mLastDwLoads; }
     // Whether the last Run took the depth-weighted path (tests).
     bool LastRunDepthWeighted() const { return mLastDepthWeighted; }
     // The enhanced path's tap scale per axis: the tent adds 1.5 scene texel^2
@@ -104,7 +88,7 @@ public:
     // `enhanced` (LookSettings::postDofFilter at Init) also compiles the tent
     // downsample and B-spline composite.
     // `depthWeighted` (LookSettings::postDofDepthWeight too) also compiles
-    // the depth-weighted downsample, blur and composite.
+    // the depth-weighted factor pre-pass, downsample, blur and composite.
     void Prewarm(wgpu::TextureFormat format, GpuDevice& gpu, bool enhanced = false,
                  bool depthWeighted = false) {
         EnsurePipelines(format, gpu);
@@ -122,8 +106,6 @@ private:
                                   GpuDevice& gpu,
                                   wgpu::TextureFormat format = wgpu::TextureFormat::Undefined);
     void EnsureDepthWeightPipelines(GpuDevice& gpu);
-    // np-look23 (c2): the downsample pipeline for `loads` (compiled on first use).
-    const wgpu::RenderPipeline& DepthWeightDownPipe(int loads, GpuDevice& gpu);
     void EnsureDepthWeightTextures(int w, int h, GpuDevice& gpu);
     void EnsureTextures(int w, int h, wgpu::TextureFormat format, GpuDevice& gpu);
     void Pass(wgpu::CommandEncoder& encoder, const wgpu::RenderPipeline& pipe,
@@ -140,23 +122,18 @@ private:
     wgpu::PipelineLayout mPassPL, mCompositePL;
     wgpu::RenderPipeline mDownPipe, mBlurPipe, mCompositePipe;
     wgpu::RenderPipeline mDownTentPipe, mCompositeBSplinePipe;   // `enhanced`: Prewarm or first use
-    // np-look23 (c), `depthWeighted`: compiled on first use.
-    wgpu::BindGroupLayout mDownDwBGL;     // src, sampler, depth (MS), params
-    wgpu::PipelineLayout mDownDwPL;
-    wgpu::RenderPipeline mDownDwPipe, mBlurDwPipe, mCompositeDwPipe;
+    // np-look23 (c), `depthWeighted`: Prewarm or first use.
+    wgpu::BindGroupLayout mFactorHalfBGL;   // depth (MS), params
+    wgpu::BindGroupLayout mDownDwBGL;       // src, sampler, factor
+    wgpu::PipelineLayout mFactorHalfPL, mDownDwPL;
+    wgpu::RenderPipeline mFactorHalfPipe, mDownDwPipe, mBlurDwPipe, mCompositeDwPipe;
     wgpu::Texture mDw[2];
     wgpu::TextureView mDwView[2];
     int mDwW = 0, mDwH = 0;
     bool mLastDepthWeighted = false;
-    // np-look23 (c2): the 4-, 1- and half-factor gathers, on first use.
-    wgpu::RenderPipeline mDownDw4Pipe, mDownDw1Pipe, mDownDwHPipe, mFactorHalfPipe;
-    wgpu::BindGroupLayout mFactorHalfBGL;   // depth (MS), params
-    wgpu::BindGroupLayout mDownDwHBGL;      // src, sampler, factor
-    wgpu::PipelineLayout mFactorHalfPL, mDownDwHPL;
-    wgpu::Texture mDwFactor;
+    wgpu::Texture mDwFactor;                // the half-size factor, ((w+1)>>1) x ((h+1)>>1)
     wgpu::TextureView mDwFactorView;
     int mDwFactorW = 0, mDwFactorH = 0;
-    int mLastDwLoads = kDepthWeightLoads16;
     wgpu::Sampler mSampler;               // linear, clamp
     // One buffer per pass: Queue::WriteBuffer lands at Submit, ahead of every
     // pass in the frame, so passes sharing a buffer would read the same data.
