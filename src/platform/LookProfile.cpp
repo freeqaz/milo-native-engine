@@ -16,13 +16,21 @@ namespace {
 constexpr float kEnhancedUiLodBias = -1.0f;
 
 // np-look49: the Apple class's value of each per-adapter rule in the enhanced
-// look (LookAdapterClass::Apple). Decided by the landing session's timing on
-// an M3 MacBook Air; the texture pass's size is not yet decided there, so it
-// is off as on any other non-discrete GPU. One line each to change.
+// look (LookAdapterClass::Apple), and its two numbers of the texture pass's
+// size rule (the cap on the longer side, the base rows). Timed on an M3
+// MacBook Air (Metal) by the landing session on 2026-11-21: with both texture
+// pass steps a 2048 target cost +0.48 to +0.50 ms of frame span against a
+// limit of +0.30 (fails), a 1536 one +0.26 (fits); step 1 alone +0.05 to
+// +0.11 against +0.15 at 713 rows. So a 1024 projection texture is 1024 (4
+// samples, step 1 alone: never below its own size) up to 720 output rows and
+// 1536 from 1080 rows up. No Apple GPU other than the M3 was timed. One line
+// each to change.
 constexpr bool kAppleDofNearField = true;
 constexpr bool kAppleDofNearSpread = true;
 constexpr bool kAppleTexPassMsaa = true;
-constexpr bool kAppleTexPassScale = false;
+constexpr bool kAppleTexPassScale = true;
+constexpr int kAppleTexPassMaxSide = 1536;
+constexpr int kAppleTexPassBaseRows = 720;
 
 LookSettings SettingsFor(LookProfile p) {
     LookSettings s;
@@ -90,10 +98,18 @@ LookSettings SettingsFor(LookProfile p) {
     // On a discrete GPU only, as step 1: on the 3090 steps 1+2 add ~0.05 ms at
     // 1536 (540 rows) and ~0.10 ms at 2048 (720 rows and above); 144 MiB a
     // target at 2048 with 4 samples (36 at 1024). An Apple GPU:
-    // kAppleTexPassScale.
+    // kAppleTexPassScale, with its own cap and rows (below).
     s.texPassScale = enh;
     s.texPassScaleApple = enh && kAppleTexPassScale;
     s.texPassScaleIntegrated = false;
+    // The size rule's two numbers per class, in every profile (they only act
+    // with texPassScale). The Integrated pair is the discrete one: unused
+    // while texPassScaleIntegrated is off, and a forced-on handheld gets the
+    // discrete class's size, as it did with one pair.
+    s.texPassMaxSideApple = kAppleTexPassMaxSide;
+    s.texPassBaseRowsApple = kAppleTexPassBaseRows;
+    s.texPassMaxSideIntegrated = s.texPassMaxSide;
+    s.texPassBaseRowsIntegrated = s.texPassBaseRows;
     // np-look23 (a): the noise map on whole output rows (LookProfile.h).
     // Uniforms only, no cost but a memoised constant per size.
     s.noiseSnapsToOutputRows = enh;
@@ -385,6 +401,15 @@ bool PickByClass(LookAdapterClass c, bool discrete, bool apple, bool other) {
     }
     return other;
 }
+// The same for a per-class number.
+int PickByClass(LookAdapterClass c, int discrete, int apple, int other) {
+    switch (c) {
+    case LookAdapterClass::Discrete: return discrete;
+    case LookAdapterClass::Apple: return apple;
+    case LookAdapterClass::OtherNonDiscrete: break;
+    }
+    return other;
+}
 }  // namespace
 
 bool LookDofNearField(const LookSettings &look, LookAdapterClass c) {
@@ -401,9 +426,10 @@ void PrintLookAdapterClass(const LookAdapterFacts &adapter) {
     const LookAdapterClass c = ClassifyLookAdapter(adapter);
     fprintf(stderr,
             "[look] adapter class: %s; depth of field near field %d, near spread %d, texture pass msaa %d, "
-            "scale %d [type %s, vendor 0x%04x, backend %s] (profile %s)\n",
+            "scale %d (cap %d, base rows %d) [type %s, vendor 0x%04x, backend %s] (profile %s)\n",
             LookAdapterClassName(c), (int)LookDofNearField(s, c), (int)LookDofNearSpread(s, c),
-            (int)LookTexPassMsaa(s, c), (int)LookTexPassScale(s, c), LookAdapterTypeName(adapter.type),
+            (int)LookTexPassMsaa(s, c), (int)LookTexPassScale(s, c), LookTexPassMaxSide(s, c),
+            LookTexPassBaseRows(s, c), LookAdapterTypeName(adapter.type),
             (unsigned)adapter.vendorId, adapter.backendName ? adapter.backendName : "unknown",
             LookProfileName(s.profile));
 }
@@ -445,11 +471,11 @@ bool SetLookAdapterClassForInspection(bool useAdapter, LookAdapterClass forced) 
     fprintf(stderr,
             "[look] adapter class forced for inspection: %s; the adapter is %s [type %s, vendor 0x%04x, "
             "backend %s]; depth of field near field %d, near spread %d, texture pass msaa %d, scale %d "
-            "(profile %s)\n",
+            "(cap %d, base rows %d) (profile %s)\n",
             LookAdapterClassName(forced), is, LookAdapterTypeName(a.type), (unsigned)a.vendorId,
             a.backendName ? a.backendName : "unknown", (int)LookDofNearField(s, forced),
             (int)LookDofNearSpread(s, forced), (int)LookTexPassMsaa(s, forced), (int)LookTexPassScale(s, forced),
-            LookProfileName(s.profile));
+            LookTexPassMaxSide(s, forced), LookTexPassBaseRows(s, forced), LookProfileName(s.profile));
     return true;
 }
 
@@ -531,11 +557,28 @@ bool SetLookTexPassSizeForInspection(int maxSide, int baseRows) {
     LookSettings &s = Mutable();
     if (s.profile == LookProfile::Native) return false;
     const LookSettings &r = SettingsFor(s.profile);
-    if (maxSide != 0) s.texPassMaxSide = maxSide < 0 ? r.texPassMaxSide : maxSide;
-    if (baseRows != 0) s.texPassBaseRows = baseRows < 0 ? r.texPassBaseRows : baseRows;
-    fprintf(stderr, "[look] texture pass size cap %d%s, base rows %d%s (inspection, profile %s)\n",
-            s.texPassMaxSide, s.texPassMaxSide == r.texPassMaxSide ? " (the rule)" : "", s.texPassBaseRows,
-            s.texPassBaseRows == r.texPassBaseRows ? " (the rule)" : "", LookProfileName(s.profile));
+    // A number > 0 is set for all three classes, < 0 returns each to its own.
+    if (maxSide != 0) {
+        s.texPassMaxSide = maxSide < 0 ? r.texPassMaxSide : maxSide;
+        s.texPassMaxSideIntegrated = maxSide < 0 ? r.texPassMaxSideIntegrated : maxSide;
+        s.texPassMaxSideApple = maxSide < 0 ? r.texPassMaxSideApple : maxSide;
+    }
+    if (baseRows != 0) {
+        s.texPassBaseRows = baseRows < 0 ? r.texPassBaseRows : baseRows;
+        s.texPassBaseRowsIntegrated = baseRows < 0 ? r.texPassBaseRowsIntegrated : baseRows;
+        s.texPassBaseRowsApple = baseRows < 0 ? r.texPassBaseRowsApple : baseRows;
+    }
+    const bool capRule = s.texPassMaxSide == r.texPassMaxSide && s.texPassMaxSideIntegrated == r.texPassMaxSideIntegrated
+                         && s.texPassMaxSideApple == r.texPassMaxSideApple;
+    const bool rowsRule = s.texPassBaseRows == r.texPassBaseRows
+                          && s.texPassBaseRowsIntegrated == r.texPassBaseRowsIntegrated
+                          && s.texPassBaseRowsApple == r.texPassBaseRowsApple;
+    fprintf(stderr,
+            "[look] texture pass size cap %d, %d on a non-discrete GPU, %d on an Apple GPU%s, base rows %d, %d on a "
+            "non-discrete GPU, %d on an Apple GPU%s (inspection, profile %s)\n",
+            s.texPassMaxSide, s.texPassMaxSideIntegrated, s.texPassMaxSideApple, capRule ? " (the rule)" : "",
+            s.texPassBaseRows, s.texPassBaseRowsIntegrated, s.texPassBaseRowsApple, rowsRule ? " (the rule)" : "",
+            LookProfileName(s.profile));
     return true;
 }
 
@@ -543,14 +586,24 @@ bool LookTexPassScale(const LookSettings &look, LookAdapterClass c) {
     return PickByClass(c, look.texPassScale, look.texPassScaleApple, look.texPassScaleIntegrated);
 }
 
-void TexPassGpuSize(const LookSettings &look, int texW, int texH, int outputRows, int &gpuW, int &gpuH) {
+int LookTexPassMaxSide(const LookSettings &look, LookAdapterClass c) {
+    return PickByClass(c, look.texPassMaxSide, look.texPassMaxSideApple, look.texPassMaxSideIntegrated);
+}
+
+int LookTexPassBaseRows(const LookSettings &look, LookAdapterClass c) {
+    return PickByClass(c, look.texPassBaseRows, look.texPassBaseRowsApple, look.texPassBaseRowsIntegrated);
+}
+
+void TexPassGpuSize(const LookSettings &look, LookAdapterClass c, int texW, int texH, int outputRows, int &gpuW,
+                    int &gpuH) {
     gpuW = texW;
     gpuH = texH;
-    if (texW <= 0 || texH <= 0 || outputRows <= 0 || look.texPassBaseRows <= 0) return;
-    float k = (float)outputRows / (float)look.texPassBaseRows;
+    const int baseRows = LookTexPassBaseRows(look, c), maxSide = LookTexPassMaxSide(look, c);
+    if (texW <= 0 || texH <= 0 || outputRows <= 0 || baseRows <= 0) return;
+    float k = (float)outputRows / (float)baseRows;
     const int side = std::max(texW, texH);
-    if (look.texPassMaxSide > 0 && side * k > (float)look.texPassMaxSide)
-        k = (float)look.texPassMaxSide / (float)side;
+    if (maxSide > 0 && side * k > (float)maxSide)
+        k = (float)maxSide / (float)side;
     if (!(k > 1.0f)) return;
     gpuW = std::max(texW, (int)(texW * k + 0.5f));
     gpuH = std::max(texH, (int)(texH * k + 0.5f));

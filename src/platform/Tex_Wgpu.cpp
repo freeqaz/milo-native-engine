@@ -400,7 +400,7 @@ static void WantedGpuSize(RndTex* tex, const GpuTexData& data, int& w, int& h) {
         return;
     const int rows = sTexPassOutputRowsForTest > 0 ? sTexPassOutputRowsForTest : gWgpuRnd->Gpu().OutputHeight();
     const int ownW = w, ownH = h;
-    milo::TexPassGpuSize(look, ownW, ownH, rows, w, h);
+    milo::TexPassGpuSize(look, gWgpuRnd->Gpu().LookClass(), ownW, ownH, rows, w, h);
 }
 
 bool GetGpuTexPassTarget(RndTex* tex, GpuTexPassTarget& out, bool passClears, bool passClearsDepth) {
