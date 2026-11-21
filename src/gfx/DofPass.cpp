@@ -236,19 +236,29 @@ struct DownNearOut {
 // near object's colour, never the in-focus figure's) over the pixels beside
 // it. Where the coverage and the centre's own near value are 0 -- the far
 // field, the in-focus figures away from a near object -- this is
-// fs_composite_bspline_dw to the pixel. +4 reads per pixel.
+// fs_composite_bspline_dw to the pixel. +1 read per pixel (the coverage,
+// with the spread), +4 more in the near field.
 @group(0) @binding(9) var nearTex: texture_2d<f32>;
 @fragment fn fs_composite_bspline_dwn(in: VOut) -> @location(0) vec4f {
     let p = vec2i(in.pos.xy);
     let scene = textureLoad(sceneTex, p, 0);
     let b = blur_bspline(in.uv);
-    let u = blur_bspline_near(in.uv);
     let rgbW = mix(scene.rgb, b.rgb / max(b.a, 1e-4), clamp(b.a * 16.0, 0.0, 1.0));
     let z = textureLoad(depthTex, min(p, vec2i(textureDimensions(depthTex)) - 1), 0);
     let f = dof_factor(z);
     let n = dof_near(z);
-    let rgb = mix(rgbW, u.rgb, n);
-    let a = max(f, clamp(u.a, 0.0, 1.0) * dof.near.x);
+    // The depth-blind colour only where the centre is in the near field (a
+    // branch: 4 reads there, none elsewhere); the spread's coverage from one
+    // bilinear read everywhere (the coverage is itself blurred). +1 read per
+    // pixel outside the near field.
+    var rgb = rgbW;
+    if (n > 0.0) {
+        rgb = mix(rgbW, blur_bspline_near(in.uv).rgb, n);
+    }
+    var a = f;
+    if (dof.near.x > 0.0) {
+        a = max(f, clamp(textureSampleLevel(nearTex, samp, in.uv, 0.0).a, 0.0, 1.0));
+    }
     return vec4f(clamp(mix(scene.rgb, rgb, a), vec3f(0.0), vec3f(1.0)), scene.a);
 }
 
