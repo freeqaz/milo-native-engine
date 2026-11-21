@@ -118,7 +118,7 @@ private:
     wgpu::RenderPipeline mDownPipe, mBlurPipe, mCompositePipe;
     wgpu::RenderPipeline mDownTentPipe, mCompositeBSplinePipe;   // `enhanced`: Prewarm or first use
     // np-look23 (c), `depthWeighted`: compiled on first use.
-    wgpu::BindGroupLayout mDownDwBGL;     // src, depth (MS), params
+    wgpu::BindGroupLayout mDownDwBGL;     // src, sampler, depth (MS), params
     wgpu::PipelineLayout mDownDwPL;
     wgpu::RenderPipeline mDownDwPipe, mBlurDwPipe, mCompositeDwPipe;
     wgpu::Texture mDw[2];

@@ -130,17 +130,21 @@ fn dof_factor(z: f32) -> f32 {
     let t = z * dof.c24.x + dof.c24.y;
     return clamp(min(max(abs(t), dof.c24.z), dof.c24.w), 0.0, 1.0);
 }
+// fs_down_tent's 16 bilinear taps, each weighted by the factor at the
+// heavier texel of its pair (one depth load per tap): a quarter of the loads
+// of weighting all 64 texels (0.187 -> 0.083 ms at 1080 on a 3090), the weight
+// resolved to 2 scene texels at an edge.
 @fragment fn fs_down_tent_dw(in: VOut) -> @location(0) vec4f {
-    let dims = vec2i(textureDimensions(srcTex));
+    let size = vec2f(textureDimensions(srcTex));
     let ddims = vec2i(textureDimensions(depthTex));
-    let base = vec2i(in.pos.xy) * 4 - 2;
+    let c = floor(in.pos.xy) * 4.0 + 2.0;
     var acc = vec4f(0.0);
-    for (var j = 0; j < 8; j++) {
-        for (var i = 0; i < 8; i++) {
-            let p = clamp(base + vec2i(i, j), vec2i(0), dims - 1);
-            let f = dof_factor(textureLoad(depthTex, min(p, ddims - 1), 0));
-            let w = kTent[i] * kTent[j] * f * f;
-            acc += vec4f(textureLoad(srcTex, p, 0).rgb * w, w);
+    for (var j = 0; j < 4; j++) {
+        for (var i = 0; i < 4; i++) {
+            let q = c + vec2f(kTentO[i], kTentO[j]);
+            let f = dof_factor(textureLoad(depthTex, clamp(vec2i(floor(q)), vec2i(0), ddims - 1), 0));
+            let w = kTentW[i] * kTentW[j] * f * f;
+            acc += vec4f(textureSampleLevel(srcTex, samp, q / size, 0.0).rgb * w, w);
         }
     }
     return acc;
@@ -318,11 +322,11 @@ void DofPass::EnsurePipelines(wgpu::TextureFormat format, GpuDevice& gpu) {
             mCompositeBGL = dev.CreateBindGroupLayout(&d);
         }
         {
-            // np-look23 (c): the depth-weighted downsample (src, depth, params).
-            wgpu::BindGroupLayoutEntry e[3] = {tex(0), depth, ub(6, sizeof(DofUniforms))};
+            // np-look23 (c): the depth-weighted downsample (src, sampler, depth, params).
+            wgpu::BindGroupLayoutEntry e[4] = {tex(0), samp, depth, ub(6, sizeof(DofUniforms))};
             wgpu::BindGroupLayoutDescriptor d{};
             d.label = "DofDownDepthWeightBGL";
-            d.entryCount = 3;
+            d.entryCount = 4;
             d.entries = e;
             mDownDwBGL = dev.CreateBindGroupLayout(&d);
         }
@@ -577,17 +581,19 @@ bool DofPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& sceneV
     // 1. downsample_4x: scene -> A.  2. blur, horizontal taps: A -> B.
     // 3. blur, vertical taps: B -> A.
     if (dw) {
-        wgpu::BindGroupEntry e[3] = {};
+        wgpu::BindGroupEntry e[4] = {};
         e[0].binding = 0;
         e[0].textureView = sceneView;
-        e[1].binding = 5;
-        e[1].textureView = depthView;
-        e[2].binding = 6;
-        e[2].buffer = mCompositeUB;
-        e[2].size = sizeof(DofUniforms);
+        e[1].binding = 1;
+        e[1].sampler = mSampler;
+        e[2].binding = 5;
+        e[2].textureView = depthView;
+        e[3].binding = 6;
+        e[3].buffer = mCompositeUB;
+        e[3].size = sizeof(DofUniforms);
         wgpu::BindGroupDescriptor d{};
         d.layout = mDownDwBGL;
-        d.entryCount = 3;
+        d.entryCount = 4;
         d.entries = e;
         Pass(encoder, mDownDwPipe, Group(dev, d), q[0], "DofDownsampleTentDepthWeight");
         Pass(encoder, mBlurDwPipe, passBG(q[0], mBlurUB[0]), q[1], "DofBlurH");
