@@ -444,7 +444,7 @@ void WgpuRnd::InitGpuResources() {
     mGpuResourcesReady = true;
     // The device is up: say once which adapter class it is and what the
     // look's class-decided settings came to on it.
-    milo::LogLookAdapterClass(mGpu.IsDiscreteGpu());
+    milo::LogLookAdapterClass(mGpu.LookAdapter());
 
     // Initialize pipeline manager. The mesh path binds its material, object
     // and bone uniforms with dynamic offsets into cached bind groups (H-30).
@@ -866,7 +866,7 @@ MeshPassContext WgpuRnd::OverlayPassContext() const {
 MeshPassContext WgpuRnd::TexturePassContext(bool depth, bool likeFrame) const {
     MeshPassContext c;  // as the TexturePass does, for a colour target
     c.targetFormat = ChooseRenderTargetFormat(nullptr);
-    c.sampleCount = likeFrame && depth && milo::LookTexPassMsaa(milo::Look(), mGpu.IsDiscreteGpu())
+    c.sampleCount = likeFrame && depth && milo::LookTexPassMsaa(milo::Look(), mGpu.LookClass())
                         ? kTexPassMsaaSamples
                         : 1;
     c.hasDepth = depth;
@@ -3276,7 +3276,7 @@ uint64_t WgpuRnd::PrewarmFixedKeyPipelines() {
     const milo::LookSettings& look = milo::Look();
     if (kMSAASamples >= 2)
         mPostProcPass.PrewarmDof(mGpu.SurfaceFormat(), mGpu, look.postDofFilter, look.postDofDepthWeight,
-                                 milo::LookDofNearField(look, mGpu.IsDiscreteGpu()));
+                                 milo::LookDofNearField(look, mGpu.LookClass()));
     mPostProcPass.PrewarmDC3Enhanced(look.postPrecision, look.postBloomFilter, mGpu);
     mSpotBeamPass.Prewarm(mGpu);
     mPointTestPass.Prewarm(wgpu::TextureFormat::Depth24PlusStencil8, kMSAASamples, mGpu);

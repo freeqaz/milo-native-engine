@@ -15,6 +15,15 @@ namespace {
 // np-look34: the enhanced look's text bias (see README of lane item34b).
 constexpr float kEnhancedUiLodBias = -1.0f;
 
+// np-look49: the Apple class's value of each per-adapter rule in the enhanced
+// look (LookAdapterClass::Apple). Decided by the landing session's timing on
+// an M3 MacBook Air; the texture pass's size is not yet decided there, so it
+// is off as on any other non-discrete GPU. One line each to change.
+constexpr bool kAppleDofNearField = true;
+constexpr bool kAppleDofNearSpread = true;
+constexpr bool kAppleTexPassMsaa = true;
+constexpr bool kAppleTexPassScale = false;
+
 LookSettings SettingsFor(LookProfile p) {
     LookSettings s;
     s.profile = p;
@@ -72,14 +81,18 @@ LookSettings SettingsFor(LookProfile p) {
     // anything else until a handheld's timing says it fits: measured on the
     // 3090, it adds ~0.025 ms to the texture pass at 1024x1024; scaled by the
     // 890M's fill and bandwidth (8-15x) that is 0.19-0.36 ms, over the 0.15 ms
-    // a 1268x713 Break It Down frame may take (item 47 README).
+    // a 1268x713 Break It Down frame may take (item 47 README). An Apple GPU:
+    // kAppleTexPassMsaa (np-look49).
     s.texPassMsaa = enh;
+    s.texPassMsaaApple = enh && kAppleTexPassMsaa;
     s.texPassMsaaIntegrated = false;
     // np-look47 step 2: the target's GPU texture sized for the output's rows.
     // On a discrete GPU only, as step 1: on the 3090 steps 1+2 add ~0.05 ms at
     // 1536 (540 rows) and ~0.10 ms at 2048 (720 rows and above); 144 MiB a
-    // target at 2048 with 4 samples (36 at 1024).
+    // target at 2048 with 4 samples (36 at 1024). An Apple GPU:
+    // kAppleTexPassScale.
     s.texPassScale = enh;
+    s.texPassScaleApple = enh && kAppleTexPassScale;
     s.texPassScaleIntegrated = false;
     // np-look23 (a): the noise map on whole output rows (LookProfile.h).
     // Uniforms only, no cost but a memoised constant per size.
@@ -88,10 +101,13 @@ LookSettings SettingsFor(LookProfile p) {
     s.postDofDepthWeight = enh;
     // np-look36: the depth weight's near field (LookProfile.h).
     // The near field and its spread by adapter class: on a discrete GPU; off
-    // on anything else until a handheld's timing says each fits there.
+    // on anything else until a handheld's timing says each fits there. An
+    // Apple GPU: kAppleDofNearField / kAppleDofNearSpread (np-look49).
     s.postDofNearField = enh;
+    s.postDofNearFieldApple = enh && kAppleDofNearField;
     s.postDofNearFieldIntegrated = false;
     s.postDofNearSpread = enh;
+    s.postDofNearSpreadApple = enh && kAppleDofNearSpread;
     s.postDofNearSpreadIntegrated = false;
     // np-look26 g: cutoutSampleTest stays off in every look. Measured against
     // the landed sharpened coverage it is a trade, not a gain (LookProfile.h);
@@ -308,40 +324,95 @@ bool SetLookDofNearForInspection(int mode, bool spread) {
     LookSettings &s = Mutable();
     if (s.profile == LookProfile::Native) return false;
     const LookSettings &r = SettingsFor(s.profile);
-    // Each has a value per adapter class. On and off force both, so the token
-    // means the same on any GPU; the rule returns each to the profile's.
+    // Each has a value per adapter class. On and off force all three, so the
+    // token means the same on any GPU; the rule returns each to the profile's.
     if (!spread) {
         s.postDofNearField = mode < 0 ? r.postDofNearField : mode != 0;
         s.postDofNearFieldIntegrated = mode < 0 ? r.postDofNearFieldIntegrated : mode != 0;
-        fprintf(stderr, "[look] depth of field near field %d, %d on a non-discrete GPU%s (inspection, profile %s)\n",
-                (int)s.postDofNearField, (int)s.postDofNearFieldIntegrated, mode < 0 ? " (the rule)" : "",
-                LookProfileName(s.profile));
+        s.postDofNearFieldApple = mode < 0 ? r.postDofNearFieldApple : mode != 0;
+        fprintf(stderr,
+                "[look] depth of field near field %d, %d on a non-discrete GPU, %d on an Apple GPU%s "
+                "(inspection, profile %s)\n",
+                (int)s.postDofNearField, (int)s.postDofNearFieldIntegrated, (int)s.postDofNearFieldApple,
+                mode < 0 ? " (the rule)" : "", LookProfileName(s.profile));
         return true;
     }
     s.postDofNearSpread = mode < 0 ? r.postDofNearSpread : mode != 0;
     s.postDofNearSpreadIntegrated = mode < 0 ? r.postDofNearSpreadIntegrated : mode != 0;
-    fprintf(stderr, "[look] depth of field near spread %d, %d on a non-discrete GPU%s (inspection, profile %s)\n",
-            (int)s.postDofNearSpread, (int)s.postDofNearSpreadIntegrated, mode < 0 ? " (the rule)" : "",
-            LookProfileName(s.profile));
+    s.postDofNearSpreadApple = mode < 0 ? r.postDofNearSpreadApple : mode != 0;
+    fprintf(stderr,
+            "[look] depth of field near spread %d, %d on a non-discrete GPU, %d on an Apple GPU%s "
+            "(inspection, profile %s)\n",
+            (int)s.postDofNearSpread, (int)s.postDofNearSpreadIntegrated, (int)s.postDofNearSpreadApple,
+            mode < 0 ? " (the rule)" : "", LookProfileName(s.profile));
     return true;
 }
 
-bool LookDofNearField(const LookSettings &look, bool discreteGpu) {
-    return discreteGpu ? look.postDofNearField : look.postDofNearFieldIntegrated;
+LookAdapterClass ClassifyLookAdapter(LookAdapterType type, uint32_t vendorId, bool metalBackend) {
+    if (type == LookAdapterType::Discrete) return LookAdapterClass::Discrete;
+    // A CPU or unknown adapter is never Apple, whoever reports it.
+    if (type == LookAdapterType::Integrated && vendorId == kAppleGpuVendorId && metalBackend)
+        return LookAdapterClass::Apple;
+    return LookAdapterClass::OtherNonDiscrete;
 }
 
-bool LookDofNearSpread(const LookSettings &look, bool discreteGpu) {
-    return discreteGpu ? look.postDofNearSpread : look.postDofNearSpreadIntegrated;
+const char *LookAdapterClassName(LookAdapterClass c) {
+    switch (c) {
+    case LookAdapterClass::Discrete: return "discrete GPU";
+    case LookAdapterClass::Apple: return "Apple GPU (not a discrete GPU)";
+    case LookAdapterClass::OtherNonDiscrete: break;
+    }
+    return "not a discrete GPU";
 }
 
-void LogLookAdapterClass(bool discreteGpu) {
-    static bool sLogged = false;
+const char *LookAdapterTypeName(LookAdapterType t) {
+    switch (t) {
+    case LookAdapterType::Discrete: return "discrete";
+    case LookAdapterType::Integrated: return "integrated";
+    case LookAdapterType::Cpu: return "cpu";
+    case LookAdapterType::Unknown: break;
+    }
+    return "unknown";
+}
+
+namespace {
+// The one place a per-adapter rule's three values are chosen between.
+bool PickByClass(LookAdapterClass c, bool discrete, bool apple, bool other) {
+    switch (c) {
+    case LookAdapterClass::Discrete: return discrete;
+    case LookAdapterClass::Apple: return apple;
+    case LookAdapterClass::OtherNonDiscrete: break;
+    }
+    return other;
+}
+}  // namespace
+
+bool LookDofNearField(const LookSettings &look, LookAdapterClass c) {
+    return PickByClass(c, look.postDofNearField, look.postDofNearFieldApple, look.postDofNearFieldIntegrated);
+}
+
+bool LookDofNearSpread(const LookSettings &look, LookAdapterClass c) {
+    return PickByClass(c, look.postDofNearSpread, look.postDofNearSpreadApple, look.postDofNearSpreadIntegrated);
+}
+
+void PrintLookAdapterClass(const LookAdapterFacts &adapter) {
     const LookSettings &s = Look();
-    if (sLogged || s.profile == LookProfile::Native) return;
+    if (s.profile == LookProfile::Native) return;
+    const LookAdapterClass c = ClassifyLookAdapter(adapter);
+    fprintf(stderr,
+            "[look] adapter class: %s; depth of field near field %d, near spread %d, texture pass msaa %d, "
+            "scale %d [type %s, vendor 0x%04x, backend %s] (profile %s)\n",
+            LookAdapterClassName(c), (int)LookDofNearField(s, c), (int)LookDofNearSpread(s, c),
+            (int)LookTexPassMsaa(s, c), (int)LookTexPassScale(s, c), LookAdapterTypeName(adapter.type),
+            (unsigned)adapter.vendorId, adapter.backendName ? adapter.backendName : "unknown",
+            LookProfileName(s.profile));
+}
+
+void LogLookAdapterClass(const LookAdapterFacts &adapter) {
+    static bool sLogged = false;
+    if (sLogged || Look().profile == LookProfile::Native) return;
     sLogged = true;
-    fprintf(stderr, "[look] adapter class: %s; depth of field near field %d, near spread %d (profile %s)\n",
-            discreteGpu ? "discrete GPU" : "not a discrete GPU", (int)LookDofNearField(s, discreteGpu),
-            (int)LookDofNearSpread(s, discreteGpu), LookProfileName(s.profile));
+    PrintLookAdapterClass(adapter);
 }
 
 bool SetLookDofDepthWeightForInspection(int mode) {
@@ -396,9 +467,11 @@ bool SetLookTexPassMsaaForInspection(int mode) {
     const LookSettings &r = SettingsFor(s.profile);
     s.texPassMsaa = mode < 0 ? r.texPassMsaa : mode != 0;
     s.texPassMsaaIntegrated = mode < 0 ? r.texPassMsaaIntegrated : mode != 0;
-    fprintf(stderr, "[look] texture pass msaa %d, %d on a non-discrete GPU%s (inspection, profile %s)\n",
-            (int)s.texPassMsaa, (int)s.texPassMsaaIntegrated, mode < 0 ? " (the rule)" : "",
-            LookProfileName(s.profile));
+    s.texPassMsaaApple = mode < 0 ? r.texPassMsaaApple : mode != 0;
+    fprintf(stderr,
+            "[look] texture pass msaa %d, %d on a non-discrete GPU, %d on an Apple GPU%s (inspection, profile %s)\n",
+            (int)s.texPassMsaa, (int)s.texPassMsaaIntegrated, (int)s.texPassMsaaApple,
+            mode < 0 ? " (the rule)" : "", LookProfileName(s.profile));
     return true;
 }
 
@@ -408,9 +481,11 @@ bool SetLookTexPassScaleForInspection(int mode) {
     const LookSettings &r = SettingsFor(s.profile);
     s.texPassScale = mode < 0 ? r.texPassScale : mode != 0;
     s.texPassScaleIntegrated = mode < 0 ? r.texPassScaleIntegrated : mode != 0;
-    fprintf(stderr, "[look] texture pass scale %d, %d on a non-discrete GPU%s (inspection, profile %s)\n",
-            (int)s.texPassScale, (int)s.texPassScaleIntegrated, mode < 0 ? " (the rule)" : "",
-            LookProfileName(s.profile));
+    s.texPassScaleApple = mode < 0 ? r.texPassScaleApple : mode != 0;
+    fprintf(stderr,
+            "[look] texture pass scale %d, %d on a non-discrete GPU, %d on an Apple GPU%s (inspection, profile %s)\n",
+            (int)s.texPassScale, (int)s.texPassScaleIntegrated, (int)s.texPassScaleApple,
+            mode < 0 ? " (the rule)" : "", LookProfileName(s.profile));
     return true;
 }
 
@@ -426,8 +501,8 @@ bool SetLookTexPassSizeForInspection(int maxSide, int baseRows) {
     return true;
 }
 
-bool LookTexPassScale(const LookSettings &look, bool discreteGpu) {
-    return discreteGpu ? look.texPassScale : look.texPassScaleIntegrated;
+bool LookTexPassScale(const LookSettings &look, LookAdapterClass c) {
+    return PickByClass(c, look.texPassScale, look.texPassScaleApple, look.texPassScaleIntegrated);
 }
 
 void TexPassGpuSize(const LookSettings &look, int texW, int texH, int outputRows, int &gpuW, int &gpuH) {
@@ -443,8 +518,8 @@ void TexPassGpuSize(const LookSettings &look, int texW, int texH, int outputRows
     gpuH = std::max(texH, (int)(texH * k + 0.5f));
 }
 
-bool LookTexPassMsaa(const LookSettings &look, bool discreteGpu) {
-    return discreteGpu ? look.texPassMsaa : look.texPassMsaaIntegrated;
+bool LookTexPassMsaa(const LookSettings &look, LookAdapterClass c) {
+    return PickByClass(c, look.texPassMsaa, look.texPassMsaaApple, look.texPassMsaaIntegrated);
 }
 
 static int sReflectionCullInspection = -1;

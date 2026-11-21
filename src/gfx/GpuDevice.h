@@ -6,6 +6,7 @@
 #include <unordered_map>
 
 #include "gfx/GpuTimers.h"
+#include "platform/LookProfile.h"
 
 // Unconditional: mReadbackScale (a scaled frame's readback) is a member on
 // every platform, web included, even though only desktop presents through one.
@@ -443,7 +444,17 @@ public:
         return mReadbackScale.Dither();
     }
     // The adapter reported itself a discrete GPU (render scale's default).
+    // Everything that sizes the frame reads this two-way flag; the look's
+    // per-adapter rules read LookClass().
     bool IsDiscreteGpu() const { return mDiscreteGpu; }
+    // np-look49: the adapter class the look's per-adapter rules are decided
+    // by (milo::LookAdapterClass: the depth of field's near field and spread,
+    // the texture pass's MSAA and size). The one accessor every caller of
+    // milo::LookDofNearField / LookDofNearSpread / LookTexPassMsaa /
+    // LookTexPassScale passes. OtherNonDiscrete before the adapter is known.
+    milo::LookAdapterClass LookClass() const { return milo::ClassifyLookAdapter(mLookAdapter); }
+    // The facts LookClass() is decided from (recorded with mDiscreteGpu).
+    const milo::LookAdapterFacts& LookAdapter() const { return mLookAdapter; }
     bool IsHeadless() const { return mHeadless; }
 #ifndef __EMSCRIPTEN__
     // Dawn's persistent blob cache (gfx/PipelineDiskCache.h); IsOpen() false
@@ -511,6 +522,7 @@ private:
 
     bool mNullBackend = false;
     bool mDiscreteGpu = false;
+    milo::LookAdapterFacts mLookAdapter;
 #ifndef __EMSCRIPTEN__
     PipelineDiskCache mPipelineCache;
     std::string mPipelineCacheIsolation;  // Dawn keeps a view of it

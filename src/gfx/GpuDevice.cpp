@@ -28,6 +28,24 @@ extern "C" void* CreateMetalLayerForWindow(void* nsWindow);
 
 namespace {
 
+#ifndef __EMSCRIPTEN__
+// The backend's name for the look's adapter class line (LookAdapterFacts).
+const char* BackendName(wgpu::BackendType b) {
+    switch (b) {
+    case wgpu::BackendType::Null: return "Null";
+    case wgpu::BackendType::WebGPU: return "WebGPU";
+    case wgpu::BackendType::D3D11: return "D3D11";
+    case wgpu::BackendType::D3D12: return "D3D12";
+    case wgpu::BackendType::Metal: return "Metal";
+    case wgpu::BackendType::Vulkan: return "Vulkan";
+    case wgpu::BackendType::OpenGL: return "OpenGL";
+    case wgpu::BackendType::OpenGLES: return "OpenGLES";
+    default: break;
+    }
+    return "unknown";
+}
+#endif
+
 double NowSeconds() {
     using namespace std::chrono;
     return duration<double>(steady_clock::now().time_since_epoch()).count();
@@ -340,6 +358,14 @@ bool GpuDevice::InitAdapter() {
     // Detect null/fallback backend (renders produce empty frames)
     mNullBackend = (info.backendType == wgpu::BackendType::Null);
     mDiscreteGpu = (info.adapterType == wgpu::AdapterType::DiscreteGPU);
+    // np-look49: the look's adapter class is decided from these three facts.
+    mLookAdapter.type = info.adapterType == wgpu::AdapterType::DiscreteGPU     ? milo::LookAdapterType::Discrete
+                        : info.adapterType == wgpu::AdapterType::IntegratedGPU ? milo::LookAdapterType::Integrated
+                        : info.adapterType == wgpu::AdapterType::CPU           ? milo::LookAdapterType::Cpu
+                                                                               : milo::LookAdapterType::Unknown;
+    mLookAdapter.vendorId = info.vendorID;
+    mLookAdapter.metalBackend = info.backendType == wgpu::BackendType::Metal;
+    mLookAdapter.backendName = BackendName(info.backendType);
     mAdapterVendorId = info.vendorID;
     mAdapterDeviceId = info.deviceID;
     mAdapterDescription.assign(info.device.data, info.device.length);
