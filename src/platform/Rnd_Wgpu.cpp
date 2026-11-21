@@ -2201,6 +2201,9 @@ void WgpuRnd::EnsureSceneUniformsCurrent() {
         // A texture target after the frame (or back), a resize across a
         // render-scale step, or an inspection switch: the bias moved.
         || PassMaterialLodBias() != mLastSceneMaterialLodBias
+        // np-look34: a text_bias_* token moved the text or HUD-art bias.
+        || milo::UiGlyphLodBias(milo::Look()) != mLastSceneUiLodBias
+        || milo::UiArtLodBias(milo::Look()) != mLastSceneUiArtLodBias
         // The same for the cutout sample test (hair_edge_*, or the overlay phase).
         || PassCutoutSampleTest() != mLastSceneCutoutSampleTest);
     // The self-shadow camera is part of the scene block (WriteSceneUniforms).
@@ -3086,6 +3089,8 @@ void WgpuRnd::WriteSceneUniforms() {
     memcpy(mLastSceneViewProj, scene.viewProj, sizeof(mLastSceneViewProj));
     mLastSceneSpecularAA = scene.specularAA;
     mLastSceneMaterialLodBias = scene.materialLodBias;
+    mLastSceneUiLodBias = scene.uiLodBias;
+    mLastSceneUiArtLodBias = scene.uiArtLodBias;
     mLastSceneCutoutSampleTest = scene.cutoutSampleTest;
 
     // Create scene bind group (group 0) — shadow map + projected light texture
