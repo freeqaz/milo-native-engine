@@ -11,6 +11,9 @@ namespace milo {
 
 namespace {
 
+// np-look34: the enhanced look's text bias (see README of lane item34b).
+constexpr float kEnhancedUiLodBias = -1.0f;
+
 LookSettings SettingsFor(LookProfile p) {
     LookSettings s;
     s.profile = p;
@@ -20,6 +23,11 @@ LookSettings SettingsFor(LookProfile p) {
         s.bitmapMipLevels = 0;  // whole authored chain ...
         s.maxAnisotropy = 16;   // ... filtered anisotropically
         s.uiMipLevels = 2;      // text/HUD keep the original's two levels
+        // np-look34: the text and HUD bias (LookSettings::uiLodBias). Pipelines
+        // read it so the tokens can move it; the value is set below.
+        s.uiTakesLodBias = true;
+        s.uiLodBias = kEnhancedUiLodBias;
+        s.uiLodBiasGlyphsOnly = true;
         // World textures: the LOD bias by render scale (MaterialLodBiasAt):
         // 0 at both ends (item 19 a, measured on the 3090 with the drift
         // protocol, three venues). At scale 1, -1 raised frame shimmer
@@ -214,6 +222,41 @@ bool SetLookLodBiasForInspection(bool useRule, float bias) {
     else
         fprintf(stderr, "[look] lod bias %.2f at every scale (inspection, profile %s)\n", bias,
                 LookProfileName(s.profile));
+    return true;
+}
+
+bool LookTakesUiLodBias(const LookSettings &look) { return look.uiTakesLodBias; }
+
+float UiGlyphLodBias(const LookSettings &look) { return look.uiTakesLodBias ? look.uiLodBias : 0.0f; }
+
+float UiArtLodBias(const LookSettings &look) {
+    return look.uiTakesLodBias && !look.uiLodBiasGlyphsOnly ? look.uiLodBias : 0.0f;
+}
+
+bool SetLookUiLodBiasForInspection(bool useRule, float bias) {
+    LookSettings &s = Mutable();
+    if (s.profile == LookProfile::Native) return false;
+    s.uiLodBias = useRule ? SettingsFor(s.profile).uiLodBias : bias;
+    fprintf(stderr, "[look] text lod bias %.2f%s (inspection, profile %s)\n", s.uiLodBias,
+            useRule ? " (the rule)" : "", LookProfileName(s.profile));
+    return true;
+}
+
+bool SetLookUiMipLevelsForInspection(int levels) {
+    LookSettings &s = Mutable();
+    if (s.profile == LookProfile::Native) return false;
+    s.uiMipLevels = levels < 0 ? SettingsFor(s.profile).uiMipLevels : levels;
+    fprintf(stderr, "[look] text mip levels %d%s (inspection, profile %s)\n", s.uiMipLevels,
+            levels < 0 ? " (the rule)" : "", LookProfileName(s.profile));
+    return true;
+}
+
+bool SetLookUiLodBiasScopeForInspection(int mode) {
+    LookSettings &s = Mutable();
+    if (s.profile == LookProfile::Native) return false;
+    s.uiLodBiasGlyphsOnly = mode < 0 ? SettingsFor(s.profile).uiLodBiasGlyphsOnly : mode != 0;
+    fprintf(stderr, "[look] text lod bias on glyphs only %d%s (inspection, profile %s)\n",
+            (int)s.uiLodBiasGlyphsOnly, mode < 0 ? " (the rule)" : "", LookProfileName(s.profile));
     return true;
 }
 

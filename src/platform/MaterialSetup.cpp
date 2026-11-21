@@ -326,6 +326,11 @@ bool MaterialDrawTakesLodBias(bool uiClass, bool lookTakesLodBias) {
     return !uiClass && lookTakesLodBias;
 }
 
+uint8_t MaterialDrawUiBias(bool uiClass, bool glyphPage, bool lookTakesUiLodBias) {
+    if (!uiClass || !lookTakesUiLodBias) return 0;
+    return glyphPage ? 1 : 2;
+}
+
 bool MaterialDrawSamplesAtOutputPixels(bool uiClass, bool toTextureTarget, float outputPixelScale) {
     return uiClass && !toTextureTarget && outputPixelScale > 1.0f;
 }

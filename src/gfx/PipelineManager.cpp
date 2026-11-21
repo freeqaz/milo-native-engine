@@ -491,7 +491,7 @@ struct PipelineManager::DescStorage {
     wgpu::BlendState blendState;
     wgpu::ColorTargetState colorTarget;
     wgpu::FragmentState fragment;
-    wgpu::ConstantEntry constants[5];
+    wgpu::ConstantEntry constants[6];
     wgpu::DepthStencilState ds;
     char label[160];
     wgpu::RenderPipelineDescriptor desc;
@@ -546,7 +546,9 @@ void PipelineManager::BuildDescriptor(const PipelineKey& key, DescStorage& st) {
     constants[3].value = LodBiasFlagFor(key);
     constants[4].key = "kOutputPixelScale";
     constants[4].value = key.outputPixelSampling ? key.outputPixelScale : 1.0f;
-    fragment.constantCount = 5;
+    constants[5].key = "kTakesUiBias";
+    constants[5].value = (double)key.uiBias;
+    fragment.constantCount = 6;
     fragment.constants = constants;
 
     st.ds = {};
@@ -567,12 +569,12 @@ void PipelineManager::BuildDescriptor(const PipelineKey& key, DescStorage& st) {
     char* label = st.label;
     snprintf(label, sizeof(st.label),
              "%s shader=%u blend=%d z=%d cull=%d stencil=%d fmt=%d samples=%u depth=%d "
-             "cut=%d awrite=%d a2c=%d cover=%d bias=%d lod=%d opx=%g",
+             "cut=%d awrite=%d a2c=%d cover=%d bias=%d lod=%d opx=%g ui=%d",
              key.layout == VertexLayoutType::Skinned ? "MainSkinned" : "MainStatic", key.shaderType,
              (int)key.blend, (int)key.zMode, (int)key.cull, (int)key.stencil, (int)key.targetFormat,
              key.sampleCount, key.hasDepth ? 1 : 0, key.alphaCut ? 1 : 0, key.alphaWrite ? 1 : 0,
              key.alphaToCoverage ? 1 : 0, key.cutoutCoverage ? 1 : 0, (int)key.depthBias,
-             key.lodBias ? 1 : 0, key.outputPixelSampling ? (double)key.outputPixelScale : 0.0);
+             key.lodBias ? 1 : 0, key.outputPixelSampling ? (double)key.outputPixelScale : 0.0, (int)key.uiBias);
     pipeDesc.label = label;
     pipeDesc.layout = mPipelineLayout;
     pipeDesc.vertex.module = shader;
@@ -703,6 +705,14 @@ void PipelineManager::BuildPreWarmKeys(wgpu::TextureFormat mainFmt,
                     // World draws in the depth passes take the look's LOD
                     // bias (Mesh_Wgpu); the RT pass's overlay-class draws do not.
                     key.lodBias = pass.hasDepth && mMaterialTakesLodBias;
+                    // np-look34: under a look with a text rule the overlay-class
+                    // draws read the text bias, a glyph page (1) and other art
+                    // (2) apart, so both are warmed (none otherwise).
+                    if (!pass.hasDepth && mUiTakesLodBias) {
+                        key.uiBias = 1;
+                        mPreWarmKeys.push_back(key);
+                        key.uiBias = 2;
+                    }
                     mPreWarmKeys.push_back(key);
                 }
             }

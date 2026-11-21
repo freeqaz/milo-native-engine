@@ -114,6 +114,13 @@ void ApplyLookSampling(SamplerDesc& desc, bool uiClass, const milo::LookSettings
 // do when the look has a bias; text and HUD-overlay draws (uiClass) never do
 // -- a negative bias would alias their minified glyph strokes.
 bool MaterialDrawTakesLodBias(bool uiClass, bool lookTakesLodBias);
+// np-look34: which text/HUD bias one material draw's pipeline reads
+// (PipelineKey::uiBias, standard_wgsl.inc kTakesUiBias): 0 for a world draw
+// or under a look without a text rule (retail, Native:
+// PipelineManager::UiTakesLodBias false), 1 for a glyph page (isTextMesh), 2
+// for any other uiClass draw (HUD-overlay art). The values are uniforms
+// (LookProfile UiGlyphLodBias / UiArtLodBias).
+uint8_t MaterialDrawUiBias(bool uiClass, bool glyphPage, bool lookTakesUiLodBias);
 // Whether one material draw samples its diffuse texture at output-pixel
 // centres (PipelineKey::outputPixelSampling): a text or HUD-overlay draw
 // (uiClass) into the frame (not a texture target) when the frame is

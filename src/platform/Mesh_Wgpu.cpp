@@ -283,6 +283,10 @@ PipelineKey MaterialPipelineKey(RndMat* rawMat, bool skinned, bool isGlyphMesh, 
     // their samplers keep its two mip levels (MaterialSetup ApplyLookSampling).
     key.lodBias = MaterialDrawTakesLodBias(isTextMesh || isOverlayPass,
                                            gWgpuRnd->Pipelines().MaterialTakesLodBias());
+    // ... and read the look's own text bias instead (np-look34,
+    // LookSettings::uiLodBias; a uniform, so a token moves it live).
+    key.uiBias = MaterialDrawUiBias(isTextMesh || isOverlayPass, isTextMesh,
+                                    gWgpuRnd->Pipelines().UiTakesLodBias());
     key.outputPixelSampling = MaterialDrawSamplesAtOutputPixels(
         isTextMesh || isOverlayPass, ctx.toTexture,
         gWgpuRnd->Pipelines().OutputPixelScale());

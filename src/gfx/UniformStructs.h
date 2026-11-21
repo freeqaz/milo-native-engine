@@ -19,12 +19,13 @@ struct SceneUniforms {
     float viewProj[16];       // mat4x4f
     float view[16];           // mat4x4f
     float cameraPos[3];       // vec3f
-    float _pad0;
+    float uiLodBias;          // f32: np-look34 text (glyph page) LOD bias, read by kTakesUiBias 1 pipelines (LookProfile UiGlyphLodBias)
     float fogColor[3];        // vec3f
     float fogStart;
     float fogEnd;
     float fogEnabled;
-    float _pad1[2];
+    float uiArtLodBias;       // f32: np-look34 LOD bias of other uiClass art, read by kTakesUiBias 2 pipelines (LookProfile UiArtLodBias)
+    float _pad1;
     float lightDirs[4][4];    // array<vec4f, 4> — direction per light
     float lightColors[4][4];  // array<vec4f, 4> — color per light
     float ambientColor[4];    // vec4f
