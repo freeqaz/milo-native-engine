@@ -456,6 +456,8 @@ inline void VertBoneWeights(const RndMesh::Vert &v, float out[4]) {
 inline int PartTilesAcross(RndParticleSys *) { return 1; }
 inline int PartTilesDown(RndParticleSys *) { return 1; }
 inline int PartTileIndex(const RndParticle *) { return 0; }
+// One tile is the whole texture either way (rndshape DC3: PartAnimatesUVs).
+inline bool PartAnimatesUVs(RndParticleSys *) { return true; }
 // A relative (non-world-space) RB3 system stores particles in the system's
 // frame; world position = mRelativeXfm * p->pos (Part.h). Absolute systems keep
 // mRelativeXfm at identity.
