@@ -53,7 +53,22 @@ public:
     bool Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& sceneView,
              wgpu::TextureFormat sceneFormat, const wgpu::TextureView& depthView,
              uint32_t depthSamples, int sceneW, int sceneH, GpuDevice& gpu,
-             bool enhanced = false);
+             bool enhanced = false, bool depthWeighted = false);
+    // np-look23 (c), with `enhanced` only (LookSettings::postDofDepthWeight):
+    // a half-size pre-pass writes the blur factor squared (one depth load per
+    // half-size texel, R16Float; DofDepthWeightFactorHalf), the downsample
+    // weights each of the tent's 16 bilinear taps by it, sampled bilinearly
+    // at the tap (premultiplied, the weight in alpha, RGBA16Float quarter
+    // targets; DofDownsampleTentDepthWeightHalf), and the composite divides it
+    // back out, so an in-focus figure's colour no longer spreads into the
+    // blurred background beside it (retail's bright fringe, which Xenia and
+    // the hardware show). A depth load per tap in the downsample itself cost
+    // +0.84 ms at 1920x1080 on a Radeon 890M (np-look23 c2); this +0.25 ms.
+    // Retail and `enhanced` without it: exactly as before.
+    static constexpr wgpu::TextureFormat kDepthWeightFormat = wgpu::TextureFormat::RGBA16Float;
+    static constexpr wgpu::TextureFormat kDepthWeightFactorFormat = wgpu::TextureFormat::R16Float;
+    // Whether the last Run took the depth-weighted path (tests).
+    bool LastRunDepthWeighted() const { return mLastDepthWeighted; }
     // The enhanced path's tap scale per axis: the tent adds 1.5 scene texel^2
     // (3/32 quarter texel^2) and the B-spline 1/6 quarter texel^2 of variance
     // over the box and bilinear, taken back out of the two Poisson passes'
@@ -72,9 +87,13 @@ public:
     // docs/native/dc3-backend-for-rb3-wii.md section 38.2).
     // `enhanced` (LookSettings::postDofFilter at Init) also compiles the tent
     // downsample and B-spline composite.
-    void Prewarm(wgpu::TextureFormat format, GpuDevice& gpu, bool enhanced = false) {
+    // `depthWeighted` (LookSettings::postDofDepthWeight too) also compiles
+    // the depth-weighted factor pre-pass, downsample, blur and composite.
+    void Prewarm(wgpu::TextureFormat format, GpuDevice& gpu, bool enhanced = false,
+                 bool depthWeighted = false) {
         EnsurePipelines(format, gpu);
         if (enhanced) EnsureEnhancedPipelines(gpu);
+        if (enhanced && depthWeighted) EnsureDepthWeightPipelines(gpu);
     }
     bool EnhancedReady() const { return (bool)mDownTentPipe && (bool)mCompositeBSplinePipe; }
     // Bind groups from `cache` (null: four created per run); dc3 PLAN H-66.
@@ -84,7 +103,10 @@ private:
     void EnsurePipelines(wgpu::TextureFormat format, GpuDevice& gpu);
     void EnsureEnhancedPipelines(GpuDevice& gpu);
     wgpu::RenderPipeline MakePipe(const wgpu::PipelineLayout& layout, const char* fs, const char* label,
-                                  GpuDevice& gpu);
+                                  GpuDevice& gpu,
+                                  wgpu::TextureFormat format = wgpu::TextureFormat::Undefined);
+    void EnsureDepthWeightPipelines(GpuDevice& gpu);
+    void EnsureDepthWeightTextures(int w, int h, GpuDevice& gpu);
     void EnsureTextures(int w, int h, wgpu::TextureFormat format, GpuDevice& gpu);
     void Pass(wgpu::CommandEncoder& encoder, const wgpu::RenderPipeline& pipe,
               const wgpu::BindGroup& bg, const wgpu::TextureView& dst, const char* label);
@@ -100,6 +122,18 @@ private:
     wgpu::PipelineLayout mPassPL, mCompositePL;
     wgpu::RenderPipeline mDownPipe, mBlurPipe, mCompositePipe;
     wgpu::RenderPipeline mDownTentPipe, mCompositeBSplinePipe;   // `enhanced`: Prewarm or first use
+    // np-look23 (c), `depthWeighted`: Prewarm or first use.
+    wgpu::BindGroupLayout mFactorHalfBGL;   // depth (MS), params
+    wgpu::BindGroupLayout mDownDwBGL;       // src, sampler, factor
+    wgpu::PipelineLayout mFactorHalfPL, mDownDwPL;
+    wgpu::RenderPipeline mFactorHalfPipe, mDownDwPipe, mBlurDwPipe, mCompositeDwPipe;
+    wgpu::Texture mDw[2];
+    wgpu::TextureView mDwView[2];
+    int mDwW = 0, mDwH = 0;
+    bool mLastDepthWeighted = false;
+    wgpu::Texture mDwFactor;                // the half-size factor, ((w+1)>>1) x ((h+1)>>1)
+    wgpu::TextureView mDwFactorView;
+    int mDwFactorW = 0, mDwFactorH = 0;
     wgpu::Sampler mSampler;               // linear, clamp
     // One buffer per pass: Queue::WriteBuffer lands at Submit, ahead of every
     // pass in the frame, so passes sharing a buffer would read the same data.

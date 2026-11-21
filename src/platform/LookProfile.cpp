@@ -59,6 +59,8 @@ LookSettings SettingsFor(LookProfile p) {
     // np-look23 (a): the noise map on whole output rows (LookProfile.h).
     // Uniforms only, no cost but a memoised constant per size.
     s.noiseSnapsToOutputRows = enh;
+    // np-look23 (c): the depth of field gathers by depth (LookProfile.h).
+    s.postDofDepthWeight = enh;
     return s;
 }
 
@@ -211,6 +213,15 @@ bool SetLookNoiseRowsForInspection(int mode) {
     s.noiseSnapsToOutputRows = mode < 0 ? SettingsFor(s.profile).noiseSnapsToOutputRows : mode != 0;
     fprintf(stderr, "[look] noise map on output rows %d%s (inspection, profile %s)\n",
             (int)s.noiseSnapsToOutputRows, mode < 0 ? " (the rule)" : "", LookProfileName(s.profile));
+    return true;
+}
+
+bool SetLookDofDepthWeightForInspection(int mode) {
+    LookSettings &s = Mutable();
+    if (s.profile == LookProfile::Native) return false;
+    s.postDofDepthWeight = mode < 0 ? SettingsFor(s.profile).postDofDepthWeight : mode != 0;
+    fprintf(stderr, "[look] depth of field depth-weighted %d%s (inspection, profile %s)\n",
+            (int)s.postDofDepthWeight, mode < 0 ? " (the rule)" : "", LookProfileName(s.profile));
     return true;
 }
 

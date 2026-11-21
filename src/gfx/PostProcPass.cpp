@@ -524,6 +524,16 @@ static bool EnhancedDof(const P*, bool worldGrade) {
         return false;
     }
 }
+// np-look23 (c): the enhanced depth of field's depth-weighted blur
+// (LookSettings::postDofDepthWeight), with EnhancedDof only.
+template <class P>
+static bool DepthWeightedDof(const P*, bool worldGrade) {
+    if constexpr (rndshape::kDC3RetailPost && sizeof(P) > 0) {
+        return worldGrade && milo::Look().postDofDepthWeight;
+    } else {
+        return false;
+    }
+}
 
 void PostProcPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& intermediateView,
                        const wgpu::Texture& intermediateTex, int intermediateW, int intermediateH,
@@ -555,7 +565,8 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& i
     if constexpr (rndshape::kDC3RetailPost) dofRuns = !rndshape::PostProcDisabled();
     if (sInspectSkip & kSkipDof) dofRuns = false;
     if (dofRuns && mDof.Run(encoder, intermediateView, intermediateTex.GetFormat(), depthView,
-                            depthSamples, intermediateW, intermediateH, gpu, EnhancedDof(pp, mWorldGrade))) {
+                            depthSamples, intermediateW, intermediateH, gpu, EnhancedDof(pp, mWorldGrade),
+                            DepthWeightedDof(pp, mWorldGrade))) {
         sceneView = mDof.OutputView();
     }
 
