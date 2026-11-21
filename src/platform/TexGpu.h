@@ -24,6 +24,36 @@ void UploadRGBAToRndTex(RndTex* tex, const uint8_t* rgba, int w, int h);
 // Choose render target format matching the surface's sRGB-ness
 wgpu::TextureFormat ChooseRenderTargetFormat(RndTex* tex);
 
+// np-look47: what a texture pass into `tex` draws into. samples > 1: draw into
+// msaaView / msaaDepthView and resolve into resolveView. gpuWidth x gpuHeight
+// is the attachments' size. passClears: the pass clears colour, so the 4x
+// pair may be made now (a pass resumed with a load never makes one). False
+// when the texture has no render target.
+struct GpuTexPassTarget {
+    wgpu::TextureView resolveView;
+    wgpu::TextureView depthView;
+    wgpu::TextureView msaaView;
+    wgpu::TextureView msaaDepthView;
+    uint32_t gpuWidth = 0;
+    uint32_t gpuHeight = 0;
+    uint32_t samples = 1;
+    // The kept answer to "is this target drawn like the frame" (np-look47),
+    // decided at the target's last clearing pass.
+    bool likeFrame = false;
+};
+bool GetGpuTexPassTarget(RndTex* tex, GpuTexPassTarget& out, bool passClears = true);
+
+// np-look47: the consumer's half of "a texture pass is drawn like the frame".
+// The engine half is fixed (RndTex type exactly kRendered, no mips); the
+// predicate answers the rest (dc3: the target is the output of texture
+// renderers that all draw a character). Asked only where a pass that clears
+// the target begins; the answer is kept until the target's next clearing
+// pass, so a sampling call never re-asks it. No predicate registered (rb3,
+// rb3-xenon): no target is drawn like the frame. nullptr unregisters.
+using TexPassLikeFrameFn = bool (*)(RndTex*);
+void SetTexPassLikeFramePredicate(TexPassLikeFrameFn fn);
+TexPassLikeFrameFn GetTexPassLikeFramePredicate();
+
 // Check if a texture has a proper renderable GPU backing (RGBA, not compressed)
 bool IsGpuTexRenderable(RndTex* tex);
 

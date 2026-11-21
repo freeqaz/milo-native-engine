@@ -66,6 +66,14 @@ LookSettings SettingsFor(LookProfile p) {
     s.specularAA = enh;
     // np-look32: soft contact shadows under the crowd (LookSettings::crowdContactShadow).
     s.crowdContactShadow = enh;
+    // np-look47 step 1: a render-to-texture target drawn like the frame
+    // (LookProfile.h), 4x MSAA resolved into it. On a discrete GPU. Off on
+    // anything else until a handheld's timing says it fits: measured on the
+    // 3090, it adds ~0.025 ms to the texture pass at 1024x1024; scaled by the
+    // 890M's fill and bandwidth (8-15x) that is 0.19-0.36 ms, over the 0.15 ms
+    // a 1268x713 Break It Down frame may take (item 47 README).
+    s.texPassMsaa = enh;
+    s.texPassMsaaIntegrated = false;
     // np-look23 (a): the noise map on whole output rows (LookProfile.h).
     // Uniforms only, no cost but a memoised constant per size.
     s.noiseSnapsToOutputRows = enh;
@@ -373,6 +381,22 @@ bool SetLookCrowdShadowForInspection(int mode) {
     fprintf(stderr, "[look] crowd contact shadow %d%s (inspection, profile %s)\n",
             (int)s.crowdContactShadow, mode < 0 ? " (the rule)" : "", LookProfileName(s.profile));
     return true;
+}
+
+bool SetLookTexPassMsaaForInspection(int mode) {
+    LookSettings &s = Mutable();
+    if (s.profile == LookProfile::Native) return false;
+    const LookSettings &r = SettingsFor(s.profile);
+    s.texPassMsaa = mode < 0 ? r.texPassMsaa : mode != 0;
+    s.texPassMsaaIntegrated = mode < 0 ? r.texPassMsaaIntegrated : mode != 0;
+    fprintf(stderr, "[look] texture pass msaa %d, %d on a non-discrete GPU%s (inspection, profile %s)\n",
+            (int)s.texPassMsaa, (int)s.texPassMsaaIntegrated, mode < 0 ? " (the rule)" : "",
+            LookProfileName(s.profile));
+    return true;
+}
+
+bool LookTexPassMsaa(const LookSettings &look, bool discreteGpu) {
+    return discreteGpu ? look.texPassMsaa : look.texPassMsaaIntegrated;
 }
 
 static int sReflectionCullInspection = -1;

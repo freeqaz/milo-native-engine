@@ -284,6 +284,23 @@ struct LookSettings {
     // pale ground it floats. Enhanced: on. Inspection:
     // {rnd native_look crowd_shadow_on|crowd_shadow_off|crowd_shadow_rule}.
     bool crowdContactShadow = false;
+
+    // ---- render-to-texture targets drawn like the frame (np-look47) ----------
+    // A camera's render target drawn through a texture pass -- in DC3 a
+    // RndTexRenderer's output, Break It Down's projection.tex -- was drawn at
+    // its own size with one sample a texel, while the frame round it has 4x
+    // MSAA at the look's render scale, so a dancer shown through it steps one
+    // pixel at a time. Which targets: TexPassDrawnLikeFrame (Tex_Wgpu.cpp),
+    // the one place the rule lives.
+    //  texPassMsaa (step 1): the pass draws with the frame's sample count
+    //    (kMSAASamples) into a multisampled colour and depth pair and resolves
+    //    into the texture. The texture keeps its size and format, so a sampler
+    //    or a readback of it sees what it saw, edges averaged.
+    // Enhanced only; Retail and Native (rb3, rb3-xenon) keep the one-sample
+    // target, pass for pass. A value per adapter class (LookTexPassMsaa).
+    // Inspection: {rnd native_look rtt_msaa_on|rtt_msaa_off|rtt_msaa_rule}.
+    bool texPassMsaa = false;
+    bool texPassMsaaIntegrated = false;
 };
 
 // The cut-out modes the scene block carries (SceneUniforms::cutoutSampleTest,
@@ -453,6 +470,11 @@ bool SetLookCutoutSampleTestForInspection(int mode);
 // crowd_shadow_on|off|rule: LookSettings::crowdContactShadow on, off, or the
 // profile's own value (mode < 0). False under Native.
 bool SetLookCrowdShadowForInspection(int mode);
+// np-look47: texPassMsaa (step 1) on, off or the profile's (1 / 0 / -1),
+// both adapter classes. False under Native.
+bool SetLookTexPassMsaaForInspection(int mode);
+// Step 1 for this adapter class.
+bool LookTexPassMsaa(const LookSettings &look, bool discreteGpu);
 // {rnd native_look hair_edge_b|hair_edge_c|hair_edge_e|hair_edge_centre}:
 // cutoutSampleTest on with that CutoutSampleMode (1..4) in place of the
 // default, until another hair_edge token. False under the Native profile or

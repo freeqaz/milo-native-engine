@@ -173,6 +173,9 @@ public:
     bool IsInPass() const { return mInPass; }
     wgpu::TextureFormat CurrentTargetFormat() const { return mCurrentTargetFormat; }
     uint32_t CurrentSampleCount() const { return mCurrentSampleCount; }
+    // np-look47: the sample count a texture pass draws with when the look's
+    // texPassMsaa reaches its target -- the frame's (kMSAASamples).
+    static constexpr uint32_t kTexPassMsaaSamples = 4;
     bool CurrentPassHasDepth() const { return mCurrentPassHasDepth; }
     // The pass states a mesh can be drawn in, for a warm that runs outside any
     // pass (MeshPipelineKey.h): the world (BeginFramePass), the HUD overlay
@@ -180,7 +183,10 @@ public:
     // without depth.
     MeshPassContext WorldPassContext(bool reflection) const;
     MeshPassContext OverlayPassContext() const;
-    MeshPassContext TexturePassContext(bool depth) const;
+    // likeFrame: a target the look draws like the frame (np-look47,
+    // LookSettings::texPassMsaa; RndTex type kRendered), whose pass then has the
+    // frame's sample count. The self-shadow caster pass never is.
+    MeshPassContext TexturePassContext(bool depth, bool likeFrame = false) const;
     // Compile now the pipeline DrawRect asks for with `mat` in `ctx` (a
     // load-time warm, DrawRect2D::Warm). Returns the pipelines created.
     int WarmRectPipelines(RndMat* mat, const MeshPassContext& ctx) {

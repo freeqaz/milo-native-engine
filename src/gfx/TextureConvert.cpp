@@ -757,23 +757,27 @@ wgpu::Texture CreateCubeFromBitmaps(GpuDevice& gpu, const RndBitmap* const* face
 }
 
 wgpu::Texture CreateRenderTarget(GpuDevice& gpu, int w, int h, wgpu::TextureFormat fmt,
-                                 const char* label) {
+                                 const char* label, uint32_t samples) {
     wgpu::TextureDescriptor desc{};
     desc.label = label;
     desc.size = {(uint32_t)w, (uint32_t)h, 1};
     desc.format = fmt;
-    desc.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding
-               | wgpu::TextureUsage::CopyDst | wgpu::TextureUsage::CopySrc;
+    desc.sampleCount = samples;
+    desc.usage = samples > 1 ? wgpu::TextureUsage::RenderAttachment
+                             : wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding
+                                   | wgpu::TextureUsage::CopyDst | wgpu::TextureUsage::CopySrc;
     return gpu.CreateTexture(desc);
 }
 
-wgpu::Texture CreateDepthTarget(GpuDevice& gpu, int w, int h, const char* label, bool sampled) {
+wgpu::Texture CreateDepthTarget(GpuDevice& gpu, int w, int h, const char* label, bool sampled,
+                                uint32_t samples) {
     wgpu::TextureDescriptor desc{};
     desc.label = label;
     desc.size = {(uint32_t)w, (uint32_t)h, 1};
     desc.format = wgpu::TextureFormat::Depth24PlusStencil8;
+    desc.sampleCount = samples;
     desc.usage = wgpu::TextureUsage::RenderAttachment;
-    if (sampled) desc.usage |= wgpu::TextureUsage::TextureBinding;
+    if (sampled && samples == 1) desc.usage |= wgpu::TextureUsage::TextureBinding;
     return gpu.CreateTexture(desc);
 }
 
