@@ -15,6 +15,7 @@
 #include "gfx/PointTestPass.h"
 #include "gfx/PointTestStandIns.h"
 #include "gfx/SpotBeamPass.h"
+#include "gfx/ContactShadowPass.h"
 #include "gfx/TexBlendPass.h"
 #include "gfx/UniformStructs.h"
 #include "gfx/UniformRingBuffer.h"
@@ -23,6 +24,7 @@
 #include "platform/MeshPipelineKey.h"
 #include "platform/PointTestHook.h"
 #include "platform/SpotBeamHook.h"
+#include "platform/ContactShadowHook.h"
 #include "platform/TexBlendHook.h"
 #ifdef MILO_RNDOBJ_SHAPE_HAS_NGRND
 #include "rndobj/ShaderMgr.h"
@@ -348,6 +350,24 @@ public:
     bool SubmitSpotBeams(const NativeSpotBeamFrame& frame, const NativeSpotBeam* beams, int count);
     int SpotBeamsDrawn() const { return mSpotBeamsDrawn; }
 
+    // Crowd contact shadows (platform/ContactShadowHook.h, gfx/ContactShadowPass.h;
+    // DC3 enhanced look, LookSettings::crowdContactShadow). A shadow is kept
+    // only while the main frame pass is open (no render target, shadow map or
+    // HUD overlay), transformed with the camera current at queue time, and
+    // drawn at the next camera change (before the deferred transparent draws)
+    // or when the pass ends: after the opaque world at that camera.
+    bool WantsContactShadows() const;
+    bool QueueContactShadow(const NativeContactShadow& s);
+    void FlushContactShadows();
+    // Shadows drawn so far this frame / in the last finished frame.
+    int ContactShadowsDrawnThisFrame() const { return mContactShadowsDrawn; }
+    int ContactShadowsDrawnLastFrame() const { return mContactShadowsDrawnLast; }
+    // True when the main frame pass's contact shadow pipeline exists already
+    // (PrewarmFixedKeyPipelines under a look that draws them).
+    bool ContactShadowPipelineReady() const {
+        return mContactShadowPass.Ready(mGpu.SurfaceFormat(), kMSAASamples);
+    }
+
     // Compiles the pipelines whose keys are fixed once the device is up (depth
     // of field, spot beams, point tests, shadow casters); DC3 calls it at init.
     // Returns how many it created: 0 when they all exist with the keys a frame
@@ -493,6 +513,19 @@ public:
         }
     };
     SpotBeamRenderer mSpotBeamRenderer;
+
+    ContactShadowPass mContactShadowPass;
+    std::vector<ContactShadowPass::Vertex> mContactShadowVerts;  // queued, not drawn
+    int mContactShadowsDrawn = 0;
+    int mContactShadowsDrawnLast = 0;
+    struct ContactShadowRenderer : NativeContactShadowRenderer {
+        WgpuRnd* rnd = nullptr;
+        bool WantsContactShadows() override { return rnd->WantsContactShadows(); }
+        bool QueueContactShadow(const NativeContactShadow& s) override {
+            return rnd->QueueContactShadow(s);
+        }
+    };
+    ContactShadowRenderer mContactShadowRenderer;
 
     // GPU resource initialization tracking
     bool mGpuResourcesReady = false;
