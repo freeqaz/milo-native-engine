@@ -211,6 +211,11 @@ public:
     float LastSceneSpecularAA() const { return mLastSceneSpecularAA; }
     // The materialLodBias the last WriteSceneUniforms wrote (tests).
     float LastSceneMaterialLodBias() const { return mLastSceneMaterialLodBias; }
+    // The cutoutSampleTest the last WriteSceneUniforms wrote (tests; np-look26).
+    float LastSceneCutoutSampleTest() const { return mLastSceneCutoutSampleTest; }
+    // The cutout alpha test per sample for the pass now open, 1 or 0
+    // (LookSettings::cutoutSampleTest): 0 in the HUD overlay phase.
+    float PassCutoutSampleTest() const;
     // The world material LOD bias for the pass now open: the look's rule
     // (milo::MaterialLodBiasAt) at the frame's render scale, or at 1 for a
     // texture target.
@@ -596,6 +601,7 @@ public:
     float mLastSceneViewProj[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     float mLastSceneSpecularAA = 0.0f;
     float mLastSceneMaterialLodBias = 0.0f;
+    float mLastSceneCutoutSampleTest = 0.0f;
     float mLastCamPosX = 0.0f; // detect same-pointer position changes
     float mLastCamPosY = 0.0f;
     float mLastCamPosZ = 0.0f;

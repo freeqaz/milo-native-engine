@@ -194,7 +194,80 @@ struct LookSettings {
     // per-pixel retail lighting, which HUD and text never take. Retail: the
     // shipped exponent, per pixel as the 360 shades it.
     bool specularAA = false;
+
+    // ---- alpha-tested cutouts (np-look26 d) --------------------------------------
+    // Inspection only: no look sets this (np-look26 g, below). When on, the
+    // enhanced cutout (MaterialCutCoverage == Sharpened: hair, crowd
+    // clothing, palms, a SrcAlpha floor line) in a 4x multisampled pass takes
+    // the original's alpha test at each of the pass's four samples, and the
+    // sample mask is the four results (standard_wgsl.inc cutoutSampleMask).
+    // Each sample reads the diffuse alpha at its own position, one bilinear
+    // fetch at the level the original's sampler reads for the pixel (two
+    // levels at most, no anisotropy, no look LOD bias), times
+    // the same material and vertex alpha the original's test multiplies in.
+    // That is retail's cut supersampled 4x: nothing passes that retail's test
+    // would not pass at that point, so a fade authored under the cut stays
+    // invisible, and a strand thinner than a texel of the averaged mip (which
+    // the 16x-anisotropic, whole-chain sample averages under the threshold and
+    // dots out) covers the part of the pixel it crosses. Off: the landed
+    // coverage (cutoutCoverage, the tested alpha sharpened to the pixel
+    // footprint). World draws only, through the scene block (SceneUniforms::
+    // cutoutSampleTest, 0 in the overlay phase), in pipelines that take the
+    // LOD bias (text and HUD never do), with a diffuse texture, 4 samples.
+    // Retail and Native: always off (no retail pipeline is fs_cutout, and the
+    // tokens refuse the Native profile).
+    // np-look26 f: the mode hair_edge_on selects is E (CutoutSampleMode):
+    // where retail's level resolves the alpha (lod <= 1: palms, fences up
+    // close) the per-sample mask alone (B, as smooth as the landed coverage);
+    // where the texture is minified past retail's level 1 (hair at a
+    // distance) retail's test at the pixel centre first, so every pixel
+    // retail draws is drawn solid, and the per-sample mask only where the
+    // centre fails (C; B alone was faithful but noisy there: four point
+    // samples of sub-pixel strand alpha). Inspection:
+    // {rnd native_look hair_edge_on|hair_edge_off|hair_edge_rule}, and
+    // hair_edge_b|hair_edge_c|hair_edge_e|hair_edge_centre for the modes.
+    // (Item 26's boost of the tested alpha by mip level, rejected: it drew
+    // content authored under the cut, dclive's PeakLine floor fades.)
+    // np-look26 g, why no look turns it on: a retail launch (two mip levels
+    // uploaded) shows hair more broken than the landed coverage, not less --
+    // the comparison that started this used the retail token in an enhanced
+    // run, which sampled whole chains. Against the landed coverage, E fills
+    // strand tips (oblio04's strands at dclive, 1268x713: solid share .519
+    // against .489) and removes a faint dotted floor line the landed coverage
+    // draws and retail does not, but it draws retail's aliased dots solid
+    // (a dotted silhouette where the landed coverage is smooth), steps floor
+    // stripe edges, and costs four alpha fetches per cut-out fragment. A
+    // trade, so the look is unchanged; one line in SettingsFor adopts it.
+    bool cutoutSampleTest = false;
 };
+
+// The cut-out modes the scene block carries (SceneUniforms::cutoutSampleTest,
+// a float holding one of these; standard_wgsl.inc cutoutSampleMask). All are
+// inspection tokens, kept so one held frame can be measured under each;
+// kCutoutModeDefault is the one hair_edge_on (and a look that sets
+// cutoutSampleTest, none today) selects.
+//   0 off: the landed sharpened coverage (cutoutCoverage).
+//   1 B: retail's test at each of the four samples, the mask the four results.
+//   2 C: retail's test at the pixel centre first; pass = full mask (everything
+//        retail draws is drawn solid), fail = B's mask (a fringe only where
+//        retail's test passes at a sample position).
+//   3 E: B where retail's level resolves the alpha (unclamped lod <= 1, at
+//        most about one texel per pixel), C above that.
+//   4 centre only (diagnostic): full mask if the centre passes, else nothing;
+//        retail's cut shape.
+enum CutoutSampleMode : int {
+    kCutoutModeOff = 0,
+    kCutoutModeB = 1,
+    kCutoutModeC = 2,
+    kCutoutModeE = 3,
+    kCutoutModeCentre = 4,
+};
+constexpr int kCutoutModeDefault = kCutoutModeE;  // hair_edge_on's mode (np-look26 f; was C in e)
+
+// The value the scene block carries (SceneUniforms::cutoutSampleTest): 0
+// while the look has no cutoutSampleTest, else kCutoutModeDefault, or the
+// mode an inspection token chose (SetLookCutoutModeForInspection).
+float CutoutSampleTestFor(const LookSettings &look);
 
 // MILO_RENDER_SCALE's value -> LookSettings::renderScaleExplicit: 0 for unset,
 // empty or not a positive number; else clamped to [1, 2]. *bad is set when a
@@ -211,9 +284,36 @@ const LookSettings &Look();
 
 const char *LookProfileName(LookProfile p);
 
+// The bitmapMipLevels the look the process started in carries: the level
+// count its regular textures were uploaded with (Tex_Wgpu reads
+// Look().bitmapMipLevels at upload; textures are not re-uploaded on a look
+// switch). SetLookProfileForInspection does not move it; ScopedLookOverride
+// sets it to its profile's value for the scope (a test scope stands for a
+// process started in that look) and restores it.
+int StartupBitmapMipLevels();
+// np-look26 f: the highest level count a material sampler may read under
+// `look` after a look switch (0 = no clamp; ApplyLookSampling sets lodMaxClamp
+// to one less): `look`'s bitmapMipLevels when it caps the upload (> 0) and
+// differs from the startup look's, else 0. So after {rnd native_look retail}
+// in a run started enhanced (whole chains uploaded), world samplers, and
+// retail's text and HUD samplers (retail has no uiMipLevels), read retail's
+// two levels, as retail's textures hold. A run that never switches looks gets
+// 0 for every look and consumer: no sampler changes. Not a look departure, no
+// LookSettings bool, and it keys on the level counts, never on the profile.
+int LookSwitchTexLevels(const LookSettings &look, int startupBitmapMipLevels);
+
 // Inspection (dc3's `{rnd native_look retail|enhanced}`): switch between the
 // two DC3 profiles at run time, so an A/B takes the same frozen frame. Ignored
-// (returns false) for a consumer whose profile is Native.
+// (returns false) for a consumer whose profile is Native. Textures keep the
+// level count they were uploaded with: switched to retail from a run started
+// enhanced, world, text and HUD samplers are clamped to retail's two levels
+// (LookSwitchTexLevels), so the frame has retail's cut and sharpness. The
+// reverse cannot be made faithful: a run started retail uploaded two levels,
+// so after {rnd native_look enhanced} minified textures read at most level 1,
+// sharper and more aliased than an enhanced launch (only a re-upload would fix
+// it; there is none). Compare against an enhanced launch for that direction.
+// Enhanced's text and HUD samplers keep their class rule (uiMipLevels) either
+// way.
 bool SetLookProfileForInspection(LookProfile p);
 // The same for the post chain's fields only (postPrecision, postBloomFilter,
 // postDofFilter), the rest of the profile untouched: an A/B of the post look
@@ -261,6 +361,18 @@ bool SetLookNoiseRowsForInspection(int mode);
 // four pipelines. Only reaches the screen with postDofFilter on. False under
 // the Native profile.
 bool SetLookDofDepthWeightForInspection(int mode);
+// {rnd native_look hair_edge_on|hair_edge_off|hair_edge_rule}: cutoutSampleTest
+// on (mode E, kCutoutModeDefault), off, or the profile's own value, which is
+// off in every look (mode 1 / 0 / -1), so one frozen frame is measured both
+// ways; each clears a mode token. A uniform:
+// takes effect on the next frame and compiles nothing. False under the Native
+// profile.
+bool SetLookCutoutSampleTestForInspection(int mode);
+// {rnd native_look hair_edge_b|hair_edge_c|hair_edge_e|hair_edge_centre}:
+// cutoutSampleTest on with that CutoutSampleMode (1..4) in place of the
+// default, until another hair_edge token. False under the Native profile or
+// for a mode outside 1..4.
+bool SetLookCutoutModeForInspection(int mode);
 // {rnd native_look refl_cull_force|refl_cull_flip|refl_cull_rule}: the cull a
 // WorldReflection's mirrored redraw gives its materials (ReflectionCull,
 // Mesh_Wgpu.cpp): force = every material culls Backwards (DC3's CheckForceCull),
@@ -285,6 +397,7 @@ public:
 
 private:
     LookSettings mPrev;
+    int mPrevStartupBitmapMipLevels;
 };
 
 }  // namespace milo
