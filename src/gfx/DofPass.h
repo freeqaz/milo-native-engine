@@ -55,8 +55,9 @@ public:
              uint32_t depthSamples, int sceneW, int sceneH, GpuDevice& gpu,
              bool enhanced = false, bool depthWeighted = false);
     // np-look23 (c), with `enhanced` only (LookSettings::postDofDepthWeight):
-    // the downsample weights each scene texel by its own blur factor squared
-    // (premultiplied, the weight in alpha, RGBA16Float quarter targets) and
+    // the downsample weights each of the tent's 16 bilinear taps by the blur
+    // factor squared at the heavier texel of its pair (premultiplied, the
+    // weight in alpha, RGBA16Float quarter targets) and
     // the composite divides it back out, so an in-focus figure's colour no
     // longer spreads into the blurred background beside it (retail's bright
     // fringe, which Xenia and the hardware show). Retail and `enhanced`

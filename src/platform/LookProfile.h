@@ -159,8 +159,8 @@ struct LookSettings {
     bool postBloomFilter = false;
     bool postDofFilter = false;
     // np-look23 (c): the depth of field's blur gathers by depth (DofPass::Run
-    // `depthWeighted`, with postDofFilter): each scene texel weighs into the
-    // quarter-size blur by its own blur factor squared, so an in-focus figure
+    // `depthWeighted`, with postDofFilter): each downsample tap weighs into the
+    // quarter-size blur by its blur factor squared, so an in-focus figure
     // adds nothing to the blurred background beside it. The original's
     // downsample_4x is depth-blind: the figure's colour spreads ~3 quarter
     // texels into the background, a bright fringe around every in-focus
