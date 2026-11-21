@@ -3,11 +3,13 @@
 #include "gfx/DofPass.h"
 #include "gfx/PresentScale.h"
 #include "gfx/RB3RetailPost.h"
+#include "gfx/NoiseRows.h"
 #include <webgpu/webgpu_cpp.h>
 #include <chrono>
 
 class GpuDevice;
 class RndPostProc;
+namespace milo { struct LookSettings; }
 
 // The composite draws the image's texture noise (NgPostProc::CheckNoise:
 // mNoiseMap overlay-blended, see rndshape::PostProcNoiseMap) for a consumer
@@ -95,6 +97,18 @@ private:
     bool NoiseConstants(RndPostProc* pp, float seeds[4], float params[4], float snap[3],
                         wgpu::TextureView& map, bool& midtone, int outputRows);
     static int NoiseOutputRows(int h, const GpuDevice& gpu);
+    NoiseRowSnapCache mNoiseRowSnap;   // NoiseConstants' memo (np-look23 a)
+public:
+    // Whether NoiseConstants re-tiles the noise map to output rows under
+    // `look`: the shape's capability AND the look's setting (Enhanced only).
+    static bool NoiseRowsSnapped(const milo::LookSettings& look);
+    // NoiseConstants' last step: re-tile `seeds` / `params` for a frame
+    // `outputRows` high and a map `mapH` tall when NoiseRowsSnapped(Look()),
+    // through the memo; otherwise every constant untouched and snap zero.
+    void SnapNoiseConstants(int outputRows, int mapH, float seeds[4], float params[4], float snap[3]);
+    // NoiseConstants' memo, for the tests (its `computes` counter).
+    const NoiseRowSnapCache& NoiseRowSnapMemo() const { return mNoiseRowSnap; }
+private:
     // np-gfx-post: DC3's retail chain (rndshape::kDC3RetailPost).
     // A template so that the RB3-Wii shape, which has no such post-process,
     // never instantiates it.

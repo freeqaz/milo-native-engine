@@ -715,6 +715,19 @@ int PostProcPass::NoiseOutputRows(int h, const GpuDevice& gpu) {
     return (int)std::lround((double)h * gpu.OutputHeight() / drawn);
 }
 
+bool PostProcPass::NoiseRowsSnapped(const milo::LookSettings& look) {
+    return rndshape::kNoiseSnapsToOutputRows && look.noiseSnapsToOutputRows;
+}
+
+void PostProcPass::SnapNoiseConstants(int outputRows, int mapH, float seeds[4], float params[4],
+                                      float snap[3]) {
+    snap[0] = snap[1] = snap[2] = 0.0f;
+    if (!NoiseRowsSnapped(milo::Look())) return;
+    ApplyNoiseRowSnap(mNoiseRowSnap.Get(outputRows, mapH, std::fabs((double)params[1]),
+                                        std::fabs((double)params[2])),
+                      seeds, params, snap);
+}
+
 bool PostProcPass::NoiseConstants(RndPostProc* pp, float seeds[4], float params[4],
                                   float snap[3], wgpu::TextureView& map, bool& midtone,
                                   int outputRows) {
@@ -758,9 +771,10 @@ bool PostProcPass::NoiseConstants(RndPostProc* pp, float seeds[4], float params[
     params[2] = noise.stationary ? 1.0f : noise.topScale;
     params[3] = noise.intensity;
     // np-look23 (a): one texel per whole number of output rows, read at one
-    // place in it (NoiseRows.h). The DC3 shape's only; otherwise untouched.
-    NoiseRowSnapConstants(rndshape::kNoiseSnapsToOutputRows, outputRows, noise.map->Height(),
-                          seeds, params, snap);
+    // place in it (NoiseRows.h). The enhanced look's, on a shape with the
+    // capability; otherwise every constant as authored. The derived values
+    // are memoised on (rows, map height, base, top).
+    SnapNoiseConstants(outputRows, noise.map->Height(), seeds, params, snap);
     return true;
 }
 

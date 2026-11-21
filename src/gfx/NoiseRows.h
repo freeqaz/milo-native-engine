@@ -15,10 +15,22 @@
 // (2.81 px at 1080, aliased to 2.16 px at 713 and 2.14 px at 720) under a
 // slow beat. Measured on a held frame: 1.2-3.6 8-bit levels at 2.81 px at
 // 1920x1080, gone (<0.1) with the noise off. Xenia's 1280x720 frame carries
-// the same pattern (2.14 px, 1.73 levels, identical in a single frame and a
-// 3 s mean): it is the authored tiling, not a native defect.
+// the same pattern, identical in a single frame and a 3 s mean, at 2.14-2.15
+// px; its amplitude depends on the region (the noise scales with the image):
+// 1.04 levels in dclive far01's floor region (x900-1080, y540-710, where the
+// native frame read 0.46), 2.56 over the left half (x0-640) and 2.69 over the
+// whole frame. (An earlier 1.73 here came from a region that was not
+// recorded; it is withdrawn.) It is the authored tiling, beat included, not a
+// native defect.
 //
-// Both looks keep the map, its intensity, its stationarity and the authored
+// RETAIL KEEPS IT. The original's behaviour is 768 map rows down any screen
+// under a linear filter, with that beat, and DC3_LOOK=retail is the original
+// (LookProfile.h). Re-tiling is the enhanced look's
+// (LookSettings::noiseSnapsToOutputRows), and needs this shape's capability
+// too (rndshape::kNoiseSnapsToOutputRows); with either off every constant and
+// both shader paths are exactly the authored ones.
+//
+// The enhanced look keeps the map, its intensity, its stationarity and the authored
 // grain density as nearly as whole output rows allow: each layer's texel
 // covers k output rows, k >= 1 the whole number nearest (in log terms) the
 // authored outputRows / (scale * mapH). At 1080 that ratio is 1.406, between
@@ -46,9 +58,10 @@
 // not the drawn buffer's: a 2x frame draws 2 rows per output row, each pair
 // reads one blend, and the box filter keeps it -- the same picture as 1x.
 //
-// A DC3-shape property (rndshape::kNoiseSnapsToOutputRows): with it off,
-// NoiseRowSnapConstants leaves every constant untouched and the shaders take
-// the authored uv unchanged.
+// Gates: the DC3-shape capability (rndshape::kNoiseSnapsToOutputRows) AND the
+// look (LookSettings::noiseSnapsToOutputRows, Enhanced only). With either
+// off, NoiseRowSnapConstants leaves every constant untouched and the shaders
+// take the authored uv unchanged.
 
 // The whole number of output rows one noise texel covers, for a layer whose
 // authored tiling puts `texelRows` map rows (scale * map height) down a
@@ -98,28 +111,74 @@ inline double NoiseSampleOffset(int k, double authoredTexelsPerRow) {
     return 0.5 * (1.0 - f);
 }
 
-// Re-tiles NoiseConstants' seeds / params (kPS_NoiseSeeds, kPS_NoiseParams:
-// params = (base x, base y, top multiplier, intensity)) so both layers' rows
-// are whole output rows of a frame `outputRows` high, for a map `mapH` texels
-// tall, and gives each layer's sample offset. snap = (1, base d, top d) when
-// applied; (0, 0, 0) and every constant untouched when `enabled` is false or
-// the size is unknown.
-inline void NoiseRowSnapConstants(bool enabled, int outputRows, int mapH, float seeds[4],
-                                  float params[4], float snap[3]) {
-    snap[0] = snap[1] = snap[2] = 0.0f;
-    if (!enabled || outputRows <= 0 || mapH <= 0 || params[1] == 0.0f) return;
-    const double base = std::fabs((double)params[1]);
-    const double top = std::fabs((double)params[2]);
+// The derived half of the re-tiling: a pure function of the output rows, the
+// map height and the two layers' authored scales (|base y|, |top multiplier|).
+// NoiseLineContrast is ~2,000 steps per layer, so PostProcPass memoises this
+// (NoiseRowSnapCache) and recomputes it only when one of those changes.
+struct NoiseRowSnap {
+    bool applied = false;          // false: leave every constant untouched
+    double rowsB = 0, rowsT = 0;   // whole-texel map rows down the screen, per layer
+    double baseY = 0;              // the base layer's re-tiled |scale| (rowsB / mapH)
+    float dB = 0, dT = 0;          // each layer's sample offset past its texel's centre
+};
+
+inline NoiseRowSnap NoiseRowSnapFor(int outputRows, int mapH, double base, double top) {
+    NoiseRowSnap r;
+    if (outputRows <= 0 || mapH <= 0 || !(base > 0.0)) return r;
     const double texB = base * mapH, texT = base * top * mapH;
     const int kb = NoiseOutputRowsPerTexel(outputRows, texB);
     const int kt = NoiseOutputRowsPerTexel(outputRows, texT);
-    const double rowsB = (double)outputRows / kb;
-    const double rowsT = (double)outputRows / kt;
-    params[1] = (float)std::copysign(rowsB / mapH, (double)params[1]);
-    params[2] = (float)std::copysign(rowsT / rowsB, (double)params[2]);
-    seeds[1] = (float)(std::round((double)seeds[1] * rowsB) / rowsB);
-    seeds[3] = (float)(std::round((double)seeds[3] * rowsT) / rowsT);
-    snap[0] = 1.0f;
-    snap[1] = (float)NoiseSampleOffset(kb, texB / outputRows);
-    snap[2] = (float)NoiseSampleOffset(kt, texT / outputRows);
+    r.applied = true;
+    r.rowsB = (double)outputRows / kb;
+    r.rowsT = (double)outputRows / kt;
+    r.baseY = r.rowsB / mapH;
+    r.dB = (float)NoiseSampleOffset(kb, texB / outputRows);
+    r.dT = (float)NoiseSampleOffset(kt, texT / outputRows);
+    return r;
 }
+
+// The cheap half, per frame: re-tiles NoiseConstants' seeds / params
+// (kPS_NoiseSeeds, kPS_NoiseParams: params = (base x, base y, top multiplier,
+// intensity)) to `r`. snap = (1, base d, top d) when applied; (0, 0, 0) and
+// every constant untouched otherwise.
+inline void ApplyNoiseRowSnap(const NoiseRowSnap &r, float seeds[4], float params[4], float snap[3]) {
+    snap[0] = snap[1] = snap[2] = 0.0f;
+    if (!r.applied) return;
+    params[1] = (float)std::copysign(r.baseY, (double)params[1]);
+    params[2] = (float)std::copysign(r.rowsT / r.rowsB, (double)params[2]);
+    seeds[1] = (float)(std::round((double)seeds[1] * r.rowsB) / r.rowsB);
+    seeds[3] = (float)(std::round((double)seeds[3] * r.rowsT) / r.rowsT);
+    snap[0] = 1.0f;
+    snap[1] = r.dB;
+    snap[2] = r.dT;
+}
+
+// Both halves at once (the tests' entry point): so both layers' rows are whole
+// output rows of a frame `outputRows` high, for a map `mapH` texels tall.
+// Every constant untouched when `enabled` is false or the size is unknown.
+inline void NoiseRowSnapConstants(bool enabled, int outputRows, int mapH, float seeds[4],
+                                  float params[4], float snap[3]) {
+    snap[0] = snap[1] = snap[2] = 0.0f;
+    if (!enabled) return;
+    ApplyNoiseRowSnap(NoiseRowSnapFor(outputRows, mapH, std::fabs((double)params[1]),
+                                      std::fabs((double)params[2])),
+                      seeds, params, snap);
+}
+
+// PostProcPass's memo of NoiseRowSnapFor, keyed on its four inputs.
+// `computes` counts the recomputations (the tests read it).
+struct NoiseRowSnapCache {
+    int outputRows = -1, mapH = -1;
+    double base = -1.0, top = -1.0;
+    NoiseRowSnap value;
+    unsigned computes = 0;
+
+    const NoiseRowSnap &Get(int rows, int h, double b, double t) {
+        if (rows != outputRows || h != mapH || b != base || t != top) {
+            outputRows = rows; mapH = h; base = b; top = t;
+            value = NoiseRowSnapFor(rows, h, b, t);
+            computes++;
+        }
+        return value;
+    }
+};
