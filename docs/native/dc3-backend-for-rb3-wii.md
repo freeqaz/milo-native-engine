@@ -10640,3 +10640,64 @@ switch for the world samplers' anisotropy, so its GPU cost can be measured in on
   `ReflectionCullTest.OnlyDrawModeEightIsTheReflection`.
 - `ReflectionCullTest.InspectionSwitchSelectsFlipForceOrRule`: sabotage (the switch ignored) turns
   it red.
+
+## 50. Soft contact shadows under a crowd (lane np-gfx sharp, item 32, branch np-look32, 2026-11-21)
+
+New work beyond the original: DC3 draws no shadow of any kind for its crowd, so its members float on
+pale floors (streetside's sidewalk). The enhanced look now puts a soft dark pool under each 3D member.
+The retail look and the Native profile (rb3, rb3-xenon) take none.
+
+### 50.1 The seam
+
+- `platform/ContactShadowHook.h` includes nothing and names no WebGPU type. A game fills a
+  `NativeContactShadow` (a centre and two half-axis vectors in world space: an ellipse lying on the
+  floor) and hands it to `GetNativeContactShadowRenderer()`, after asking `WantsContactShadows()`.
+- `WgpuRnd` is the renderer. It wants shadows only when `milo::Look().crowdContactShadow` is set and
+  the draw is in the main frame pass with depth: not a render target, not the HUD overlay, not the
+  shadow-map pass, and with a current camera. Anything else is refused, so a caller needs no guard of
+  its own beyond the draw mode it already knows.
+- The four corners are projected with the camera current when the shadow is queued. The queue is
+  flushed when the camera changes (before the deferred transparent draws) and first thing in
+  `EndActivePass` (before text), and emptied at `BeginDrawing`.
+
+### 50.2 The pass
+
+- `gfx/ContactShadowPass`: one pipeline per (target format, sample count), no bind group of its own
+  (the scene's group 0 stays bound; mesh draws set their pipeline every time), one vertex buffer of
+  1024 shadows x 6 vertices per frame, each flush writing its own range.
+- Fragment: `factor = 1 - 0.45 * g`, `g = (exp(-3 r^2) - e^-3) / (1 - e^-3)`, so 45 % at the centre and
+  exactly 0 at the rim of the ellipse (`r = 1`): no edge to see. Multiply blend; depth test LessEqual
+  against the world and the characters already drawn; no depth write; no alpha write (the DC3 frame
+  alpha is the bloom mask).
+- The pipeline is created through `CreateCountedRenderPipeline` and, when the look starts with shadows
+  on, by `PrewarmFixedKeyPipelines` for the main frame pass's key (the surface format x
+  `kMSAASamples`). Compiled lazily it cost 4.5 ms on the first crowd frame (3090).
+- `LookSettings::crowdContactShadow`: on for Enhanced, off for Retail and Native.
+  `SetLookCrowdShadowForInspection(1 | 0 | -1)` is on, off, the look's rule; DC3 tokens
+  `{rnd native_look crowd_shadow_on|crowd_shadow_off|crowd_shadow_rule}`.
+
+### 50.3 What DC3 asks for
+
+`WorldCrowd::Draw3DChars` (dc3 `src/system/world/Crowd.cpp`, under `HX_NATIVE`), after each 3D
+member's draw in `kDrawNormal`: an ellipse on the member's origin plane lifted 0.03 x its height (2.25
+units at the shipped 75; streetside's sidewalk members stand up to about 2 units inside the floor, and
+at 0.005 the ellipses were under it and showed as streaks), half axes 0.20 and 0.13 of the height.
+
+### 50.4 Measured (3090, 1280x720 scale 1 unless said; dc3 archive `lanes/sharp/item32/`)
+
+- Where it shows: streetside's sidewalk crowd (close-up low 2,607 pixels changed by more than 8
+  levels, largest drop 46; wide low 1,593, 63) and, fainter, houseparty (76 to 889 pixels, drops 10 to
+  35). Rollerrink, dclive, dci and throneroom show no visible change (largest drop 3 to 11 on dark
+  floors, or none: the crowd's feet are behind rails or out of frame there).
+- Cost at 1920x1080 scale 2, streetside: below what the GPU timers resolve (off 2.42 and 2.51 ms GPU
+  sum, on 2.37 and 2.38).
+
+### 50.5 Guards (dc3-decomp)
+
+- `ContactShadowGpuTest` (4): `DarkensCentreLeavesRimAndAlpha`, `WritesNoDepth`,
+  `NearerSurfaceStaysClean`, `RetailAndNativeTakeNone` (with the enhanced frame as its positive
+  control). `CrowdTest`: shadows equal the 3D draws under enhanced and are 0 under `DC3_LOOK=retail`.
+- `FixedKeyPipelinesTest.CrowdContactShadowJoinsTheWarmForTheLookThatDrawsIt`.
+- Seven sabotages, each caught: strength 0, the setting on for every profile, depth write on, depth
+  compare Always, the `Crowd.cpp` call removed, the flush removed from `EndActivePass`, the warm
+  removed.
