@@ -1,4 +1,5 @@
 #include "gfx/PostProcPass.h"
+#include "gfx/NoiseRows.h"
 #include "gfx/BindGroupCount.h"
 #include "gfx/GpuTimers.h"
 #include "gfx/GpuDevice.h"
@@ -188,8 +189,12 @@ struct VOut {
     // takes sqrt(n) and branches on the luma L = (0.3,0.59,0.11).S, and its weight
     // is intensity * 6.75 L (1-L)^2, which peaks at 1 for L = 1/3.
     if (pp.noiseMode > 0.5) {
-        let baseUv = (in.uv + pp.noiseSeeds.xy) * pp.noiseParams.xy;
-        let topUv = (in.uv + pp.noiseSeeds.zw) * pp.noiseParams.xy * pp.noiseParams.z;
+        // np-look23 (a): each row at its texel's centre (NoiseRows.h).
+        let mapH = f32(textureDimensions(noiseTex).y);
+        var baseUv = (in.uv + pp.noiseSeeds.xy) * pp.noiseParams.xy;
+        var topUv = (in.uv + pp.noiseSeeds.zw) * pp.noiseParams.xy * pp.noiseParams.z;
+        baseUv.y = (floor(baseUv.y * mapH) + 0.5) / mapH;
+        topUv.y = (floor(topUv.y * mapH) + 0.5) / mapH;
         let n = textureSample(noiseTex, noiseSampler, baseUv).rgb *
                 textureSample(noiseTex, noiseSampler, topUv).rgb;
         let s = clamp(color, vec3f(0.0), vec3f(1.0));
@@ -410,7 +415,10 @@ void PostProcPass::RunDC3Retail(wgpu::CommandEncoder& encoder, P* pp, int mode,
             rndshape::FillRetailPost(pp, 1.0f, rp);
             bool midtone = false;
             wgpu::TextureView map;
-            if (NoiseConstants(pp, rp.noiseSeeds, rp.noiseParams, map, midtone)) {
+            // The composite draws w x h; a frame drawn at the window's size
+            // leaves at OutputHeight rows (a render scale box-filters it).
+            const int outRows = w == gpu.WindowWidth() ? gpu.OutputHeight() : h;
+            if (NoiseConstants(pp, rp.noiseSeeds, rp.noiseParams, map, midtone, outRows)) {
                 rp.noiseMap = map;
                 rp.noiseMidtone = midtone ? 1.0f : 0.0f;
             }
@@ -629,7 +637,8 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& i
         uni.noiseIntensity = 0.0f;
         wgpu::TextureView mapView;
         bool midtone = false;
-        if (NoiseConstants(pp, uni.noiseSeeds, uni.noiseParams, mapView, midtone)) {
+        const int outRows = intermediateW == gpu.WindowWidth() ? gpu.OutputHeight() : intermediateH;
+        if (NoiseConstants(pp, uni.noiseSeeds, uni.noiseParams, mapView, midtone, outRows)) {
             noiseView = mapView;
             uni.noiseMode = midtone ? 2.0f : 1.0f;
         }
@@ -687,7 +696,7 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& i
 }
 
 bool PostProcPass::NoiseConstants(RndPostProc* pp, float seeds[4], float params[4],
-                                  wgpu::TextureView& map, bool& midtone) {
+                                  wgpu::TextureView& map, bool& midtone, int outputRows) {
     rndshape::PostProcNoise noise;
     if (!rndshape::PostProcNoiseMap(pp, noise)) return false;
     // NgPostProc::CheckNoise: no noise unless the intensity is non-zero AND
@@ -726,6 +735,9 @@ bool PostProcPass::NoiseConstants(RndPostProc* pp, float seeds[4], float params[
     params[1] = noise.baseScale[1];
     params[2] = noise.stationary ? 1.0f : noise.topScale;
     params[3] = noise.intensity;
+    // np-look23 (a): one texel per whole number of output rows (NoiseRows.h);
+    // the shaders sample each row at its texel's centre.
+    SnapNoiseToOutputRows(outputRows, noise.map->Height(), seeds, params);
     return true;
 }
 

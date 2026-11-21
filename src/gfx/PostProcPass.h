@@ -83,8 +83,9 @@ private:
     float StepTime();
     float StepFlicker(RndPostProc* pp, float dt);
     // NgPostProc::CheckNoise's constants for `pp` (false: no noise this frame).
+    // outputRows: the rows the frame leaves at (0 = do not re-tile).
     bool NoiseConstants(RndPostProc* pp, float seeds[4], float params[4],
-                        wgpu::TextureView& map, bool& midtone);
+                        wgpu::TextureView& map, bool& midtone, int outputRows);
     // np-gfx-post: DC3's retail chain (rndshape::kDC3RetailPost).
     // A template so that the RB3-Wii shape, which has no such post-process,
     // never instantiates it.

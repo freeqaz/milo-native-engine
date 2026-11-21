@@ -448,8 +448,14 @@ fn grade_dc3(uv: vec2f, scene: vec3f) -> vec3f {
     // Bits 2 / 47: the noise map, overlay-blended into the screen result S
     // (no clamp on S in the microcode). n = map(base uv) * map(top uv).
     if (cu.noiseMode.x > 0.5) {
-        let baseUv = (uv + cu.noiseSeeds.xy) * cu.noiseParams.xy;
-        let topUv = (uv + cu.noiseSeeds.zw) * cu.noiseParams.xy * cu.noiseParams.z;
+        // np-look23 (a): each output row at its texel's centre, so the
+        // linear filter never blends two map rows (the CPU side tiles the
+        // rows to whole output rows: NoiseRows.h, SnapNoiseToOutputRows).
+        let mapH = f32(textureDimensions(noiseTex).y);
+        var baseUv = (uv + cu.noiseSeeds.xy) * cu.noiseParams.xy;
+        var topUv = (uv + cu.noiseSeeds.zw) * cu.noiseParams.xy * cu.noiseParams.z;
+        baseUv.y = (floor(baseUv.y * mapH) + 0.5) / mapH;
+        topUv.y = (floor(topUv.y * mapH) + 0.5) / mapH;
         let n = textureSampleLevel(noiseTex, noiseSamp, baseUv, 0.0).rgb *
                 textureSampleLevel(noiseTex, noiseSamp, topUv, 0.0).rgb;
         let s = c;
