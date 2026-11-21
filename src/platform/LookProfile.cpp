@@ -61,6 +61,10 @@ LookSettings SettingsFor(LookProfile p) {
     s.noiseSnapsToOutputRows = enh;
     // np-look23 (c): the depth of field gathers by depth (LookProfile.h).
     s.postDofDepthWeight = enh;
+    // np-look26 d: the cutout's alpha test at each of the four samples
+    // (LookProfile.h). Four bilinear alpha fetches in the cutout pipelines'
+    // fragments, nothing elsewhere.
+    s.cutoutSampleTest = enh;
     return s;
 }
 
@@ -100,14 +104,32 @@ LookSettings Resolve() {
     }
 }
 
+// The bitmapMipLevels the process's regular textures were uploaded with: the
+// look it started in (StartupBitmapMipLevels). Set once, by the first Look().
+int sStartupBitmapMipLevels = 0;
+
 LookSettings &Mutable() {
-    static LookSettings s = Resolve();
+    static LookSettings s = [] {
+        LookSettings r = Resolve();
+        sStartupBitmapMipLevels = r.bitmapMipLevels;
+        return r;
+    }();
     return s;
 }
 
 }  // namespace
 
 const LookSettings &Look() { return Mutable(); }
+
+int StartupBitmapMipLevels() {
+    Mutable();
+    return sStartupBitmapMipLevels;
+}
+
+int LookSwitchTexLevels(const LookSettings &look, int startupBitmapMipLevels) {
+    if (look.bitmapMipLevels <= 0 || look.bitmapMipLevels == startupBitmapMipLevels) return 0;
+    return look.bitmapMipLevels;
+}
 
 float ParseRenderScaleKnob(const char *value, bool *bad) {
     if (bad) *bad = false;
@@ -225,6 +247,34 @@ bool SetLookDofDepthWeightForInspection(int mode) {
     return true;
 }
 
+// The mode a hair_edge_b|c|e|centre token chose, 0 = the default mode.
+static int sCutoutModeInspection = 0;
+
+float CutoutSampleTestFor(const LookSettings &look) {
+    if (!look.cutoutSampleTest) return 0.0f;
+    return (float)(sCutoutModeInspection > 0 ? sCutoutModeInspection : kCutoutModeDefault);
+}
+
+bool SetLookCutoutModeForInspection(int mode) {
+    LookSettings &s = Mutable();
+    if (s.profile == LookProfile::Native || mode < kCutoutModeB || mode > kCutoutModeCentre) return false;
+    s.cutoutSampleTest = true;
+    sCutoutModeInspection = mode;
+    fprintf(stderr, "[look] cutout alpha test per sample, mode %d (inspection, profile %s)\n", mode,
+            LookProfileName(s.profile));
+    return true;
+}
+
+bool SetLookCutoutSampleTestForInspection(int mode) {
+    LookSettings &s = Mutable();
+    if (s.profile == LookProfile::Native) return false;
+    sCutoutModeInspection = 0;
+    s.cutoutSampleTest = mode < 0 ? SettingsFor(s.profile).cutoutSampleTest : mode != 0;
+    fprintf(stderr, "[look] cutout alpha test per sample %d%s (inspection, profile %s)\n",
+            (int)s.cutoutSampleTest, mode < 0 ? " (the rule)" : "", LookProfileName(s.profile));
+    return true;
+}
+
 static int sReflectionCullInspection = -1;
 void SetReflectionCullForInspection(int mode) {
     sReflectionCullInspection = mode < 0 ? -1 : (mode ? 1 : 0);
@@ -236,14 +286,22 @@ int ReflectionCullInspection() { return sReflectionCullInspection; }
 bool SetLookProfileForInspection(LookProfile p) {
     if (Mutable().profile == LookProfile::Native || p == LookProfile::Native) return false;
     Mutable() = SettingsFor(p);
+    sCutoutModeInspection = 0;  // the profile's own cut-out mode
     fprintf(stderr, "[look] profile %s (inspection)\n", LookProfileName(p));
     return true;
 }
 
-ScopedLookOverride::ScopedLookOverride(LookProfile p) : mPrev(Mutable()) {
+ScopedLookOverride::ScopedLookOverride(LookProfile p)
+    : mPrev(Mutable()), mPrevStartupBitmapMipLevels(sStartupBitmapMipLevels) {
     Mutable() = SettingsFor(p);
+    sStartupBitmapMipLevels = Mutable().bitmapMipLevels;  // a scope stands for a process started in p
+    sCutoutModeInspection = 0;
 }
 
-ScopedLookOverride::~ScopedLookOverride() { Mutable() = mPrev; }
+ScopedLookOverride::~ScopedLookOverride() {
+    Mutable() = mPrev;
+    sStartupBitmapMipLevels = mPrevStartupBitmapMipLevels;
+    sCutoutModeInspection = 0;
+}
 
 }  // namespace milo
