@@ -45,7 +45,7 @@ struct DC3CompositeUniforms {
     float chroma[4];       // c121.xy = offset / (W, H); z = 1 on; w = 1 sharpen
     float noiseSeeds[4];   // c112
     float noiseParams[4];  // c113
-    float noiseMode[4];    // x: 0 off, 1 overlay, 2 midtone
+    float noiseMode[4];    // x: 0 off, 1 overlay, 2 midtone; y: 1 retiled to output rows (np-look23), z / w: base / top d
     float motion[4];       // c105 (CheckMotionBlur)
     float motionMode[4];   // x: 0 off, 1 prev valid, 2 first frame (no prev yet);
                            // y: 1 = the glare composite (bit 37) instead of bit 4
@@ -448,14 +448,17 @@ fn grade_dc3(uv: vec2f, scene: vec3f) -> vec3f {
     // Bits 2 / 47: the noise map, overlay-blended into the screen result S
     // (no clamp on S in the microcode). n = map(base uv) * map(top uv).
     if (cu.noiseMode.x > 0.5) {
-        // np-look23 (a): each output row at its texel's centre, so the
-        // linear filter never blends two map rows (the CPU side tiles the
-        // rows to whole output rows: NoiseRows.h, SnapNoiseToOutputRows).
-        let mapH = f32(textureDimensions(noiseTex).y);
         var baseUv = (uv + cu.noiseSeeds.xy) * cu.noiseParams.xy;
         var topUv = (uv + cu.noiseSeeds.zw) * cu.noiseParams.xy * cu.noiseParams.z;
-        baseUv.y = (floor(baseUv.y * mapH) + 0.5) / mapH;
-        topUv.y = (floor(topUv.y * mapH) + 0.5) / mapH;
+        // np-look23 (a), only when the CPU side retiled the map to output
+        // rows (NoiseRows.h, noiseMode.y): every row of a texel reads it at
+        // one place, d past its centre (noiseMode.z base, .w top), so the
+        // blend of two map rows no longer drifts down the screen.
+        if (cu.noiseMode.y > 0.5) {
+            let mapH = f32(textureDimensions(noiseTex).y);
+            baseUv.y = (floor(baseUv.y * mapH) + 0.5 + cu.noiseMode.z) / mapH;
+            topUv.y = (floor(topUv.y * mapH) + 0.5 + cu.noiseMode.w) / mapH;
+        }
         let n = textureSampleLevel(noiseTex, noiseSamp, baseUv, 0.0).rgb *
                 textureSampleLevel(noiseTex, noiseSamp, topUv, 0.0).rgb;
         let s = c;
@@ -1136,6 +1139,9 @@ void RB3RetailPost::RunDC3Composite(wgpu::CommandEncoder& encoder, const wgpu::T
         std::memcpy(cu.noiseSeeds, p.noiseSeeds, sizeof(cu.noiseSeeds));
         std::memcpy(cu.noiseParams, p.noiseParams, sizeof(cu.noiseParams));
         cu.noiseMode[0] = p.noiseMidtone > 0.5f ? 2.0f : 1.0f;
+        cu.noiseMode[1] = p.noiseSnap[0];
+        cu.noiseMode[2] = p.noiseSnap[1];
+        cu.noiseMode[3] = p.noiseSnap[2];
     }
     // CheckMotionBlur. Retail resolves mPostProcessBuffer on EVERY frame; this
     // keeps the feedback target only while motion blur is on, so the first

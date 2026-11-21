@@ -39,8 +39,11 @@ struct PostProcUniforms {
     float bloomColor[4];
     float time;
     float noiseMode;     // 0 procedural grain (noiseIntensity), 1 map overlay, 2 map midtone
-    float _pad1;
-    float _pad2;
+    // np-look23 (a), NoiseRows.h: 0 = the authored uv; otherwise the map was
+    // retiled to output rows and each layer samples d past its texel's
+    // centre, noiseSnapBase = 1 + base d, noiseSnapTop = top d.
+    float noiseSnapBase;
+    float noiseSnapTop;
     float noiseSeeds[4];   // retail kPS_NoiseSeeds (c112)
     float noiseParams[4];  // retail kPS_NoiseParams (c113): baseScale.xy, topScale, intensity
 };
@@ -68,8 +71,8 @@ struct PostProcUB {
     bloomColor: vec4f,
     time: f32,
     noiseMode: f32,
-    _pad1: f32,
-    _pad2: f32,
+    noiseSnapBase: f32,
+    noiseSnapTop: f32,
     noiseSeeds: vec4f,
     noiseParams: vec4f,
 };
@@ -189,12 +192,15 @@ struct VOut {
     // takes sqrt(n) and branches on the luma L = (0.3,0.59,0.11).S, and its weight
     // is intensity * 6.75 L (1-L)^2, which peaks at 1 for L = 1/3.
     if (pp.noiseMode > 0.5) {
-        // np-look23 (a): each row at its texel's centre (NoiseRows.h).
-        let mapH = f32(textureDimensions(noiseTex).y);
         var baseUv = (in.uv + pp.noiseSeeds.xy) * pp.noiseParams.xy;
         var topUv = (in.uv + pp.noiseSeeds.zw) * pp.noiseParams.xy * pp.noiseParams.z;
-        baseUv.y = (floor(baseUv.y * mapH) + 0.5) / mapH;
-        topUv.y = (floor(topUv.y * mapH) + 0.5) / mapH;
+        // np-look23 (a), only when the CPU side retiled the map to output rows
+        // (NoiseRows.h): every row of a texel samples it d past its centre.
+        if (pp.noiseSnapBase > 0.5) {
+            let mapH = f32(textureDimensions(noiseTex).y);
+            baseUv.y = (floor(baseUv.y * mapH) + 0.5 + (pp.noiseSnapBase - 1.0)) / mapH;
+            topUv.y = (floor(topUv.y * mapH) + 0.5 + pp.noiseSnapTop) / mapH;
+        }
         let n = textureSample(noiseTex, noiseSampler, baseUv).rgb *
                 textureSample(noiseTex, noiseSampler, topUv).rgb;
         let s = clamp(color, vec3f(0.0), vec3f(1.0));
@@ -415,10 +421,8 @@ void PostProcPass::RunDC3Retail(wgpu::CommandEncoder& encoder, P* pp, int mode,
             rndshape::FillRetailPost(pp, 1.0f, rp);
             bool midtone = false;
             wgpu::TextureView map;
-            // The composite draws w x h; a frame drawn at the window's size
-            // leaves at OutputHeight rows (a render scale box-filters it).
-            const int outRows = w == gpu.WindowWidth() ? gpu.OutputHeight() : h;
-            if (NoiseConstants(pp, rp.noiseSeeds, rp.noiseParams, map, midtone, outRows)) {
+            if (NoiseConstants(pp, rp.noiseSeeds, rp.noiseParams, rp.noiseSnap, map, midtone,
+                               NoiseOutputRows(h, gpu))) {
                 rp.noiseMap = map;
                 rp.noiseMidtone = midtone ? 1.0f : 0.0f;
             }
@@ -427,6 +431,8 @@ void PostProcPass::RunDC3Retail(wgpu::CommandEncoder& encoder, P* pp, int mode,
         }
         if (mode == 3 || mode == 4) rp.debugView = mode - 2;
         if (mode == 5) rp.bloom = false;
+        if (sInspectSkip & kSkipBloom) rp.bloom = rp.glare = rp.streak = false;
+        if (sInspectSkip & kSkipMotionBlur) rp.motionBlur = false;
         if (mode == 6) rp.debugView = 4;
         if (mode == 7) rp.debugView = 5;
         // NgSpotlightDrawer's beams (WgpuRnd::RunDC3SpotBeams), retail's bit 51.
@@ -440,7 +446,7 @@ void PostProcPass::RunDC3Retail(wgpu::CommandEncoder& encoder, P* pp, int mode,
         // DoVelocity's result for this frame (SetVelocity), retail's bit 42.
         const bool velPending = mVelPending;
         mVelPending = false;
-        if (velPending && mVelReady && mode != 2) {
+        if (velPending && mVelReady && mode != 2 && !(sInspectSkip & kSkipVelocity)) {
             rp.velocity = true;
             rp.velocityScale = mVelScale;
             std::memcpy(rp.velocityReproj, mVelReproj, sizeof(rp.velocityReproj));
@@ -547,6 +553,7 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& i
     wgpu::TextureView sceneView = intermediateView;
     bool dofRuns = true;
     if constexpr (rndshape::kDC3RetailPost) dofRuns = !rndshape::PostProcDisabled();
+    if (sInspectSkip & kSkipDof) dofRuns = false;
     if (dofRuns && mDof.Run(encoder, intermediateView, intermediateTex.GetFormat(), depthView,
                             depthSamples, intermediateW, intermediateH, gpu, EnhancedDof(pp, mWorldGrade))) {
         sceneView = mDof.OutputView();
@@ -637,10 +644,13 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& i
         uni.noiseIntensity = 0.0f;
         wgpu::TextureView mapView;
         bool midtone = false;
-        const int outRows = intermediateW == gpu.WindowWidth() ? gpu.OutputHeight() : intermediateH;
-        if (NoiseConstants(pp, uni.noiseSeeds, uni.noiseParams, mapView, midtone, outRows)) {
+        float snap[3];
+        if (NoiseConstants(pp, uni.noiseSeeds, uni.noiseParams, snap, mapView, midtone,
+                           NoiseOutputRows(intermediateH, gpu))) {
             noiseView = mapView;
             uni.noiseMode = midtone ? 2.0f : 1.0f;
+            uni.noiseSnapBase = snap[0] > 0.5f ? 1.0f + snap[1] : 0.0f;
+            uni.noiseSnapTop = snap[2];
         }
     } else {
         uni.noiseIntensity = rndshape::PostProcGrain(pp);
@@ -695,8 +705,20 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& i
     pass.End();
 }
 
+// The rows a buffer `h` rows tall leaves the renderer at: the post-process
+// buffers are drawn at the frame's drawn size (WindowHeight), which a render
+// scale box-filters down to OutputHeight. 1x: h. 1920x1080 at scale 2:
+// 2160 * 1080 / 2160 = 1080, the same rows as 1x.
+int PostProcPass::NoiseOutputRows(int h, const GpuDevice& gpu) {
+    const int drawn = gpu.WindowHeight();
+    if (drawn <= 0) return h;
+    return (int)std::lround((double)h * gpu.OutputHeight() / drawn);
+}
+
 bool PostProcPass::NoiseConstants(RndPostProc* pp, float seeds[4], float params[4],
-                                  wgpu::TextureView& map, bool& midtone, int outputRows) {
+                                  float snap[3], wgpu::TextureView& map, bool& midtone,
+                                  int outputRows) {
+    snap[0] = snap[1] = snap[2] = 0.0f;
     rndshape::PostProcNoise noise;
     if (!rndshape::PostProcNoiseMap(pp, noise)) return false;
     // NgPostProc::CheckNoise: no noise unless the intensity is non-zero AND
@@ -735,9 +757,10 @@ bool PostProcPass::NoiseConstants(RndPostProc* pp, float seeds[4], float params[
     params[1] = noise.baseScale[1];
     params[2] = noise.stationary ? 1.0f : noise.topScale;
     params[3] = noise.intensity;
-    // np-look23 (a): one texel per whole number of output rows (NoiseRows.h);
-    // the shaders sample each row at its texel's centre.
-    SnapNoiseToOutputRows(outputRows, noise.map->Height(), seeds, params);
+    // np-look23 (a): one texel per whole number of output rows, read at one
+    // place in it (NoiseRows.h). The DC3 shape's only; otherwise untouched.
+    NoiseRowSnapConstants(rndshape::kNoiseSnapsToOutputRows, outputRows, noise.map->Height(),
+                          seeds, params, snap);
     return true;
 }
 
