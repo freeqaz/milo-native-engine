@@ -29,14 +29,17 @@ public:
 
     // AudioSource interface (called from audio thread)
     virtual int RenderAudio(float *output, int frameCount) override;
-    // Delay reporting finished until mDoneBufferCounter exceeds the same
-    // threshold StandardStream uses for kFinished. This keeps the source in
-    // the mixer so RenderAudio() continues advancing mPlayCursor through
-    // silence, which keeps GetRawTime()/songMs moving toward end-of-song.
-    virtual bool IsFinished() const override {
-        return mEndData && mPlayCursor >= mWriteCursor
-            && mDoneBufferCounter > mNumBuffers + 2;
-    }
+    // Never: to the mixer "finished" means "drop this source", and a receiver
+    // the mixer no longer renders stops counting bytes played, so the stream's
+    // clock (StandardStream::GetRawTime) stops with it. On the 360 the voice
+    // goes on playing zero-filled buffers for as long as the receiver is
+    // polled, StandardStream's kFinished included, and song time runs on
+    // through that silence. A song whose audio ends before its MIDI [end]
+    // needs it: DC3's Technologic has 145.94 s of audio and [end] at 146.89 s,
+    // and with the receiver dropped at kFinished (1..2 buffers after the
+    // audio) song time froze at 146.2 s and the song never ended. The
+    // destructor takes the receiver out of the mixer.
+    virtual bool IsFinished() const override { return false; }
 #ifdef HX_WEB
     virtual void DebugDescribe(char *buf, size_t bufSize) const override;
     void SetDebugLabel(const char *label);
