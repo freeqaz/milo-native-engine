@@ -28,10 +28,14 @@ public:
     void Init(GpuDevice& gpu);
     // `depthView` is a depth-only view of the scene depth (`depthSamples`
     // samples, intermediate-sized); depth of field reads it.
+    // `colorSampleView` (np-look51): the multisampled colour the intermediate
+    // was resolved from (the same samples and size), for the depth of field's
+    // edge rule (DofPass::Run); without it the rule does not run.
     void Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& intermediateView,
              const wgpu::Texture& intermediateTex, int intermediateW, int intermediateH,
              const wgpu::TextureView& depthView, uint32_t depthSamples,
-             wgpu::TextureView& frameView, wgpu::TextureView& blackTexView, GpuDevice& gpu);
+             wgpu::TextureView& frameView, wgpu::TextureView& blackTexView, GpuDevice& gpu,
+             const wgpu::TextureView& colorSampleView = wgpu::TextureView());
     void Terminate();
     // The depth of field's pipelines for a `format` intermediate (DofPass::Prewarm).
     // `enhanced`: also the enhanced look's tent / B-spline pipelines.

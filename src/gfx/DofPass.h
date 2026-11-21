@@ -54,20 +54,26 @@ public:
              wgpu::TextureFormat sceneFormat, const wgpu::TextureView& depthView,
              uint32_t depthSamples, int sceneW, int sceneH, GpuDevice& gpu,
              bool enhanced = false, bool depthWeighted = false, bool nearField = false,
-             bool nearSpread = false, bool edge = false);
+             bool nearSpread = false, bool edge = false,
+             const wgpu::TextureView& colorSampleView = wgpu::TextureView());
     // np-look51, with `enhanced` only (LookSettings::postDofEdge, the edge
-    // rule): the composite that runs reads every depth sample of the pixel
-    // (depthSamples) for its mix amount, not sample 0 alone: the smallest
-    // factor of all the samples, raised to the largest of those in front of
-    // the focus (and the near field, with
-    // `nearField`, the largest of the samples'). So a pixel an in-focus figure
-    // partly covers keeps its resolved anti-aliased colour, where sample 0
-    // alone kept it whole or replaced it whole by the blur (a one-sample
-    // stair-stepped outline in close-ups), and a pixel a blurred near object
-    // touches stays blurred. A pixel whose samples share one depth gets
-    // today's value. A separate entry point per composite
-    // (..._edge, DofComposite...Edge), so with `edge` off the composite that
-    // runs is the one before np-look51; the retail composite never takes it.
+    // rule) and `colorSampleView` (the multisampled colour the scene was
+    // resolved from, depthSamples samples, same size; a texture with
+    // TextureBinding, read with textureLoad): the composite that runs reads
+    // every depth sample of the pixel, not sample 0 alone. Where they all give
+    // sample 0's factor and near value (within 1/1024) it is the composite
+    // without the rule, to the bit, with no colour load. Elsewhere it
+    // composites per sample: out = scene + (1/N) sum_i a_i (rgb_i - col_i),
+    // each sample with its own factor (and near value, with `nearField`) and
+    // its own colour col_i, added to the resolved scene. So a pixel an
+    // in-focus figure covers c of over a blurred background is c * figure +
+    // (1 - c) * blur, where sample 0 alone kept it whole or replaced it whole
+    // by the blur (a one-sample stair-stepped outline in close-ups), and a
+    // near object's samples blur by their own near value. Without
+    // `colorSampleView` the composites without the rule run. A separate entry
+    // point per composite (..._edge, DofComposite...Edge, their own layouts),
+    // so with `edge` off the composite that runs is the one before np-look51;
+    // the retail composite never takes it.
     // np-look36, with `depthWeighted` only (LookSettings::postDofNearField):
     // the depth weight keeps an in-focus figure out of the blur on BOTH sides
     // of the focal plane, so an out-of-focus object in front of a dancer kept
@@ -191,7 +197,10 @@ private:
     bool mLastNearField = false;
     // Whether the half factor target was made with the near field's channel.
     bool mDwFactorNear = false;
-    // np-look51, `edge`: the edge rule's composite per path, Prewarm or first use.
+    // np-look51, `edge`: the edge rule's composite per path, Prewarm or first use;
+    // their layouts are the composites' plus the multisampled colour (10).
+    wgpu::BindGroupLayout mCompositeEdgeBGL, mCompositeNearEdgeBGL;
+    wgpu::PipelineLayout mCompositeEdgePL, mCompositeNearEdgePL;
     wgpu::RenderPipeline mCompositeBSplineEdgePipe, mCompositeDwEdgePipe, mCompositeNearEdgePipe;
     bool mLastEdge = false;
     wgpu::Sampler mSampler;               // linear, clamp

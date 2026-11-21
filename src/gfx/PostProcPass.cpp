@@ -562,7 +562,7 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& i
                        const wgpu::Texture& intermediateTex, int intermediateW, int intermediateH,
                        const wgpu::TextureView& depthView, uint32_t depthSamples,
                        wgpu::TextureView& frameView, wgpu::TextureView& blackTexView,
-                       GpuDevice& gpu) {
+                       GpuDevice& gpu, const wgpu::TextureView& colorSampleView) {
     EnsurePipeline(gpu);
 
     // The beams are this frame's only, whichever composite runs.
@@ -592,7 +592,7 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& i
                             DepthWeightedDof(pp, mWorldGrade),
                             NearFieldDof(pp, mWorldGrade, false, gpu.LookClass()),
                             NearFieldDof(pp, mWorldGrade, true, gpu.LookClass()),
-                            EdgeDof(pp, mWorldGrade, gpu.LookClass()))) {
+                            EdgeDof(pp, mWorldGrade, gpu.LookClass()), colorSampleView)) {
         sceneView = mDof.OutputView();
     }
 

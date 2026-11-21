@@ -266,11 +266,15 @@ struct LookSettings {
     // the factor of depth sample 0 alone, so a pixel an in-focus dancer half
     // covers was kept whole or replaced whole by the blurred background, and
     // the outline stepped at one sample per pixel in every close-up (dc3
-    // item 51). The rule reads every sample: the smallest factor of all of
-    // them, raised to the largest of those in front of the focus, so the edge
-    // keeps its anti-aliased blend and a blurred near object's edge stays
-    // blurred (DofPass.cpp dof_edge). Three more depth loads per full-size pixel
-    // of the composite. Decided by adapter class like the near field:
+    // item 51). The rule reads every depth sample; where they disagree it
+    // composites per sample with the main pass's multisampled colour (each
+    // sample its own factor, near value and colour, the correction added to
+    // the resolved scene), so a half-covered edge pixel is half figure, half
+    // blurred background (DofPass.cpp, the ..._edge composites). Three more
+    // depth loads per full-size pixel of the composite, and four colour loads
+    // at the pixels whose samples disagree; MSAA4xColor gains TextureBinding.
+    // Where the samples agree: the composite without the rule, to the bit.
+    // Decided by adapter class like the near field:
     // postDofEdge on a discrete GPU, ...Apple on an Apple GPU, ...Integrated
     // on anything else. Enhanced: on / off (kAppleDofEdge, until the landing
     // session's M3 timing) / off (until the 890M's timing). Retail and

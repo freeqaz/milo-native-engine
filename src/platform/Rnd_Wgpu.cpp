@@ -931,7 +931,8 @@ void WgpuRnd::FlushPostProcessingForOverlay() {
         mPostProcPass.SetWorldGrade(true);
         mPostProcPass.Run(mEncoder, mIntermediateView, mIntermediateTex,
                           mIntermediateWidth, mIntermediateHeight,
-                          mDepthSampleView, kMSAASamples, FrameTarget(), mBlackTexView, mGpu);
+                          mDepthSampleView, kMSAASamples, FrameTarget(), mBlackTexView, mGpu,
+                          MsaaSampleView());
         mPostProcPass.SetWorldGrade(false);
     }
 
@@ -1008,7 +1009,8 @@ void WgpuRnd::FlushWorldPost() {
         mSpotBeamDraws.clear();
         mSpotBeamFog = nullptr;
         mPostProcPass.Run(mEncoder, mIntermediateView, mIntermediateTex, w, h,
-                          mDepthSampleView, kMSAASamples, mPostOutView, mBlackTexView, mGpu);
+                          mDepthSampleView, kMSAASamples, mPostOutView, mBlackTexView, mGpu,
+                          MsaaSampleView());
         mPostProcFlushed = true;
         mWorldPostDone = true;
 
@@ -2149,9 +2151,12 @@ void WgpuRnd::BeginDrawing() {
         desc.size.height = curH;
         desc.size.depthOrArrayLayers = 1;
         desc.format = mGpu.SurfaceFormat();
-        desc.usage = wgpu::TextureUsage::RenderAttachment;
+        // TextureBinding (np-look51): the depth of field's edge rule reads its
+        // samples (gfx/DofPass.cpp, colorMsTex).
+        desc.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding;
         desc.mipLevelCount = 1;
         desc.sampleCount = kMSAASamples;
+        if (mMsaaView) mPostBindGroupCache.Forget(mMsaaView.Get());
         mMsaaTex = mGpu.CreateTexture(desc);
         mMsaaView = mMsaaTex.CreateView();
         mMsaaWidth = curW;
@@ -2296,7 +2301,8 @@ void WgpuRnd::EndDrawing() {
             RunDC3SpotBeams();
             mPostProcPass.Run(mEncoder, mIntermediateView, mIntermediateTex,
                               mIntermediateWidth, mIntermediateHeight,
-                              mDepthSampleView, kMSAASamples, FrameTarget(), mBlackTexView, mGpu);
+                              mDepthSampleView, kMSAASamples, FrameTarget(), mBlackTexView, mGpu,
+                              MsaaSampleView());
         }
 
         // The display gamma ramp (RB3: DxRnd::SetupGamma's D3DDevice_SetGammaRamp),
