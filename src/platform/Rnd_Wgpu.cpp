@@ -527,6 +527,11 @@ void WgpuRnd::InitGpuResources() {
         mSpotBeamRenderer.drop = getenv("MILO_NO_SPOT_BEAMS") != nullptr;
         SetNativeSpotBeamRenderer(&mSpotBeamRenderer);
     }
+    // Crowd contact shadows: registered for every flavor; each shadow is drawn
+    // only while the look asks (LookSettings::crowdContactShadow, never under
+    // Native, so rb3 and rb3-xenon draw none), and only DC3's crowd submits.
+    mContactShadowRenderer.rnd = this;
+    SetNativeContactShadowRenderer(&mContactShadowRenderer);
 
     // DC3: the passes whose pipelines have fixed keys compile them now
     // (PrewarmFixedKeyPipelines), not on the first venue frame.
@@ -649,6 +654,10 @@ void WgpuRnd::Terminate() {
     if (GetNativePointTester() == &mPointTester) SetNativePointTester(nullptr);
     if (GetNativeTexBlendComposer() == &mTexBlendComposer) SetNativeTexBlendComposer(nullptr);
     if (GetNativeSpotBeamRenderer() == &mSpotBeamRenderer) SetNativeSpotBeamRenderer(nullptr);
+    if (GetNativeContactShadowRenderer() == &mContactShadowRenderer)
+        SetNativeContactShadowRenderer(nullptr);
+    mContactShadowVerts.clear();
+    mContactShadowPass.Terminate();
     mSpotBeamDraws.clear();
     mSpotBeamFog = nullptr;
     mSpotBeamPass.Terminate();
@@ -753,6 +762,7 @@ void WgpuRnd::EndActivePass() {
     if (!mInPass) {
         return;
     }
+    FlushContactShadows();
     FlushTextDraws();
     FlushTransparentDraws();
     // The 2D canvas records what it still holds and closes: a canvas session
@@ -1153,6 +1163,48 @@ int WgpuRnd::WarmTexBlendPipelines(RndTex* output) {
 // ----------------------------------------------------------------------------
 
 static void CamSceneMatrices(RndCam* cam, float* viewProj, float* viewOut);
+
+// ----------------------------------------------------------------------------
+// Crowd contact shadows (platform/ContactShadowHook.h, gfx/ContactShadowPass.h)
+// ----------------------------------------------------------------------------
+
+bool WgpuRnd::WantsContactShadows() const {
+    return milo::Look().crowdContactShadow && mGpuResourcesReady && mDrawing && mInPass &&
+        !mActiveTargetTex && !mFrameInOverlay && mCurrentPassHasDepth &&
+        !mShadowPass.InShadowPass() && RndCam::Current();
+}
+
+bool WgpuRnd::QueueContactShadow(const NativeContactShadow& s) {
+    if (!WantsContactShadows()) return false;
+    if ((int)mContactShadowVerts.size() >= ContactShadowPass::kMaxShadowsPerFrame * 6) return false;
+    float vp[16];
+    CamSceneMatrices(RndCam::Current(), vp, nullptr);
+    static const float kCorner[4][2] = {{-1, -1}, {1, -1}, {1, 1}, {-1, 1}};
+    ContactShadowPass::Vertex c[4];
+    for (int k = 0; k < 4; k++) {
+        const float u = kCorner[k][0], v = kCorner[k][1];
+        float p[4];
+        for (int i = 0; i < 3; i++) p[i] = s.centre[i] + u * s.axisA[i] + v * s.axisB[i];
+        p[3] = 1.0f;
+        for (int j = 0; j < 4; j++)
+            c[k].clip[j] = p[0] * vp[0 * 4 + j] + p[1] * vp[1 * 4 + j] + p[2] * vp[2 * 4 + j] +
+                p[3] * vp[3 * 4 + j];
+        c[k].uv[0] = u;
+        c[k].uv[1] = v;
+    }
+    const int tri[6] = {0, 1, 2, 0, 2, 3};
+    for (int i : tri) mContactShadowVerts.push_back(c[i]);
+    return true;
+}
+
+void WgpuRnd::FlushContactShadows() {
+    if (mContactShadowVerts.empty()) return;
+    if (mInPass && !mActiveTargetTex && mCurrentPassHasDepth) {
+        mContactShadowsDrawn += mContactShadowPass.Draw(mGpu, CurrentPass(), mCurrentTargetFormat,
+                                                        mCurrentSampleCount, mContactShadowVerts);
+    }
+    mContactShadowVerts.clear();
+}
 
 // ----------------------------------------------------------------------------
 // Volumetric spotlight beams (platform/SpotBeamHook.h, gfx/SpotBeamPass.h)
@@ -1867,6 +1919,10 @@ void WgpuRnd::BeginDrawing() {
     mSpotBeamDraws.clear();
     mSpotBeamFog = nullptr;
     mSpotBeamsDrawn = 0;
+    mContactShadowVerts.clear();
+    mContactShadowPass.BeginFrame();
+    mContactShadowsDrawnLast = mContactShadowsDrawn;
+    mContactShadowsDrawn = 0;
     mPointTestSeqBeforeFrame = mPointTestPass.LastSeq();
     RndMesh_ResetFrameStats();
     rndshape::DrawLogFrameBegin();
@@ -2154,6 +2210,8 @@ void WgpuRnd::EnsureSceneUniformsCurrent() {
         camChanged = true;
     }
     if (camChanged) {
+        // Shadows queued under the previous camera, after its opaque draws.
+        if (!mContactShadowVerts.empty()) FlushContactShadows();
         if (HasTransparentDraws() && !IsFlushingTransparentDraws()) {
             FlushTransparentDraws();
         }
