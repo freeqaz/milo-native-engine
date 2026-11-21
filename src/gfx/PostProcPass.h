@@ -36,9 +36,10 @@ public:
     // The depth of field's pipelines for a `format` intermediate (DofPass::Prewarm).
     // `enhanced`: also the enhanced look's tent / B-spline pipelines.
     // `depthWeighted`: the depth-weighted ones too (np-look23 c).
+    // `edge`: the edge rule's composite for that path (np-look51).
     void PrewarmDof(wgpu::TextureFormat format, GpuDevice& gpu, bool enhanced = false,
-                    bool depthWeighted = false, bool nearField = false) {
-        mDof.Prewarm(format, gpu, enhanced, depthWeighted, nearField);
+                    bool depthWeighted = false, bool nearField = false, bool edge = false) {
+        mDof.Prewarm(format, gpu, enhanced, depthWeighted, nearField, edge);
     }
     // The DC3 chain's enhanced-look bloom pipelines (RB3RetailPost::PrewarmDC3Enhanced).
     void PrewarmDC3Enhanced(bool precision, bool filter, GpuDevice& gpu) {

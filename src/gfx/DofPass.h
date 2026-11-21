@@ -54,7 +54,20 @@ public:
              wgpu::TextureFormat sceneFormat, const wgpu::TextureView& depthView,
              uint32_t depthSamples, int sceneW, int sceneH, GpuDevice& gpu,
              bool enhanced = false, bool depthWeighted = false, bool nearField = false,
-             bool nearSpread = false);
+             bool nearSpread = false, bool edge = false);
+    // np-look51, with `enhanced` only (LookSettings::postDofEdge, the edge
+    // rule): the composite that runs reads every depth sample of the pixel
+    // (depthSamples) for its mix amount, not sample 0 alone: the smallest
+    // factor of all the samples, raised to the largest of those in front of
+    // the focus (and the near field, with
+    // `nearField`, the largest of the samples'). So a pixel an in-focus figure
+    // partly covers keeps its resolved anti-aliased colour, where sample 0
+    // alone kept it whole or replaced it whole by the blur (a one-sample
+    // stair-stepped outline in close-ups), and a pixel a blurred near object
+    // touches stays blurred. A pixel whose samples share one depth gets
+    // today's value. A separate entry point per composite
+    // (..._edge, DofComposite...Edge), so with `edge` off the composite that
+    // runs is the one before np-look51; the retail composite never takes it.
     // np-look36, with `depthWeighted` only (LookSettings::postDofNearField):
     // the depth weight keeps an in-focus figure out of the blur on BOTH sides
     // of the focal plane, so an out-of-focus object in front of a dancer kept
@@ -87,6 +100,7 @@ public:
     // Whether the last Run took the depth-weighted path (tests).
     bool LastRunDepthWeighted() const { return mLastDepthWeighted; }
     bool LastRunNearField() const { return mLastNearField; }
+    bool LastRunEdge() const { return mLastEdge; }
     // The half factor target's own format, as the device made it (tests).
     wgpu::TextureFormat FactorTargetFormat() const {
         return mDwFactor ? mDwFactor.GetFormat() : wgpu::TextureFormat::Undefined;
@@ -112,12 +126,15 @@ public:
     // `depthWeighted` (LookSettings::postDofDepthWeight too) also compiles
     // the depth-weighted factor pre-pass, downsample, blur and composite.
     // `nearField` (postDofNearField too): the near field's three as well.
+    // `edge` (postDofEdge, with `enhanced`): the edge rule's composite for the
+    // same path.
     void Prewarm(wgpu::TextureFormat format, GpuDevice& gpu, bool enhanced = false,
-                 bool depthWeighted = false, bool nearField = false) {
+                 bool depthWeighted = false, bool nearField = false, bool edge = false) {
         EnsurePipelines(format, gpu);
         if (enhanced) EnsureEnhancedPipelines(gpu);
         if (enhanced && depthWeighted) EnsureDepthWeightPipelines(gpu);
         if (enhanced && depthWeighted && nearField) EnsureNearPipelines(gpu);
+        if (enhanced && edge) EnsureEdgePipelines(gpu, depthWeighted, depthWeighted && nearField);
     }
     bool EnhancedReady() const { return (bool)mDownTentPipe && (bool)mCompositeBSplinePipe; }
     // Bind groups from `cache` (null: four created per run); dc3 PLAN H-66.
@@ -131,6 +148,7 @@ private:
                                   wgpu::TextureFormat format = wgpu::TextureFormat::Undefined,
                                   uint32_t targets = 1);
     void EnsureNearPipelines(GpuDevice& gpu);
+    void EnsureEdgePipelines(GpuDevice& gpu, bool depthWeighted, bool nearField);
     void EnsureNearTextures(int w, int h, GpuDevice& gpu);
     void EnsureDepthWeightPipelines(GpuDevice& gpu);
     void EnsureDepthWeightTextures(int w, int h, GpuDevice& gpu, bool nearField = false);
@@ -173,6 +191,9 @@ private:
     bool mLastNearField = false;
     // Whether the half factor target was made with the near field's channel.
     bool mDwFactorNear = false;
+    // np-look51, `edge`: the edge rule's composite per path, Prewarm or first use.
+    wgpu::RenderPipeline mCompositeBSplineEdgePipe, mCompositeDwEdgePipe, mCompositeNearEdgePipe;
+    bool mLastEdge = false;
     wgpu::Sampler mSampler;               // linear, clamp
     // One buffer per pass: Queue::WriteBuffer lands at Submit, ahead of every
     // pass in the frame, so passes sharing a buffer would read the same data.

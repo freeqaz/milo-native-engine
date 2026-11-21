@@ -139,6 +139,41 @@ fn dof_near(z: f32) -> f32 {
     let t = z * dof.c24.x + dof.c24.y;
     return smoothstep(0.2, 0.6, -t);
 }
+// np-look51, LookSettings::postDofEdge (the edge rule; Run's `edge`, the
+// ..._edge composites below). The scene the composites mix is the resolved
+// colour, so a pixel an in-focus figure half covers already holds its
+// anti-aliased blend; the mix amount came from depth sample 0 alone, so such a
+// pixel was kept whole or replaced whole by the blur and the outline stepped
+// at one sample per pixel. The rule reads every sample: the mix amount is the
+// smallest factor of all the samples (an in-focus sample keeps the pixel's
+// blend), raised to the largest factor of the samples in front of the focus
+// (t < 0, dof_near's side: a pixel a blurred near object touches stays
+// blurred, so its soft edge stays soft); no sample in front counts 0.
+// The smallest is taken over ALL the samples, not only those at or behind the
+// focus: an in-focus figure is in front of the focal plane by a little as
+// often as behind it, and a figure sample in front (small factor) over the far
+// background would otherwise leave the background's factor alone in the
+// smallest's group and replace the pixel. x: that mix amount; y: the near
+// field, the largest of the samples' dof_near. A pixel whose samples share one
+// depth gets dof_factor / dof_near of that depth.
+fn dof_edge(p: vec2i) -> vec2f {
+    let q = min(p, vec2i(textureDimensions(depthTex)) - 1);
+    let count = i32(textureNumSamples(depthTex));
+    var lowest = 1.0;
+    var front = 0.0;
+    var nearMax = 0.0;
+    for (var i = 0; i < count; i++) {
+        let z = textureLoad(depthTex, q, i);
+        let t = z * dof.c24.x + dof.c24.y;
+        let f = dof_factor(z);
+        lowest = min(lowest, f);
+        if (t < 0.0) {
+            front = max(front, f);
+        }
+        nearMax = max(nearMax, dof_near(z));
+    }
+    return vec2f(max(lowest, front), nearMax);
+}
 // np-look23 (c2): the weight comes from a half-size pre-pass. It writes the
 // factor squared from one depth load per half-size texel (scene texel 2p + 1:
 // each multisampled depth texel read at most once, the reads coherent) into
@@ -187,6 +222,15 @@ fn dof_near(z: f32) -> f32 {
     let rgb = mix(scene.rgb, b.rgb / max(b.a, 1e-4), clamp(b.a * 16.0, 0.0, 1.0));
     let z = textureLoad(depthTex, min(p, vec2i(textureDimensions(depthTex)) - 1), 0);
     let f = dof_factor(z);
+    return vec4f(clamp(mix(scene.rgb, rgb, f), vec3f(0.0), vec3f(1.0)), scene.a);
+}
+// np-look51: the same with the edge rule's mix amount (dof_edge).
+@fragment fn fs_composite_bspline_dw_edge(in: VOut) -> @location(0) vec4f {
+    let p = vec2i(in.pos.xy);
+    let scene = textureLoad(sceneTex, p, 0);
+    let b = blur_bspline(in.uv);
+    let rgb = mix(scene.rgb, b.rgb / max(b.a, 1e-4), clamp(b.a * 16.0, 0.0, 1.0));
+    let f = dof_edge(p).x;
     return vec4f(clamp(mix(scene.rgb, rgb, f), vec3f(0.0), vec3f(1.0)), scene.a);
 }
 
@@ -269,6 +313,27 @@ struct DownNearOut {
     }
     return vec4f(clamp(mix(scene.rgb, rgb, a), vec3f(0.0), vec3f(1.0)), scene.a);
 }
+// np-look51: the same with the edge rule (dof_edge): its mix amount, and the
+// near field the largest of the samples', so every pixel a near object
+// touches takes the depth-blind colour.
+@fragment fn fs_composite_bspline_dwn_edge(in: VOut) -> @location(0) vec4f {
+    let p = vec2i(in.pos.xy);
+    let scene = textureLoad(sceneTex, p, 0);
+    let b = blur_bspline(in.uv);
+    let rgbW = mix(scene.rgb, b.rgb / max(b.a, 1e-4), clamp(b.a * 16.0, 0.0, 1.0));
+    let e = dof_edge(p);
+    let f = e.x;
+    let n = e.y;
+    var rgb = rgbW;
+    if (n > 0.0) {
+        rgb = mix(rgbW, blur_bspline_near(in.uv).rgb, n);
+    }
+    var a = f;
+    if (dof.near.x > 0.0) {
+        a = max(f, clamp(textureSampleLevel(nearTex, samp, in.uv, 0.0).a, 0.0, 1.0));
+    }
+    return vec4f(clamp(mix(scene.rgb, rgb, a), vec3f(0.0), vec3f(1.0)), scene.a);
+}
 
 // The quarter-size blur at uv through a cubic B-spline in four bilinear taps
 // (Sigg and Hadwiger 2005): C2-smooth across its texel boundaries, where the
@@ -324,6 +389,14 @@ fn dof_mix(p: vec2i, blurred: vec4f) -> vec4f {
 }
 @fragment fn fs_composite_bspline(in: VOut) -> @location(0) vec4f {
     return dof_mix(vec2i(in.pos.xy), blur_bspline(in.uv));
+}
+// np-look51: the enhanced composite without the depth weight (reached only by
+// {rnd native_look dof_depth_weight_off}) with the edge rule (dof_edge).
+@fragment fn fs_composite_bspline_edge(in: VOut) -> @location(0) vec4f {
+    let p = vec2i(in.pos.xy);
+    let scene = textureLoad(sceneTex, p, 0);
+    let f = dof_edge(p).x;
+    return clamp(mix(scene, blur_bspline(in.uv), f), vec4f(0.0), vec4f(1.0));
 }
 
 // postprocess.ps, depth-of-field bit: tf6 scene, tf8 blur (linear, clamp),
@@ -515,6 +588,7 @@ void DofPass::EnsurePipelines(wgpu::TextureFormat format, GpuDevice& gpu) {
     mCompositeBSplinePipe = nullptr;
     mFactorHalfPipe = mDownDwPipe = mBlurDwPipe = mCompositeDwPipe = nullptr;
     mFactorHalfNearPipe = mDownNearPipe = mBlurNearPipe = mCompositeNearPipe = nullptr;
+    mCompositeBSplineEdgePipe = mCompositeDwEdgePipe = mCompositeNearEdgePipe = nullptr;
     // The quarter and output textures are in `format` too.
     mW = mH = 0;
 }
@@ -567,6 +641,23 @@ void DofPass::EnsureNearPipelines(GpuDevice& gpu) {
                              kDepthWeightFormat, 2);
     mBlurNearPipe = MakePipe(mBlurNearPL, "fs_blur_near", "DofBlurNear", gpu, kDepthWeightFormat, 2);
     mCompositeNearPipe = MakePipe(mCompositeNearPL, "fs_composite_bspline_dwn", "DofCompositeNear", gpu);
+}
+
+void DofPass::EnsureEdgePipelines(GpuDevice& gpu, bool depthWeighted, bool nearField) {
+    // np-look51: the edge rule's composite for the path that runs, each made
+    // on first use (or Prewarm); the composites without it are untouched.
+    if (nearField) {
+        if (!mCompositeNearEdgePipe)
+            mCompositeNearEdgePipe =
+                MakePipe(mCompositeNearPL, "fs_composite_bspline_dwn_edge", "DofCompositeNearEdge", gpu);
+    } else if (depthWeighted) {
+        if (!mCompositeDwEdgePipe)
+            mCompositeDwEdgePipe =
+                MakePipe(mCompositePL, "fs_composite_bspline_dw_edge", "DofCompositeDepthWeightEdge", gpu);
+    } else if (!mCompositeBSplineEdgePipe) {
+        mCompositeBSplineEdgePipe =
+            MakePipe(mCompositePL, "fs_composite_bspline_edge", "DofCompositeBSplineEdge", gpu);
+    }
 }
 
 void DofPass::EnsureNearTextures(int w, int h, GpuDevice& gpu) {
@@ -690,7 +781,7 @@ void DofPass::Pass(wgpu::CommandEncoder& encoder, const wgpu::RenderPipeline& pi
 bool DofPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& sceneView,
                   wgpu::TextureFormat sceneFormat, const wgpu::TextureView& depthView,
                   uint32_t depthSamples, int sceneW, int sceneH, GpuDevice& gpu, bool enhanced,
-                  bool depthWeighted, bool nearField, bool nearSpread) {
+                  bool depthWeighted, bool nearField, bool nearSpread, bool edge) {
     extern DOFProc* TheDOFProc;
     if (!TheDOFProc || !TheDOFProc->Enabled()) return false;
     if (!sceneView || !depthView || sceneW <= 0 || sceneH <= 0) return false;
@@ -728,6 +819,7 @@ bool DofPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& sceneV
                 EnsureNearTextures(sceneW, sceneH, gpu);
             }
         }
+        if (edge) EnsureEdgePipelines(gpu, depthWeighted, depthWeighted && nearField);
         // The two passes' spread per axis, in quarter texels^2 (each pass the
         // mean of its 8 taps, so its variance is E[o^2] - E[o]^2).
         for (int a = 0; a < 2; a++) {
@@ -794,6 +886,10 @@ bool DofPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& sceneV
     const bool nf = dw && nearField;
     mLastDepthWeighted = dw;
     mLastNearField = nf;
+    // np-look51: the edge rule rides on the enhanced composites only; the
+    // retail one (fs_composite) never reads it.
+    const bool eg = enhanced && edge;
+    mLastEdge = eg;
     // The quarter targets: retail's (scene format), or the depth-weighted
     // path's RGBA16Float pair.
     const wgpu::TextureView* q = dw ? mDwView : mQuarterView;
@@ -893,11 +989,20 @@ bool DofPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& sceneV
             e[5].textureView = mNearView[0];
             d.layout = mCompositeNearBGL;
             d.entryCount = 6;
-            Pass(encoder, mCompositeNearPipe, Group(dev, d), mOutView, "DofCompositeNear");
+            if (eg)
+                Pass(encoder, mCompositeNearEdgePipe, Group(dev, d), mOutView, "DofCompositeNearEdge");
+            else
+                Pass(encoder, mCompositeNearPipe, Group(dev, d), mOutView, "DofCompositeNear");
         } else if (dw) {
-            Pass(encoder, mCompositeDwPipe, Group(dev, d), mOutView, "DofCompositeDepthWeight");
+            if (eg)
+                Pass(encoder, mCompositeDwEdgePipe, Group(dev, d), mOutView, "DofCompositeDepthWeightEdge");
+            else
+                Pass(encoder, mCompositeDwPipe, Group(dev, d), mOutView, "DofCompositeDepthWeight");
         } else if (enhanced) {
-            Pass(encoder, mCompositeBSplinePipe, Group(dev, d), mOutView, "DofCompositeBSpline");
+            if (eg)
+                Pass(encoder, mCompositeBSplineEdgePipe, Group(dev, d), mOutView, "DofCompositeBSplineEdge");
+            else
+                Pass(encoder, mCompositeBSplinePipe, Group(dev, d), mOutView, "DofCompositeBSpline");
         } else {
             Pass(encoder, mCompositePipe, Group(dev, d), mOutView, "DofComposite");
         }
@@ -920,6 +1025,7 @@ void DofPass::Terminate() {
     mFactorHalfBGL = mDownDwBGL = nullptr;
     mFactorHalfPL = mDownDwPL = nullptr;
     mFactorHalfNearPipe = mDownNearPipe = mBlurNearPipe = mCompositeNearPipe = nullptr;
+    mCompositeBSplineEdgePipe = mCompositeDwEdgePipe = mCompositeNearEdgePipe = nullptr;
     mBlurNearBGL = mCompositeNearBGL = nullptr;
     mBlurNearPL = mCompositeNearPL = nullptr;
     mNear[0] = mNear[1] = nullptr;
