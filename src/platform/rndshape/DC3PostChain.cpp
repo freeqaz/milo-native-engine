@@ -7,6 +7,7 @@
 // backend, i.e. for dc3-decomp AND rb3-xenon; everything here is gated on
 // rndshape::kDC3RetailPost, which only dc3-decomp's accessors turn on, so
 // rb3-xenon's mode is 0 and its output is unchanged.
+#include "gfx/DisplayRamp.h"
 #include "platform/rndshape/RndShape.h"
 #include "gfx/RB3RetailPost.h"
 #include "platform/TexGpu.h"
@@ -129,39 +130,91 @@ int RetailPostMode() {
     }
 }
 
+namespace {
+// {rnd native_look display_*} (dc3 rndobj/Rnd.cpp NativeLook): -1 = the
+// environment's / the default, 0 = no ramp, else a display type.
+int gDisplayInspect = -1;
+
+// DC3_DISPLAY_GAMMA, read once. Grammar: unset = the console on a TV (display
+// type TV, the system config's gamma); "off" or 0 = no ramp (the pre-ramp
+// front buffer); "srgb" = the ramp alone, scanned out as given (a VGA-cabled
+// console: type sRGB, the picture before item 31); "tv" = the default
+// spelled out; a positive number = that gamma on a TV; "srgb:<g>" / "tv:<g>"
+// = both.
+struct DisplayEnv {
+    bool off = false;
+    float gamma = 0.0f;   // 0: the system config's
+    int type = DisplayRamp::kDisplayTV;
+};
+const DisplayEnv &Env() {
+    static DisplayEnv env;
+    static bool read = false;
+    if (!read) {
+        read = true;
+        if (const char *e = getenv("DC3_DISPLAY_GAMMA")) {
+            const char *num = e;
+            if (strncmp(e, "srgb", 4) == 0) {
+                env.type = DisplayRamp::kDisplaySRGB;
+                num = e + 4;
+            } else if (strncmp(e, "tv", 2) == 0) {
+                num = e + 2;
+            }
+            if (*num == ':') num++;
+            if (strcmp(e, "off") == 0) env.off = true;
+            else if (*num) {
+                const float v = (float)atof(num);
+                if (v > 0.0f) env.gamma = v;
+                else env.off = true;
+            }
+        }
+    }
+    return env;
+}
+
+// DxRnd::SetupGamma: SystemConfig("rnd")->FindData("gamma", gamma, false);
+// DC3's config/rnd.dta #merges system/run/config/default.dta, which sets
+// (gamma 0.85). Not cached until the system config exists.
+float ConfigGamma() {
+    static float s = -1.0f;
+    if (s >= 0.0f) return s;
+    DataArray *root = SystemConfig();
+    if (!root) return 0.0f;
+    DataArray *rnd = root->FindArray("rnd", false);
+    float g = 0.0f;
+    s = (rnd && rnd->FindData("gamma", g, false) && g > 0.0f) ? g : 0.0f;
+    MILO_LOG("DC3 display ramp: gamma %.3f on every output, display type %s (captures are %s)\n",
+             s, Env().type == DisplayRamp::kDisplaySRGB ? "sRGB" : "TV",
+             s > 0.0f ? "POST-ramp; DC3_DISPLAY_GAMMA=off for pre-ramp" : "pre-ramp");
+    return s;
+}
+}  // namespace
+
+void SetDisplayTypeForInspection(int type) {
+    gDisplayInspect = (type == 0 || type == DisplayRamp::kDisplaySRGB ||
+                       type == DisplayRamp::kDisplayTV) ? type : -1;
+}
+
+int DisplayTypeForInspection() { return gDisplayInspect; }
+
 float DisplayGamma(bool presenting) {
     (void)presenting;
     if constexpr (!kDC3RetailPost) {
         return 0.0f;
     } else {
-        // DC3_DISPLAY_GAMMA: "off" or 0 = no ramp (the pre-ramp front buffer),
-        // a positive value = that gamma. Unset: the system config's.
-        static int envState = -1;   // -1 unread, 0 unset, 1 set
-        static float envGamma = 0.0f;
-        if (envState < 0) {
-            const char *e = getenv("DC3_DISPLAY_GAMMA");
-            envState = e ? 1 : 0;
-            if (e) {
-                const float v = (strcmp(e, "off") == 0) ? 0.0f : (float)atof(e);
-                envGamma = v > 0.0f ? v : 0.0f;
-            }
-        }
-        if (envState == 1) return envGamma;
-        // DxRnd::SetupGamma: SystemConfig("rnd")->FindData("gamma", gamma,
-        // false); DC3's config/rnd.dta #merges system/run/config/default.dta,
-        // which sets (gamma 0.85). Every output, headless included: frames
-        // captured natively are what the TV shows (post-ramp). Not cached
-        // until the system config exists.
-        static float s = -1.0f;
-        if (s >= 0.0f) return s;
-        DataArray *root = SystemConfig();
-        if (!root) return 0.0f;
-        DataArray *rnd = root->FindArray("rnd", false);
-        float g = 0.0f;
-        s = (rnd && rnd->FindData("gamma", g, false) && g > 0.0f) ? g : 0.0f;
-        MILO_LOG("DC3 display ramp: gamma %.3f on every output (captures are %s)\n", s,
-                 s > 0.0f ? "POST-ramp; DC3_DISPLAY_GAMMA=off for pre-ramp" : "pre-ramp");
-        return s;
+        // Every output, headless included: frames captured natively are what
+        // the TV shows (post-ramp).
+        if (gDisplayInspect == 0) return 0.0f;
+        const DisplayEnv &env = Env();
+        if (env.off && gDisplayInspect < 0) return 0.0f;
+        return env.gamma > 0.0f ? env.gamma : ConfigGamma();
+    }
+}
+
+int DisplayGammaType() {
+    if constexpr (!kDC3RetailPost) {
+        return DisplayRamp::kDisplaySRGB;
+    } else {
+        return gDisplayInspect > 0 ? gDisplayInspect : Env().type;
     }
 }
 

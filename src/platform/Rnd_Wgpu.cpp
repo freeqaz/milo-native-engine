@@ -2218,7 +2218,8 @@ void WgpuRnd::EndDrawing() {
             const wgpu::Texture& frameTex =
                 mGpu.IsHeadless() ? mGpu.HeadlessTex() : mGpu.SurfaceTexture();
 #endif
-            mDisplayRamp.Apply(mEncoder, frameTex, FrameTarget(), displayGamma, mGpu);
+            mDisplayRamp.Apply(mEncoder, frameTex, FrameTarget(), displayGamma, mGpu,
+                               rndshape::DisplayGammaType());
         }
 
 #ifdef HX_IMGUI
