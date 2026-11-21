@@ -547,6 +547,27 @@ bool LookDofNearSpread(const LookSettings &look, LookAdapterClass c);
 void LogLookAdapterClass(const LookAdapterFacts &adapter);
 // The same line, every call (LogLookAdapterClass's body; tests read it).
 void PrintLookAdapterClass(const LookAdapterFacts &adapter);
+// The adapter LogLookAdapterClass was last given (default facts before any).
+// Every call records it, logged or not; the class token's line names it.
+LookAdapterFacts LoggedLookAdapter();
+// {rnd native_look adapter_apple|adapter_other|adapter_discrete|adapter_rule}
+// (np-look49): force the class the look's four per-adapter rules use
+// (LookAdapterClassInEffect, so every caller of GpuDevice::LookClass()), or
+// (useAdapter) return to the adapter's own class. Look rules only: render
+// scale, the output row cap, frame sizing and GpuDevice::IsDiscreteGpu()
+// never read it. Each rule takes it as it takes its own token: a texture pass
+// target at its next clearing pass, the depth of field on the next frame (the
+// near field's first switch on compiles four pipelines). Kept across a
+// profile switch (it stands for the adapter, not the look); a
+// ScopedLookOverride starts with none and restores it. Prints that the class
+// is forced, which class the adapter really is (LoggedLookAdapter) and the
+// four outcomes; useAdapter prints the ordinary class line. False under the
+// Native profile, changing nothing.
+bool SetLookAdapterClassForInspection(bool useAdapter,
+                                      LookAdapterClass forced = LookAdapterClass::OtherNonDiscrete);
+// The class the look's rules use for this adapter: the forced class while
+// one is, else ClassifyLookAdapter(adapter). GpuDevice::LookClass() is this.
+LookAdapterClass LookAdapterClassInEffect(const LookAdapterFacts &adapter);
 // {rnd native_look hair_edge_on|hair_edge_off|hair_edge_rule}: cutoutSampleTest
 // on (mode E, kCutoutModeDefault), off, or the profile's own value, which is
 // off in every look (mode 1 / 0 / -1), so one frozen frame is measured both
@@ -606,6 +627,7 @@ public:
 private:
     LookSettings mPrev;
     int mPrevStartupBitmapMipLevels;
+    int mPrevAdapterClassInspection;
 };
 
 }  // namespace milo

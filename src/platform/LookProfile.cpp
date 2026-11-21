@@ -408,11 +408,49 @@ void PrintLookAdapterClass(const LookAdapterFacts &adapter) {
             LookProfileName(s.profile));
 }
 
+// The adapter LogLookAdapterClass was given, and the class token's choice
+// (-1 = the adapter's own, else a LookAdapterClass).
+static LookAdapterFacts sLoggedAdapter;
+static int sAdapterClassInspection = -1;
+
 void LogLookAdapterClass(const LookAdapterFacts &adapter) {
     static bool sLogged = false;
+    sLoggedAdapter = adapter;
     if (sLogged || Look().profile == LookProfile::Native) return;
     sLogged = true;
     PrintLookAdapterClass(adapter);
+}
+
+LookAdapterFacts LoggedLookAdapter() { return sLoggedAdapter; }
+
+LookAdapterClass LookAdapterClassInEffect(const LookAdapterFacts &adapter) {
+    if (sAdapterClassInspection >= 0) return (LookAdapterClass)sAdapterClassInspection;
+    return ClassifyLookAdapter(adapter);
+}
+
+bool SetLookAdapterClassForInspection(bool useAdapter, LookAdapterClass forced) {
+    const LookSettings &s = Look();
+    if (s.profile == LookProfile::Native) return false;
+    if (useAdapter) {
+        sAdapterClassInspection = -1;
+        PrintLookAdapterClass(sLoggedAdapter);
+        return true;
+    }
+    sAdapterClassInspection = (int)forced;
+    const LookAdapterFacts &a = sLoggedAdapter;
+    const LookAdapterClass own = ClassifyLookAdapter(a);
+    const char *is = own == LookAdapterClass::Discrete ? "a discrete GPU"
+                     : own == LookAdapterClass::Apple  ? "an Apple GPU (not a discrete GPU)"
+                                                       : "not a discrete GPU";
+    fprintf(stderr,
+            "[look] adapter class forced for inspection: %s; the adapter is %s [type %s, vendor 0x%04x, "
+            "backend %s]; depth of field near field %d, near spread %d, texture pass msaa %d, scale %d "
+            "(profile %s)\n",
+            LookAdapterClassName(forced), is, LookAdapterTypeName(a.type), (unsigned)a.vendorId,
+            a.backendName ? a.backendName : "unknown", (int)LookDofNearField(s, forced),
+            (int)LookDofNearSpread(s, forced), (int)LookTexPassMsaa(s, forced), (int)LookTexPassScale(s, forced),
+            LookProfileName(s.profile));
+    return true;
 }
 
 bool SetLookDofDepthWeightForInspection(int mode) {
@@ -539,16 +577,19 @@ bool SetLookProfileForInspection(LookProfile p) {
 }
 
 ScopedLookOverride::ScopedLookOverride(LookProfile p)
-    : mPrev(Mutable()), mPrevStartupBitmapMipLevels(sStartupBitmapMipLevels) {
+    : mPrev(Mutable()), mPrevStartupBitmapMipLevels(sStartupBitmapMipLevels),
+      mPrevAdapterClassInspection(sAdapterClassInspection) {
     Mutable() = SettingsFor(p);
     sStartupBitmapMipLevels = Mutable().bitmapMipLevels;  // a scope stands for a process started in p
     sCutoutModeInspection = 0;
+    sAdapterClassInspection = -1;  // the adapter's own class
 }
 
 ScopedLookOverride::~ScopedLookOverride() {
     Mutable() = mPrev;
     sStartupBitmapMipLevels = mPrevStartupBitmapMipLevels;
     sCutoutModeInspection = 0;
+    sAdapterClassInspection = mPrevAdapterClassInspection;
 }
 
 }  // namespace milo

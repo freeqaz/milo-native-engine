@@ -452,7 +452,8 @@ public:
     // the texture pass's MSAA and size). The one accessor every caller of
     // milo::LookDofNearField / LookDofNearSpread / LookTexPassMsaa /
     // LookTexPassScale passes. OtherNonDiscrete before the adapter is known.
-    milo::LookAdapterClass LookClass() const { return milo::ClassifyLookAdapter(mLookAdapter); }
+    // An inspection token can force it (milo::SetLookAdapterClassForInspection).
+    milo::LookAdapterClass LookClass() const { return milo::LookAdapterClassInEffect(mLookAdapter); }
     // The facts LookClass() is decided from (recorded with mDiscreteGpu).
     const milo::LookAdapterFacts& LookAdapter() const { return mLookAdapter; }
     bool IsHeadless() const { return mHeadless; }
