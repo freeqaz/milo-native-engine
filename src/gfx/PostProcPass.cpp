@@ -566,7 +566,7 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& i
     if (sInspectSkip & kSkipDof) dofRuns = false;
     if (dofRuns && mDof.Run(encoder, intermediateView, intermediateTex.GetFormat(), depthView,
                             depthSamples, intermediateW, intermediateH, gpu, EnhancedDof(pp, mWorldGrade),
-                            DepthWeightedDof(pp, mWorldGrade))) {
+                            DepthWeightedDof(pp, mWorldGrade), milo::Look().postDofDepthWeightLoads)) {
         sceneView = mDof.OutputView();
     }
 
