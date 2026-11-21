@@ -414,6 +414,18 @@ bool SetLookTexPassScaleForInspection(int mode) {
     return true;
 }
 
+bool SetLookTexPassSizeForInspection(int maxSide, int baseRows) {
+    LookSettings &s = Mutable();
+    if (s.profile == LookProfile::Native) return false;
+    const LookSettings &r = SettingsFor(s.profile);
+    if (maxSide != 0) s.texPassMaxSide = maxSide < 0 ? r.texPassMaxSide : maxSide;
+    if (baseRows != 0) s.texPassBaseRows = baseRows < 0 ? r.texPassBaseRows : baseRows;
+    fprintf(stderr, "[look] texture pass size cap %d%s, base rows %d%s (inspection, profile %s)\n",
+            s.texPassMaxSide, s.texPassMaxSide == r.texPassMaxSide ? " (the rule)" : "", s.texPassBaseRows,
+            s.texPassBaseRows == r.texPassBaseRows ? " (the rule)" : "", LookProfileName(s.profile));
+    return true;
+}
+
 bool LookTexPassScale(const LookSettings &look, bool discreteGpu) {
     return discreteGpu ? look.texPassScale : look.texPassScaleIntegrated;
 }

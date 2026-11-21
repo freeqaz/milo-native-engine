@@ -320,7 +320,9 @@ struct LookSettings {
     //    to its own size, a CPU write puts the target at its own size and
     //    holds it there. The size changes only where a pass that clears the
     //    target begins (WgpuRnd::BeginTexturePass), never where it is sampled.
-    //    Inspection: {rnd native_look rtt_scale_on|rtt_scale_off|rtt_scale_rule}.
+    //    Inspection: {rnd native_look rtt_scale_on|rtt_scale_off|rtt_scale_rule};
+    //    the two numbers: rtt_cap_1024|1536|2048|rule, rtt_rows_360|480|720|rule
+    //    (SetLookTexPassSizeForInspection).
     bool texPassScale = false;
     bool texPassScaleIntegrated = false;
     int texPassMaxSide = 2048;
@@ -502,6 +504,12 @@ bool LookTexPassMsaa(const LookSettings &look, bool discreteGpu);
 // np-look47 step 2: texPassScale on, off or the profile's (1 / 0 / -1), both
 // adapter classes. False under Native.
 bool SetLookTexPassScaleForInspection(int mode);
+// The two numbers of step 2's size rule (TexPassGpuSize): texPassMaxSide and
+// texPassBaseRows. Each argument > 0 sets that value, 0 leaves it alone, < 0
+// returns it to the profile's. Does not turn texPassScale on or off; a target
+// takes the new size at its next clearing pass, as for the scale token. Prints
+// the cap and the rows now in force. False under Native, changing nothing.
+bool SetLookTexPassSizeForInspection(int maxSide, int baseRows);
 bool LookTexPassScale(const LookSettings &look, bool discreteGpu);
 // The GPU size of a texW x texH target under texPassScale for an output of
 // outputRows rows: each side times max(1, outputRows / texPassBaseRows), the
