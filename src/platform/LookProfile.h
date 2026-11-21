@@ -261,6 +261,24 @@ struct LookSettings {
     bool postDofNearSpread = false;
     bool postDofNearSpreadApple = false;
     bool postDofNearSpreadIntegrated = false;
+    // np-look51: the depth of field's edge rule (DofPass::Run `edge`, the
+    // enhanced composites only). The composite mixed the resolved scene by
+    // the factor of depth sample 0 alone, so a pixel an in-focus dancer half
+    // covers was kept whole or replaced whole by the blurred background, and
+    // the outline stepped at one sample per pixel in every close-up (dc3
+    // item 51). The rule reads every sample: the smallest factor of all of
+    // them, raised to the largest of those in front of the focus, so the edge
+    // keeps its anti-aliased blend and a blurred near object's edge stays
+    // blurred (DofPass.cpp dof_edge). Three more depth loads per full-size pixel
+    // of the composite. Decided by adapter class like the near field:
+    // postDofEdge on a discrete GPU, ...Apple on an Apple GPU, ...Integrated
+    // on anything else. Enhanced: on / off (kAppleDofEdge, until the landing
+    // session's M3 timing) / off (until the 890M's timing). Retail and
+    // Native: off. Inspection: {rnd native_look dof_edge_on|_off|_rule}.
+    // LookDofEdge picks.
+    bool postDofEdge = false;
+    bool postDofEdgeApple = false;
+    bool postDofEdgeIntegrated = false;
     // np-look23 (a): DC3's post noise map (noise_mono.tex) re-tiled so each
     // texel covers whole OUTPUT rows, read at one fixed place in the texel
     // (gfx/NoiseRows.h): the same fine lines on every row at every size and
@@ -552,8 +570,17 @@ bool SetLookDofNearForInspection(int mode, bool spread = false);
 // ...Integrated pair on anything else. Callers pass GpuDevice::LookClass().
 bool LookDofNearField(const LookSettings &look, LookAdapterClass c);
 bool LookDofNearSpread(const LookSettings &look, LookAdapterClass c);
+// {rnd native_look dof_edge_on|_off|_rule} (np-look51): postDofEdge on, off or
+// the profile's (1 / 0 / -1), all three adapter classes, as the near field's
+// tokens do. A switch on compiles the edge rule's composite once. False under
+// Native, changing nothing.
+bool SetLookDofEdgeForInspection(int mode);
+// The edge rule for this adapter class: postDofEdge on a discrete GPU,
+// ...Apple on an Apple GPU, ...Integrated on anything else. Callers pass
+// GpuDevice::LookClass().
+bool LookDofEdge(const LookSettings &look, LookAdapterClass c);
 // Prints, once per process, the adapter class the device reported, the facts
-// it was decided from and what the four class-decided settings came to on it
+// it was decided from and what the five class-decided settings came to on it
 // ("[look] adapter class ..."). Nothing under the Native profile, which has no
 // class-decided setting here. The renderer calls it when its device is up.
 void LogLookAdapterClass(const LookAdapterFacts &adapter);
@@ -563,7 +590,7 @@ void PrintLookAdapterClass(const LookAdapterFacts &adapter);
 // Every call records it, logged or not; the class token's line names it.
 LookAdapterFacts LoggedLookAdapter();
 // {rnd native_look adapter_apple|adapter_other|adapter_discrete|adapter_rule}
-// (np-look49): force the class the look's four per-adapter rules use
+// (np-look49): force the class the look's per-adapter rules use
 // (LookAdapterClassInEffect, so every caller of GpuDevice::LookClass()), or
 // (useAdapter) return to the adapter's own class. Look rules only: render
 // scale, the output row cap, frame sizing and GpuDevice::IsDiscreteGpu()

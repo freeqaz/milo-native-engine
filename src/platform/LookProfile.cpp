@@ -27,6 +27,9 @@ constexpr float kEnhancedUiLodBias = -1.0f;
 // 1080 up. No Apple GPU other than the M3 was timed. One line each to change.
 constexpr bool kAppleDofNearField = true;
 constexpr bool kAppleDofNearSpread = true;
+// np-look51: the depth of field's edge rule on an Apple GPU. Off until the
+// landing session's M3 timing says its three extra depth loads per pixel fit.
+constexpr bool kAppleDofEdge = false;
 constexpr bool kAppleTexPassMsaa = true;
 constexpr bool kAppleTexPassScale = true;
 constexpr int kAppleTexPassMaxSide = 1536;
@@ -125,6 +128,11 @@ LookSettings SettingsFor(LookProfile p) {
     s.postDofNearSpread = enh;
     s.postDofNearSpreadApple = enh && kAppleDofNearSpread;
     s.postDofNearSpreadIntegrated = false;
+    // np-look51: the edge rule (LookProfile.h). On a discrete GPU; Apple's is
+    // kAppleDofEdge; anything else off until the 890M's timing.
+    s.postDofEdge = enh;
+    s.postDofEdgeApple = enh && kAppleDofEdge;
+    s.postDofEdgeIntegrated = false;
     // np-look26 g: cutoutSampleTest stays off in every look. Measured against
     // the landed sharpened coverage it is a trade, not a gain (LookProfile.h);
     // the hair_edge inspection tokens turn it on.
@@ -364,6 +372,21 @@ bool SetLookDofNearForInspection(int mode, bool spread) {
     return true;
 }
 
+bool SetLookDofEdgeForInspection(int mode) {
+    LookSettings &s = Mutable();
+    if (s.profile == LookProfile::Native) return false;
+    const LookSettings &r = SettingsFor(s.profile);
+    s.postDofEdge = mode < 0 ? r.postDofEdge : mode != 0;
+    s.postDofEdgeIntegrated = mode < 0 ? r.postDofEdgeIntegrated : mode != 0;
+    s.postDofEdgeApple = mode < 0 ? r.postDofEdgeApple : mode != 0;
+    fprintf(stderr,
+            "[look] depth of field edge rule %d, %d on a non-discrete GPU, %d on an Apple GPU%s "
+            "(inspection, profile %s)\n",
+            (int)s.postDofEdge, (int)s.postDofEdgeIntegrated, (int)s.postDofEdgeApple,
+            mode < 0 ? " (the rule)" : "", LookProfileName(s.profile));
+    return true;
+}
+
 LookAdapterClass ClassifyLookAdapter(LookAdapterType type, uint32_t vendorId, bool metalBackend) {
     if (type == LookAdapterType::Discrete) return LookAdapterClass::Discrete;
     // A CPU or unknown adapter is never Apple, whoever reports it.
@@ -420,15 +443,19 @@ bool LookDofNearSpread(const LookSettings &look, LookAdapterClass c) {
     return PickByClass(c, look.postDofNearSpread, look.postDofNearSpreadApple, look.postDofNearSpreadIntegrated);
 }
 
+bool LookDofEdge(const LookSettings &look, LookAdapterClass c) {
+    return PickByClass(c, look.postDofEdge, look.postDofEdgeApple, look.postDofEdgeIntegrated);
+}
+
 void PrintLookAdapterClass(const LookAdapterFacts &adapter) {
     const LookSettings &s = Look();
     if (s.profile == LookProfile::Native) return;
     const LookAdapterClass c = ClassifyLookAdapter(adapter);
     fprintf(stderr,
-            "[look] adapter class: %s; depth of field near field %d, near spread %d, texture pass msaa %d, "
-            "scale %d (cap %d, base rows %d) [type %s, vendor 0x%04x, backend %s] (profile %s)\n",
+            "[look] adapter class: %s; depth of field near field %d, near spread %d, edge %d, texture pass "
+            "msaa %d, scale %d (cap %d, base rows %d) [type %s, vendor 0x%04x, backend %s] (profile %s)\n",
             LookAdapterClassName(c), (int)LookDofNearField(s, c), (int)LookDofNearSpread(s, c),
-            (int)LookTexPassMsaa(s, c), (int)LookTexPassScale(s, c), LookTexPassMaxSide(s, c),
+            (int)LookDofEdge(s, c), (int)LookTexPassMsaa(s, c), (int)LookTexPassScale(s, c), LookTexPassMaxSide(s, c),
             LookTexPassBaseRows(s, c), LookAdapterTypeName(adapter.type),
             (unsigned)adapter.vendorId, adapter.backendName ? adapter.backendName : "unknown",
             LookProfileName(s.profile));
@@ -470,11 +497,11 @@ bool SetLookAdapterClassForInspection(bool useAdapter, LookAdapterClass forced) 
                                                        : "not a discrete GPU";
     fprintf(stderr,
             "[look] adapter class forced for inspection: %s; the adapter is %s [type %s, vendor 0x%04x, "
-            "backend %s]; depth of field near field %d, near spread %d, texture pass msaa %d, scale %d "
-            "(cap %d, base rows %d) (profile %s)\n",
+            "backend %s]; depth of field near field %d, near spread %d, edge %d, texture pass msaa %d, "
+            "scale %d (cap %d, base rows %d) (profile %s)\n",
             LookAdapterClassName(forced), is, LookAdapterTypeName(a.type), (unsigned)a.vendorId,
             a.backendName ? a.backendName : "unknown", (int)LookDofNearField(s, forced),
-            (int)LookDofNearSpread(s, forced), (int)LookTexPassMsaa(s, forced), (int)LookTexPassScale(s, forced),
+            (int)LookDofNearSpread(s, forced), (int)LookDofEdge(s, forced), (int)LookTexPassMsaa(s, forced), (int)LookTexPassScale(s, forced),
             LookTexPassMaxSide(s, forced), LookTexPassBaseRows(s, forced), LookProfileName(s.profile));
     return true;
 }
