@@ -233,7 +233,7 @@ struct LookSettings {
 // The cut-out modes the scene block carries (SceneUniforms::cutoutSampleTest,
 // a float holding one of these; standard_wgsl.inc cutoutSampleMask). Only
 // kCutoutModeDefault is the look's: the others are inspection tokens
-// (np-look26 e), and the modes not chosen are removed in a later round.
+// (np-look26 e), kept so one held frame can be measured under each.
 //   0 off: the landed sharpened coverage (cutoutCoverage).
 //   1 B: retail's test at each of the four samples, the mask the four results.
 //   2 C: retail's test at the pixel centre first; pass = full mask (everything
