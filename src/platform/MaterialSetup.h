@@ -103,10 +103,10 @@ MaterialParams BuildPassMaterialParams(BaseMaterial* pass);
 // the whole chain is uploaded.
 void ApplyLookSampling(SamplerDesc& desc, bool uiClass, const milo::LookSettings& look);
 // The same with the startup level count given (milo::StartupBitmapMipLevels()
-// in the overload above): world draws also clamp to
-// milo::WorldTexLodMaxLevels(look, startupBitmapMipLevels) levels when that is
-// over 0 -- only after a look switch to a look that uploads fewer levels
-// (np-look26 f).
+// in the overload above): world draws, and text/HUD draws under a look with no
+// uiMipLevels, also clamp to milo::LookSwitchTexLevels(look,
+// startupBitmapMipLevels) levels when that is over 0 -- only after a look
+// switch to a look that uploads fewer levels (np-look26 f).
 void ApplyLookSampling(SamplerDesc& desc, bool uiClass, const milo::LookSettings& look,
                        int startupBitmapMipLevels);
 // Whether one material draw's pipeline takes the material LOD bias

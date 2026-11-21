@@ -126,7 +126,7 @@ int StartupBitmapMipLevels() {
     return sStartupBitmapMipLevels;
 }
 
-int WorldTexLodMaxLevels(const LookSettings &look, int startupBitmapMipLevels) {
+int LookSwitchTexLevels(const LookSettings &look, int startupBitmapMipLevels) {
     if (look.bitmapMipLevels <= 0 || look.bitmapMipLevels == startupBitmapMipLevels) return 0;
     return look.bitmapMipLevels;
 }

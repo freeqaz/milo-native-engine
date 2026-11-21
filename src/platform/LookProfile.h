@@ -279,27 +279,29 @@ const char *LookProfileName(LookProfile p);
 // sets it to its profile's value for the scope (a test scope stands for a
 // process started in that look) and restores it.
 int StartupBitmapMipLevels();
-// np-look26 f: the highest level count a world material sampler may read
-// under `look` (0 = no clamp; ApplyLookSampling sets lodMaxClamp to one less):
-// `look`'s bitmapMipLevels when it caps the upload (> 0) and differs from the
-// startup look's, else 0. So after {rnd native_look retail} in a run started
-// enhanced (whole chains uploaded), world samplers read retail's two levels,
-// as retail's textures hold. A run that never switches looks gets 0 for every
-// look and consumer: no sampler changes. Not a look departure, no LookSettings
-// bool, and it keys on the level counts, never on the profile.
-int WorldTexLodMaxLevels(const LookSettings &look, int startupBitmapMipLevels);
+// np-look26 f: the highest level count a material sampler may read under
+// `look` after a look switch (0 = no clamp; ApplyLookSampling sets lodMaxClamp
+// to one less): `look`'s bitmapMipLevels when it caps the upload (> 0) and
+// differs from the startup look's, else 0. So after {rnd native_look retail}
+// in a run started enhanced (whole chains uploaded), world samplers, and
+// retail's text and HUD samplers (retail has no uiMipLevels), read retail's
+// two levels, as retail's textures hold. A run that never switches looks gets
+// 0 for every look and consumer: no sampler changes. Not a look departure, no
+// LookSettings bool, and it keys on the level counts, never on the profile.
+int LookSwitchTexLevels(const LookSettings &look, int startupBitmapMipLevels);
 
 // Inspection (dc3's `{rnd native_look retail|enhanced}`): switch between the
 // two DC3 profiles at run time, so an A/B takes the same frozen frame. Ignored
 // (returns false) for a consumer whose profile is Native. Textures keep the
 // level count they were uploaded with: switched to retail from a run started
-// enhanced, world samplers are clamped to retail's two levels
-// (WorldTexLodMaxLevels), so the frame has retail's cut and sharpness. The
+// enhanced, world, text and HUD samplers are clamped to retail's two levels
+// (LookSwitchTexLevels), so the frame has retail's cut and sharpness. The
 // reverse cannot be made faithful: a run started retail uploaded two levels,
 // so after {rnd native_look enhanced} minified textures read at most level 1,
 // sharper and more aliased than an enhanced launch (only a re-upload would fix
 // it; there is none). Compare against an enhanced launch for that direction.
-// Text and HUD samplers keep their class rule (uiMipLevels), unchanged.
+// Enhanced's text and HUD samplers keep their class rule (uiMipLevels) either
+// way.
 bool SetLookProfileForInspection(LookProfile p);
 // The same for the post chain's fields only (postPrecision, postBloomFilter,
 // postDofFilter), the rest of the profile untouched: an A/B of the post look

@@ -421,9 +421,9 @@ void RndTex::PresyncBitmap() {
     // the reference holder is this texture: its bitmap is what changed.)
     // Levels uploaded: the look profile's (milo::Look().bitmapMipLevels; a
     // look switch by inspection token does not re-upload, so textures keep the
-    // startup look's count, and ApplyLookSampling clamps world samplers to the
+    // startup look's count, and ApplyLookSampling clamps samplers to the
     // switched look's count where that is lower -- np-look26 f,
-    // milo::WorldTexLodMaxLevels). It is in the key all the same, so two holders
+    // milo::LookSwitchTexLevels). It is in the key all the same, so two holders
     // given different level counts can never share. The text/HUD clamp to two
     // levels is sampler state of the draw (MaterialSetup ApplyLookSampling,
     // lodMaxClamp), not of the texture, so a glyph page and a world texture of
