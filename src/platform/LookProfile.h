@@ -158,6 +158,18 @@ struct LookSettings {
     bool postPrecision = false;
     bool postBloomFilter = false;
     bool postDofFilter = false;
+    // np-look23 (a): DC3's post noise map (noise_mono.tex) re-tiled so each
+    // texel covers whole OUTPUT rows, read at one fixed place in the texel
+    // (gfx/NoiseRows.h): the same fine lines on every row at every size and
+    // render scale, at the authored mean contrast. The original ties the map
+    // to the screen: 768 map rows down any screen (base scale (1, 3) of a
+    // 256-row map) under a linear filter, so the blend of neighbouring rows
+    // drifts down the screen -- a 2.1-2.8 px line pattern under a slow beat
+    // (a 15-row beat at the Xbox's own 720 rows, which Xenia shows too).
+    // Retail and Native: that tiling, beat included. Needs the shape's
+    // capability as well (rndshape::kNoiseSnapsToOutputRows: rb3-xenon has it
+    // false). Inspection: {rnd native_look noise_rows_on|_off|_rule}.
+    bool noiseSnapsToOutputRows = false;
 
     // ---- shading (np-gfx item 18 c) ------------------------------------------
     // Specular antialiasing on the scene's per-pixel retail lighting (DC3's
@@ -225,6 +237,12 @@ bool SetLookLodBiasForInspection(bool useRule, float bias);
 // on the next frame through new samplers and bind groups (inspection only).
 // False under the Native profile.
 bool SetLookAnisotropyForInspection(unsigned short maxAnisotropy);
+// {rnd native_look noise_rows_on|noise_rows_off|noise_rows_rule}: the post
+// noise map's output-row re-tiling (noiseSnapsToOutputRows) on, off, or the
+// profile's own value (mode 1 / 0 / -1), so one frozen frame is measured both
+// ways. Takes effect on the next frame (uniforms only). False under the Native
+// profile.
+bool SetLookNoiseRowsForInspection(int mode);
 // {rnd native_look refl_cull_force|refl_cull_flip|refl_cull_rule}: the cull a
 // WorldReflection's mirrored redraw gives its materials (ReflectionCull,
 // Mesh_Wgpu.cpp): force = every material culls Backwards (DC3's CheckForceCull),

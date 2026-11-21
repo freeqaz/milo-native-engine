@@ -111,6 +111,10 @@ struct RetailPostParams {
     wgpu::TextureView noiseMap;
     float noiseSeeds[4] = {0, 0, 0, 0};
     float noiseParams[4] = {0, 0, 0, 0};
+    // np-look23 (a), gfx/NoiseRows.h: (1, base d, top d) when the map was
+    // retiled to output rows (each layer read d past its texel's centre);
+    // zeros: the authored uv.
+    float noiseSnap[3] = {0, 0, 0};
     // NgPostProc::CheckMotionBlur (postprocess.ps bit 24): when
     // RndPostProc::DoMotionBlur() holds, c105 = (weight.rgb * blend,
     // weight.a) and the composite mixes in tf14, DxRnd's mPostProcessBuffer
