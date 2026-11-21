@@ -73,7 +73,10 @@ LookSettings SettingsFor(LookProfile p) {
     s.postDofDepthWeight = enh;
     // np-look36: the depth weight's near field (LookProfile.h).
     s.postDofNearField = enh;
+    // The spread by adapter class: on a discrete GPU; off on anything else
+    // until a handheld's timing says the composite's extra read fits there.
     s.postDofNearSpread = enh;
+    s.postDofNearSpreadIntegrated = false;
     // np-look26 g: cutoutSampleTest stays off in every look. Measured against
     // the landed sharpened coverage it is a trade, not a gain (LookProfile.h);
     // the hair_edge inspection tokens turn it on.
@@ -288,12 +291,25 @@ bool SetLookNoiseRowsForInspection(int mode) {
 bool SetLookDofNearForInspection(int mode, bool spread) {
     LookSettings &s = Mutable();
     if (s.profile == LookProfile::Native) return false;
-    bool &v = spread ? s.postDofNearSpread : s.postDofNearField;
     const LookSettings &r = SettingsFor(s.profile);
-    v = mode < 0 ? (spread ? r.postDofNearSpread : r.postDofNearField) : mode != 0;
-    fprintf(stderr, "[look] depth of field near %s %d%s (inspection, profile %s)\n",
-            spread ? "spread" : "field", (int)v, mode < 0 ? " (the rule)" : "", LookProfileName(s.profile));
+    if (!spread) {
+        s.postDofNearField = mode < 0 ? r.postDofNearField : mode != 0;
+        fprintf(stderr, "[look] depth of field near field %d%s (inspection, profile %s)\n",
+                (int)s.postDofNearField, mode < 0 ? " (the rule)" : "", LookProfileName(s.profile));
+        return true;
+    }
+    // The spread has a value per adapter class. On and off force both, so the
+    // token means the same on any GPU; the rule returns each to the profile's.
+    s.postDofNearSpread = mode < 0 ? r.postDofNearSpread : mode != 0;
+    s.postDofNearSpreadIntegrated = mode < 0 ? r.postDofNearSpreadIntegrated : mode != 0;
+    fprintf(stderr, "[look] depth of field near spread %d, %d on a non-discrete GPU%s (inspection, profile %s)\n",
+            (int)s.postDofNearSpread, (int)s.postDofNearSpreadIntegrated, mode < 0 ? " (the rule)" : "",
+            LookProfileName(s.profile));
     return true;
+}
+
+bool LookDofNearSpread(const LookSettings &look, bool discreteGpu) {
+    return discreteGpu ? look.postDofNearSpread : look.postDofNearSpreadIntegrated;
 }
 
 bool SetLookDofDepthWeightForInspection(int mode) {

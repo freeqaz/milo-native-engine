@@ -191,8 +191,15 @@ struct LookSettings {
     // object's blur over the in-focus pixels beside it. Retail and Native: off.
     // Inspection: {rnd native_look dof_near_on|_off|_rule,
     // dof_near_spread_on|_off|_rule}.
+    // The spread is decided by adapter class, as supersampling is
+    // (renderScale / renderScaleIntegrated): it costs one more texture read at
+    // every full-size pixel of the composite. postDofNearSpread is the value
+    // on a discrete GPU, postDofNearSpreadIntegrated on anything else
+    // (integrated, CPU, unknown, the web build). Enhanced: on / off, the
+    // second until a handheld's timing says it fits. LookDofNearSpread picks.
     bool postDofNearField = false;
     bool postDofNearSpread = false;
+    bool postDofNearSpreadIntegrated = false;
     // np-look23 (a): DC3's post noise map (noise_mono.tex) re-tiled so each
     // texel covers whole OUTPUT rows, read at one fixed place in the texel
     // (gfx/NoiseRows.h): the same fine lines on every row at every size and
@@ -418,7 +425,12 @@ bool SetLookDofDepthWeightForInspection(int mode);
 // postDofNearField / postDofNearSpread on, off or the profile's (1 / 0 / -1).
 // The first switch of the near field on in a run that did not start with it
 // compiles three pipelines; the spread is a uniform. False under Native.
+// The spread tokens write both adapter classes' values (on and off force it
+// on any GPU; the rule returns each class to the profile's).
 bool SetLookDofNearForInspection(int mode, bool spread = false);
+// The near field's spread for this adapter class: postDofNearSpread on a
+// discrete GPU, postDofNearSpreadIntegrated on anything else.
+bool LookDofNearSpread(const LookSettings &look, bool discreteGpu);
 // {rnd native_look hair_edge_on|hair_edge_off|hair_edge_rule}: cutoutSampleTest
 // on (mode E, kCutoutModeDefault), off, or the profile's own value, which is
 // off in every look (mode 1 / 0 / -1), so one frozen frame is measured both

@@ -10778,6 +10778,14 @@ Enhanced DC3 look only (`LookSettings::postDofNearField`, `postDofNearSpread`). 
 and the Native profile take neither, and `DofPass::Run`'s two new arguments default off, so no
 other caller changes.
 
+The field is on for every adapter. The spread is decided by adapter class, as supersampling is
+(`renderScale` / `renderScaleIntegrated`): `postDofNearSpread` is the value on a discrete GPU (on),
+`postDofNearSpreadIntegrated` the value on anything else (integrated, CPU, unknown, the web build;
+off). `LookDofNearSpread(look, discreteGpu)` picks, and `PostProcPass::Run` asks it with
+`GpuDevice::IsDiscreteGpu()`. The reason is cost: the spread is one more texture read at every
+full-size pixel of the composite, and a handheld's integrated GPU had not been timed with it when
+this landed. If that timing fits, `postDofNearSpreadIntegrated` goes on in `SettingsFor`.
+
 ### 52.1 The rule
 
 - `dof_near(z) = smoothstep(0.2, 0.6, -t)`, `t = z * c24.x + c24.y` (the same `t` the factor
@@ -10828,13 +10836,17 @@ other caller changes.
 
 - `SetLookDofNearForInspection(mode, spread)` (1 / 0 / -1 for on, off, the profile's; refused
   under Native); DC3 tokens `{rnd native_look dof_near_on|dof_near_off|dof_near_rule}` and
-  `dof_near_spread_on|dof_near_spread_off|dof_near_spread_rule`. The switch back to the picture
-  before this section is `dof_near_off`.
+  `dof_near_spread_on|dof_near_spread_off|dof_near_spread_rule`. The spread's on and off tokens
+  write both adapter classes' values, so they mean the same on any GPU; its rule token returns
+  each class to the profile's. The switch back to the picture before this section is
+  `dof_near_off`.
 - `DC3LookPostTest.DofNearFieldSoftensANearObjectsEdgeAndLeavesTheFarField`: a bright in-focus
   half beside a dark half in front of the focus. Largest edge step in levels per pixel: retail
   107, weighted 209, field 108, field and spread 13. The same scene mirrored behind the focus
   changes no pixel, and no switch compiles a pipeline after the pre-warm.
-  `DC3LookDofNear.FollowsTheLookAndItsSwitch`: the profiles' values and the tokens. Five
-  sabotages, each caught.
+  `DC3LookDofNear.FollowsTheLookAndItsSwitch`: the profiles' values and the tokens.
+  `DC3LookDofNear.TheSpreadFollowsTheAdapterClass`: the class rule and the tokens over it. Seven
+  sabotages, each caught. The one line no test reaches is `PostProcPass::Run` passing the
+  device's class: this machine has no non-discrete adapter to draw with.
 - Not addressed: an edge between two blurred surfaces that are both behind the focus (the far
   field's rule).
