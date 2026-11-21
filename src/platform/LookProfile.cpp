@@ -77,7 +77,8 @@ LookSettings SettingsFor(LookProfile p) {
     s.texPassMsaaIntegrated = false;
     // np-look47 step 2: the target's GPU texture sized for the output's rows.
     // On a discrete GPU only, as step 1: on the 3090 steps 1+2 add ~0.05 ms at
-    // 1536 (1080 rows) and ~0.10 ms at 2048.
+    // 1536 (540 rows) and ~0.10 ms at 2048 (720 rows and above); 144 MiB a
+    // target at 2048 with 4 samples (36 at 1024).
     s.texPassScale = enh;
     s.texPassScaleIntegrated = false;
     // np-look23 (a): the noise map on whole output rows (LookProfile.h).

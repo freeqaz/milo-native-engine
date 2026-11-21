@@ -304,9 +304,16 @@ struct LookSettings {
     //  texPassScale (step 2): the GPU texture behind the RndTex is drawn
     //    larger, by the OUTPUT's rows (GpuDevice::OutputHeight, the rows the
     //    frame leaves the renderer at, whatever its render scale) over
-    //    texPassBaseRows: a 1024 target is 1024 up to 720 rows, 1536 at 1080
-    //    rows, 2048 (texPassMaxSide, the longer side's cap) at 1440 and above;
-    //    1080 at render scale 2 gets what 1080 at scale 1 gets. Width()/
+    //    texPassBaseRows: a 1024 target is 1024 up to 360 rows, 1536 at 540
+    //    rows, 2048 (texPassMaxSide, the longer side's cap) from 720 rows up;
+    //    1080 at render scale 2 gets what 1080 at scale 1 gets. That is about
+    //    two texels a screen pixel for a figure that fills the frame's height
+    //    at 720 rows: with one (base rows 720) the target is resampled
+    //    bilinearly at about 1 to 1 and the figure is softer than the same
+    //    character in the main frame (dc3 PLAN H-175: mean |Laplacian| inside
+    //    the figure 15.4 / 22.0 / 26.0 at 1024 / 1536 / 2048). texPassBaseRows
+    //    is the one constant of the rule: 480 gives 1536 at 720 rows, the
+    //    fallback if thin lines are seen to crawl in play. Width()/
     //    Height() of the RndTex do not change, and every reader of them sees
     //    the texture's own size: viewports stay in its pixels (FrameViewport
     //    scales them to the attachment), a CPU readback is box-filtered back
@@ -317,7 +324,7 @@ struct LookSettings {
     bool texPassScale = false;
     bool texPassScaleIntegrated = false;
     int texPassMaxSide = 2048;
-    int texPassBaseRows = 720;
+    int texPassBaseRows = 360;
 };
 
 // The cut-out modes the scene block carries (SceneUniforms::cutoutSampleTest,
