@@ -450,6 +450,8 @@ void WgpuRnd::InitGpuResources() {
     // (none unless the profile has one). Its value is per pass, in the scene
     // block (WriteSceneUniforms), so it can follow the render scale.
     mPipelines.SetMaterialTakesLodBias(milo::LookTakesLodBias(milo::Look()));
+    // np-look34: whether text/HUD pipelines read the look's text bias.
+    mPipelines.SetUiTakesLodBias(milo::LookTakesUiLodBias(milo::Look()));
     // The consumer's alpha fringe fade (off for DC3: no retail counterpart).
     mPipelines.SetAlphaFringeFade(rndshape::kAlphaFringeFade);
     // A render-scaled frame's text and HUD sample at output-pixel centres
@@ -2199,6 +2201,9 @@ void WgpuRnd::EnsureSceneUniformsCurrent() {
         // A texture target after the frame (or back), a resize across a
         // render-scale step, or an inspection switch: the bias moved.
         || PassMaterialLodBias() != mLastSceneMaterialLodBias
+        // np-look34: a text_bias_* token moved the text or HUD-art bias.
+        || milo::UiGlyphLodBias(milo::Look()) != mLastSceneUiLodBias
+        || milo::UiArtLodBias(milo::Look()) != mLastSceneUiArtLodBias
         // The same for the cutout sample test (hair_edge_*, or the overlay phase).
         || PassCutoutSampleTest() != mLastSceneCutoutSampleTest);
     // The self-shadow camera is part of the scene block (WriteSceneUniforms).
@@ -3064,6 +3069,12 @@ void WgpuRnd::WriteSceneUniforms() {
     // constant: a window resized across a render-scale step changes it on the
     // next frame and compiles nothing.
     scene.materialLodBias = PassMaterialLodBias();
+    // np-look34: the text and HUD bias (LookSettings::uiLodBias), read only by
+    // uiClass pipelines that take it (kTakesUiBias), so 0 in effect for world
+    // draws, the retail look and rb3/rb3-xenon (Native). The same at every
+    // render scale: the scaled path applies it to its gradients.
+    scene.uiLodBias = milo::UiGlyphLodBias(milo::Look());
+    scene.uiArtLodBias = milo::UiArtLodBias(milo::Look());
     // Cutout alpha test per sample (LookSettings::cutoutSampleTest; the value
     // is the CutoutSampleMode, 0 = off): world cutouts only, never the HUD
     // overlay phase. Read only by fs_cutout pipelines that take the LOD bias.
@@ -3078,6 +3089,8 @@ void WgpuRnd::WriteSceneUniforms() {
     memcpy(mLastSceneViewProj, scene.viewProj, sizeof(mLastSceneViewProj));
     mLastSceneSpecularAA = scene.specularAA;
     mLastSceneMaterialLodBias = scene.materialLodBias;
+    mLastSceneUiLodBias = scene.uiLodBias;
+    mLastSceneUiArtLodBias = scene.uiArtLodBias;
     mLastSceneCutoutSampleTest = scene.cutoutSampleTest;
 
     // Create scene bind group (group 0) — shadow map + projected light texture

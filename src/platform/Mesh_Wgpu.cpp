@@ -279,10 +279,16 @@ PipelineKey MaterialPipelineKey(RndMat* rawMat, bool skinned, bool isGlyphMesh, 
     key.cutoutCoverage = cutCov == CutCoverage::Sharpened;
     key.depthBias = depthBias;
     // The look's texture LOD bias (LookSettings::lodBiasScale1/2) is for
-    // world textures; text and HUD keep the original's unbiased samples, as
-    // their samplers keep its two mip levels (MaterialSetup ApplyLookSampling).
+    // world textures; text and HUD never take it. Their samplers keep the
+    // original's two mip levels (MaterialSetup ApplyLookSampling), and under
+    // enhanced glyph pages take a bias of their own inside that clamp
+    // (np-look34, measured by item 34b: see MaterialSetup.h).
     key.lodBias = MaterialDrawTakesLodBias(isTextMesh || isOverlayPass,
                                            gWgpuRnd->Pipelines().MaterialTakesLodBias());
+    // ... and read the look's own text bias instead (np-look34,
+    // LookSettings::uiLodBias; a uniform, so a token moves it live).
+    key.uiBias = MaterialDrawUiBias(isTextMesh || isOverlayPass, isTextMesh,
+                                    gWgpuRnd->Pipelines().UiTakesLodBias());
     key.outputPixelSampling = MaterialDrawSamplesAtOutputPixels(
         isTextMesh || isOverlayPass, ctx.toTexture,
         gWgpuRnd->Pipelines().OutputPixelScale());

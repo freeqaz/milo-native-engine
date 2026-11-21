@@ -213,6 +213,9 @@ public:
     float LastSceneSpecularAA() const { return mLastSceneSpecularAA; }
     // The materialLodBias the last WriteSceneUniforms wrote (tests).
     float LastSceneMaterialLodBias() const { return mLastSceneMaterialLodBias; }
+    // The text / other-HUD-art biases the last WriteSceneUniforms wrote (np-look34, tests).
+    float LastSceneUiLodBias() const { return mLastSceneUiLodBias; }
+    float LastSceneUiArtLodBias() const { return mLastSceneUiArtLodBias; }
     // The cutoutSampleTest the last WriteSceneUniforms wrote (tests; np-look26).
     float LastSceneCutoutSampleTest() const { return mLastSceneCutoutSampleTest; }
     // The cutout alpha test per sample for the pass now open, 1 or 0
@@ -634,6 +637,8 @@ public:
     float mLastSceneViewProj[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     float mLastSceneSpecularAA = 0.0f;
     float mLastSceneMaterialLodBias = 0.0f;
+    float mLastSceneUiLodBias = 0.0f;
+    float mLastSceneUiArtLodBias = 0.0f;
     float mLastSceneCutoutSampleTest = 0.0f;
     float mLastCamPosX = 0.0f; // detect same-pointer position changes
     float mLastCamPosY = 0.0f;

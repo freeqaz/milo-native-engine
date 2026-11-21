@@ -55,6 +55,18 @@ struct LookSettings {
     // (0 = no limit). Enhanced uploads whole chains, so this keeps glyphs at
     // the original's min(NumMips()+1, 2) -- see MaterialSetup.cpp.
     int uiMipLevels = 0;
+    // np-look34: LOD bias added to text and HUD-overlay (uiClass) diffuse
+    // samples, beside uiMipLevels: the text sampling rule is these two numbers.
+    // A uniform (SceneUniforms::uiLodBias / uiArtLodBias, written per pass),
+    // so a token switches it with no pipeline compiled; uiTakesLodBias says
+    // whether uiClass pipelines read it (PipelineKey::uiBias). At render scale
+    // above 1 the output-pixel path scales its gradients by 2^bias
+    // (standard_wgsl.inc diffuseSample). uiLodBiasGlyphsOnly: only glyph pages
+    // (isTextMesh) take it; other uiClass art (flashcard pictograms, icons,
+    // bars) reads uiArtLodBias = 0. Retail and Native: 0 and not taken.
+    float uiLodBias = 0.0f;
+    bool uiLodBiasGlyphsOnly = true;
+    bool uiTakesLodBias = false;
     // LOD bias added to world material texture samples, as a function of the
     // render scale the pass draws at (MaterialLodBiasAt): lodBiasScale1 at 1x,
     // lodBiasScale2 at 2x, linear in log2(scale) between. The value reaches
@@ -352,6 +364,27 @@ float PassMaterialLodBias(const LookSettings &look, bool toTextureTarget, float 
 // bias (enhanced) made its world pipelines biasable; in a run started retail
 // this changes nothing on screen.
 bool SetLookLodBiasForInspection(bool useRule, float bias);
+// np-look34: whether uiClass draws read the text bias at all under `look`
+// (PipelineKey::uiBias): look.uiTakesLodBias. False for retail and Native,
+// whose text pipelines then sample exactly as before.
+bool LookTakesUiLodBias(const LookSettings &look);
+// The two values a pass's scene block carries: the glyph-page bias, and the
+// bias of the other uiClass art (0 while uiLodBiasGlyphsOnly).
+float UiGlyphLodBias(const LookSettings &look);
+float UiArtLodBias(const LookSettings &look);
+// {rnd native_look text_bias_off|text_bias_half|text_bias_on|text_bias_rule}:
+// uiLodBias 0 / -0.5 / -1, or the profile's own value (useRule). A uniform:
+// the next frame, nothing compiles. False under Native.
+bool SetLookUiLodBiasForInspection(bool useRule, float bias);
+// {rnd native_look text_levels_2|text_levels_all|text_levels_rule}: the text
+// and HUD samplers' level clamp (uiMipLevels 2, 0 = no clamp, or the
+// profile's; levels < 0). One sampler and bind-group cache miss per material,
+// as the anisotropy tokens. False under Native.
+bool SetLookUiMipLevelsForInspection(int levels);
+// {rnd native_look text_bias_glyphs|text_bias_all_ui|text_bias_scope_rule}:
+// uiLodBiasGlyphsOnly true / false / the profile's (mode 1 / 0 / -1). A
+// uniform. False under Native.
+bool SetLookUiLodBiasScopeForInspection(int mode);
 // {rnd native_look aniso_1|aniso_4|aniso_16|aniso_rule}: the world samplers'
 // max anisotropy (ApplyLookSampling; text and HUD never take it), or 0 for the
 // profile's own value, so one run measures the GPU cost at each. Takes effect

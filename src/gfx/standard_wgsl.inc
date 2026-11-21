@@ -38,6 +38,18 @@ override kTakesLodBias: f32 = 0.0;
 fn materialLodBias() -> f32 {
     return kTakesLodBias * scene.materialLodBias;
 }
+// np-look34: which text/HUD bias a uiClass draw reads (PipelineKey::uiBias;
+// only under a look that has one, LookSettings::uiTakesLodBias): 0 none (world
+// draws, and every draw of retail and Native), 1 a glyph page
+// (scene.uiLodBias), 2 other text/HUD art (scene.uiArtLodBias). The values are
+// uniforms, so an inspection token moves them with no pipeline compiled. Kept
+// apart from the world bias (kTakesLodBias), which uiClass draws never take.
+override kTakesUiBias: f32 = 0.0;
+fn uiLodBias() -> f32 {
+    if (kTakesUiBias > 1.5) { return scene.uiArtLodBias; }
+    if (kTakesUiBias > 0.5) { return scene.uiLodBias; }
+    return 0.0;
+}
 // A text/HUD draw into a render-scaled frame (GpuDeviceDesc::renderScale):
 // the frame's pixels per output pixel, else 1. The diffuse sample is then
 // taken at the centre of the output pixel the fragment falls in, with that
@@ -195,13 +207,16 @@ struct SceneUniforms {
     viewProj: mat4x4f,
     view: mat4x4f,
     cameraPos: vec3f,
-    _pad0: f32,
+    // np-look34: the text (glyph page) LOD bias (kTakesUiBias 1).
+    uiLodBias: f32,
     // Fog
     fogColor: vec3f,
     fogStart: f32,
     fogEnd: f32,
     fogEnabled: f32,
-    _pad1: vec2f,
+    // np-look34: the LOD bias of other text/HUD art (kTakesUiBias 2).
+    uiArtLodBias: f32,
+    _pad1: f32,
     // Multi-light (up to 4 directional lights)
     lightDirs: array<vec4f, 4>,
     lightColors: array<vec4f, 4>,
@@ -1726,10 +1741,14 @@ fn diffuseSample(uv: vec2f, fragPos: vec2f) -> vec4f {
         let dy = dpdy(uv);
         let centre = (floor(fragPos / kOutputPixelScale) + 0.5) * kOutputPixelScale;
         let d = centre - fragPos;
+        // textureSampleGrad takes no bias: a bias b is gradients x 2^b
+        // (LOD = log2 |grad| + b), so the scaled frame's text samples the
+        // level the unscaled frame's does (np-look34).
+        let g = kOutputPixelScale * exp2(uiLodBias());
         return textureSampleGrad(diffuseTex, diffuseSampler, uv + dx * d.x + dy * d.y,
-                                 dx * kOutputPixelScale, dy * kOutputPixelScale);
+                                 dx * g, dy * g);
     }
-    return textureSampleBias(diffuseTex, diffuseSampler, uv, materialLodBias());
+    return textureSampleBias(diffuseTex, diffuseSampler, uv, materialLodBias() + uiLodBias());
 }
 
 // === Fragment Shader ===
