@@ -28,6 +28,8 @@
 // MILO_OUTPUT_MAX_ROWS (outputMaxRowsExplicit), the output resolution's cap.
 // ─────────────────────────────────────────────────────────────────────────────
 
+#include <cstdint>
+
 namespace milo {
 
 enum class LookProfile : unsigned char {
@@ -35,6 +37,55 @@ enum class LookProfile : unsigned char {
     Retail,    // DC3: the original hardware's behaviour
     Enhanced,  // DC3: native polish (default)
 };
+
+// ---- adapter classes (np-look49) --------------------------------------------
+// The look's per-adapter rules (the depth of field's near field and near
+// spread, the texture pass's MSAA and size) are decided by one of three
+// classes. Nothing that sizes the frame reads it: render scale, the output row
+// cap and the thermal governor keep GpuDevice::IsDiscreteGpu().
+//   Discrete: the adapter reports DiscreteGPU (an Intel Mac's Radeon too).
+//   Apple: integrated, vendor 0x106B, on Dawn's Metal backend (Apple
+//     silicon; Dawn reports it IntegratedGPU). Through MoltenVK (the Vulkan
+//     backend) it is not Apple; nor is an Intel Mac's Intel graphics (0x8086),
+//     nor a CPU or unknown-type adapter whatever its vendor.
+//   OtherNonDiscrete: everything else (integrated, CPU, unknown, the web
+//     build): the rules exactly as the one non-discrete class had them.
+// An enum class so a bool can never be passed where a class is wanted.
+enum class LookAdapterClass : unsigned char {
+    Discrete,
+    Apple,
+    OtherNonDiscrete,
+};
+
+// The adapter's reported type, as plain facts (no wgpu types, so tests can
+// walk the classification without a device).
+enum class LookAdapterType : unsigned char {
+    Discrete,
+    Integrated,
+    Cpu,
+    Unknown,
+};
+
+constexpr uint32_t kAppleGpuVendorId = 0x106B;
+
+// What the class is decided from, recorded by GpuDevice when it gets its
+// adapter. backendName is for the log line only (a string literal).
+struct LookAdapterFacts {
+    LookAdapterType type = LookAdapterType::Unknown;
+    uint32_t vendorId = 0;
+    bool metalBackend = false;
+    const char *backendName = "unknown";
+};
+
+// The classification, a pure function of the three facts.
+LookAdapterClass ClassifyLookAdapter(LookAdapterType type, uint32_t vendorId, bool metalBackend);
+inline LookAdapterClass ClassifyLookAdapter(const LookAdapterFacts &f) {
+    return ClassifyLookAdapter(f.type, f.vendorId, f.metalBackend);
+}
+// "discrete GPU", "Apple GPU (not a discrete GPU)", "not a discrete GPU".
+const char *LookAdapterClassName(LookAdapterClass c);
+// "discrete", "integrated", "cpu", "unknown".
+const char *LookAdapterTypeName(LookAdapterType t);
 
 struct LookSettings {
     LookProfile profile = LookProfile::Native;
@@ -196,15 +247,19 @@ struct LookSettings {
     // downsample and the two blurs (8 more reads per quarter texel in each)
     // and 4 reads in the composite inside the near field; the spread one more
     // read at every full-size pixel of the composite. postDofNearField and
-    // postDofNearSpread are the values on a discrete GPU, the ...Integrated
-    // pair on anything else (integrated, CPU, unknown, the web build).
-    // Enhanced: on / off, the second until a handheld's timing says each fits
-    // (dc3 PLAN H-165). LookDofNearField / LookDofNearSpread pick, and with the
-    // field off the depth of field runs exactly the passes it ran before
-    // np-look36. LogLookAdapterClass prints the choice once.
+    // postDofNearSpread are the values on a discrete GPU, the ...Apple pair on
+    // an Apple GPU (LookAdapterClass, np-look49), the ...Integrated pair on
+    // anything else (integrated, CPU, unknown, the web build).
+    // Enhanced: on / Apple on (timed on an M3) / off, the last until a
+    // handheld's timing says each fits (dc3 PLAN H-165). LookDofNearField /
+    // LookDofNearSpread pick, and with the field off the depth of field runs
+    // exactly the passes it ran before np-look36. LogLookAdapterClass prints
+    // the choice once.
     bool postDofNearField = false;
+    bool postDofNearFieldApple = false;
     bool postDofNearFieldIntegrated = false;
     bool postDofNearSpread = false;
+    bool postDofNearSpreadApple = false;
     bool postDofNearSpreadIntegrated = false;
     // np-look23 (a): DC3's post noise map (noise_mono.tex) re-tiled so each
     // texel covers whole OUTPUT rows, read at one fixed place in the texel
@@ -297,9 +352,11 @@ struct LookSettings {
     //    into the texture. The texture keeps its size and format, so a sampler
     //    or a readback of it sees what it saw, edges averaged.
     // Enhanced only; Retail and Native (rb3, rb3-xenon) keep the one-sample
-    // target, pass for pass. A value per adapter class (LookTexPassMsaa).
+    // target, pass for pass. A value per adapter class (LookTexPassMsaa):
+    // texPassMsaa discrete, ...Apple, ...Integrated anything else.
     // Inspection: {rnd native_look rtt_msaa_on|rtt_msaa_off|rtt_msaa_rule}.
     bool texPassMsaa = false;
+    bool texPassMsaaApple = false;
     bool texPassMsaaIntegrated = false;
     //  texPassScale (step 2): the GPU texture behind the RndTex is drawn
     //    larger, by the OUTPUT's rows (GpuDevice::OutputHeight, the rows the
@@ -313,7 +370,13 @@ struct LookSettings {
     //    character in the main frame (dc3 PLAN H-175: mean |Laplacian| inside
     //    the figure 15.4 / 22.0 / 26.0 at 1024 / 1536 / 2048). texPassBaseRows
     //    is the one constant of the rule: 480 gives 1536 at 720 rows, the
-    //    fallback if thin lines are seen to crawl in play. Width()/
+    //    fallback if thin lines are seen to crawl in play. Both numbers are
+    //    per adapter class (np-look49), as the switch is: texPassMaxSide /
+    //    texPassBaseRows discrete, ...Apple, ...Integrated anything else
+    //    (LookTexPassMaxSide / LookTexPassBaseRows); the numbers above are the
+    //    discrete class's, which the Integrated pair also carries. Apple:
+    //    cap 1536, base rows 720 (timed on an M3: 1024 up to 720 rows, 1536
+    //    from 1080 rows up). Width()/
     //    Height() of the RndTex do not change, and every reader of them sees
     //    the texture's own size: viewports stay in its pixels (FrameViewport
     //    scales them to the attachment), a CPU readback is box-filtered back
@@ -322,11 +385,18 @@ struct LookSettings {
     //    target begins (WgpuRnd::BeginTexturePass), never where it is sampled.
     //    Inspection: {rnd native_look rtt_scale_on|rtt_scale_off|rtt_scale_rule};
     //    the two numbers: rtt_cap_1024|1536|2048|rule, rtt_rows_360|480|720|rule
-    //    (SetLookTexPassSizeForInspection).
+    //    (SetLookTexPassSizeForInspection; a number token sets that number for
+    //    all three classes, its rule returns each to its own). Per adapter
+    //    class as texPassMsaa.
     bool texPassScale = false;
+    bool texPassScaleApple = false;
     bool texPassScaleIntegrated = false;
     int texPassMaxSide = 2048;
+    int texPassMaxSideApple = 2048;
+    int texPassMaxSideIntegrated = 2048;
     int texPassBaseRows = 360;
+    int texPassBaseRowsApple = 360;
+    int texPassBaseRowsIntegrated = 360;
 };
 
 // The cut-out modes the scene block carries (SceneUniforms::cutoutSampleTest,
@@ -474,18 +544,42 @@ bool SetLookDofDepthWeightForInspection(int mode);
 // postDofNearField / postDofNearSpread on, off or the profile's (1 / 0 / -1).
 // The first switch of the near field on in a run that did not start with it
 // compiles four pipelines; the spread is a uniform. False under Native.
-// Each token writes both adapter classes' values: on and off force it on any
-// GPU, and the rule returns each class to the profile's.
+// Each token writes all three adapter classes' values: on and off force it on
+// any GPU, and the rule returns each class to the profile's.
 bool SetLookDofNearForInspection(int mode, bool spread = false);
 // The near field and its spread for this adapter class: postDofNearField /
-// postDofNearSpread on a discrete GPU, the ...Integrated pair on anything else.
-bool LookDofNearField(const LookSettings &look, bool discreteGpu);
-bool LookDofNearSpread(const LookSettings &look, bool discreteGpu);
-// Prints, once per process, the adapter class the device reported and what the
-// class-decided settings came to on it ("[look] adapter class ..."). Nothing
-// under the Native profile, which has no class-decided setting here. The
-// renderer calls it when its device is up.
-void LogLookAdapterClass(bool discreteGpu);
+// postDofNearSpread on a discrete GPU, the ...Apple pair on an Apple GPU, the
+// ...Integrated pair on anything else. Callers pass GpuDevice::LookClass().
+bool LookDofNearField(const LookSettings &look, LookAdapterClass c);
+bool LookDofNearSpread(const LookSettings &look, LookAdapterClass c);
+// Prints, once per process, the adapter class the device reported, the facts
+// it was decided from and what the four class-decided settings came to on it
+// ("[look] adapter class ..."). Nothing under the Native profile, which has no
+// class-decided setting here. The renderer calls it when its device is up.
+void LogLookAdapterClass(const LookAdapterFacts &adapter);
+// The same line, every call (LogLookAdapterClass's body; tests read it).
+void PrintLookAdapterClass(const LookAdapterFacts &adapter);
+// The adapter LogLookAdapterClass was last given (default facts before any).
+// Every call records it, logged or not; the class token's line names it.
+LookAdapterFacts LoggedLookAdapter();
+// {rnd native_look adapter_apple|adapter_other|adapter_discrete|adapter_rule}
+// (np-look49): force the class the look's four per-adapter rules use
+// (LookAdapterClassInEffect, so every caller of GpuDevice::LookClass()), or
+// (useAdapter) return to the adapter's own class. Look rules only: render
+// scale, the output row cap, frame sizing and GpuDevice::IsDiscreteGpu()
+// never read it. Each rule takes it as it takes its own token: a texture pass
+// target at its next clearing pass, the depth of field on the next frame (the
+// near field's first switch on compiles four pipelines). Kept across a
+// profile switch (it stands for the adapter, not the look); a
+// ScopedLookOverride starts with none and restores it. Prints that the class
+// is forced, which class the adapter really is (LoggedLookAdapter) and the
+// four outcomes; useAdapter prints the ordinary class line. False under the
+// Native profile, changing nothing.
+bool SetLookAdapterClassForInspection(bool useAdapter,
+                                      LookAdapterClass forced = LookAdapterClass::OtherNonDiscrete);
+// The class the look's rules use for this adapter: the forced class while
+// one is, else ClassifyLookAdapter(adapter). GpuDevice::LookClass() is this.
+LookAdapterClass LookAdapterClassInEffect(const LookAdapterFacts &adapter);
 // {rnd native_look hair_edge_on|hair_edge_off|hair_edge_rule}: cutoutSampleTest
 // on (mode E, kCutoutModeDefault), off, or the profile's own value, which is
 // off in every look (mode 1 / 0 / -1), so one frozen frame is measured both
@@ -497,24 +591,31 @@ bool SetLookCutoutSampleTestForInspection(int mode);
 // profile's own value (mode < 0). False under Native.
 bool SetLookCrowdShadowForInspection(int mode);
 // np-look47: texPassMsaa (step 1) on, off or the profile's (1 / 0 / -1),
-// both adapter classes. False under Native.
+// all three adapter classes. False under Native.
 bool SetLookTexPassMsaaForInspection(int mode);
 // Step 1 for this adapter class.
-bool LookTexPassMsaa(const LookSettings &look, bool discreteGpu);
-// np-look47 step 2: texPassScale on, off or the profile's (1 / 0 / -1), both
-// adapter classes. False under Native.
+bool LookTexPassMsaa(const LookSettings &look, LookAdapterClass c);
+// np-look47 step 2: texPassScale on, off or the profile's (1 / 0 / -1), all
+// three adapter classes. False under Native.
 bool SetLookTexPassScaleForInspection(int mode);
-// The two numbers of step 2's size rule (TexPassGpuSize): texPassMaxSide and
-// texPassBaseRows. Each argument > 0 sets that value, 0 leaves it alone, < 0
-// returns it to the profile's. Does not turn texPassScale on or off; a target
-// takes the new size at its next clearing pass, as for the scale token. Prints
-// the cap and the rows now in force. False under Native, changing nothing.
+// The two numbers of step 2's size rule (TexPassGpuSize): the cap
+// (texPassMaxSide...) and the base rows (texPassBaseRows...). Each argument
+// > 0 sets that number for all three adapter classes (so a token means the
+// same on any GPU), 0 leaves it alone, < 0 returns each class's to the
+// profile's. Does not turn texPassScale on or off; a target takes the new size
+// at its next clearing pass, as for the scale token. Prints each number for
+// the three classes. False under Native, changing nothing.
 bool SetLookTexPassSizeForInspection(int maxSide, int baseRows);
-bool LookTexPassScale(const LookSettings &look, bool discreteGpu);
+bool LookTexPassScale(const LookSettings &look, LookAdapterClass c);
+// Step 2's two numbers for this adapter class.
+int LookTexPassMaxSide(const LookSettings &look, LookAdapterClass c);
+int LookTexPassBaseRows(const LookSettings &look, LookAdapterClass c);
 // The GPU size of a texW x texH target under texPassScale for an output of
-// outputRows rows: each side times max(1, outputRows / texPassBaseRows), the
-// longer side at most texPassMaxSide (never below the texture's own).
-void TexPassGpuSize(const LookSettings &look, int texW, int texH, int outputRows, int &gpuW, int &gpuH);
+// outputRows rows on adapter class c (GpuDevice::LookClass()): each side times
+// max(1, outputRows / the class's base rows), the longer side at most the
+// class's cap (never below the texture's own).
+void TexPassGpuSize(const LookSettings &look, LookAdapterClass c, int texW, int texH, int outputRows, int &gpuW,
+                    int &gpuH);
 // {rnd native_look hair_edge_b|hair_edge_c|hair_edge_e|hair_edge_centre}:
 // cutoutSampleTest on with that CutoutSampleMode (1..4) in place of the
 // default, until another hair_edge token. False under the Native profile or
@@ -545,6 +646,7 @@ public:
 private:
     LookSettings mPrev;
     int mPrevStartupBitmapMipLevels;
+    int mPrevAdapterClassInspection;
 };
 
 }  // namespace milo

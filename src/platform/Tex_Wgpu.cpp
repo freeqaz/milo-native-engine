@@ -396,11 +396,11 @@ static void WantedGpuSize(RndTex* tex, const GpuTexData& data, int& w, int& h) {
     const milo::LookSettings& look = milo::Look();
     // The kept answer (set by this clearing pass), never the rule itself.
     if (data.cpuWritten || !data.likeFrame
-        || !milo::LookTexPassScale(look, gWgpuRnd->Gpu().IsDiscreteGpu()))
+        || !milo::LookTexPassScale(look, gWgpuRnd->Gpu().LookClass()))
         return;
     const int rows = sTexPassOutputRowsForTest > 0 ? sTexPassOutputRowsForTest : gWgpuRnd->Gpu().OutputHeight();
     const int ownW = w, ownH = h;
-    milo::TexPassGpuSize(look, ownW, ownH, rows, w, h);
+    milo::TexPassGpuSize(look, gWgpuRnd->Gpu().LookClass(), ownW, ownH, rows, w, h);
 }
 
 bool GetGpuTexPassTarget(RndTex* tex, GpuTexPassTarget& out, bool passClears, bool passClearsDepth) {
@@ -412,7 +412,7 @@ bool GetGpuTexPassTarget(RndTex* tex, GpuTexPassTarget& out, bool passClears, bo
         // until this target's next clearing pass.
         GpuTexData& d = sTexGpuData[tex];
         d.likeFrame = TexPassDrawnLikeFrame(tex);
-        d.wantSamples = d.likeFrame && milo::LookTexPassMsaa(milo::Look(), gWgpuRnd->Gpu().IsDiscreteGpu())
+        d.wantSamples = d.likeFrame && milo::LookTexPassMsaa(milo::Look(), gWgpuRnd->Gpu().LookClass())
             ? WgpuRnd::kTexPassMsaaSamples
             : 1u;
         // A target no longer drawn multisampled lets its 4x pair go.

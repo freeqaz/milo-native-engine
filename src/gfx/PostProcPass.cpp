@@ -538,10 +538,10 @@ static bool DepthWeightedDof(const P*, bool worldGrade) {
 // with DepthWeightedDof only. Both are decided by adapter class
 // (milo::LookDofNearField / LookDofNearSpread).
 template <class P>
-static bool NearFieldDof(const P*, bool worldGrade, bool spread, bool discreteGpu) {
+static bool NearFieldDof(const P*, bool worldGrade, bool spread, milo::LookAdapterClass adapter) {
     if constexpr (rndshape::kDC3RetailPost && sizeof(P) > 0) {
-        return worldGrade && (spread ? milo::LookDofNearSpread(milo::Look(), discreteGpu)
-                                     : milo::LookDofNearField(milo::Look(), discreteGpu));
+        return worldGrade && (spread ? milo::LookDofNearSpread(milo::Look(), adapter)
+                                     : milo::LookDofNearField(milo::Look(), adapter));
     } else {
         return false;
     }
@@ -579,8 +579,8 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& i
     if (dofRuns && mDof.Run(encoder, intermediateView, intermediateTex.GetFormat(), depthView,
                             depthSamples, intermediateW, intermediateH, gpu, EnhancedDof(pp, mWorldGrade),
                             DepthWeightedDof(pp, mWorldGrade),
-                            NearFieldDof(pp, mWorldGrade, false, gpu.IsDiscreteGpu()),
-                            NearFieldDof(pp, mWorldGrade, true, gpu.IsDiscreteGpu()))) {
+                            NearFieldDof(pp, mWorldGrade, false, gpu.LookClass()),
+                            NearFieldDof(pp, mWorldGrade, true, gpu.LookClass()))) {
         sceneView = mDof.OutputView();
     }
 
