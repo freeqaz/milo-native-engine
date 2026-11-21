@@ -301,6 +301,30 @@ struct LookSettings {
     // Inspection: {rnd native_look rtt_msaa_on|rtt_msaa_off|rtt_msaa_rule}.
     bool texPassMsaa = false;
     bool texPassMsaaIntegrated = false;
+    //  texPassScale (step 2): the GPU texture behind the RndTex is drawn
+    //    larger, by the OUTPUT's rows (GpuDevice::OutputHeight, the rows the
+    //    frame leaves the renderer at, whatever its render scale) over
+    //    texPassBaseRows: a 1024 target is 1024 up to 360 rows, 1536 at 540
+    //    rows, 2048 (texPassMaxSide, the longer side's cap) from 720 rows up;
+    //    1080 at render scale 2 gets what 1080 at scale 1 gets. That is about
+    //    two texels a screen pixel for a figure that fills the frame's height
+    //    at 720 rows: with one (base rows 720) the target is resampled
+    //    bilinearly at about 1 to 1 and the figure is softer than the same
+    //    character in the main frame (dc3 PLAN H-175: mean |Laplacian| inside
+    //    the figure 15.4 / 22.0 / 26.0 at 1024 / 1536 / 2048). texPassBaseRows
+    //    is the one constant of the rule: 480 gives 1536 at 720 rows, the
+    //    fallback if thin lines are seen to crawl in play. Width()/
+    //    Height() of the RndTex do not change, and every reader of them sees
+    //    the texture's own size: viewports stay in its pixels (FrameViewport
+    //    scales them to the attachment), a CPU readback is box-filtered back
+    //    to its own size, a CPU write puts the target at its own size and
+    //    holds it there. The size changes only where a pass that clears the
+    //    target begins (WgpuRnd::BeginTexturePass), never where it is sampled.
+    //    Inspection: {rnd native_look rtt_scale_on|rtt_scale_off|rtt_scale_rule}.
+    bool texPassScale = false;
+    bool texPassScaleIntegrated = false;
+    int texPassMaxSide = 2048;
+    int texPassBaseRows = 360;
 };
 
 // The cut-out modes the scene block carries (SceneUniforms::cutoutSampleTest,
@@ -475,6 +499,14 @@ bool SetLookCrowdShadowForInspection(int mode);
 bool SetLookTexPassMsaaForInspection(int mode);
 // Step 1 for this adapter class.
 bool LookTexPassMsaa(const LookSettings &look, bool discreteGpu);
+// np-look47 step 2: texPassScale on, off or the profile's (1 / 0 / -1), both
+// adapter classes. False under Native.
+bool SetLookTexPassScaleForInspection(int mode);
+bool LookTexPassScale(const LookSettings &look, bool discreteGpu);
+// The GPU size of a texW x texH target under texPassScale for an output of
+// outputRows rows: each side times max(1, outputRows / texPassBaseRows), the
+// longer side at most texPassMaxSide (never below the texture's own).
+void TexPassGpuSize(const LookSettings &look, int texW, int texH, int outputRows, int &gpuW, int &gpuH);
 // {rnd native_look hair_edge_b|hair_edge_c|hair_edge_e|hair_edge_centre}:
 // cutoutSampleTest on with that CutoutSampleMode (1..4) in place of the
 // default, until another hair_edge token. False under the Native profile or

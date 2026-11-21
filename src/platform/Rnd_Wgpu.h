@@ -555,6 +555,10 @@ public:
     bool mCurrentPassHasDepth = false;
     uint32_t mCurrentTargetWidth = 0;
     uint32_t mCurrentTargetHeight = 0;
+    // np-look47 step 2: a texture pass's attachment pixels over the texture's
+    // own (LookSettings::texPassScale); 1 when the target is drawn at its size.
+    float mTexPassScaleX = 1.0f;
+    float mTexPassScaleY = 1.0f;
 
     // Uniform buffers (staged: one WriteBuffer each per frame, PLAN H-31;
     // FlushUniformRings before the frame Submit)

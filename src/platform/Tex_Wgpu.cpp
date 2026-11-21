@@ -63,6 +63,9 @@ struct GpuTexData {
     wgpu::TextureView msaaView;
     wgpu::Texture msaaDepthTexture;
     wgpu::TextureView msaaDepthView;
+    // np-look47 step 2: the CPU wrote this target (UploadRGBAToRndTex), so it
+    // is held at its own size from then on: what was written is the picture.
+    bool cpuWritten = false;
 };
 
 static std::unordered_map<RndTex*, GpuTexData> sTexGpuData;
@@ -352,7 +355,55 @@ static GpuTexData* EnsureRenderTargetData(RndTex* tex) {
     return &data;
 }
 
-bool GetGpuTexPassTarget(RndTex* tex, GpuTexPassTarget& out, bool passClears) {
+// np-look47 step 2: re-make a render target's colour (and its 1x depth, when
+// it has one) at w x h, letting its 4x pair go (the next clearing pass makes
+// it at the new size). The new colour is NOT initialised: the only callers are
+// a pass that clears it (GetGpuTexPassTarget) and a CPU write that fills it
+// (UploadRGBAToRndTex).
+static void ResizeRenderTarget(RndTex* tex, GpuTexData& data, int w, int h) {
+    const std::string label = std::string("RndTex:") + (tex->Name() ? tex->Name() : "");
+    gWgpuRnd->ForgetTextureView(data.view);
+    data.texture = TextureConvert::CreateRenderTarget(gWgpuRnd->Gpu(), w, h, ChooseRenderTargetFormat(tex),
+                                                      label.c_str());
+    data.view = data.texture.CreateView();
+    if (data.depthTexture) {
+        const bool sampled = rndshape::kSelfShadowMap && (int)tex->GetType() == rndshape::kSelfShadowTexType;
+        data.depthTexture =
+            TextureConvert::CreateDepthTarget(gWgpuRnd->Gpu(), w, h, (label + " depth").c_str(), sampled);
+        data.depthView = data.depthTexture.CreateView();
+        data.depthSampleView = nullptr;
+        if (sampled) {
+            wgpu::TextureViewDescriptor vd{};
+            vd.aspect = wgpu::TextureAspect::DepthOnly;
+            data.depthSampleView = data.depthTexture.CreateView(&vd);
+        }
+    }
+    data.msaaTexture = nullptr;
+    data.msaaView = nullptr;
+    data.msaaDepthTexture = nullptr;
+    data.msaaDepthView = nullptr;
+    data.samples = 1;
+}
+
+// np-look47 step 2: the GPU size the look asks for `tex` now (its own size
+// unless the look scales a target it draws like the frame). The output's
+// rows, not the drawn frame's: 1080 at render scale 2 gets 1080 at scale 1's.
+static int sTexPassOutputRowsForTest = 0;
+void SetTexPassOutputRowsForTest(int rows) { sTexPassOutputRowsForTest = rows; }
+static void WantedGpuSize(RndTex* tex, const GpuTexData& data, int& w, int& h) {
+    w = tex->Width() > 0 ? tex->Width() : 256;
+    h = tex->Height() > 0 ? tex->Height() : 256;
+    const milo::LookSettings& look = milo::Look();
+    // The kept answer (set by this clearing pass), never the rule itself.
+    if (data.cpuWritten || !data.likeFrame
+        || !milo::LookTexPassScale(look, gWgpuRnd->Gpu().IsDiscreteGpu()))
+        return;
+    const int rows = sTexPassOutputRowsForTest > 0 ? sTexPassOutputRowsForTest : gWgpuRnd->Gpu().OutputHeight();
+    const int ownW = w, ownH = h;
+    milo::TexPassGpuSize(look, ownW, ownH, rows, w, h);
+}
+
+bool GetGpuTexPassTarget(RndTex* tex, GpuTexPassTarget& out, bool passClears, bool passClearsDepth) {
     out = GpuTexPassTarget();
     if (!tex || !tex->IsRenderTarget()) return false;
     if (passClears && gWgpuRnd && gWgpuRnd->Gpu().IsReady()) {
@@ -375,6 +426,16 @@ bool GetGpuTexPassTarget(RndTex* tex, GpuTexPassTarget& out, bool passClears) {
     }
     GpuTexData* rt = EnsureRenderTargetData(tex);
     if (!rt || !rt->view || !rt->texture) return false;
+    // Step 2: the size changes here and only here, for a pass that clears
+    // what the target holds (colour, and depth when it has one), so nothing
+    // still to be shown is lost; a pass resumed with a load, and every call
+    // that samples the target, use the texture as it is.
+    if (passClears && (passClearsDepth || !NeedsDepthTarget(tex))) {
+        int ww = 0, wh = 0;
+        WantedGpuSize(tex, *rt, ww, wh);
+        if ((int)rt->texture.GetWidth() != ww || (int)rt->texture.GetHeight() != wh)
+            ResizeRenderTarget(tex, *rt, ww, wh);
+    }
     const int w = (int)rt->texture.GetWidth(), h = (int)rt->texture.GetHeight();
     // np-look47 step 1: the multisampled pair the pass draws into, at the
     // colour texture's size, made by a pass that clears colour (a target that
@@ -676,6 +737,14 @@ void UploadRGBAToRndTex(RndTex* tex, const uint8_t* rgba, int w, int h) {
     if (!tex || !rgba || !gWgpuRnd || !gWgpuRnd->Gpu().IsReady()) return;
     GpuTexData* rtData = EnsureRenderTargetData(tex);
     if (!rtData || !rtData->texture) return;
+    // np-look47 step 2: a target the CPU writes is the picture written, at
+    // its own size, from now on (no pass resizes it again).
+    rtData->cpuWritten = true;
+    if ((int)rtData->texture.GetWidth() != w || (int)rtData->texture.GetHeight() != h) {
+        const int ownW = tex->Width() > 0 ? tex->Width() : 256, ownH = tex->Height() > 0 ? tex->Height() : 256;
+        if ((int)rtData->texture.GetWidth() != ownW || (int)rtData->texture.GetHeight() != ownH)
+            ResizeRenderTarget(tex, *rtData, ownW, ownH);
+    }
 
     wgpu::TexelCopyTextureInfo dest{};
     dest.texture = rtData->texture;
@@ -715,7 +784,48 @@ bool ReadbackGpuRenderTarget(RndTex* tex, std::vector<uint8_t>& texels, int& w, 
     w = (int)t.GetWidth();
     h = (int)t.GetHeight();
     texels.resize((size_t)w * h * 4);
-    return gWgpuRnd->Gpu().ReadbackTexture(t, w, h, texels.data(), texels.size());
+    if (!gWgpuRnd->Gpu().ReadbackTexture(t, w, h, texels.data(), texels.size())) return false;
+    // np-look47 step 2: a target drawn larger is read back at its own size,
+    // box-filtered on the CPU (the reader sizes everything from Width()/
+    // Height(); a GPU blit would need a pipeline per format for a path that
+    // is rare and already waits on the GPU).
+    const int ownW = tex->Width(), ownH = tex->Height();
+    if (ownW > 0 && ownH > 0 && (ownW != w || ownH != h)) {
+        std::vector<uint8_t> own;
+        BoxFilterRGBA8(texels.data(), w, h, own, ownW, ownH);
+        texels.swap(own);
+        w = ownW;
+        h = ownH;
+    }
+    return true;
+}
+
+void BoxFilterRGBA8(const uint8_t* src, int sw, int sh, std::vector<uint8_t>& dst, int dw, int dh) {
+    dst.assign((size_t)dw * dh * 4, 0);
+    if (!src || sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0) return;
+    // Each destination texel is the area-weighted mean of the source texels
+    // its footprint covers (fractional at the edges: 1536 -> 1024 is 1.5).
+    const double fx = (double)sw / dw, fy = (double)sh / dh;
+    for (int y = 0; y < dh; ++y) {
+        const double y0 = y * fy, y1 = y0 + fy;
+        for (int x = 0; x < dw; ++x) {
+            const double x0 = x * fx, x1 = x0 + fx;
+            double acc[4] = {0, 0, 0, 0}, wsum = 0;
+            for (int sy = (int)y0; sy < sh && sy < y1; ++sy) {
+                const double wy = std::min(y1, (double)sy + 1) - std::max(y0, (double)sy);
+                if (wy <= 0) continue;
+                for (int sx = (int)x0; sx < sw && sx < x1; ++sx) {
+                    const double wx = std::min(x1, (double)sx + 1) - std::max(x0, (double)sx);
+                    if (wx <= 0) continue;
+                    const uint8_t* p = src + ((size_t)sy * sw + sx) * 4;
+                    for (int c = 0; c < 4; ++c) acc[c] += p[c] * wx * wy;
+                    wsum += wx * wy;
+                }
+            }
+            uint8_t* q = &dst[((size_t)y * dw + x) * 4];
+            for (int c = 0; c < 4; ++c) q[c] = (uint8_t)std::min(255.0, acc[c] / wsum + 0.5);
+        }
+    }
 }
 
 // Debug aid: write every live render target's colour contents to

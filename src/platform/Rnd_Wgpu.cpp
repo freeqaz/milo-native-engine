@@ -1473,8 +1473,10 @@ void WgpuRnd::ApplyCameraViewport(RndCam* cam) {
     const Vector2& z = rndshape::CamZRange(cam);
     // A frame pass's viewport is in logical pixels (FrameViewport scales it to
     // the drawn frame); a texture pass's in the texture's.
-    const int w = mActiveTargetTex ? (int)mCurrentTargetWidth : mGpu.LogicalWidth();
-    const int h = mActiveTargetTex ? (int)mCurrentTargetHeight : mGpu.LogicalHeight();
+    // np-look47 step 2: the texture's own pixels even when it is drawn larger
+    // (FrameViewport scales them to the attachment).
+    const int w = mActiveTargetTex ? (int)mActiveTargetTex->Width() : mGpu.LogicalWidth();
+    const int h = mActiveTargetTex ? (int)mActiveTargetTex->Height() : mGpu.LogicalHeight();
     SetViewport(BuildViewportForScreenRect(w, h, rndshape::CamScreenRect(cam), z.x, z.y));
 }
 
@@ -1484,9 +1486,13 @@ void WgpuRnd::ApplyCameraViewport(RndCam* cam) {
 // frame at the output's own resolution (GpuDeviceDesc::outputFollowsTarget),
 // or both. Texture passes take viewports in the texture's own pixels.
 WgpuRndBase::Viewport WgpuRnd::FrameViewport(const Viewport& v) const {
-    if (mActiveTargetTex || !mGpu.FrameScaled()) return v;
-    const float sx = mGpu.FrameScaleX();
-    const float sy = mGpu.FrameScaleY();
+    // np-look47 step 2: a texture drawn larger than its own size
+    // (texPassScale) takes its viewports in its own pixels too, scaled to the
+    // attachment's.
+    const bool texScaled = mActiveTargetTex && (mTexPassScaleX != 1.0f || mTexPassScaleY != 1.0f);
+    if (mActiveTargetTex ? !texScaled : !mGpu.FrameScaled()) return v;
+    const float sx = mActiveTargetTex ? mTexPassScaleX : mGpu.FrameScaleX();
+    const float sy = mActiveTargetTex ? mTexPassScaleY : mGpu.FrameScaleY();
     Viewport o = v;
     o.X = (unsigned int)((float)v.X * sx + 0.5f);
     o.Y = (unsigned int)((float)v.Y * sy + 0.5f);
@@ -1799,8 +1805,11 @@ void WgpuRnd::BeginTexturePass(RndTex* tex, const TexturePassLoad& load) {
     // the look draws this target like the frame (np-look47), the multisampled
     // pair. The pair is made only by a pass that clears colour: a pass resumed
     // with a load (WgpuRnd::Clear restarting it) draws as the pass it resumes.
+    // Step 2: the one place a target's GPU size changes is here, at a pass
+    // that clears colour (and depth, when it has depth), so a size change
+    // never loses a picture that is still to be shown.
     GpuTexPassTarget pt;
-    GetGpuTexPassTarget(tex, pt, load.clearColor);
+    GetGpuTexPassTarget(tex, pt, load.clearColor, load.clearDepth);
     wgpu::TextureView colorView = pt.resolveView;
     // Only textures with a proper RGBA GPU render target can be used as
     // color attachments. Compressed textures (BC1/BC3) lack RenderAttachment
@@ -1855,8 +1864,12 @@ void WgpuRnd::BeginTexturePass(RndTex* tex, const TexturePassLoad& load) {
     mCurrentTargetFormat = ChooseRenderTargetFormat(tex);
     mCurrentSampleCount = msaa ? pt.samples : 1;
     mCurrentPassHasDepth = depthView != nullptr;
-    mCurrentTargetWidth = (uint32_t)tex->Width();
-    mCurrentTargetHeight = (uint32_t)tex->Height();
+    // The attachment's pixels (as the frame pass's are the drawn frame's);
+    // viewports stay in the texture's own and FrameViewport scales them.
+    mCurrentTargetWidth = pt.gpuWidth ? pt.gpuWidth : (uint32_t)tex->Width();
+    mCurrentTargetHeight = pt.gpuHeight ? pt.gpuHeight : (uint32_t)tex->Height();
+    mTexPassScaleX = tex->Width() > 0 ? (float)mCurrentTargetWidth / (float)tex->Width() : 1.0f;
+    mTexPassScaleY = tex->Height() > 0 ? (float)mCurrentTargetHeight / (float)tex->Height() : 1.0f;
     static const bool sDebugPipelines = getenv("MILO_DEBUG_PIPELINES") != nullptr;  // H-110: read once; nothing in the process writes it
     if (sDebugPipelines) {
         printf(

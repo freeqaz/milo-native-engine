@@ -2,6 +2,7 @@
 
 #include <webgpu/webgpu_cpp.h>
 #include <cstdint>
+#include <vector>
 
 class RndTex;
 class RndCubeTex;
@@ -26,9 +27,12 @@ wgpu::TextureFormat ChooseRenderTargetFormat(RndTex* tex);
 
 // np-look47: what a texture pass into `tex` draws into. samples > 1: draw into
 // msaaView / msaaDepthView and resolve into resolveView. gpuWidth x gpuHeight
-// is the attachments' size. passClears: the pass clears colour, so the 4x
-// pair may be made now (a pass resumed with a load never makes one). False
-// when the texture has no render target.
+// is the attachments' size, which under LookSettings::texPassScale may exceed
+// tex->Width() x Height(). passClears: the pass clears colour, so the 4x pair
+// may be made now (a pass resumed with a load never makes one);
+// passClears && passClearsDepth (or no depth): the target may also be re-made
+// at the size the look asks for now -- the one place a target's GPU size
+// changes. False when the texture has no render target.
 struct GpuTexPassTarget {
     wgpu::TextureView resolveView;
     wgpu::TextureView depthView;
@@ -41,7 +45,14 @@ struct GpuTexPassTarget {
     // decided at the target's last clearing pass.
     bool likeFrame = false;
 };
-bool GetGpuTexPassTarget(RndTex* tex, GpuTexPassTarget& out, bool passClears = true);
+bool GetGpuTexPassTarget(RndTex* tex, GpuTexPassTarget& out, bool passClears = true,
+                         bool passClearsDepth = true);
+// np-look47 step 2, tests: the output rows the size rule reads in place of
+// GpuDevice::OutputHeight() (0 = the device's).
+void SetTexPassOutputRowsForTest(int rows);
+// The area-weighted box filter a scaled target's readback is brought back to
+// its own size with (RGBA8, sw x sh -> dw x dh).
+void BoxFilterRGBA8(const uint8_t* src, int sw, int sh, std::vector<uint8_t>& dst, int dw, int dh);
 
 // np-look47: the consumer's half of "a texture pass is drawn like the frame".
 // The engine half is fixed (RndTex type exactly kRendered, no mips); the
