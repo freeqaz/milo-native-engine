@@ -24,6 +24,22 @@ void UploadRGBAToRndTex(RndTex* tex, const uint8_t* rgba, int w, int h);
 // Choose render target format matching the surface's sRGB-ness
 wgpu::TextureFormat ChooseRenderTargetFormat(RndTex* tex);
 
+// np-look47: what a texture pass into `tex` draws into. samples > 1: draw into
+// msaaView / msaaDepthView and resolve into resolveView. gpuWidth x gpuHeight
+// is the attachments' size. passClears: the pass clears colour, so the 4x
+// pair may be made now (a pass resumed with a load never makes one). False
+// when the texture has no render target.
+struct GpuTexPassTarget {
+    wgpu::TextureView resolveView;
+    wgpu::TextureView depthView;
+    wgpu::TextureView msaaView;
+    wgpu::TextureView msaaDepthView;
+    uint32_t gpuWidth = 0;
+    uint32_t gpuHeight = 0;
+    uint32_t samples = 1;
+};
+bool GetGpuTexPassTarget(RndTex* tex, GpuTexPassTarget& out, bool passClears = true);
+
 // Check if a texture has a proper renderable GPU backing (RGBA, not compressed)
 bool IsGpuTexRenderable(RndTex* tex);
 

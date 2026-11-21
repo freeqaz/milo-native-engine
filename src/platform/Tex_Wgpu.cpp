@@ -50,6 +50,15 @@ struct GpuTexData {
     // Bytes of the bitmap texture this holder created (0 for a share hit, a
     // render target, or once the texture moved into sSharedTex).
     uint64_t bytes = 0;
+    // np-look47 (LookSettings::texPassMsaa): while a render target's pass
+    // draws multisampled, the 4x colour and depth it draws into and resolves
+    // from (at the colour texture's size).
+    uint32_t samples = 1;      // the 4x pair held now
+    uint32_t wantSamples = 1;  // what the look asks (made at a clearing pass)
+    wgpu::Texture msaaTexture;
+    wgpu::TextureView msaaView;
+    wgpu::Texture msaaDepthTexture;
+    wgpu::TextureView msaaDepthView;
 };
 
 static std::unordered_map<RndTex*, GpuTexData> sTexGpuData;
@@ -238,6 +247,22 @@ static wgpu::TextureFormat ChooseRenderTargetFormat(RndTex* tex) {
     return wgpu::TextureFormat::RGBA8UnormSrgb;
 }
 
+// np-look47: a target drawn like the frame -- a camera's colour-and-depth
+// render target, RndTex type exactly kRendered. That leaves out by what they
+// are: shadow maps and the self-shadow map (kShadowMap 0x42), depth volume
+// maps (0xA2), density maps (0x122), depthless targets (kRenderedNoZ 0x22,
+// which RndTexBlender outputs and impostors use), and anything with the
+// scratch or other bits. The RndTexBlender's own compose pass never goes
+// through a texture pass at all (WgpuRnd::ComposeTexBlend).
+//
+// And no mip chain: a kRendered target made with mips is a crowd impostor
+// sheet (World Crowd's gImpostorTex, SetBitmap(..., kRendered, useMips true)),
+// alpha-cut and shown minified at a distance in perform mode, not magnified;
+// it keeps one sample and its own size.
+static bool TexPassDrawnLikeFrame(RndTex* tex) {
+    return tex && (int)tex->GetType() == (int)RndTex::kRendered && tex->NumMips() == 0;
+}
+
 static GpuTexData* EnsureRenderTargetData(RndTex* tex) {
     if (!tex || !gWgpuRnd || !gWgpuRnd->Gpu().IsReady()) return nullptr;
     if (!tex->IsRenderTarget()) return nullptr;
@@ -249,12 +274,19 @@ static GpuTexData* EnsureRenderTargetData(RndTex* tex) {
     int texH = tex->Height() > 0 ? tex->Height() : 256;
 
     GpuTexData& data = sTexGpuData[tex];
+    // np-look47: the sample count the look asks for this target's pass.
+    const uint32_t samples = TexPassDrawnLikeFrame(tex)
+                                     && milo::LookTexPassMsaa(milo::Look(), gWgpuRnd->Gpu().IsDiscreteGpu())
+                                 ? WgpuRnd::kTexPassMsaaSamples
+                                 : 1u;
     // Named for GPU captures and the MILO_GPU_TIMERS target list.
     const std::string label = std::string("RndTex:") + (tex->Name() ? tex->Name() : "");
     // If the existing texture was uploaded as BC compressed (from PresyncBitmap),
     // it lacks RenderAttachment usage and must be replaced with a proper RGBA target.
     bool needColor = !data.texture || !data.view || (data.texture && !data.renderTarget);
-    bool needDepth = NeedsDepthTarget(tex) && (!data.depthTexture || !data.depthView);
+    // A pass drawn multisampled uses its 4x depth instead of a 1x one.
+    const bool wantDepth = NeedsDepthTarget(tex) && samples == 1;
+    bool needDepth = wantDepth && (!data.depthTexture || !data.depthView);
     if (needColor) {
         // The old view (a BC upload being replaced) leaves the bind-group cache.
         if (data.shared) ReleaseBitmapTexture(tex, data);
@@ -263,6 +295,11 @@ static GpuTexData* EnsureRenderTargetData(RndTex* tex) {
             gWgpuRnd->Gpu(), texW, texH, ChooseRenderTargetFormat(tex), label.c_str()
         );
         data.view = data.texture.CreateView();
+        data.msaaTexture = nullptr;  // re-made at the next clearing pass
+        data.msaaView = nullptr;
+        data.msaaDepthTexture = nullptr;
+        data.msaaDepthView = nullptr;
+        data.samples = 1;
 
         // Clear to opaque black — WebGPU spec allows undefined initial contents,
         // which browsers often display as purple/magenta. Alpha must be 255
@@ -293,14 +330,57 @@ static GpuTexData* EnsureRenderTargetData(RndTex* tex) {
             vd.aspect = wgpu::TextureAspect::DepthOnly;
             data.depthSampleView = data.depthTexture.CreateView(&vd);
         }
-    } else if (!NeedsDepthTarget(tex)) {
+    } else if (!wantDepth) {
         data.depthTexture = nullptr;
         data.depthView = nullptr;
         data.depthSampleView = nullptr;
     }
+    // A target the look no longer draws multisampled lets its 4x pair go.
+    if (samples == 1 && data.samples != 1) {
+        data.msaaTexture = nullptr;
+        data.msaaView = nullptr;
+        data.msaaDepthTexture = nullptr;
+        data.msaaDepthView = nullptr;
+        data.samples = 1;
+    }
+    data.wantSamples = samples;
     data.uploaded = true;
     data.renderTarget = true;
     return &data;
+}
+
+bool GetGpuTexPassTarget(RndTex* tex, GpuTexPassTarget& out, bool passClears) {
+    out = GpuTexPassTarget();
+    if (!tex || !tex->IsRenderTarget()) return false;
+    GpuTexData* rt = EnsureRenderTargetData(tex);
+    if (!rt || !rt->view || !rt->texture) return false;
+    const int w = (int)rt->texture.GetWidth(), h = (int)rt->texture.GetHeight();
+    // np-look47 step 1: the multisampled pair the pass draws into, at the
+    // colour texture's size, made by a pass that clears colour (a target that
+    // is only sampled, as projectionp2.tex with one player, never gets one;
+    // a pass resumed with a load keeps what it resumes).
+    if (passClears && rt->wantSamples > 1 && (rt->samples != rt->wantSamples || !rt->msaaView)) {
+        const std::string label = std::string("RndTex:") + (tex->Name() ? tex->Name() : "");
+        rt->msaaTexture = TextureConvert::CreateRenderTarget(
+            gWgpuRnd->Gpu(), w, h, ChooseRenderTargetFormat(tex), (label + " msaa").c_str(), rt->wantSamples
+        );
+        rt->msaaView = rt->msaaTexture.CreateView();
+        rt->msaaDepthTexture = TextureConvert::CreateDepthTarget(
+            gWgpuRnd->Gpu(), w, h, (label + " msaa depth").c_str(), false, rt->wantSamples
+        );
+        rt->msaaDepthView = rt->msaaDepthTexture.CreateView();
+        rt->samples = rt->wantSamples;
+    }
+    out.resolveView = rt->view;
+    out.depthView = rt->depthView;
+    out.gpuWidth = (uint32_t)w;
+    out.gpuHeight = (uint32_t)h;
+    out.samples = rt->samples;
+    if (rt->samples > 1) {
+        out.msaaView = rt->msaaView;
+        out.msaaDepthView = rt->msaaDepthView;
+    }
+    return true;
 }
 
 // Public accessor — used by Mesh_Wgpu.cpp to get texture view for binding

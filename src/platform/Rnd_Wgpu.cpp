@@ -863,10 +863,12 @@ MeshPassContext WgpuRnd::OverlayPassContext() const {
     return c;
 }
 
-MeshPassContext WgpuRnd::TexturePassContext(bool depth) const {
+MeshPassContext WgpuRnd::TexturePassContext(bool depth, bool likeFrame) const {
     MeshPassContext c;  // as the TexturePass does, for a colour target
     c.targetFormat = ChooseRenderTargetFormat(nullptr);
-    c.sampleCount = 1;
+    c.sampleCount = likeFrame && depth && milo::LookTexPassMsaa(milo::Look(), mGpu.IsDiscreteGpu())
+                        ? kTexPassMsaaSamples
+                        : 1;
     c.hasDepth = depth;
     c.toTexture = true;
     return c;
@@ -1792,9 +1794,14 @@ void WgpuRnd::BeginTexturePass(RndTex* tex) { BeginTexturePass(tex, TexturePassL
 void WgpuRnd::BeginTexturePass(RndTex* tex, const TexturePassLoad& load) {
     if (!tex) return;
     // Ensure the GPU render target exists (lazy creation).
-    // GetGpuTexView calls EnsureRenderTargetData for render-target textures,
-    // which sets up the texture + depth + renderTarget flag.
-    wgpu::TextureView colorView = GetGpuTexView(tex);
+    // GetGpuTexPassTarget calls EnsureRenderTargetData for render-target
+    // textures, which sets up the texture + depth + renderTarget flag, and, when
+    // the look draws this target like the frame (np-look47), the multisampled
+    // pair. The pair is made only by a pass that clears colour: a pass resumed
+    // with a load (WgpuRnd::Clear restarting it) draws as the pass it resumes.
+    GpuTexPassTarget pt;
+    GetGpuTexPassTarget(tex, pt, load.clearColor);
+    wgpu::TextureView colorView = pt.resolveView;
     // Only textures with a proper RGBA GPU render target can be used as
     // color attachments. Compressed textures (BC1/BC3) lack RenderAttachment
     // usage and would invalidate the entire command encoder.
@@ -1805,8 +1812,13 @@ void WgpuRnd::BeginTexturePass(RndTex* tex, const TexturePassLoad& load) {
         return;
     }
 
+    const bool msaa = pt.samples > 1 && pt.msaaView && pt.msaaDepthView;
     wgpu::RenderPassColorAttachment colorAtt{};
-    colorAtt.view = colorView;
+    // np-look47 step 1: draw into the 4x pair and resolve into the texture. The
+    // 4x colour is stored, as the frame's is, so a pass resumed with a load
+    // (WgpuRnd::Clear restarts it) keeps its samples.
+    colorAtt.view = msaa ? pt.msaaView : colorView;
+    if (msaa) colorAtt.resolveTarget = colorView;
     colorAtt.loadOp = load.clearColor ? wgpu::LoadOp::Clear : wgpu::LoadOp::Load;
     colorAtt.storeOp = wgpu::StoreOp::Store;
     // Selecting a target clears to transparent black so impostor/billboard
@@ -1822,7 +1834,7 @@ void WgpuRnd::BeginTexturePass(RndTex* tex, const TexturePassLoad& load) {
     rpDesc.colorAttachmentCount = 1;
     rpDesc.colorAttachments = &colorAtt;
 
-    wgpu::TextureView depthView = GetGpuTexDepthView(tex);
+    wgpu::TextureView depthView = msaa ? pt.msaaDepthView : pt.depthView;
     if (depthView) {
         depthAtt.view = depthView;
         const wgpu::LoadOp depthLoad = load.clearDepth ? wgpu::LoadOp::Clear : wgpu::LoadOp::Load;
@@ -1841,15 +1853,17 @@ void WgpuRnd::BeginTexturePass(RndTex* tex, const TexturePassLoad& load) {
     mInPass = true;
     mActiveTargetTex = tex;
     mCurrentTargetFormat = ChooseRenderTargetFormat(tex);
-    mCurrentSampleCount = 1;
+    mCurrentSampleCount = msaa ? pt.samples : 1;
     mCurrentPassHasDepth = depthView != nullptr;
     mCurrentTargetWidth = (uint32_t)tex->Width();
     mCurrentTargetHeight = (uint32_t)tex->Height();
     static const bool sDebugPipelines = getenv("MILO_DEBUG_PIPELINES") != nullptr;  // H-110: read once; nothing in the process writes it
     if (sDebugPipelines) {
         printf(
-            "DC3 Pass: TexturePass tex='%s' fmt=%d samples=%u depth=%d size=%ux%u\n",
+            "DC3 Pass: TexturePass tex='%s' type=0x%x mips=%d fmt=%d samples=%u depth=%d size=%ux%u\n",
             tex->Name(),
+            (unsigned)tex->GetType(),
+            tex->NumMips(),
             (int)mCurrentTargetFormat,
             mCurrentSampleCount,
             mCurrentPassHasDepth ? 1 : 0,
@@ -3260,7 +3274,8 @@ uint64_t WgpuRnd::PrewarmFixedKeyPipelines() {
     // The 2D canvas (gfx/Canvas2D.h) in each pass a UI can draw in: the HUD
     // overlay, the world, and a render target with and without depth.
     for (const MeshPassContext& c : {OverlayPassContext(), WorldPassContext(false),
-                                     TexturePassContext(false), TexturePassContext(true)})
+                                     TexturePassContext(false), TexturePassContext(true),
+                                     TexturePassContext(true, true)})
         mCanvas2D.Warm((uint32_t)c.targetFormat, c.hasDepth, c.toTexture, c.sampleCount);
     return GpuPipelineCreateCount() - before;
 }
