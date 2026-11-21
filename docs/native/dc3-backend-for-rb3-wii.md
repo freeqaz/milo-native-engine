@@ -10862,5 +10862,15 @@ profile.
   writing the two-channel target, the field's helper ignoring the class, the field's on token
   writing the discrete value only). The one line no native test reaches is `PostProcPass::Run`
   passing the device's class: the build machine has no non-discrete adapter.
+- Both classes drawn on a held frame (streetside low state, the close-up `cu01`, 1280x720).
+  Discrete (the build machine's 3090, native): the rule's frame is the forced-on frame (92
+  pixels apart, none by more than 2 levels; the same setting twice is 7 to 95 pixels) and
+  42,284 pixels from the forced-off frame (16,066 by more than 8 levels). Non-discrete (the web
+  build, where the adapter type is not `DiscreteGPU`): the rule's frame is the `dof_near_off`
+  frame to the pixel (0 of 921,600, against two takes of each), 24,698 pixels from the field's
+  frame and 37,281 from the spread's, and the page logs `[look] adapter class: not a discrete
+  GPU; depth of field near field 0, near spread 0`. The on tokens work there too (the four
+  pipelines compile on first use, no validation error). Not drawn yet on a native integrated
+  adapter (the 890M, Apple's).
 - Not addressed: an edge between two blurred surfaces that are both behind the focus (the far
   field's rule).
