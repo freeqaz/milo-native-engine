@@ -182,6 +182,17 @@ struct LookSettings {
     // Retail and Native: the depth-blind blur. Inspection:
     // {rnd native_look dof_depth_weight_on|_off|_rule}.
     bool postDofDepthWeight = false;
+    // np-look36: the near field of the depth-weighted blur (DofPass::Run
+    // `nearField`, with postDofDepthWeight). The weight kept in-focus colour
+    // out of the blur in FRONT of the focus too, so a blurred crowd member
+    // between the camera and the dancers kept a hard cut-out edge (retail's
+    // depth-blind blur softens it). A pixel out of focus in front of the focal
+    // plane takes the depth-blind blur; postDofNearSpread also spreads the near
+    // object's blur over the in-focus pixels beside it. Retail and Native: off.
+    // Inspection: {rnd native_look dof_near_on|_off|_rule,
+    // dof_near_spread_on|_off|_rule}.
+    bool postDofNearField = false;
+    bool postDofNearSpread = false;
     // np-look23 (a): DC3's post noise map (noise_mono.tex) re-tiled so each
     // texel covers whole OUTPUT rows, read at one fixed place in the texel
     // (gfx/NoiseRows.h): the same fine lines on every row at every size and
@@ -403,6 +414,11 @@ bool SetLookNoiseRowsForInspection(int mode);
 // four pipelines. Only reaches the screen with postDofFilter on. False under
 // the Native profile.
 bool SetLookDofDepthWeightForInspection(int mode);
+// {rnd native_look dof_near_on|_off|_rule} / {dof_near_spread_on|_off|_rule}:
+// postDofNearField / postDofNearSpread on, off or the profile's (1 / 0 / -1).
+// The first switch of the near field on in a run that did not start with it
+// compiles three pipelines; the spread is a uniform. False under Native.
+bool SetLookDofNearForInspection(int mode, bool spread = false);
 // {rnd native_look hair_edge_on|hair_edge_off|hair_edge_rule}: cutoutSampleTest
 // on (mode E, kCutoutModeDefault), off, or the profile's own value, which is
 // off in every look (mode 1 / 0 / -1), so one frozen frame is measured both

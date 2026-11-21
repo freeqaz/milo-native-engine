@@ -37,8 +37,8 @@ public:
     // `enhanced`: also the enhanced look's tent / B-spline pipelines.
     // `depthWeighted`: the depth-weighted ones too (np-look23 c).
     void PrewarmDof(wgpu::TextureFormat format, GpuDevice& gpu, bool enhanced = false,
-                    bool depthWeighted = false) {
-        mDof.Prewarm(format, gpu, enhanced, depthWeighted);
+                    bool depthWeighted = false, bool nearField = false) {
+        mDof.Prewarm(format, gpu, enhanced, depthWeighted, nearField);
     }
     // The DC3 chain's enhanced-look bloom pipelines (RB3RetailPost::PrewarmDC3Enhanced).
     void PrewarmDC3Enhanced(bool precision, bool filter, GpuDevice& gpu) {

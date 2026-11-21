@@ -53,7 +53,19 @@ public:
     bool Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& sceneView,
              wgpu::TextureFormat sceneFormat, const wgpu::TextureView& depthView,
              uint32_t depthSamples, int sceneW, int sceneH, GpuDevice& gpu,
-             bool enhanced = false, bool depthWeighted = false);
+             bool enhanced = false, bool depthWeighted = false, bool nearField = false,
+             bool nearSpread = false);
+    // np-look36, with `depthWeighted` only (LookSettings::postDofNearField):
+    // the depth weight keeps an in-focus figure out of the blur on BOTH sides
+    // of the focal plane, so an out-of-focus object in front of a dancer kept
+    // a hard cut-out edge. The factor pre-pass also writes the near field
+    // (out of focus, in front of the focus; G), the downsample writes a second
+    // quarter target (the depth-blind tent, the near coverage in alpha), the
+    // blurs carry both, and the composite takes the depth-blind blur where the
+    // centre is in the near field. `nearSpread` (postDofNearSpread, a uniform)
+    // also mixes the near object's blur over the pixels beside it by the
+    // blurred near coverage. Behind the focus and in focus: the depth-weighted
+    // result to the pixel.
     // np-look23 (c), with `enhanced` only (LookSettings::postDofDepthWeight):
     // a half-size pre-pass writes the blur factor squared (one depth load per
     // half-size texel, R16Float; DofDepthWeightFactorHalf), the downsample
@@ -66,9 +78,11 @@ public:
     // +0.84 ms at 1920x1080 on a Radeon 890M (np-look23 c2); this +0.25 ms.
     // Retail and `enhanced` without it: exactly as before.
     static constexpr wgpu::TextureFormat kDepthWeightFormat = wgpu::TextureFormat::RGBA16Float;
-    static constexpr wgpu::TextureFormat kDepthWeightFactorFormat = wgpu::TextureFormat::R16Float;
+    // RG: the factor squared, and the near field (np-look36; unread without it).
+    static constexpr wgpu::TextureFormat kDepthWeightFactorFormat = wgpu::TextureFormat::RG16Float;
     // Whether the last Run took the depth-weighted path (tests).
     bool LastRunDepthWeighted() const { return mLastDepthWeighted; }
+    bool LastRunNearField() const { return mLastNearField; }
     // The enhanced path's tap scale per axis: the tent adds 1.5 scene texel^2
     // (3/32 quarter texel^2) and the B-spline 1/6 quarter texel^2 of variance
     // over the box and bilinear, taken back out of the two Poisson passes'
@@ -89,11 +103,13 @@ public:
     // downsample and B-spline composite.
     // `depthWeighted` (LookSettings::postDofDepthWeight too) also compiles
     // the depth-weighted factor pre-pass, downsample, blur and composite.
+    // `nearField` (postDofNearField too): the near field's three as well.
     void Prewarm(wgpu::TextureFormat format, GpuDevice& gpu, bool enhanced = false,
-                 bool depthWeighted = false) {
+                 bool depthWeighted = false, bool nearField = false) {
         EnsurePipelines(format, gpu);
         if (enhanced) EnsureEnhancedPipelines(gpu);
         if (enhanced && depthWeighted) EnsureDepthWeightPipelines(gpu);
+        if (enhanced && depthWeighted && nearField) EnsureNearPipelines(gpu);
     }
     bool EnhancedReady() const { return (bool)mDownTentPipe && (bool)mCompositeBSplinePipe; }
     // Bind groups from `cache` (null: four created per run); dc3 PLAN H-66.
@@ -104,12 +120,16 @@ private:
     void EnsureEnhancedPipelines(GpuDevice& gpu);
     wgpu::RenderPipeline MakePipe(const wgpu::PipelineLayout& layout, const char* fs, const char* label,
                                   GpuDevice& gpu,
-                                  wgpu::TextureFormat format = wgpu::TextureFormat::Undefined);
+                                  wgpu::TextureFormat format = wgpu::TextureFormat::Undefined,
+                                  uint32_t targets = 1);
+    void EnsureNearPipelines(GpuDevice& gpu);
+    void EnsureNearTextures(int w, int h, GpuDevice& gpu);
     void EnsureDepthWeightPipelines(GpuDevice& gpu);
     void EnsureDepthWeightTextures(int w, int h, GpuDevice& gpu);
     void EnsureTextures(int w, int h, wgpu::TextureFormat format, GpuDevice& gpu);
     void Pass(wgpu::CommandEncoder& encoder, const wgpu::RenderPipeline& pipe,
-              const wgpu::BindGroup& bg, const wgpu::TextureView& dst, const char* label);
+              const wgpu::BindGroup& bg, const wgpu::TextureView& dst, const char* label,
+              const wgpu::TextureView* dst2 = nullptr);
 
     wgpu::BindGroup Group(wgpu::Device& dev, const wgpu::BindGroupDescriptor& d) {
         return mBindGroups ? mBindGroups->GetOrCreate(dev, d) : CreateCountedBindGroup(dev, &d);
@@ -134,6 +154,15 @@ private:
     wgpu::Texture mDwFactor;                // the half-size factor, ((w+1)>>1) x ((h+1)>>1)
     wgpu::TextureView mDwFactorView;
     int mDwFactorW = 0, mDwFactorH = 0;
+    // np-look36, `nearField`: Prewarm or first use.
+    wgpu::BindGroupLayout mBlurNearBGL;      // src, sampler, offsets, src2
+    wgpu::BindGroupLayout mCompositeNearBGL; // the composite's + the near quarter
+    wgpu::PipelineLayout mBlurNearPL, mCompositeNearPL;
+    wgpu::RenderPipeline mDownNearPipe, mBlurNearPipe, mCompositeNearPipe;
+    wgpu::Texture mNear[2];
+    wgpu::TextureView mNearView[2];
+    int mNearW = 0, mNearH = 0;
+    bool mLastNearField = false;
     wgpu::Sampler mSampler;               // linear, clamp
     // One buffer per pass: Queue::WriteBuffer lands at Submit, ahead of every
     // pass in the frame, so passes sharing a buffer would read the same data.
