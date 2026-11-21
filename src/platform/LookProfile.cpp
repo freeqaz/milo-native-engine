@@ -18,13 +18,13 @@ constexpr float kEnhancedUiLodBias = -1.0f;
 // np-look49: the Apple class's value of each per-adapter rule in the enhanced
 // look (LookAdapterClass::Apple), and its two numbers of the texture pass's
 // size rule (the cap on the longer side, the base rows). Timed on an M3
-// MacBook Air (Metal) by the landing session on 2026-11-21: with both texture
-// pass steps a 2048 target cost +0.48 to +0.50 ms of frame span against a
-// limit of +0.30 (fails), a 1536 one +0.26 (fits); step 1 alone +0.05 to
-// +0.11 against +0.15 at 713 rows. So a 1024 projection texture is 1024 (4
-// samples, step 1 alone: never below its own size) up to 720 output rows and
-// 1536 from 1080 rows up. No Apple GPU other than the M3 was timed. One line
-// each to change.
+// MacBook Air (Metal) by the landing session: with both texture pass steps a
+// 2048 target cost +0.48 to +0.50 ms of frame span against a limit of +0.30
+// (fails). kAppleTexPassMaxSide 1536: measured +0.27 to +0.29 against +0.30
+// on the M3, 2026-11-21 (1080 and 1440 output rows), so anything that adds
+// to this pass on an Apple GPU needs a new reading. A 1024 projection is 1024
+// (4 samples, never below its own size) up to 720 output rows, 1536 from
+// 1080 up. No Apple GPU other than the M3 was timed. One line each to change.
 constexpr bool kAppleDofNearField = true;
 constexpr bool kAppleDofNearSpread = true;
 constexpr bool kAppleTexPassMsaa = true;
