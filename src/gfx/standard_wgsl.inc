@@ -84,9 +84,9 @@ fn cutoutCoverage(a: f32, threshold: f32, w: f32) -> f32 {
 // (the standard 4x pattern, in pixels from the pixel centre: WebGPU's fixed
 // sample positions (6,2) (14,6) (2,10) (10,14) sixteenths, samples 0..3,
 // which are the sample mask's bits 0..3), with one bilinear fetch at the
-// level the original's sampler would pick for a footprint of half a pixel per
-// axis (the isotropic major-axis footprint, clamped to retail's two levels,
-// no look LOD bias), times the same material x vertex alpha the original's
+// level the original's sampler picks for the pixel (the isotropic major-axis
+// footprint, clamped to retail's two levels, no look LOD bias), times the
+// same material x vertex alpha the original's
 // test multiplies in, and passes as retail's test passes (`a < threshold`
 // fails; MaterialAlphaThreshold carries the strict-greater reference). So
 // nothing passes that retail's test would not pass at that point: a fade
@@ -119,9 +119,13 @@ fn cutoutSamplePasses(uv: vec2f, level: f32, untexturedA: f32, threshold: f32) -
 fn cutoutSampleMask(uv: vec2f, dx: vec2f, dy: vec2f, untexturedA: f32, threshold: f32) -> u32 {
     let size = vec2f(textureDimensions(diffuseTex, 0));
     let footPixel = max(length(dx * size), length(dy * size));
-    // A sample's footprint is half a pixel per axis: one level below the
-    // pixel's, clamped to the two levels retail uploads.
-    let level = clamp(log2(max(footPixel, 1e-6)) - 1.0, 0.0, 1.0);
+    // Retail's level at this pixel: its isotropic (major-axis) footprint,
+    // clamped to the two levels retail uploads. Not one level finer for the
+    // samples' half-pixel footprint: that reads level-0 detail retail never
+    // shows at this distance (oblio04's hair over the face is authored with
+    // speckled alpha that its level 1 averages over the cut; read at level 0
+    // per sample it came out as sparse dots, sparser than retail).
+    let level = clamp(log2(max(footPixel, 1e-6)), 0.0, 1.0);
     var mask = 0u;
     if (cutoutSamplePasses(uv + dx * -0.125 + dy * -0.375, level, untexturedA, threshold)) {
         mask |= 1u;

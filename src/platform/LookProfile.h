@@ -201,8 +201,8 @@ struct LookSettings {
     // the original's alpha test at each of the pass's four samples, and the
     // sample mask is the four results (standard_wgsl.inc cutoutSampleMask).
     // Each sample reads the diffuse alpha at its own position, one bilinear
-    // fetch at the level the original's sampler would read for a footprint of
-    // half a pixel (two levels at most, no anisotropy, no look LOD bias), times
+    // fetch at the level the original's sampler reads for the pixel (two
+    // levels at most, no anisotropy, no look LOD bias), times
     // the same material and vertex alpha the original's test multiplies in.
     // That is retail's cut supersampled 4x: nothing passes that retail's test
     // would not pass at that point, so a fade authored under the cut stays
