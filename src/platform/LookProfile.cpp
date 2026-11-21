@@ -2,6 +2,7 @@
 #include "platform/LookProfile.h"
 #include "platform/rndshape/RndShape.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -74,6 +75,11 @@ LookSettings SettingsFor(LookProfile p) {
     // a 1268x713 Break It Down frame may take (item 47 README).
     s.texPassMsaa = enh;
     s.texPassMsaaIntegrated = false;
+    // np-look47 step 2: the target's GPU texture sized for the output's rows.
+    // On a discrete GPU only, as step 1: on the 3090 steps 1+2 add ~0.05 ms at
+    // 1536 (1080 rows) and ~0.10 ms at 2048.
+    s.texPassScale = enh;
+    s.texPassScaleIntegrated = false;
     // np-look23 (a): the noise map on whole output rows (LookProfile.h).
     // Uniforms only, no cost but a memoised constant per size.
     s.noiseSnapsToOutputRows = enh;
@@ -393,6 +399,35 @@ bool SetLookTexPassMsaaForInspection(int mode) {
             (int)s.texPassMsaa, (int)s.texPassMsaaIntegrated, mode < 0 ? " (the rule)" : "",
             LookProfileName(s.profile));
     return true;
+}
+
+bool SetLookTexPassScaleForInspection(int mode) {
+    LookSettings &s = Mutable();
+    if (s.profile == LookProfile::Native) return false;
+    const LookSettings &r = SettingsFor(s.profile);
+    s.texPassScale = mode < 0 ? r.texPassScale : mode != 0;
+    s.texPassScaleIntegrated = mode < 0 ? r.texPassScaleIntegrated : mode != 0;
+    fprintf(stderr, "[look] texture pass scale %d, %d on a non-discrete GPU%s (inspection, profile %s)\n",
+            (int)s.texPassScale, (int)s.texPassScaleIntegrated, mode < 0 ? " (the rule)" : "",
+            LookProfileName(s.profile));
+    return true;
+}
+
+bool LookTexPassScale(const LookSettings &look, bool discreteGpu) {
+    return discreteGpu ? look.texPassScale : look.texPassScaleIntegrated;
+}
+
+void TexPassGpuSize(const LookSettings &look, int texW, int texH, int outputRows, int &gpuW, int &gpuH) {
+    gpuW = texW;
+    gpuH = texH;
+    if (texW <= 0 || texH <= 0 || outputRows <= 0 || look.texPassBaseRows <= 0) return;
+    float k = (float)outputRows / (float)look.texPassBaseRows;
+    const int side = std::max(texW, texH);
+    if (look.texPassMaxSide > 0 && side * k > (float)look.texPassMaxSide)
+        k = (float)look.texPassMaxSide / (float)side;
+    if (!(k > 1.0f)) return;
+    gpuW = std::max(texW, (int)(texW * k + 0.5f));
+    gpuH = std::max(texH, (int)(texH * k + 0.5f));
 }
 
 bool LookTexPassMsaa(const LookSettings &look, bool discreteGpu) {
