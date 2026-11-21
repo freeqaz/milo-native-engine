@@ -71,6 +71,9 @@ LookSettings SettingsFor(LookProfile p) {
     s.noiseSnapsToOutputRows = enh;
     // np-look23 (c): the depth of field gathers by depth (LookProfile.h).
     s.postDofDepthWeight = enh;
+    // np-look36: the depth weight's near field (LookProfile.h).
+    s.postDofNearField = enh;
+    s.postDofNearSpread = enh;
     // np-look26 g: cutoutSampleTest stays off in every look. Measured against
     // the landed sharpened coverage it is a trade, not a gain (LookProfile.h);
     // the hair_edge inspection tokens turn it on.
@@ -279,6 +282,17 @@ bool SetLookNoiseRowsForInspection(int mode) {
     s.noiseSnapsToOutputRows = mode < 0 ? SettingsFor(s.profile).noiseSnapsToOutputRows : mode != 0;
     fprintf(stderr, "[look] noise map on output rows %d%s (inspection, profile %s)\n",
             (int)s.noiseSnapsToOutputRows, mode < 0 ? " (the rule)" : "", LookProfileName(s.profile));
+    return true;
+}
+
+bool SetLookDofNearForInspection(int mode, bool spread) {
+    LookSettings &s = Mutable();
+    if (s.profile == LookProfile::Native) return false;
+    bool &v = spread ? s.postDofNearSpread : s.postDofNearField;
+    const LookSettings &r = SettingsFor(s.profile);
+    v = mode < 0 ? (spread ? r.postDofNearSpread : r.postDofNearField) : mode != 0;
+    fprintf(stderr, "[look] depth of field near %s %d%s (inspection, profile %s)\n",
+            spread ? "spread" : "field", (int)v, mode < 0 ? " (the rule)" : "", LookProfileName(s.profile));
     return true;
 }
 

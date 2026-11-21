@@ -18,9 +18,10 @@ struct BlurUniforms {
 static_assert(sizeof(BlurUniforms) == 128, "BlurUniforms layout");
 
 struct DofUniforms {
-    float c24[4];  // range, -scale * range, minBlur, maxBlur
+    float c24[4];   // range, -scale * range, minBlur, maxBlur
+    float near[4];  // np-look36: x = the near field's spread over the focus (0 / 1)
 };
-static_assert(sizeof(DofUniforms) == 16, "DofUniforms layout");
+static_assert(sizeof(DofUniforms) == 32, "DofUniforms layout");
 
 // The two tap tables SetVHBlurWeights builds on first use (function-local
 // statics in retail). Both are 2D; "horizontal" and "vertical" name the passes,
@@ -44,6 +45,7 @@ struct BlurUB {
 };
 struct DofUB {
     c24: vec4f,   // range, -scale * range, minBlur, maxBlur
+    near: vec4f,  // np-look36: x = the near field's spread (fs_composite_bspline_dwn)
 };
 
 @group(0) @binding(0) var srcTex: texture_2d<f32>;
@@ -130,6 +132,13 @@ fn dof_factor(z: f32) -> f32 {
     let t = z * dof.c24.x + dof.c24.y;
     return clamp(min(max(abs(t), dof.c24.z), dof.c24.w), 0.0, 1.0);
 }
+// np-look36: the near field, out of focus and IN FRONT of the focal plane
+// (t < 0): 0 up to |t| = 0.2, 1 from 0.6. Exactly 0 at and behind the focus, so
+// the near rule leaves the far field and the in-focus figures to the pixel.
+fn dof_near(z: f32) -> f32 {
+    let t = z * dof.c24.x + dof.c24.y;
+    return smoothstep(0.2, 0.6, -t);
+}
 // np-look23 (c2): the weight comes from a half-size pre-pass. It writes the
 // factor squared from one depth load per half-size texel (scene texel 2p + 1:
 // each multisampled depth texel read at most once, the reads coherent) into
@@ -141,8 +150,9 @@ fn dof_factor(z: f32) -> f32 {
 @fragment fn fs_dw_factor_half(in: VOut) -> @location(0) vec4f {
     let dmax = vec2i(textureDimensions(depthTex)) - 1;
     let p = vec2i(in.pos.xy) * 2 + 1;
-    let f = dof_factor(textureLoad(depthTex, min(p, dmax), 0));
-    return vec4f(f * f, 0.0, 0.0, 1.0);
+    let z = textureLoad(depthTex, min(p, dmax), 0);
+    let f = dof_factor(z);
+    return vec4f(f * f, dof_near(z), 0.0, 1.0);
 }
 @group(0) @binding(7) var factorTex: texture_2d<f32>;
 @fragment fn fs_down_tent_dwh(in: VOut) -> @location(0) vec4f {
@@ -172,6 +182,76 @@ fn dof_factor(z: f32) -> f32 {
     return vec4f(clamp(mix(scene.rgb, rgb, f), vec3f(0.0), vec3f(1.0)), scene.a);
 }
 
+// np-look36, LookSettings::postDofNearField: the depth weight keeps in-focus
+// colour out of EVERY blurred pixel, which is right behind the focus (the
+// background beside a dancer) and wrong in front of it: a blurred near object
+// is see-through at its edge, so the sharp figure behind it belongs in its
+// blur, and its blur spills over the figure beyond its silhouette. The
+// downsample writes a second quarter target beside the weighted one: the
+// plain tent (depth-blind, as retail's) with the near-field coverage in
+// alpha (the factor target's G, dof_near). Same 16 + 16 reads as
+// fs_down_tent_dwh, one more target.
+struct DownNearOut {
+    @location(0) weighted: vec4f,
+    @location(1) near: vec4f,
+};
+@fragment fn fs_down_tent_dwn(in: VOut) -> DownNearOut {
+    let size = vec2f(textureDimensions(srcTex));
+    let fsize = vec2f(textureDimensions(factorTex)) * 2.0;
+    let c = floor(in.pos.xy) * 4.0 + 2.0;
+    var acc = vec4f(0.0);
+    var accN = vec4f(0.0);
+    for (var j = 0; j < 4; j++) {
+        for (var i = 0; i < 4; i++) {
+            let q = c + vec2f(kTentO[i], kTentO[j]);
+            let k = kTentW[i] * kTentW[j];
+            let fw = textureSampleLevel(factorTex, samp, q / fsize, 0.0).rg;
+            let rgb = textureSampleLevel(srcTex, samp, q / size, 0.0).rgb;
+            acc += vec4f(rgb * (k * fw.r), k * fw.r);
+            accN += k * vec4f(rgb, fw.g);
+        }
+    }
+    var out: DownNearOut;
+    out.weighted = acc;
+    out.near = accN;
+    return out;
+}
+// Both quarter targets through the same 8 taps (+8 reads per quarter texel).
+@group(0) @binding(8) var src2Tex: texture_2d<f32>;
+@fragment fn fs_blur_near(in: VOut) -> DownNearOut {
+    var acc = vec4f(0.0);
+    var accN = vec4f(0.0);
+    for (var i = 0; i < 8; i++) {
+        acc += textureSampleLevel(srcTex, samp, in.uv + blur.taps[i].xy, 0.0);
+        accN += textureSampleLevel(src2Tex, samp, in.uv + blur.taps[i].xy, 0.0);
+    }
+    var out: DownNearOut;
+    out.weighted = acc * 0.125;
+    out.near = accN * 0.125;
+    return out;
+}
+// The composite: a pixel in the near field takes the depth-blind blur (the
+// figure behind shows through its edge, at least as retail's does); with
+// near.x the near field's blurred coverage also mixes the weighted blur (the
+// near object's colour, never the in-focus figure's) over the pixels beside
+// it. Where the coverage and the centre's own near value are 0 -- the far
+// field, the in-focus figures away from a near object -- this is
+// fs_composite_bspline_dw to the pixel. +4 reads per pixel.
+@group(0) @binding(9) var nearTex: texture_2d<f32>;
+@fragment fn fs_composite_bspline_dwn(in: VOut) -> @location(0) vec4f {
+    let p = vec2i(in.pos.xy);
+    let scene = textureLoad(sceneTex, p, 0);
+    let b = blur_bspline(in.uv);
+    let u = blur_bspline_near(in.uv);
+    let rgbW = mix(scene.rgb, b.rgb / max(b.a, 1e-4), clamp(b.a * 16.0, 0.0, 1.0));
+    let z = textureLoad(depthTex, min(p, vec2i(textureDimensions(depthTex)) - 1), 0);
+    let f = dof_factor(z);
+    let n = dof_near(z);
+    let rgb = mix(rgbW, u.rgb, n);
+    let a = max(f, clamp(u.a, 0.0, 1.0) * dof.near.x);
+    return vec4f(clamp(mix(scene.rgb, rgb, a), vec3f(0.0), vec3f(1.0)), scene.a);
+}
+
 // The quarter-size blur at uv through a cubic B-spline in four bilinear taps
 // (Sigg and Hadwiger 2005): C2-smooth across its texel boundaries, where the
 // bilinear read creases. A partition of unity.
@@ -194,6 +274,27 @@ fn blur_bspline(uv: vec2f) -> vec4f {
            g1.x * g0.y * textureSampleLevel(blurTex, samp, vec2f(p1.x, p0.y), 0.0) +
            g0.x * g1.y * textureSampleLevel(blurTex, samp, vec2f(p0.x, p1.y), 0.0) +
            g1.x * g1.y * textureSampleLevel(blurTex, samp, p1, 0.0);
+}
+
+fn blur_bspline_near(uv: vec2f) -> vec4f {
+    let size = vec2f(textureDimensions(nearTex));
+    let p = uv * size - 0.5;
+    let i = floor(p);
+    let f = p - i;
+    let f2 = f * f;
+    let f3 = f2 * f;
+    let w0 = (1.0 - 3.0 * f + 3.0 * f2 - f3) * (1.0 / 6.0);
+    let w1 = (4.0 - 6.0 * f2 + 3.0 * f3) * (1.0 / 6.0);
+    let w2 = (1.0 + 3.0 * f + 3.0 * f2 - 3.0 * f3) * (1.0 / 6.0);
+    let w3 = f3 * (1.0 / 6.0);
+    let g0 = w0 + w1;
+    let g1 = w2 + w3;
+    let p0 = (i - 0.5 + w1 / g0) / size;
+    let p1 = (i + 1.5 + w3 / g1) / size;
+    return g0.x * g0.y * textureSampleLevel(nearTex, samp, p0, 0.0) +
+           g1.x * g0.y * textureSampleLevel(nearTex, samp, vec2f(p1.x, p0.y), 0.0) +
+           g0.x * g1.y * textureSampleLevel(nearTex, samp, vec2f(p0.x, p1.y), 0.0) +
+           g1.x * g1.y * textureSampleLevel(nearTex, samp, p1, 0.0);
 }
 
 fn dof_mix(p: vec2i, blurred: vec4f) -> vec4f {
@@ -345,6 +446,19 @@ void DofPass::EnsurePipelines(wgpu::TextureFormat format, GpuDevice& gpu) {
             d.entryCount = 3;
             d.entries = e2;
             mDownDwBGL = dev.CreateBindGroupLayout(&d);
+            // np-look36: the near field's blur (two sources) and composite
+            // (the near quarter at 9).
+            wgpu::BindGroupLayoutEntry e3[4] = {tex(0), samp, ub(2, sizeof(BlurUniforms)), tex(8)};
+            d.label = "DofBlurNearBGL";
+            d.entryCount = 4;
+            d.entries = e3;
+            mBlurNearBGL = dev.CreateBindGroupLayout(&d);
+            wgpu::BindGroupLayoutEntry e4[6] = {samp, tex(3), tex(4), depth, ub(6, sizeof(DofUniforms)),
+                                                tex(9)};
+            d.label = "DofCompositeNearBGL";
+            d.entryCount = 6;
+            d.entries = e4;
+            mCompositeNearBGL = dev.CreateBindGroupLayout(&d);
         }
         wgpu::PipelineLayoutDescriptor pl{};
         pl.bindGroupLayoutCount = 1;
@@ -356,6 +470,10 @@ void DofPass::EnsurePipelines(wgpu::TextureFormat format, GpuDevice& gpu) {
         mFactorHalfPL = dev.CreatePipelineLayout(&pl);
         pl.bindGroupLayouts = &mDownDwBGL;
         mDownDwPL = dev.CreatePipelineLayout(&pl);
+        pl.bindGroupLayouts = &mBlurNearBGL;
+        mBlurNearPL = dev.CreatePipelineLayout(&pl);
+        pl.bindGroupLayouts = &mCompositeNearBGL;
+        mCompositeNearPL = dev.CreatePipelineLayout(&pl);
 
         wgpu::BufferDescriptor bd{};
         bd.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
@@ -378,21 +496,25 @@ void DofPass::EnsurePipelines(wgpu::TextureFormat format, GpuDevice& gpu) {
     mDownTentPipe = nullptr;           // `enhanced`: Prewarm or the first Run
     mCompositeBSplinePipe = nullptr;
     mFactorHalfPipe = mDownDwPipe = mBlurDwPipe = mCompositeDwPipe = nullptr;
+    mDownNearPipe = mBlurNearPipe = mCompositeNearPipe = nullptr;
     // The quarter and output textures are in `format` too.
     mW = mH = 0;
 }
 
 wgpu::RenderPipeline DofPass::MakePipe(const wgpu::PipelineLayout& layout, const char* fs,
-                                   const char* label, GpuDevice& gpu, wgpu::TextureFormat format) {
+                                   const char* label, GpuDevice& gpu, wgpu::TextureFormat format,
+                                   uint32_t targets) {
     auto& dev = gpu.Device();
-    wgpu::ColorTargetState ct{};
-    ct.format = format == wgpu::TextureFormat::Undefined ? mFormat : format;
-    ct.writeMask = wgpu::ColorWriteMask::All;
+    wgpu::ColorTargetState ct[2]{};
+    for (auto& t : ct) {
+        t.format = format == wgpu::TextureFormat::Undefined ? mFormat : format;
+        t.writeMask = wgpu::ColorWriteMask::All;
+    }
     wgpu::FragmentState frag{};
     frag.module = mShader;
     frag.entryPoint = fs;
-    frag.targetCount = 1;
-    frag.targets = &ct;
+    frag.targetCount = targets;
+    frag.targets = ct;
     wgpu::RenderPipelineDescriptor pd{};
     pd.label = label;
     pd.layout = layout;
@@ -417,6 +539,33 @@ void DofPass::EnsureDepthWeightPipelines(GpuDevice& gpu) {
                            kDepthWeightFormat);
     mBlurDwPipe = MakePipe(mPassPL, "fs_blur", "DofBlurDepthWeight", gpu, kDepthWeightFormat);
     mCompositeDwPipe = MakePipe(mCompositePL, "fs_composite_bspline_dw", "DofCompositeDepthWeight", gpu);
+}
+
+void DofPass::EnsureNearPipelines(GpuDevice& gpu) {
+    if (mDownNearPipe) return;
+    mDownNearPipe = MakePipe(mDownDwPL, "fs_down_tent_dwn", "DofDownsampleTentNear", gpu,
+                             kDepthWeightFormat, 2);
+    mBlurNearPipe = MakePipe(mBlurNearPL, "fs_blur_near", "DofBlurNear", gpu, kDepthWeightFormat, 2);
+    mCompositeNearPipe = MakePipe(mCompositeNearPL, "fs_composite_bspline_dwn", "DofCompositeNear", gpu);
+}
+
+void DofPass::EnsureNearTextures(int w, int h, GpuDevice& gpu) {
+    const int qw = std::max(1, w >> 2), qh = std::max(1, h >> 2);
+    if (mNearW == qw && mNearH == qh && mNearView[0]) return;
+    if (mBindGroups)
+        for (int k = 0; k < 2; k++)
+            if (mNearView[k]) mBindGroups->Forget(mNearView[k].Get());
+    for (int k = 0; k < 2; k++) {
+        wgpu::TextureDescriptor td{};
+        td.label = k ? "DofBlurNearB" : "DofBlurNearA";
+        td.size = {(uint32_t)qw, (uint32_t)qh, 1};
+        td.format = kDepthWeightFormat;
+        td.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding;
+        mNear[k] = gpu.CreateTexture(td);
+        mNearView[k] = mNear[k].CreateView();
+    }
+    mNearW = qw;
+    mNearH = qh;
 }
 
 void DofPass::EnsureDepthWeightTextures(int w, int h, GpuDevice& gpu) {
@@ -495,16 +644,19 @@ void DofPass::EnsureTextures(int w, int h, wgpu::TextureFormat format, GpuDevice
 }
 
 void DofPass::Pass(wgpu::CommandEncoder& encoder, const wgpu::RenderPipeline& pipe,
-                   const wgpu::BindGroup& bg, const wgpu::TextureView& dst, const char* label) {
-    wgpu::RenderPassColorAttachment ca{};
-    ca.view = dst;
-    ca.loadOp = wgpu::LoadOp::Clear;
-    ca.storeOp = wgpu::StoreOp::Store;
-    ca.clearValue = {0, 0, 0, 0};
+                   const wgpu::BindGroup& bg, const wgpu::TextureView& dst, const char* label,
+                   const wgpu::TextureView* dst2) {
+    wgpu::RenderPassColorAttachment ca[2]{};
+    for (int k = 0; k < 2; k++) {
+        ca[k].view = k ? (dst2 ? *dst2 : dst) : dst;
+        ca[k].loadOp = wgpu::LoadOp::Clear;
+        ca[k].storeOp = wgpu::StoreOp::Store;
+        ca[k].clearValue = {0, 0, 0, 0};
+    }
     wgpu::RenderPassDescriptor rp{};
     rp.label = label;
-    rp.colorAttachmentCount = 1;
-    rp.colorAttachments = &ca;
+    rp.colorAttachmentCount = dst2 ? 2 : 1;
+    rp.colorAttachments = ca;
     MILO_GPU_TIME_PASS(rp);
     auto pass = encoder.BeginRenderPass(&rp);
     pass.SetPipeline(pipe);
@@ -516,7 +668,7 @@ void DofPass::Pass(wgpu::CommandEncoder& encoder, const wgpu::RenderPipeline& pi
 bool DofPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& sceneView,
                   wgpu::TextureFormat sceneFormat, const wgpu::TextureView& depthView,
                   uint32_t depthSamples, int sceneW, int sceneH, GpuDevice& gpu, bool enhanced,
-                  bool depthWeighted) {
+                  bool depthWeighted, bool nearField, bool nearSpread) {
     extern DOFProc* TheDOFProc;
     if (!TheDOFProc || !TheDOFProc->Enabled()) return false;
     if (!sceneView || !depthView || sceneW <= 0 || sceneH <= 0) return false;
@@ -549,6 +701,10 @@ bool DofPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& sceneV
         if (depthWeighted) {
             EnsureDepthWeightPipelines(gpu);
             EnsureDepthWeightTextures(sceneW, sceneH, gpu);
+            if (nearField) {
+                EnsureNearPipelines(gpu);
+                EnsureNearTextures(sceneW, sceneH, gpu);
+            }
         }
         // The two passes' spread per axis, in quarter texels^2 (each pass the
         // mean of its 8 taps, so its variance is E[o^2] - E[o]^2).
@@ -593,6 +749,7 @@ bool DofPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& sceneV
     RetailConstants(TheDOFProc->FocalPlane(), TheDOFProc->BlurDepth(), TheDOFProc->MaxBlur(),
                     TheDOFProc->MinBlur(), nearPlane, farPlane, zr.x, zr.y, du.c24);
     for (int i = 0; i < 4; i++) mLastConstants[i] = du.c24[i];
+    du.near[0] = nearSpread ? 1.0f : 0.0f;
     queue.WriteBuffer(mCompositeUB, 0, &du, sizeof(du));
 
     auto passBG = [&](const wgpu::TextureView& src, const wgpu::Buffer& ub) {
@@ -612,7 +769,9 @@ bool DofPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& sceneV
     };
 
     const bool dw = enhanced && depthWeighted;
+    const bool nf = dw && nearField;
     mLastDepthWeighted = dw;
+    mLastNearField = nf;
     // The quarter targets: retail's (scene format), or the depth-weighted
     // path's RGBA16Float pair.
     const wgpu::TextureView* q = dw ? mDwView : mQuarterView;
@@ -646,10 +805,36 @@ bool DofPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& sceneV
             d.layout = mDownDwBGL;
             d.entryCount = 3;
             d.entries = e;
-            Pass(encoder, mDownDwPipe, Group(dev, d), q[0], "DofDownsampleTentDepthWeightHalf");
+            if (nf)
+                Pass(encoder, mDownNearPipe, Group(dev, d), q[0], "DofDownsampleTentNear", &mNearView[0]);
+            else
+                Pass(encoder, mDownDwPipe, Group(dev, d), q[0], "DofDownsampleTentDepthWeightHalf");
         }
-        Pass(encoder, mBlurDwPipe, passBG(q[0], mBlurUB[0]), q[1], "DofBlurH");
-        Pass(encoder, mBlurDwPipe, passBG(q[1], mBlurUB[1]), q[0], "DofBlurV");
+        if (nf) {
+            // np-look36: both quarters through the same taps.
+            auto nearBG = [&](int src, const wgpu::Buffer& ub) {
+                wgpu::BindGroupEntry e[4] = {};
+                e[0].binding = 0;
+                e[0].textureView = q[src];
+                e[1].binding = 1;
+                e[1].sampler = mSampler;
+                e[2].binding = 2;
+                e[2].buffer = ub;
+                e[2].size = sizeof(BlurUniforms);
+                e[3].binding = 8;
+                e[3].textureView = mNearView[src];
+                wgpu::BindGroupDescriptor d{};
+                d.layout = mBlurNearBGL;
+                d.entryCount = 4;
+                d.entries = e;
+                return Group(dev, d);
+            };
+            Pass(encoder, mBlurNearPipe, nearBG(0, mBlurUB[0]), q[1], "DofBlurH", &mNearView[1]);
+            Pass(encoder, mBlurNearPipe, nearBG(1, mBlurUB[1]), q[0], "DofBlurV", &mNearView[0]);
+        } else {
+            Pass(encoder, mBlurDwPipe, passBG(q[0], mBlurUB[0]), q[1], "DofBlurH");
+            Pass(encoder, mBlurDwPipe, passBG(q[1], mBlurUB[1]), q[0], "DofBlurV");
+        }
     } else if (enhanced) {
         Pass(encoder, mDownTentPipe, passBG(sceneView, mBlurUB[0]), mQuarterView[0], "DofDownsampleTent");
     } else {
@@ -662,7 +847,7 @@ bool DofPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& sceneV
 
     // 4. The composite: scene, A, depth -> output.
     {
-        wgpu::BindGroupEntry e[5] = {};
+        wgpu::BindGroupEntry e[6] = {};
         e[0].binding = 1;
         e[0].sampler = mSampler;
         e[1].binding = 3;
@@ -678,7 +863,13 @@ bool DofPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& sceneV
         d.layout = mCompositeBGL;
         d.entryCount = 5;
         d.entries = e;
-        if (dw) {
+        if (nf) {
+            e[5].binding = 9;
+            e[5].textureView = mNearView[0];
+            d.layout = mCompositeNearBGL;
+            d.entryCount = 6;
+            Pass(encoder, mCompositeNearPipe, Group(dev, d), mOutView, "DofCompositeNear");
+        } else if (dw) {
             Pass(encoder, mCompositeDwPipe, Group(dev, d), mOutView, "DofCompositeDepthWeight");
         } else if (enhanced) {
             Pass(encoder, mCompositeBSplinePipe, Group(dev, d), mOutView, "DofCompositeBSpline");
@@ -703,6 +894,12 @@ void DofPass::Terminate() {
     mFactorHalfPipe = mDownDwPipe = mBlurDwPipe = mCompositeDwPipe = nullptr;
     mFactorHalfBGL = mDownDwBGL = nullptr;
     mFactorHalfPL = mDownDwPL = nullptr;
+    mDownNearPipe = mBlurNearPipe = mCompositeNearPipe = nullptr;
+    mBlurNearBGL = mCompositeNearBGL = nullptr;
+    mBlurNearPL = mCompositeNearPL = nullptr;
+    mNear[0] = mNear[1] = nullptr;
+    mNearView[0] = mNearView[1] = nullptr;
+    mNearW = mNearH = 0;
     mDwFactor = nullptr;
     mDwFactorView = nullptr;
     mDwFactorW = mDwFactorH = 0;
