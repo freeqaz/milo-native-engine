@@ -358,6 +358,33 @@ inline void VertBoneWeights(const RndMesh::Vert &v, float out[4]) {
 inline int PartTilesAcross(RndParticleSys *s) { return s->NumTilesAcross(); }
 inline int PartTilesDown(RndParticleSys *s) { return s->NumTilesDown(); }
 inline int PartTileIndex(const RndParticle *p) { return p->mCurrentTileIndex; }
+// Whether the system's quads read one tile of a tile sheet (animate_uvs) or the
+// whole texture. The shipped particles vertex shader (dc3 xbox_shaders, type
+// "particles", every textured permutation) branches on c51.x, which
+// DxParticleSys::DrawShowing loads with mAnimateUVs ? 1 : 0 (target 0x82625690,
+// lbz of the flag, fmr 1.0 or 0.0, SetVConstant 0x33):
+//   (p0 = c51.x == 0)  max r3.xy, r0.yx                  the corner's own 0/1 uv
+//   (!p0)              r3.xy = (corner + (col, row)) * c50.zw   one tile
+// so with animate_uvs off num_tiles_across/down are ignored and each quad
+// carries the whole texture (throneroom's smoke.mat systems: a 6 x 5 sheet
+// drawn whole, 30 small puffs per quad -- the original's speckled haze).
+// A consumer whose RndParticleSys has no AnimateUVs() accessor keeps reading
+// the tile at mCurrentTileIndex for every system, as before (rb3-xenon, whose
+// retail DrawShowing loads neither c50 nor c51).
+template <typename Sys, typename = void>
+struct PartHasAnimateUVs : std::false_type {};
+template <typename Sys>
+struct PartHasAnimateUVs<Sys, std::void_t<decltype(std::declval<const Sys &>().AnimateUVs())>>
+    : std::true_type {};
+template <typename Sys>
+inline bool PartAnimatesUVs(Sys *s) {
+    if constexpr (PartHasAnimateUVs<Sys>::value) {
+        return s->AnimateUVs();
+    } else {
+        (void)s;
+        return true;
+    }
+}
 // Particle positions live in the system's relative space, not world space:
 // retail DxParticleSys::DrawShowing (dc3 src/system/rnddx9/Part.cpp, and
 // rb3-xenon's identical one) draws them under

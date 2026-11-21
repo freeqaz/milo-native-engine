@@ -410,6 +410,20 @@ ParticleQuadAxes ParticleAlignedAxes(const float pos[3], const float velLocal[3]
     return q;
 }
 
+ParticleUVRect ParticleTileUV(int tileIndex, int tilesAcross, int tilesDown, bool animateUVs) {
+    ParticleUVRect r;
+    if (!animateUVs) return r;  // the whole texture (c51.x == 0)
+    if (tilesAcross < 1) tilesAcross = 1;
+    if (tilesDown < 1) tilesDown = 1;
+    const float tileW = 1.0f / tilesAcross;
+    const float tileH = 1.0f / tilesDown;
+    r.u0 = (tileIndex % tilesAcross) * tileW;
+    r.v0 = (tileIndex / tilesAcross) * tileH;
+    r.u1 = r.u0 + tileW;
+    r.v1 = r.v0 + tileH;
+    return r;
+}
+
 void DrawParticlesBillboard(RndParticleSys* sys) {
     if (!gWgpuRnd || !gWgpuRnd->IsInPass()) return;
 
@@ -454,13 +468,11 @@ void DrawParticlesBillboard(RndParticleSys* sys) {
     alignTerms.perspective = billboard.perspective;
     alignTerms.stretchScale = billboard.stretchScale;
 
-    // UV tiling
-    int tilesAcross = rndshape::PartTilesAcross(sys);
-    int tilesDown = rndshape::PartTilesDown(sys);
-    if (tilesAcross < 1) tilesAcross = 1;
-    if (tilesDown < 1) tilesDown = 1;
-    float tileW = 1.0f / tilesAcross;
-    float tileH = 1.0f / tilesDown;
+    // UV tiling: one tile of the sheet, or the whole texture when the system
+    // does not animate its UVs (ParticleTileUV).
+    const int tilesAcross = rndshape::PartTilesAcross(sys);
+    const int tilesDown = rndshape::PartTilesDown(sys);
+    const bool animateUVs = rndshape::PartAnimatesUVs(sys);
 
     // Count particles and generate vertices
     std::vector<ParticleVertex> verts;
@@ -495,11 +507,9 @@ void DrawParticlesBillboard(RndParticleSys* sys) {
         const float sux = q.up[0], suy = q.up[1], suz = q.up[2];
 
         // UV tile
-        int tileIdx = rndshape::PartTileIndex(p);
-        float u0 = (tileIdx % tilesAcross) * tileW;
-        float v0 = (tileIdx / tilesAcross) * tileH;
-        float u1 = u0 + tileW;
-        float v1 = v0 + tileH;
+        const ParticleUVRect uvr =
+            ParticleTileUV(rndshape::PartTileIndex(p), tilesAcross, tilesDown, animateUVs);
+        const float u0 = uvr.u0, v0 = uvr.v0, u1 = uvr.u1, v1 = uvr.v1;
 
         float cr = p->col.red * mcr, cg = p->col.green * mcg, cb = p->col.blue * mcb,
               ca = p->col.alpha * mca;

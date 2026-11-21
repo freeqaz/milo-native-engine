@@ -10874,3 +10874,65 @@ profile.
   adapter (the 890M, Apple's).
 - Not addressed: an edge between two blurred surfaces that are both behind the focus (the far
   field's rule).
+
+## 53. Particle quads without `animate_uvs` carry the whole texture (lane np-gfx sharp, items 39 and 39b, branch np-look39, 2026-11-21)
+
+A faithfulness fix, in both DC3 looks. It is not a look setting and has no switch.
+
+**What was wrong.** `DrawParticlesBillboard` always gave a quad one tile of the system's tile
+sheet (`num_tiles_across` x `num_tiles_down`, tile `mCurrentTileIndex`). The original does that
+only when `animate_uvs` is set. The shipped `particles` vertex shader branches on `c51.x`, which
+`DxParticleSys::DrawShowing` loads with `mAnimateUVs ? 1 : 0` (target 0x82625690): with it
+clear the quad's uv is the corner's own 0/1 and the tile counts are not read, so each quad
+carries the whole texture. Throneroom's smoke systems (`animate_uvs 0`, a 6 x 5 sheet on a
+256x256 texture of 30 small puffs) drew one puff magnified over each quad: flat translucent
+polygons with straight edges where the original has a fine speckled haze.
+
+### 53.1 The rule and how a consumer takes it
+
+- `ParticleTileUV(tileIndex, across, down, animateUVs)` (`Part_Wgpu.{h,cpp}`): the tile's
+  rectangle with `animateUVs`, (0,0) to (1,1) without it.
+- `rndshape::PartAnimatesUVs(sys)` chooses. In the DC3 shape it is detected: a
+  `RndParticleSys` with an `AnimateUVs()` accessor is asked; one without it returns true,
+  which is the per-tile read every system had before. dc3-decomp adds the accessor
+  (`src/system/rndobj/Part.h`, native only). rb3-xenon compiles the DC3 shape and has no
+  accessor, so nothing changes there; its retail `DrawShowing` loads neither c50 nor c51, so
+  DC3's rule must not be given to it without its own evidence. The RB3-Wii shape returns true
+  and reports one tile, which is the whole texture either way.
+- A system changes only if it has `animate_uvs 0` and more than one tile.
+
+### 53.2 Which DC3 systems change (dc3 archive `lanes/sharp/item39b/`)
+
+All 328 particle systems in the 6,539 shipped `.milo_xbox` files were read from the data (two
+independent counts agree file by file; the DLC has none). 13 have `animate_uvs 0` and more than
+one tile: 8 in throneroom (five smoke systems, `dust_gust`, `peak_smoke`, `god_rays`), 2 in
+houseparty (`light_pop`, `light_pop1`: a burst during the change to the peak state), 1 in
+streetside (`peak_hydrant`, which the original keeps hidden in normal play, and native too),
+and 2 in test files nothing loads. No HUD, menu or character system is among them; their
+multi-tile systems all animate their uvs. Nothing sets these fields at run time.
+
+### 53.3 Against the original (Xenia, matched shots; retail look, 1280x720, display curve off)
+
+- Throneroom's far smoke: the polygon edges are gone and the haze is soft and mottled, as the
+  original's. With both sides held at the same song time (15.51 s) the area right of the left
+  column reads mean luma 42.3 against the original's 42.7, with the same spread (10th to 90th
+  percentile 35 to 50 against 34 to 51). Compare at the same song time, not only the same
+  camera: the clouds behind the smoke change brightness on the song clock (with the particles
+  hidden the same box reads 47 at 15.75 s and 81 at 20.02 s on one binary), and an earlier
+  reading of "lighter than the original's" came from frames about 5 s apart.
+- Houseparty's `light_pop`: hard-edged rectangles before, tapered soft streaks after, as the
+  original's.
+- Streetside's `peak_hydrant`, forced to show on both sides: large angular shards before, small
+  four-point sparkles after, as the original's.
+- The original also applies the material's texture transform (c20, c21) to particle uvs and
+  this path does not. Every particle material loaded in the six venues has an identity
+  transform (170 of 170 rows read from the running game), and so do the 13 systems' stored
+  materials, so nothing is drawn differently for it today.
+
+### 53.4 Guards (dc3-decomp `native/tests/test_particle_color.cpp`)
+
+`ParticleColorTest.WholeTextureWithoutAnimateUVs` (the rule),
+`ParticleColorTest.DC3ShapeReadsAnimateUVs` (the accessor reaches the shape, both ways),
+`ParticleColorTest.RenderedSheetWithoutAnimateUVsIsWhole` (a 2 x 2 sheet drawn on one particle:
+four quadrants with the flag off, tile 0 alone with it on). Two sabotages, both red (the draw
+ignoring the flag gives greens 40, 40, 40, 40 where 40, 100, 160, 220 are expected).
