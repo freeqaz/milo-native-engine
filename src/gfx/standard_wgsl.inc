@@ -97,6 +97,14 @@ fn cutoutCoverage(a: f32, threshold: f32, w: f32) -> f32 {
 // Only in fs_cutout pipelines with 4 samples that take the LOD bias (world
 // draws: never text or HUD), with a diffuse texture; the scene value is 0 in
 // the overlay phase and for the retail and Native looks.
+// np-look26 e: the modes (LookProfile.h CutoutSampleMode; the scene value):
+// 1 B, the four results only; 2 C, retail's test at the pixel centre first,
+// a pass draws the pixel solid (everything retail draws stays solid), a fail
+// leaves the four results (a fringe only where retail's test passes at a
+// sample position, so content under the cut stays invisible); 3 E, B where
+// retail's level resolves the alpha (unclamped lod <= 1), C above; 4 centre
+// only (diagnostic: retail's cut shape). Each mode is one line of the
+// centre-first rule below.
 var<private> gCutSampleTest: bool = false;
 var<private> gCutMask: u32 = 0u;
 fn cutoutSampleTestApplies() -> bool {
@@ -125,7 +133,18 @@ fn cutoutSampleMask(uv: vec2f, dx: vec2f, dy: vec2f, untexturedA: f32, threshold
     // shows at this distance (oblio04's hair over the face is authored with
     // speckled alpha that its level 1 averages over the cut; read at level 0
     // per sample it came out as sparse dots, sparser than retail).
-    let level = clamp(log2(max(footPixel, 1e-6)), 0.0, 1.0);
+    let lod = log2(max(footPixel, 1e-6));
+    let level = clamp(lod, 0.0, 1.0);
+    let mode = u32(scene.cutoutSampleTest + 0.5);
+    let centreFirst = mode == 2u || mode == 4u || (mode == 3u && lod > 1.0);
+    if (centreFirst) {
+        if (cutoutSamplePasses(uv, level, untexturedA, threshold)) {
+            return 0xfu;
+        }
+        if (mode == 4u) {
+            return 0u;
+        }
+    }
     var mask = 0u;
     if (cutoutSamplePasses(uv + dx * -0.125 + dy * -0.375, level, untexturedA, threshold)) {
         mask |= 1u;
@@ -191,7 +210,8 @@ struct SceneUniforms {
     // materialLodBias()): LookSettings' rule at the scale the pass draws at.
     materialLodBias: f32,
     // Enhanced cutout alpha test per sample (LookSettings::cutoutSampleTest,
-    // cutoutSampleMask above): 1 on, 0 off. Read only by 4x fs_cutout
+    // cutoutSampleMask above): the mode, 0 off, 1..4 (LookProfile.h
+    // CutoutSampleMode). Read only by 4x fs_cutout
     // pipelines that take the LOD bias (world draws), so 0 in effect for text,
     // HUD and the retail look; 0 in the overlay phase.
     cutoutSampleTest: f32,
