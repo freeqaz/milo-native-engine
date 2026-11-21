@@ -100,7 +100,12 @@ MaterialParams BuildPassMaterialParams(BaseMaterial* pass);
 // look.uiMipLevels levels (0 = no clamp): the song-select glyph atlases carry
 // six mips and draw ~2.5x minified, and blending mips 2.. into a 1-px stroke
 // halves it, so they keep the original's min(NumMips()+1, 2) look even where
-// the whole chain is uploaded.
+// the whole chain is uploaded. Re-measured by item 34b (2026-11-21, held
+// frames, enhanced, streetside): lifting the clamp (text_levels_all, no bias)
+// takes the move-name D stem from a 1.22 to a 1.80 px rise at 720 rows and
+// drops thin menu-stroke peaks 154 -> 127 ("EXIT CONTROLLER MODE" breaks into
+// 56 pieces against 29), so the clamp stays. The text bias
+// (LookSettings::uiLodBias) acts inside it.
 void ApplyLookSampling(SamplerDesc& desc, bool uiClass, const milo::LookSettings& look);
 // The same with the startup level count given (milo::StartupBitmapMipLevels()
 // in the overload above): world draws, and text/HUD draws under a look with no
@@ -111,8 +116,14 @@ void ApplyLookSampling(SamplerDesc& desc, bool uiClass, const milo::LookSettings
                        int startupBitmapMipLevels);
 // Whether one material draw's pipeline takes the material LOD bias
 // (PipelineKey::lodBias, PipelineManager::MaterialTakesLodBias): world draws
-// do when the look has a bias; text and HUD-overlay draws (uiClass) never do
-// -- a negative bias would alias their minified glyph strokes.
+// do when the look has a bias; text and HUD-overlay draws (uiClass) never take
+// the WORLD bias. The note here used to say "a negative bias would alias
+// their minified glyph strokes"; that was never measured for text. Item 34b
+// measured it: text has its own bias (MaterialDrawUiBias, uiLodBias), and -1
+// on glyph pages inside the two-level clamp narrows the move-name stem rise
+// 1.87 -> 0.84 px at 1080 rows (1.22 -> 0.98 at 720) with no halo, stroke
+// width within 0.05 px and the drop shadow unchanged, and no rise in the
+// song list's frame-to-frame flicker. HUD art keeps unbiased samples.
 bool MaterialDrawTakesLodBias(bool uiClass, bool lookTakesLodBias);
 // np-look34: which text/HUD bias one material draw's pipeline reads
 // (PipelineKey::uiBias, standard_wgsl.inc kTakesUiBias): 0 for a world draw
