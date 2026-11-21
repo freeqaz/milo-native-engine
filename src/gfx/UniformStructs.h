@@ -31,7 +31,7 @@ struct SceneUniforms {
     float numLights;          // f32
     float specularAA;         // f32: 1 = specular antialiasing (DC3 enhanced; standard_wgsl.inc)
     float materialLodBias;    // f32: world material LOD bias for this pass (LookProfile MaterialLodBiasAt)
-    float _padN;
+    float cutoutMipScale;     // f32: enhanced cutout coverage kept across mip levels (LookProfile CutoutMipScaleFor)
     // Point lights (up to 4)
     float pointLightPos[4][4];    // array<vec4f, 4> — world position (.w unused)
     float pointLightColors[4][4]; // array<vec4f, 4> — color per light

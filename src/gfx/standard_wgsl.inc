@@ -65,6 +65,25 @@ var<private> gCutCoverage: f32 = 1.0;
 // minified edge stays as wide as the alpha test drew it and only its last
 // pixel blends. A fully transparent texel never covers anything, so a cut at
 // threshold 0 (pass where alpha > 0) does not grow a half-covered border.
+// np-look26: an alpha-tested strand thinner than a texel of the mip being
+// sampled is averaged with its transparent surround, so its alpha falls under
+// the cut threshold a mip or two below the base and the strand breaks into a
+// dotted chain (long hair over a face, side hair). The tested alpha is scaled
+// by 1 + scale x (mip level) (Castano's coverage-preserving mips, as a scale
+// in the shader: Golus, "Anti-aliased Alpha Test", 2017), so the strand keeps
+// about the coverage its base level has; 1 at the base level, where the cut
+// keeps retail's shape. The level is estimated as the sampler picks it under
+// 16x anisotropic filtering (the enhanced look's): from the minor axis of the
+// footprint, or the major one over 16, plus the look's LOD bias.
+// kTakesLodBias gates it to world draws: text and HUD never take it.
+fn cutoutMipBoost(uv: vec2f) -> f32 {
+    let size = vec2f(textureDimensions(diffuseTex, 0));
+    let lx = length(dpdx(uv) * size);
+    let ly = length(dpdy(uv) * size);
+    let foot = max(min(lx, ly), max(lx, ly) * (1.0 / 16.0));
+    let lod = log2(max(foot, 1e-6)) + materialLodBias();
+    return 1.0 + kTakesLodBias * scene.cutoutMipScale * max(lod, 0.0);
+}
 fn cutoutCoverage(a: f32, threshold: f32, w: f32) -> f32 {
     if (a <= 0.0) {
         return 0.0;
@@ -120,7 +139,11 @@ struct SceneUniforms {
     // The world material LOD bias for this pass (kTakesLodBias,
     // materialLodBias()): LookSettings' rule at the scale the pass draws at.
     materialLodBias: f32,
-    _padN3: f32,
+    // Enhanced cutout coverage across mip levels (LookSettings::
+    // cutoutMipCoverage, cutoutMipBoost below): the boost per mip level below
+    // the base, 0 = none. Read only by fs_cutout pipelines that take the LOD
+    // bias (world draws), so 0 in effect for text, HUD and the retail look.
+    cutoutMipScale: f32,
     // Point lights (up to 4)
     pointLightPos: array<vec4f, 4>,
     pointLightColors: array<vec4f, 4>,
@@ -1726,7 +1749,10 @@ fn shadeStandard(surfaceInput: VertexOutput) -> vec4f {
     // (nothing below changes baseColor.a), with its pixel footprint taken here
     // in uniform control flow. A fade with a constant texel alpha has no
     // footprint, so it steps at the threshold exactly as retail's test does.
-    let cutA = baseColor.a;
+    var cutA = baseColor.a;
+    if (kCutoutCoverage && isEnabled(material.useTexture)) {
+        cutA = cutA * cutoutMipBoost(surfaceInput.uv);
+    }
     let cutW = fwidth(cutA);
 
     // DC3 retail environment map (scene.retailLighting 2, standard.ps option

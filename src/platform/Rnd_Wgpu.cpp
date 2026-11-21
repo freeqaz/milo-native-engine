@@ -2125,6 +2125,10 @@ float WgpuRnd::PassMaterialLodBias() const {
                                      mGpu.SupersampleScale());
 }
 
+float WgpuRnd::PassCutoutMipScale() const {
+    return mFrameInOverlay ? 0.0f : milo::CutoutMipScaleFor(milo::Look());
+}
+
 void WgpuRnd::EnsureSceneUniformsCurrent() {
     RndCam* cam = RndCam::Current();
     RndEnviron* env = rndshape::CurrentEnv();
@@ -2138,7 +2142,9 @@ void WgpuRnd::EnsureSceneUniformsCurrent() {
         || (rndshape::kRenderTargetStoresLinear && mActiveTargetTex != mLastSceneTarget)
         // A texture target after the frame (or back), a resize across a
         // render-scale step, or an inspection switch: the bias moved.
-        || PassMaterialLodBias() != mLastSceneMaterialLodBias);
+        || PassMaterialLodBias() != mLastSceneMaterialLodBias
+        // The same for the cutout scale (hair_edge_*, or the overlay phase).
+        || PassCutoutMipScale() != mLastSceneCutoutMipScale);
     // The self-shadow camera is part of the scene block (WriteSceneUniforms).
     RndCam* shadowCam = rndshape::kSelfShadowMap ? rndshape::SelfShadowCam() : nullptr;
     const Vector3& shadowPos = shadowCam ? shadowCam->WorldXfm().v : Vector3(0, 0, 0);
@@ -2999,6 +3005,11 @@ void WgpuRnd::WriteSceneUniforms() {
     // constant: a window resized across a render-scale step changes it on the
     // next frame and compiles nothing.
     scene.materialLodBias = PassMaterialLodBias();
+    // Enhanced cutout coverage across mip levels (LookSettings::
+    // cutoutMipCoverage): world cutouts only, never the HUD overlay phase.
+    // Read only by fs_cutout pipelines that take the LOD bias. 0 for rb3 and
+    // rb3-xenon (Native) and the retail look.
+    scene.cutoutMipScale = PassCutoutMipScale();
 
     // Upload scene uniforms at a new ring buffer offset (allows mid-frame camera switches —
     // each camera gets its own data in the ring, so queue.WriteBuffer doesn't overwrite earlier values)
@@ -3007,6 +3018,7 @@ void WgpuRnd::WriteSceneUniforms() {
     memcpy(mLastSceneViewProj, scene.viewProj, sizeof(mLastSceneViewProj));
     mLastSceneSpecularAA = scene.specularAA;
     mLastSceneMaterialLodBias = scene.materialLodBias;
+    mLastSceneCutoutMipScale = scene.cutoutMipScale;
 
     // Create scene bind group (group 0) — shadow map + projected light texture
     wgpu::BindGroupEntry entries[5] = {};

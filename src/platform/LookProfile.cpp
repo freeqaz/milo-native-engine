@@ -61,6 +61,9 @@ LookSettings SettingsFor(LookProfile p) {
     s.noiseSnapsToOutputRows = enh;
     // np-look23 (c): the depth of field gathers by depth (LookProfile.h).
     s.postDofDepthWeight = enh;
+    // np-look26: cutout coverage kept across mip levels (LookProfile.h).
+    // A few ALU ops in the cutout pipelines' fragments, nothing elsewhere.
+    s.cutoutMipCoverage = enh;
     return s;
 }
 
@@ -222,6 +225,30 @@ bool SetLookDofDepthWeightForInspection(int mode) {
     s.postDofDepthWeight = mode < 0 ? SettingsFor(s.profile).postDofDepthWeight : mode != 0;
     fprintf(stderr, "[look] depth of field depth-weighted %d%s (inspection, profile %s)\n",
             (int)s.postDofDepthWeight, mode < 0 ? " (the rule)" : "", LookProfileName(s.profile));
+    return true;
+}
+
+float CutoutMipScaleFor(const LookSettings &look) {
+    if (!look.cutoutMipCoverage) return 0.0f;
+    return look.cutoutMipScaleInspected ? look.cutoutMipScaleInspect : kCutoutMipScale;
+}
+
+bool SetLookCutoutMipCoverageForInspection(int mode) {
+    LookSettings &s = Mutable();
+    if (s.profile == LookProfile::Native) return false;
+    s.cutoutMipCoverage = mode < 0 ? SettingsFor(s.profile).cutoutMipCoverage : mode != 0;
+    fprintf(stderr, "[look] cutout coverage across mips %d%s (inspection, profile %s)\n",
+            (int)s.cutoutMipCoverage, mode < 0 ? " (the rule)" : "", LookProfileName(s.profile));
+    return true;
+}
+
+bool SetLookCutoutMipScaleForInspection(bool useRule, float scale) {
+    LookSettings &s = Mutable();
+    if (s.profile == LookProfile::Native) return false;
+    s.cutoutMipScaleInspected = !useRule;
+    s.cutoutMipScaleInspect = useRule ? 0.0f : scale;
+    fprintf(stderr, "[look] cutout mip scale %.3f%s (inspection, profile %s)\n",
+            CutoutMipScaleFor(s), useRule ? " (the rule)" : "", LookProfileName(s.profile));
     return true;
 }
 
