@@ -23,6 +23,7 @@
 #include "os/System.h"
 #include "os/Debug.h"
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <type_traits>
@@ -192,6 +193,12 @@ float ConfigGamma() {
 void SetDisplayTypeForInspection(int type) {
     gDisplayInspect = (type == 0 || type == DisplayRamp::kDisplaySRGB ||
                        type == DisplayRamp::kDisplayTV) ? type : -1;
+    // One line per switch, in the form of every other look token's, so a
+    // capture tool can find the moment a display token took in the log.
+    fprintf(stderr, "[look] display curve %s (inspection)\n",
+            gDisplayInspect == 0 ? "off"
+            : gDisplayInspect == DisplayRamp::kDisplaySRGB ? "srgb"
+            : gDisplayInspect == DisplayRamp::kDisplayTV ? "tv" : "the launch's (the rule)");
 }
 
 int DisplayTypeForInspection() { return gDisplayInspect; }
