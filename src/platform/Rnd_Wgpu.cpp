@@ -1860,12 +1860,13 @@ void WgpuRnd::BeginTexturePass(RndTex* tex, const TexturePassLoad& load) {
     static const bool sDebugPipelines = getenv("MILO_DEBUG_PIPELINES") != nullptr;  // H-110: read once; nothing in the process writes it
     if (sDebugPipelines) {
         printf(
-            "DC3 Pass: TexturePass tex='%s' type=0x%x mips=%d fmt=%d samples=%u depth=%d size=%ux%u\n",
+            "DC3 Pass: TexturePass tex='%s' type=0x%x mips=%d fmt=%d samples=%u likeFrame=%d depth=%d size=%ux%u\n",
             tex->Name(),
             (unsigned)tex->GetType(),
             tex->NumMips(),
             (int)mCurrentTargetFormat,
             mCurrentSampleCount,
+            pt.likeFrame ? 1 : 0,
             mCurrentPassHasDepth ? 1 : 0,
             mCurrentTargetWidth,
             mCurrentTargetHeight

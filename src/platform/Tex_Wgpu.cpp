@@ -55,6 +55,10 @@ struct GpuTexData {
     // from (at the colour texture's size).
     uint32_t samples = 1;      // the 4x pair held now
     uint32_t wantSamples = 1;  // what the look asks (made at a clearing pass)
+    // The kept answer of TexPassDrawnLikeFrame, decided only where a pass
+    // that clears this target begins (GetGpuTexPassTarget with passClears)
+    // and kept until the next one; sampling calls read it, never re-ask.
+    bool likeFrame = false;
     wgpu::Texture msaaTexture;
     wgpu::TextureView msaaView;
     wgpu::Texture msaaDepthTexture;
@@ -259,8 +263,18 @@ static wgpu::TextureFormat ChooseRenderTargetFormat(RndTex* tex) {
 // sheet (World Crowd's gImpostorTex, SetBitmap(..., kRendered, useMips true)),
 // alpha-cut and shown minified at a distance in perform mode, not magnified;
 // it keeps one sample and its own size.
+//
+// That is the engine's half. The consumer's half is a registered predicate
+// (SetTexPassLikeFramePredicate); with none registered, nothing is drawn like
+// the frame.
+static TexPassLikeFrameFn sTexPassLikeFrame = nullptr;
+
+void SetTexPassLikeFramePredicate(TexPassLikeFrameFn fn) { sTexPassLikeFrame = fn; }
+TexPassLikeFrameFn GetTexPassLikeFramePredicate() { return sTexPassLikeFrame; }
+
 static bool TexPassDrawnLikeFrame(RndTex* tex) {
-    return tex && (int)tex->GetType() == (int)RndTex::kRendered && tex->NumMips() == 0;
+    return tex && (int)tex->GetType() == (int)RndTex::kRendered && tex->NumMips() == 0
+        && sTexPassLikeFrame && sTexPassLikeFrame(tex);
 }
 
 static GpuTexData* EnsureRenderTargetData(RndTex* tex) {
@@ -274,11 +288,9 @@ static GpuTexData* EnsureRenderTargetData(RndTex* tex) {
     int texH = tex->Height() > 0 ? tex->Height() : 256;
 
     GpuTexData& data = sTexGpuData[tex];
-    // np-look47: the sample count the look asks for this target's pass.
-    const uint32_t samples = TexPassDrawnLikeFrame(tex)
-                                     && milo::LookTexPassMsaa(milo::Look(), gWgpuRnd->Gpu().IsDiscreteGpu())
-                                 ? WgpuRnd::kTexPassMsaaSamples
-                                 : 1u;
+    // np-look47: the sample count kept from this target's last clearing pass
+    // (GetGpuTexPassTarget). Not asked here: a sampling call reaches this.
+    const uint32_t samples = data.wantSamples;
     // Named for GPU captures and the MILO_GPU_TIMERS target list.
     const std::string label = std::string("RndTex:") + (tex->Name() ? tex->Name() : "");
     // If the existing texture was uploaded as BC compressed (from PresyncBitmap),
@@ -335,15 +347,6 @@ static GpuTexData* EnsureRenderTargetData(RndTex* tex) {
         data.depthView = nullptr;
         data.depthSampleView = nullptr;
     }
-    // A target the look no longer draws multisampled lets its 4x pair go.
-    if (samples == 1 && data.samples != 1) {
-        data.msaaTexture = nullptr;
-        data.msaaView = nullptr;
-        data.msaaDepthTexture = nullptr;
-        data.msaaDepthView = nullptr;
-        data.samples = 1;
-    }
-    data.wantSamples = samples;
     data.uploaded = true;
     data.renderTarget = true;
     return &data;
@@ -352,6 +355,24 @@ static GpuTexData* EnsureRenderTargetData(RndTex* tex) {
 bool GetGpuTexPassTarget(RndTex* tex, GpuTexPassTarget& out, bool passClears) {
     out = GpuTexPassTarget();
     if (!tex || !tex->IsRenderTarget()) return false;
+    if (passClears && gWgpuRnd && gWgpuRnd->Gpu().IsReady()) {
+        // np-look47: the one place the rule is asked. The answer (and the
+        // look's sample count, so a look token takes effect here too) is kept
+        // until this target's next clearing pass.
+        GpuTexData& d = sTexGpuData[tex];
+        d.likeFrame = TexPassDrawnLikeFrame(tex);
+        d.wantSamples = d.likeFrame && milo::LookTexPassMsaa(milo::Look(), gWgpuRnd->Gpu().IsDiscreteGpu())
+            ? WgpuRnd::kTexPassMsaaSamples
+            : 1u;
+        // A target no longer drawn multisampled lets its 4x pair go.
+        if (d.wantSamples == 1 && d.samples != 1) {
+            d.msaaTexture = nullptr;
+            d.msaaView = nullptr;
+            d.msaaDepthTexture = nullptr;
+            d.msaaDepthView = nullptr;
+            d.samples = 1;
+        }
+    }
     GpuTexData* rt = EnsureRenderTargetData(tex);
     if (!rt || !rt->view || !rt->texture) return false;
     const int w = (int)rt->texture.GetWidth(), h = (int)rt->texture.GetHeight();
@@ -376,6 +397,7 @@ bool GetGpuTexPassTarget(RndTex* tex, GpuTexPassTarget& out, bool passClears) {
     out.gpuWidth = (uint32_t)w;
     out.gpuHeight = (uint32_t)h;
     out.samples = rt->samples;
+    out.likeFrame = rt->likeFrame;
     if (rt->samples > 1) {
         out.msaaView = rt->msaaView;
         out.msaaDepthView = rt->msaaDepthView;
