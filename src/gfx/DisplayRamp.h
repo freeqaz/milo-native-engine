@@ -23,7 +23,7 @@
 //
 // Display type sRGB (and every RB3 shape) runs the ramp formula per pixel,
 // exactly as before the table existed. Any other type runs a 256-entry lookup
-// of the corrected entries, built on the CPU in the console's float order
+// of the corrected entries (a 256 x 1 texture), built on the CPU in the console's float order
 // (HardwareTable below); one pass either way.
 //
 // Rndobj-free: the caller (WgpuRnd::EndDrawing) supplies g through
@@ -71,7 +71,8 @@ private:
     bool mTablePipe = false;        // mPipe is fs_table (else fs_ramp)
     int mTableType = 0;             // what mLut holds
     float mTableGamma = 0.0f, mTablePower = 0.0f;
-    wgpu::Buffer mLut;              // 64 x vec4f: the corrected entries x 64
+    wgpu::Texture mLut;             // 256 x 1 R32Float: the corrected entries x 64
+    wgpu::TextureView mLutView;
     wgpu::Texture mScratch;
     wgpu::TextureView mScratchView;
     uint32_t mW = 0, mH = 0;

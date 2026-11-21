@@ -57,9 +57,10 @@ const char* kShader = R"WGSL(
 override kGamma: f32 = 1.0;
 
 @group(0) @binding(0) var srcTex: texture_2d<f32>;
-// fs_table only: entry i of the corrected table x 64 (a 16-bit ramp entry),
-// four to a vec4.
-@group(0) @binding(1) var<uniform> lut: array<vec4f, 64>;
+// fs_table only: entry i of the corrected table x 64 (a 16-bit ramp entry)
+// in texel (i, 0). A texture, not a uniform array: a per-pixel dynamic index
+// into a uniform array cost 0.13-0.19 ms at 1080p on the RTX (item 31 cost).
+@group(0) @binding(1) var lut: texture_2d<f32>;
 
 @vertex fn vs_full(@builtin(vertex_index) idx: u32) -> @builtin(position) vec4f {
     let x = f32(i32(idx & 1u)) * 4.0 - 1.0;
@@ -77,7 +78,7 @@ override kGamma: f32 = 1.0;
 }
 
 // The display-corrected table (DisplayRamp::HardwareTable), looked up per byte.
-fn tableEntry(i: u32) -> f32 { return lut[i >> 2u][i & 3u]; }
+fn tableEntry(i: u32) -> f32 { return textureLoad(lut, vec2i(i32(i), 0), 0).r; }
 @fragment fn fs_table(@builtin(position) pos: vec4f) -> @location(0) vec4f {
     let c = textureLoad(srcTex, vec2i(pos.xy), 0);
     let i = vec3u(round(clamp(c.rgb, vec3f(0.0), vec3f(1.0)) * 255.0));
@@ -153,18 +154,20 @@ bool DisplayRamp::Apply(wgpu::CommandEncoder& encoder, const wgpu::Texture& fram
             e[0].texture.viewDimension = wgpu::TextureViewDimension::e2D;
             e[1].binding = 1;
             e[1].visibility = wgpu::ShaderStage::Fragment;
-            e[1].buffer.type = wgpu::BufferBindingType::Uniform;
-            e[1].buffer.minBindingSize = 64 * 16;
+            e[1].texture.sampleType = wgpu::TextureSampleType::UnfilterableFloat;
+            e[1].texture.viewDimension = wgpu::TextureViewDimension::e2D;
             wgpu::BindGroupLayoutDescriptor bd{};
             bd.entryCount = 2;
             bd.entries = e;
             mBGL = dev.CreateBindGroupLayout(&bd);
 
-            wgpu::BufferDescriptor lb{};
-            lb.label = "DisplayRampTable";
-            lb.size = 64 * 16;
-            lb.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
-            mLut = dev.CreateBuffer(&lb);
+            wgpu::TextureDescriptor lt{};
+            lt.label = "DisplayRampTable";
+            lt.size = {256, 1, 1};
+            lt.format = wgpu::TextureFormat::R32Float;
+            lt.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
+            mLut = gpu.CreateTexture(lt);
+            mLutView = mLut.CreateView();
             mTableType = 0;
         }
         wgpu::PipelineLayoutDescriptor pld{};
@@ -203,7 +206,12 @@ bool DisplayRamp::Apply(wgpu::CommandEncoder& encoder, const wgpu::Texture& fram
         HardwareTable(gamma, type, power, hw);
         float data[256];
         for (int i = 0; i < 256; i++) data[i] = (float)hw[i] * 64.0f;
-        gpu.Queue().WriteBuffer(mLut, 0, data, sizeof(data));
+        wgpu::TexelCopyTextureInfo ld{};
+        ld.texture = mLut;
+        wgpu::TexelCopyBufferLayout ll{};
+        ll.bytesPerRow = sizeof(data);
+        wgpu::Extent3D le = {256, 1, 1};
+        gpu.Queue().WriteTexture(&ld, data, sizeof(data), &ll, &le);
         mTableType = type;
         mTableGamma = gamma;
         mTablePower = power;
@@ -232,8 +240,7 @@ bool DisplayRamp::Apply(wgpu::CommandEncoder& encoder, const wgpu::Texture& fram
     be[0].binding = 0;
     be[0].textureView = mScratchView;
     be[1].binding = 1;
-    be[1].buffer = mLut;
-    be[1].size = 64 * 16;
+    be[1].textureView = mLutView;
     wgpu::BindGroupDescriptor bgd{};
     bgd.layout = mBGL;
     bgd.entryCount = 2;
