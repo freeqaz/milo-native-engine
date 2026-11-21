@@ -54,6 +54,16 @@ ParticleQuadAxes ParticleAlignedAxes(const float pos[3], const float velLocal[3]
                                      const float camUp[3], float size,
                                      const ParticleAlignTerms& terms);
 
+// The texture rectangle one particle's quad carries (TL = (u0, v0), BR = (u1,
+// v1)). With animateUVs (the DC3 shape's animate_uvs, rndshape::PartAnimatesUVs)
+// it is tile `tileIndex` of a tilesAcross x tilesDown sheet, read row by row;
+// without it the whole texture, whatever the tile counts say -- the shipped
+// particles vertex shader's c51.x == 0 branch (rndshape::PartAnimatesUVs).
+struct ParticleUVRect {
+    float u0 = 0.0f, v0 = 0.0f, u1 = 1.0f, v1 = 1.0f;
+};
+ParticleUVRect ParticleTileUV(int tileIndex, int tilesAcross, int tilesDown, bool animateUVs);
+
 // The factor every particle's colour is multiplied by before it is written to
 // the vertex buffer, for shapes without the Wii tint model
 // (rndshape::kPartMaterialTint false: DC3 and rb3-xenon). It is what retail's
