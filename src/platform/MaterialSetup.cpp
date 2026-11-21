@@ -294,12 +294,29 @@ static UiDrawTerms CurrentUiDrawTerms() {
     return UiDrawTermsFor(gWgpuRnd && gWgpuRnd->FrameInOverlay());
 }
 
-void ApplyLookSampling(SamplerDesc& desc, bool uiClass, const milo::LookSettings& look) {
+void ApplyLookSampling(SamplerDesc& desc, bool uiClass, const milo::LookSettings& look,
+                       int startupBitmapMipLevels) {
     if (uiClass) {
         if (look.uiMipLevels > 0) desc.lodMaxClamp = (float)(look.uiMipLevels - 1);
     } else {
         desc.maxAnisotropy = look.maxAnisotropy;
+        // np-look26 f: textures keep the level count of the look the process
+        // started in (Tex_Wgpu, Look().bitmapMipLevels at upload). After a
+        // look switch to a look that uploads fewer levels ({rnd native_look
+        // retail} in a run started enhanced: whole chains uploaded, retail
+        // uploads 2), read only the levels that look would have uploaded, so
+        // the inspection frame has retail's cut and sharpness. A run that never
+        // switches gets no clamp (WorldTexLodMaxLevels 0): retail, enhanced,
+        // rb3 and rb3-xenon sample exactly as before. Limit: the reverse (a run
+        // started retail, switched to enhanced) has only two levels to read and
+        // stays so; only a re-upload could fix it.
+        const int levels = milo::WorldTexLodMaxLevels(look, startupBitmapMipLevels);
+        if (levels > 0) desc.lodMaxClamp = (float)(levels - 1);
     }
+}
+
+void ApplyLookSampling(SamplerDesc& desc, bool uiClass, const milo::LookSettings& look) {
+    ApplyLookSampling(desc, uiClass, look, milo::StartupBitmapMipLevels());
 }
 
 bool MaterialDrawTakesLodBias(bool uiClass, bool lookTakesLodBias) {

@@ -104,14 +104,32 @@ LookSettings Resolve() {
     }
 }
 
+// The bitmapMipLevels the process's regular textures were uploaded with: the
+// look it started in (StartupBitmapMipLevels). Set once, by the first Look().
+int sStartupBitmapMipLevels = 0;
+
 LookSettings &Mutable() {
-    static LookSettings s = Resolve();
+    static LookSettings s = [] {
+        LookSettings r = Resolve();
+        sStartupBitmapMipLevels = r.bitmapMipLevels;
+        return r;
+    }();
     return s;
 }
 
 }  // namespace
 
 const LookSettings &Look() { return Mutable(); }
+
+int StartupBitmapMipLevels() {
+    Mutable();
+    return sStartupBitmapMipLevels;
+}
+
+int WorldTexLodMaxLevels(const LookSettings &look, int startupBitmapMipLevels) {
+    if (look.bitmapMipLevels <= 0 || look.bitmapMipLevels == startupBitmapMipLevels) return 0;
+    return look.bitmapMipLevels;
+}
 
 float ParseRenderScaleKnob(const char *value, bool *bad) {
     if (bad) *bad = false;
@@ -273,13 +291,16 @@ bool SetLookProfileForInspection(LookProfile p) {
     return true;
 }
 
-ScopedLookOverride::ScopedLookOverride(LookProfile p) : mPrev(Mutable()) {
+ScopedLookOverride::ScopedLookOverride(LookProfile p)
+    : mPrev(Mutable()), mPrevStartupBitmapMipLevels(sStartupBitmapMipLevels) {
     Mutable() = SettingsFor(p);
+    sStartupBitmapMipLevels = Mutable().bitmapMipLevels;  // a scope stands for a process started in p
     sCutoutModeInspection = 0;
 }
 
 ScopedLookOverride::~ScopedLookOverride() {
     Mutable() = mPrev;
+    sStartupBitmapMipLevels = mPrevStartupBitmapMipLevels;
     sCutoutModeInspection = 0;
 }
 

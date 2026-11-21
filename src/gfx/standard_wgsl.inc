@@ -104,7 +104,8 @@ fn cutoutCoverage(a: f32, threshold: f32, w: f32) -> f32 {
 // sample position, so content under the cut stays invisible); 3 E, B where
 // retail's level resolves the alpha (unclamped lod <= 1), C above; 4 centre
 // only (diagnostic: retail's cut shape). Each mode is one line of the
-// centre-first rule below.
+// centre-first rule below. The enhanced look's default is E (np-look26 f;
+// kCutoutModeDefault), the others are inspection tokens.
 var<private> gCutSampleTest: bool = false;
 var<private> gCutMask: u32 = 0u;
 fn cutoutSampleTestApplies() -> bool {

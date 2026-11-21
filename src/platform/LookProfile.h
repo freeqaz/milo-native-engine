@@ -214,11 +214,15 @@ struct LookSettings {
     // cutoutSampleTest, 0 in the overlay phase), in pipelines that take the
     // LOD bias (text and HUD never do), with a diffuse texture, 4 samples.
     // Retail and Native: off (and no retail pipeline is fs_cutout).
-    // np-look26 e: under that test the default is mode C (CutoutSampleMode):
-    // retail's test at the pixel centre first, so every pixel retail draws is
-    // drawn solid, and the per-sample mask only where the centre fails (B
-    // alone was faithful but noisy on hair minified past retail's level 1:
-    // four point samples of sub-pixel strand alpha). Inspection:
+    // np-look26 f: under that test the default is mode E (CutoutSampleMode):
+    // where retail's level resolves the alpha (lod <= 1: palms, fences up
+    // close) the per-sample mask alone (B, as smooth as the landed coverage);
+    // where the texture is minified past retail's level 1 (hair at a
+    // distance) retail's test at the pixel centre first, so every pixel
+    // retail draws is drawn solid, and the per-sample mask only where the
+    // centre fails (C; B alone was faithful but noisy there: four point
+    // samples of sub-pixel strand alpha). Round 2 (np-look26 e) shipped C as
+    // the default; C stays selectable by token. Inspection:
     // {rnd native_look hair_edge_on|hair_edge_off|hair_edge_rule}, and
     // hair_edge_b|hair_edge_c|hair_edge_e|hair_edge_centre for the modes.
     // (Item 26's boost of the tested alpha by mip level, rejected: it drew
@@ -246,7 +250,7 @@ enum CutoutSampleMode : int {
     kCutoutModeE = 3,
     kCutoutModeCentre = 4,
 };
-constexpr int kCutoutModeDefault = kCutoutModeC;
+constexpr int kCutoutModeDefault = kCutoutModeE;  // np-look26 f (was C in e)
 
 // The value the scene block carries (SceneUniforms::cutoutSampleTest): 0
 // while the look has no cutoutSampleTest, else kCutoutModeDefault, or the
@@ -268,9 +272,34 @@ const LookSettings &Look();
 
 const char *LookProfileName(LookProfile p);
 
+// The bitmapMipLevels the look the process started in carries: the level
+// count its regular textures were uploaded with (Tex_Wgpu reads
+// Look().bitmapMipLevels at upload; textures are not re-uploaded on a look
+// switch). SetLookProfileForInspection does not move it; ScopedLookOverride
+// sets it to its profile's value for the scope (a test scope stands for a
+// process started in that look) and restores it.
+int StartupBitmapMipLevels();
+// np-look26 f: the highest level count a world material sampler may read
+// under `look` (0 = no clamp; ApplyLookSampling sets lodMaxClamp to one less):
+// `look`'s bitmapMipLevels when it caps the upload (> 0) and differs from the
+// startup look's, else 0. So after {rnd native_look retail} in a run started
+// enhanced (whole chains uploaded), world samplers read retail's two levels,
+// as retail's textures hold. A run that never switches looks gets 0 for every
+// look and consumer: no sampler changes. Not a look departure, no LookSettings
+// bool, and it keys on the level counts, never on the profile.
+int WorldTexLodMaxLevels(const LookSettings &look, int startupBitmapMipLevels);
+
 // Inspection (dc3's `{rnd native_look retail|enhanced}`): switch between the
 // two DC3 profiles at run time, so an A/B takes the same frozen frame. Ignored
-// (returns false) for a consumer whose profile is Native.
+// (returns false) for a consumer whose profile is Native. Textures keep the
+// level count they were uploaded with: switched to retail from a run started
+// enhanced, world samplers are clamped to retail's two levels
+// (WorldTexLodMaxLevels), so the frame has retail's cut and sharpness. The
+// reverse cannot be made faithful: a run started retail uploaded two levels,
+// so after {rnd native_look enhanced} minified textures read at most level 1,
+// sharper and more aliased than an enhanced launch (only a re-upload would fix
+// it; there is none). Compare against an enhanced launch for that direction.
+// Text and HUD samplers keep their class rule (uiMipLevels), unchanged.
 bool SetLookProfileForInspection(LookProfile p);
 // The same for the post chain's fields only (postPrecision, postBloomFilter,
 // postDofFilter), the rest of the profile untouched: an A/B of the post look
@@ -353,6 +382,7 @@ public:
 
 private:
     LookSettings mPrev;
+    int mPrevStartupBitmapMipLevels;
 };
 
 }  // namespace milo
