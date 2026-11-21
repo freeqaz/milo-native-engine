@@ -3158,7 +3158,8 @@ uint64_t WgpuRnd::PrewarmFixedKeyPipelines() {
     // The enhanced look's post pipelines join the warm when the look starts
     // with them on; Retail warms exactly what it did before.
     const milo::LookSettings& look = milo::Look();
-    if (kMSAASamples >= 2) mPostProcPass.PrewarmDof(mGpu.SurfaceFormat(), mGpu, look.postDofFilter);
+    if (kMSAASamples >= 2) mPostProcPass.PrewarmDof(mGpu.SurfaceFormat(), mGpu, look.postDofFilter,
+                                                     look.postDofDepthWeight);
     mPostProcPass.PrewarmDC3Enhanced(look.postPrecision, look.postBloomFilter, mGpu);
     mSpotBeamPass.Prewarm(mGpu);
     mPointTestPass.Prewarm(wgpu::TextureFormat::Depth24PlusStencil8, kMSAASamples, mGpu);
