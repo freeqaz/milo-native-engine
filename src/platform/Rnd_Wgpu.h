@@ -362,6 +362,11 @@ public:
     // Shadows drawn so far this frame / in the last finished frame.
     int ContactShadowsDrawnThisFrame() const { return mContactShadowsDrawn; }
     int ContactShadowsDrawnLastFrame() const { return mContactShadowsDrawnLast; }
+    // True when the main frame pass's contact shadow pipeline exists already
+    // (PrewarmFixedKeyPipelines under a look that draws them).
+    bool ContactShadowPipelineReady() const {
+        return mContactShadowPass.Ready(mGpu.SurfaceFormat(), kMSAASamples);
+    }
 
     // Compiles the pipelines whose keys are fixed once the device is up (depth
     // of field, spot beams, point tests, shadow casters); DC3 calls it at init.

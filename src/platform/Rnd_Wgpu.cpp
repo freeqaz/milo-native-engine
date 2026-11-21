@@ -3235,6 +3235,11 @@ uint64_t WgpuRnd::PrewarmFixedKeyPipelines() {
     mPostProcPass.PrewarmDC3Enhanced(look.postPrecision, look.postBloomFilter, mGpu);
     mSpotBeamPass.Prewarm(mGpu);
     mPointTestPass.Prewarm(wgpu::TextureFormat::Depth24PlusStencil8, kMSAASamples, mGpu);
+    // The crowd contact shadow's one pipeline (np-look32), for the main frame
+    // pass it draws in, when the look starts with it on. Switched on at run
+    // time ({rnd native_look crowd_shadow_on} under retail) it compiles once,
+    // on the first crowd frame.
+    if (look.crowdContactShadow) mContactShadowPass.Warm(mGpu, mGpu.SurfaceFormat(), kMSAASamples);
     // The 2D canvas (gfx/Canvas2D.h) in each pass a UI can draw in: the HUD
     // overlay, the world, and a render target with and without depth.
     for (const MeshPassContext& c : {OverlayPassContext(), WorldPassContext(false),

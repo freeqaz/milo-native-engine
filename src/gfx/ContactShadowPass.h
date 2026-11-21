@@ -42,6 +42,8 @@ public:
              uint32_t samples, const std::vector<Vertex>& verts);
     // Creates the pipeline for that target ahead of the first draw.
     void Warm(GpuDevice& gpu, wgpu::TextureFormat format, uint32_t samples);
+    // True once the pipeline for that target exists (a draw into it compiles nothing).
+    bool Ready(wgpu::TextureFormat format, uint32_t samples) const;
 
 private:
     wgpu::RenderPipeline PipelineFor(GpuDevice& gpu, wgpu::TextureFormat format, uint32_t samples);

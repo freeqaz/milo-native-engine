@@ -2,6 +2,7 @@
 #include "gfx/ContactShadowPass.h"
 
 #include "gfx/GpuDevice.h"
+#include "gfx/PipelineCount.h"
 
 #include <cstring>
 
@@ -126,13 +127,20 @@ wgpu::RenderPipeline ContactShadowPass::PipelineFor(GpuDevice& gpu, wgpu::Textur
     pd.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
     pd.primitive.cullMode = wgpu::CullMode::None;
     pd.multisample.count = samples;
-    wgpu::RenderPipeline pipe = dev.CreateRenderPipeline(&pd);
+    // Counted like every pipeline the engine creates (gfx/PipelineCount.h).
+    wgpu::RenderPipeline pipe = CreateCountedRenderPipeline(dev, &pd);
     mPipes.push_back({format, samples, pipe});
     return pipe;
 }
 
 void ContactShadowPass::Warm(GpuDevice& gpu, wgpu::TextureFormat format, uint32_t samples) {
     PipelineFor(gpu, format, samples);
+}
+
+bool ContactShadowPass::Ready(wgpu::TextureFormat format, uint32_t samples) const {
+    for (const Entry& e : mPipes)
+        if (e.format == format && e.samples == samples) return true;
+    return false;
 }
 
 int ContactShadowPass::Draw(GpuDevice& gpu, wgpu::RenderPassEncoder& pass, wgpu::TextureFormat format,
