@@ -61,9 +61,10 @@ LookSettings SettingsFor(LookProfile p) {
     s.noiseSnapsToOutputRows = enh;
     // np-look23 (c): the depth of field gathers by depth (LookProfile.h).
     s.postDofDepthWeight = enh;
-    // np-look26: cutout coverage kept across mip levels (LookProfile.h).
-    // A few ALU ops in the cutout pipelines' fragments, nothing elsewhere.
-    s.cutoutMipCoverage = enh;
+    // np-look26 d: the cutout's alpha test at each of the four samples
+    // (LookProfile.h). Four bilinear alpha fetches in the cutout pipelines'
+    // fragments, nothing elsewhere.
+    s.cutoutSampleTest = enh;
     return s;
 }
 
@@ -228,27 +229,14 @@ bool SetLookDofDepthWeightForInspection(int mode) {
     return true;
 }
 
-float CutoutMipScaleFor(const LookSettings &look) {
-    if (!look.cutoutMipCoverage) return 0.0f;
-    return look.cutoutMipScaleInspected ? look.cutoutMipScaleInspect : kCutoutMipScale;
-}
+float CutoutSampleTestFor(const LookSettings &look) { return look.cutoutSampleTest ? 1.0f : 0.0f; }
 
-bool SetLookCutoutMipCoverageForInspection(int mode) {
+bool SetLookCutoutSampleTestForInspection(int mode) {
     LookSettings &s = Mutable();
     if (s.profile == LookProfile::Native) return false;
-    s.cutoutMipCoverage = mode < 0 ? SettingsFor(s.profile).cutoutMipCoverage : mode != 0;
-    fprintf(stderr, "[look] cutout coverage across mips %d%s (inspection, profile %s)\n",
-            (int)s.cutoutMipCoverage, mode < 0 ? " (the rule)" : "", LookProfileName(s.profile));
-    return true;
-}
-
-bool SetLookCutoutMipScaleForInspection(bool useRule, float scale) {
-    LookSettings &s = Mutable();
-    if (s.profile == LookProfile::Native) return false;
-    s.cutoutMipScaleInspected = !useRule;
-    s.cutoutMipScaleInspect = useRule ? 0.0f : scale;
-    fprintf(stderr, "[look] cutout mip scale %.3f%s (inspection, profile %s)\n",
-            CutoutMipScaleFor(s), useRule ? " (the rule)" : "", LookProfileName(s.profile));
+    s.cutoutSampleTest = mode < 0 ? SettingsFor(s.profile).cutoutSampleTest : mode != 0;
+    fprintf(stderr, "[look] cutout alpha test per sample %d%s (inspection, profile %s)\n",
+            (int)s.cutoutSampleTest, mode < 0 ? " (the rule)" : "", LookProfileName(s.profile));
     return true;
 }
 

@@ -65,30 +65,77 @@ var<private> gCutCoverage: f32 = 1.0;
 // minified edge stays as wide as the alpha test drew it and only its last
 // pixel blends. A fully transparent texel never covers anything, so a cut at
 // threshold 0 (pass where alpha > 0) does not grow a half-covered border.
-// np-look26: an alpha-tested strand thinner than a texel of the mip being
-// sampled is averaged with its transparent surround, so its alpha falls under
-// the cut threshold a mip or two below the base and the strand breaks into a
-// dotted chain (long hair over a face, side hair). The tested alpha is scaled
-// by 1 + scale x (mip level) (Castano's coverage-preserving mips, as a scale
-// in the shader: Golus, "Anti-aliased Alpha Test", 2017), so the strand keeps
-// about the coverage its base level has; 1 at the base level, where the cut
-// keeps retail's shape. The level is estimated as the sampler picks it under
-// 16x anisotropic filtering (the enhanced look's): from the minor axis of the
-// footprint, or the major one over 16, plus the look's LOD bias.
-// kTakesLodBias gates it to world draws: text and HUD never take it.
-fn cutoutMipBoost(uv: vec2f) -> f32 {
-    let size = vec2f(textureDimensions(diffuseTex, 0));
-    let lx = length(dpdx(uv) * size);
-    let ly = length(dpdy(uv) * size);
-    let foot = max(min(lx, ly), max(lx, ly) * (1.0 / 16.0));
-    let lod = log2(max(foot, 1e-6)) + materialLodBias();
-    return 1.0 + kTakesLodBias * scene.cutoutMipScale * max(lod, 0.0);
-}
 fn cutoutCoverage(a: f32, threshold: f32, w: f32) -> f32 {
     if (a <= 0.0) {
         return 0.0;
     }
     return saturate((a - threshold) / max(w, 1e-4) + 0.5);
+}
+
+// np-look26 d, the enhanced look's cutout edge (LookSettings::
+// cutoutSampleTest, scene.cutoutSampleTest): the original's alpha test taken
+// at each of the pass's four samples, the sample mask being the four results.
+// Why: the enhanced look uploads the whole mip chain and filters it 16x
+// anisotropically, so a strand thinner than a texel of the level it reads is
+// averaged with its transparent surround and falls under the cut, and
+// cutoutCoverage above tests that averaged alpha once per pixel: the strand
+// dots out. Retail reads its two top levels only, so its strands alias but do
+// not dissolve. Each sample here reads the texel alpha at its own position
+// (the standard 4x pattern, in pixels from the pixel centre: WebGPU's fixed
+// sample positions (6,2) (14,6) (2,10) (10,14) sixteenths, samples 0..3,
+// which are the sample mask's bits 0..3), with one bilinear fetch at the
+// level the original's sampler would pick for a footprint of half a pixel per
+// axis (the isotropic major-axis footprint, clamped to retail's two levels,
+// no look LOD bias), times the same material x vertex alpha the original's
+// test multiplies in, and passes as retail's test passes (`a < threshold`
+// fails; MaterialAlphaThreshold carries the strict-greater reference). So
+// nothing passes that retail's test would not pass at that point: a fade
+// authored under the cut stays invisible (item 26's boost of the averaged
+// alpha drew dclive's PeakLine floor fades, and was rejected), and a thin
+// strand covers the fraction of the pixel it crosses. Colour is still shaded
+// once at the pixel centre, and a blended cutout blends by its centre alpha.
+// Only in fs_cutout pipelines with 4 samples that take the LOD bias (world
+// draws: never text or HUD), with a diffuse texture; the scene value is 0 in
+// the overlay phase and for the retail and Native looks.
+var<private> gCutSampleTest: bool = false;
+var<private> gCutMask: u32 = 0u;
+fn cutoutSampleTestApplies() -> bool {
+    return kCutoutCoverage && kCutoutSamples == 4u && kTakesLodBias > 0.5 &&
+           scene.cutoutSampleTest > 0.5 && isEnabled(material.useTexture);
+}
+// Retail's test at one sample: the diffuse alpha at uv, level `level`, as the
+// test multiplies it in (colorModAlpha unless the alpha is the colour), times
+// the non-texel factor.
+fn cutoutSamplePasses(uv: vec2f, level: f32, untexturedA: f32, threshold: f32) -> bool {
+    let t = textureSampleLevel(diffuseTex, diffuseSampler, uv, level).a;
+    var a = t;
+    if (!isEnabled(material.useAlphaAsRGB)) {
+        a = colorModAlpha(t);
+    }
+    return !(untexturedA * a < threshold);
+}
+// dx, dy: the uv's screen derivatives, taken by the caller in uniform control
+// flow. Returns the 4-bit sample mask.
+fn cutoutSampleMask(uv: vec2f, dx: vec2f, dy: vec2f, untexturedA: f32, threshold: f32) -> u32 {
+    let size = vec2f(textureDimensions(diffuseTex, 0));
+    let footPixel = max(length(dx * size), length(dy * size));
+    // A sample's footprint is half a pixel per axis: one level below the
+    // pixel's, clamped to the two levels retail uploads.
+    let level = clamp(log2(max(footPixel, 1e-6)) - 1.0, 0.0, 1.0);
+    var mask = 0u;
+    if (cutoutSamplePasses(uv + dx * -0.125 + dy * -0.375, level, untexturedA, threshold)) {
+        mask |= 1u;
+    }
+    if (cutoutSamplePasses(uv + dx * 0.375 + dy * -0.125, level, untexturedA, threshold)) {
+        mask |= 2u;
+    }
+    if (cutoutSamplePasses(uv + dx * -0.375 + dy * 0.125, level, untexturedA, threshold)) {
+        mask |= 4u;
+    }
+    if (cutoutSamplePasses(uv + dx * 0.125 + dy * 0.375, level, untexturedA, threshold)) {
+        mask |= 8u;
+    }
+    return mask;
 }
 // Soft-clip ("GX saturate") of the per-channel LIGHTING SUM (ambient + Σ light
 // diffuse) before it modulates the base/texture colour. On Wii the rasterised
@@ -139,11 +186,11 @@ struct SceneUniforms {
     // The world material LOD bias for this pass (kTakesLodBias,
     // materialLodBias()): LookSettings' rule at the scale the pass draws at.
     materialLodBias: f32,
-    // Enhanced cutout coverage across mip levels (LookSettings::
-    // cutoutMipCoverage, cutoutMipBoost below): the boost per mip level below
-    // the base, 0 = none. Read only by fs_cutout pipelines that take the LOD
-    // bias (world draws), so 0 in effect for text, HUD and the retail look.
-    cutoutMipScale: f32,
+    // Enhanced cutout alpha test per sample (LookSettings::cutoutSampleTest,
+    // cutoutSampleMask above): 1 on, 0 off. Read only by 4x fs_cutout
+    // pipelines that take the LOD bias (world draws), so 0 in effect for text,
+    // HUD and the retail look; 0 in the overlay phase.
+    cutoutSampleTest: f32,
     // Point lights (up to 4)
     pointLightPos: array<vec4f, 4>,
     pointLightColors: array<vec4f, 4>,
@@ -1731,6 +1778,8 @@ fn shadeStandard(surfaceInput: VertexOutput) -> vec4f {
         }
     }
     var baseColor = vec4f(matRgb * vertexTint, materialAlpha * vertexAlpha);
+    // The tested alpha's non-texel factor (cutoutSampleMask).
+    let untexturedA = baseColor.a;
 
     // The texel alpha colour modulation reads (1 untextured: no band tint).
     var colorModTexA = 1.0;
@@ -1749,11 +1798,15 @@ fn shadeStandard(surfaceInput: VertexOutput) -> vec4f {
     // (nothing below changes baseColor.a), with its pixel footprint taken here
     // in uniform control flow. A fade with a constant texel alpha has no
     // footprint, so it steps at the threshold exactly as retail's test does.
-    var cutA = baseColor.a;
-    if (kCutoutCoverage && isEnabled(material.useTexture)) {
-        cutA = cutA * cutoutMipBoost(surfaceInput.uv);
-    }
+    // np-look26 d: or that test at each of the four samples
+    // (cutoutSampleMask; the derivatives taken here, in uniform control flow).
+    let cutA = baseColor.a;
     let cutW = fwidth(cutA);
+    if (cutoutSampleTestApplies()) {
+        gCutSampleTest = true;
+        gCutMask = cutoutSampleMask(surfaceInput.uv, dpdx(surfaceInput.uv), dpdy(surfaceInput.uv),
+                                    untexturedA, material.alphaThreshold);
+    }
 
     // DC3 retail environment map (scene.retailLighting 2, standard.ps option
     // bit 3; permutations 0x30018, 0x30019, 0x80000030019 disassembled in
@@ -1795,7 +1848,12 @@ fn shadeStandard(surfaceInput: VertexOutput) -> vec4f {
     // Intensify is the original material toggle that doubles texture brightness.
     baseColor = vec4f(baseColor.rgb * material.intensify, baseColor.a);
 
-    if (kCutoutCoverage) {
+    if (gCutSampleTest) {
+        // Retail's test at each sample: no sample passes, nothing is drawn.
+        if (gCutMask == 0u) {
+            discard;
+        }
+    } else if (kCutoutCoverage) {
         // The fade erodes the cutout's shape as the alpha test does on retail
         // (same product, same threshold); only the edge is anti-aliased.
         gCutCoverage = cutoutCoverage(cutA, material.alphaThreshold, cutW);
@@ -2046,13 +2104,19 @@ struct CutoutOutput {
     @builtin(sample_mask) mask: u32,
 }
 
-// Enhanced cutout coverage (kCutoutCoverage pipelines only): the coverage
-// becomes round(cov * samples) of the pass's samples, rotated per pixel so
+// Enhanced cutout coverage (kCutoutCoverage pipelines only): the per-sample
+// alpha test's mask (cutoutSampleMask), or else the coverage becomes
+// round(cov * samples) of the pass's samples, rotated per pixel so
 // neighbouring edge pixels do not all cover the same sample positions.
 @fragment
 fn fs_cutout(surfaceInput: VertexOutput) -> CutoutOutput {
     var out: CutoutOutput;
     out.color = shadeStandard(surfaceInput);
+    // np-look26 d: the per-sample alpha test's mask, bit i = sample i.
+    if (gCutSampleTest) {
+        out.mask = gCutMask;
+        return out;
+    }
     let n = max(kCutoutSamples, 1u);
     let full = select((1u << n) - 1u, 0xffffffffu, n >= 32u);
     let k = u32(round(gCutCoverage * f32(n)));

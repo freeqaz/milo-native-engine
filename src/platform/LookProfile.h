@@ -195,31 +195,34 @@ struct LookSettings {
     // shipped exponent, per pixel as the 360 shades it.
     bool specularAA = false;
 
-    // ---- alpha-tested cutouts (np-look26) ----------------------------------------
-    // The enhanced cutout coverage (MaterialCutCoverage == Sharpened: hair,
-    // crowd clothing, palms) keeps its coverage across mip levels: the alpha
-    // the cut tests is scaled by 1 + kCutoutMipScale x (mip level the sampler
-    // reads), so a strand thinner than a texel of that level, which the
-    // filter averages under the threshold, stays a continuous strand instead
-    // of a dotted chain (standard_wgsl.inc cutoutMipBoost). At the base level
-    // the scale is 1, so the cut keeps retail's shape. The original tests the
-    // texel alpha alone at whatever level it samples (two levels at most).
-    // World draws only, through the scene block (SceneUniforms::
-    // cutoutMipScale, 0 in the overlay phase) and only in pipelines that take
-    // the LOD bias (text and HUD never do). Retail and Native: off.
+    // ---- alpha-tested cutouts (np-look26 d) --------------------------------------
+    // The enhanced cutout (MaterialCutCoverage == Sharpened: hair, crowd
+    // clothing, palms, a SrcAlpha floor line) in a 4x multisampled pass takes
+    // the original's alpha test at each of the pass's four samples, and the
+    // sample mask is the four results (standard_wgsl.inc cutoutSampleMask).
+    // Each sample reads the diffuse alpha at its own position, one bilinear
+    // fetch at the level the original's sampler would read for a footprint of
+    // half a pixel (two levels at most, no anisotropy, no look LOD bias), times
+    // the same material and vertex alpha the original's test multiplies in.
+    // That is retail's cut supersampled 4x: nothing passes that retail's test
+    // would not pass at that point, so a fade authored under the cut stays
+    // invisible, and a strand thinner than a texel of the averaged mip (which
+    // the 16x-anisotropic, whole-chain sample averages under the threshold and
+    // dots out) covers the part of the pixel it crosses. Off: the landed
+    // coverage (cutoutCoverage, the tested alpha sharpened to the pixel
+    // footprint). World draws only, through the scene block (SceneUniforms::
+    // cutoutSampleTest, 0 in the overlay phase), in pipelines that take the
+    // LOD bias (text and HUD never do), with a diffuse texture, 4 samples.
+    // Retail and Native: off (and no retail pipeline is fs_cutout).
     // Inspection: {rnd native_look hair_edge_on|hair_edge_off|hair_edge_rule}.
-    bool cutoutMipCoverage = false;
-    // Inspection only (tuning): the scale per mip level while
-    // cutoutMipScaleInspected; kCutoutMipScale otherwise.
-    bool cutoutMipScaleInspected = false;
-    float cutoutMipScaleInspect = 0.0f;
+    // (Item 26's boost of the tested alpha by mip level, rejected: it drew
+    // content authored under the cut, dclive's PeakLine floor fades.)
+    bool cutoutSampleTest = false;
 };
 
-// The boost per mip level LookSettings::cutoutMipCoverage applies.
-constexpr float kCutoutMipScale = 0.25f;
-// The value the scene block carries (SceneUniforms::cutoutMipScale): the
-// scale while the look has cutoutMipCoverage (or the inspected scale), else 0.
-float CutoutMipScaleFor(const LookSettings &look);
+// The value the scene block carries (SceneUniforms::cutoutSampleTest): 1
+// while the look has cutoutSampleTest, else 0.
+float CutoutSampleTestFor(const LookSettings &look);
 
 // MILO_RENDER_SCALE's value -> LookSettings::renderScaleExplicit: 0 for unset,
 // empty or not a positive number; else clamped to [1, 2]. *bad is set when a
@@ -286,13 +289,11 @@ bool SetLookNoiseRowsForInspection(int mode);
 // four pipelines. Only reaches the screen with postDofFilter on. False under
 // the Native profile.
 bool SetLookDofDepthWeightForInspection(int mode);
-// {rnd native_look hair_edge_on|hair_edge_off|hair_edge_rule}: cutoutMipCoverage
+// {rnd native_look hair_edge_on|hair_edge_off|hair_edge_rule}: cutoutSampleTest
 // on, off, or the profile's own value (mode 1 / 0 / -1), so one frozen frame is
-// measured both ways; hair_edge_<n> (SetLookCutoutMipScaleForInspection) sets
-// the scale per mip level for tuning. A uniform: takes effect on the next frame
-// and compiles nothing. False under the Native profile.
-bool SetLookCutoutMipCoverageForInspection(int mode);
-bool SetLookCutoutMipScaleForInspection(bool useRule, float scale);
+// measured both ways. A uniform: takes effect on the next frame and compiles
+// nothing. False under the Native profile.
+bool SetLookCutoutSampleTestForInspection(int mode);
 // {rnd native_look refl_cull_force|refl_cull_flip|refl_cull_rule}: the cull a
 // WorldReflection's mirrored redraw gives its materials (ReflectionCull,
 // Mesh_Wgpu.cpp): force = every material culls Backwards (DC3's CheckForceCull),
