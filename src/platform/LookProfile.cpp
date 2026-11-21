@@ -56,6 +56,8 @@ LookSettings SettingsFor(LookProfile p) {
     s.postBloomFilter = enh;
     s.postDofFilter = enh;
     s.specularAA = enh;
+    // np-look32: soft contact shadows under the crowd (LookSettings::crowdContactShadow).
+    s.crowdContactShadow = enh;
     // np-look23 (a): the noise map on whole output rows (LookProfile.h).
     // Uniforms only, no cost but a memoised constant per size.
     s.noiseSnapsToOutputRows = enh;
@@ -271,6 +273,15 @@ bool SetLookCutoutSampleTestForInspection(int mode) {
     s.cutoutSampleTest = mode < 0 ? SettingsFor(s.profile).cutoutSampleTest : mode != 0;
     fprintf(stderr, "[look] cutout alpha test per sample %d%s (inspection, profile %s)\n",
             (int)s.cutoutSampleTest, mode < 0 ? " (the rule)" : "", LookProfileName(s.profile));
+    return true;
+}
+
+bool SetLookCrowdShadowForInspection(int mode) {
+    LookSettings &s = Mutable();
+    if (s.profile == LookProfile::Native) return false;
+    s.crowdContactShadow = mode < 0 ? SettingsFor(s.profile).crowdContactShadow : mode != 0;
+    fprintf(stderr, "[look] crowd contact shadow %d%s (inspection, profile %s)\n",
+            (int)s.crowdContactShadow, mode < 0 ? " (the rule)" : "", LookProfileName(s.profile));
     return true;
 }
 

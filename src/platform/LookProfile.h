@@ -239,6 +239,15 @@ struct LookSettings {
     // stripe edges, and costs four alpha fetches per cut-out fragment. A
     // trade, so the look is unchanged; one line in SettingsFor adopts it.
     bool cutoutSampleTest = false;
+
+    // ---- crowd contact shadows (np-look32) ------------------------------------
+    // A soft dark ellipse on the ground at each 3D crowd member's feet
+    // (platform/ContactShadowHook.h, gfx/ContactShadowPass.h). The original
+    // draws no shadow of any kind for the crowd (WorldCrowd::Draw3DChars turns
+    // self and floor shadow off in game, and the models carry none), so on
+    // pale ground it floats. Enhanced: on. Inspection:
+    // {rnd native_look crowd_shadow_on|crowd_shadow_off|crowd_shadow_rule}.
+    bool crowdContactShadow = false;
 };
 
 // The cut-out modes the scene block carries (SceneUniforms::cutoutSampleTest,
@@ -368,6 +377,9 @@ bool SetLookDofDepthWeightForInspection(int mode);
 // takes effect on the next frame and compiles nothing. False under the Native
 // profile.
 bool SetLookCutoutSampleTestForInspection(int mode);
+// crowd_shadow_on|off|rule: LookSettings::crowdContactShadow on, off, or the
+// profile's own value (mode < 0). False under Native.
+bool SetLookCrowdShadowForInspection(int mode);
 // {rnd native_look hair_edge_b|hair_edge_c|hair_edge_e|hair_edge_centre}:
 // cutoutSampleTest on with that CutoutSampleMode (1..4) in place of the
 // default, until another hair_edge token. False under the Native profile or
