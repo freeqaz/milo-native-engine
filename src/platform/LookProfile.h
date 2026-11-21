@@ -55,6 +55,18 @@ struct LookSettings {
     // (0 = no limit). Enhanced uploads whole chains, so this keeps glyphs at
     // the original's min(NumMips()+1, 2) -- see MaterialSetup.cpp.
     int uiMipLevels = 0;
+    // np-look34: LOD bias added to text and HUD-overlay (uiClass) diffuse
+    // samples, beside uiMipLevels: the text sampling rule is these two numbers.
+    // A uniform (SceneUniforms::uiLodBias / uiArtLodBias, written per pass),
+    // so a token switches it with no pipeline compiled; uiTakesLodBias says
+    // whether uiClass pipelines read it (PipelineKey::uiBias). At render scale
+    // above 1 the output-pixel path scales its gradients by 2^bias
+    // (standard_wgsl.inc diffuseSample). uiLodBiasGlyphsOnly: only glyph pages
+    // (isTextMesh) take it; other uiClass art (flashcard pictograms, icons,
+    // bars) reads uiArtLodBias = 0. Retail and Native: 0 and not taken.
+    float uiLodBias = 0.0f;
+    bool uiLodBiasGlyphsOnly = true;
+    bool uiTakesLodBias = false;
     // LOD bias added to world material texture samples, as a function of the
     // render scale the pass draws at (MaterialLodBiasAt): lodBiasScale1 at 1x,
     // lodBiasScale2 at 2x, linear in log2(scale) between. The value reaches
@@ -170,6 +182,30 @@ struct LookSettings {
     // Retail and Native: the depth-blind blur. Inspection:
     // {rnd native_look dof_depth_weight_on|_off|_rule}.
     bool postDofDepthWeight = false;
+    // np-look36: the near field of the depth-weighted blur (DofPass::Run
+    // `nearField`, with postDofDepthWeight). The weight kept in-focus colour
+    // out of the blur in FRONT of the focus too, so a blurred crowd member
+    // between the camera and the dancers kept a hard cut-out edge (retail's
+    // depth-blind blur softens it). A pixel out of focus in front of the focal
+    // plane takes the depth-blind blur; postDofNearSpread also spreads the near
+    // object's blur over the in-focus pixels beside it. Retail and Native: off.
+    // Inspection: {rnd native_look dof_near_on|_off|_rule,
+    // dof_near_spread_on|_off|_rule}.
+    // Both are decided by adapter class, as supersampling is (renderScale /
+    // renderScaleIntegrated). The field adds a second quarter target to the
+    // downsample and the two blurs (8 more reads per quarter texel in each)
+    // and 4 reads in the composite inside the near field; the spread one more
+    // read at every full-size pixel of the composite. postDofNearField and
+    // postDofNearSpread are the values on a discrete GPU, the ...Integrated
+    // pair on anything else (integrated, CPU, unknown, the web build).
+    // Enhanced: on / off, the second until a handheld's timing says each fits
+    // (dc3 PLAN H-165). LookDofNearField / LookDofNearSpread pick, and with the
+    // field off the depth of field runs exactly the passes it ran before
+    // np-look36. LogLookAdapterClass prints the choice once.
+    bool postDofNearField = false;
+    bool postDofNearFieldIntegrated = false;
+    bool postDofNearSpread = false;
+    bool postDofNearSpreadIntegrated = false;
     // np-look23 (a): DC3's post noise map (noise_mono.tex) re-tiled so each
     // texel covers whole OUTPUT rows, read at one fixed place in the texel
     // (gfx/NoiseRows.h): the same fine lines on every row at every size and
@@ -352,6 +388,27 @@ float PassMaterialLodBias(const LookSettings &look, bool toTextureTarget, float 
 // bias (enhanced) made its world pipelines biasable; in a run started retail
 // this changes nothing on screen.
 bool SetLookLodBiasForInspection(bool useRule, float bias);
+// np-look34: whether uiClass draws read the text bias at all under `look`
+// (PipelineKey::uiBias): look.uiTakesLodBias. False for retail and Native,
+// whose text pipelines then sample exactly as before.
+bool LookTakesUiLodBias(const LookSettings &look);
+// The two values a pass's scene block carries: the glyph-page bias, and the
+// bias of the other uiClass art (0 while uiLodBiasGlyphsOnly).
+float UiGlyphLodBias(const LookSettings &look);
+float UiArtLodBias(const LookSettings &look);
+// {rnd native_look text_bias_off|text_bias_half|text_bias_on|text_bias_rule}:
+// uiLodBias 0 / -0.5 / -1, or the profile's own value (useRule). A uniform:
+// the next frame, nothing compiles. False under Native.
+bool SetLookUiLodBiasForInspection(bool useRule, float bias);
+// {rnd native_look text_levels_2|text_levels_all|text_levels_rule}: the text
+// and HUD samplers' level clamp (uiMipLevels 2, 0 = no clamp, or the
+// profile's; levels < 0). One sampler and bind-group cache miss per material,
+// as the anisotropy tokens. False under Native.
+bool SetLookUiMipLevelsForInspection(int levels);
+// {rnd native_look text_bias_glyphs|text_bias_all_ui|text_bias_scope_rule}:
+// uiLodBiasGlyphsOnly true / false / the profile's (mode 1 / 0 / -1). A
+// uniform. False under Native.
+bool SetLookUiLodBiasScopeForInspection(int mode);
 // {rnd native_look aniso_1|aniso_4|aniso_16|aniso_rule}: the world samplers'
 // max anisotropy (ApplyLookSampling; text and HUD never take it), or 0 for the
 // profile's own value, so one run measures the GPU cost at each. Takes effect
@@ -370,6 +427,22 @@ bool SetLookNoiseRowsForInspection(int mode);
 // four pipelines. Only reaches the screen with postDofFilter on. False under
 // the Native profile.
 bool SetLookDofDepthWeightForInspection(int mode);
+// {rnd native_look dof_near_on|_off|_rule} / {dof_near_spread_on|_off|_rule}:
+// postDofNearField / postDofNearSpread on, off or the profile's (1 / 0 / -1).
+// The first switch of the near field on in a run that did not start with it
+// compiles four pipelines; the spread is a uniform. False under Native.
+// Each token writes both adapter classes' values: on and off force it on any
+// GPU, and the rule returns each class to the profile's.
+bool SetLookDofNearForInspection(int mode, bool spread = false);
+// The near field and its spread for this adapter class: postDofNearField /
+// postDofNearSpread on a discrete GPU, the ...Integrated pair on anything else.
+bool LookDofNearField(const LookSettings &look, bool discreteGpu);
+bool LookDofNearSpread(const LookSettings &look, bool discreteGpu);
+// Prints, once per process, the adapter class the device reported and what the
+// class-decided settings came to on it ("[look] adapter class ..."). Nothing
+// under the Native profile, which has no class-decided setting here. The
+// renderer calls it when its device is up.
+void LogLookAdapterClass(bool discreteGpu);
 // {rnd native_look hair_edge_on|hair_edge_off|hair_edge_rule}: cutoutSampleTest
 // on (mode E, kCutoutModeDefault), off, or the profile's own value, which is
 // off in every look (mode 1 / 0 / -1), so one frozen frame is measured both

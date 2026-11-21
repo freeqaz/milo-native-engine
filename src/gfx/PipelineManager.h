@@ -56,6 +56,11 @@ struct PipelineKey {
     // enhanced look, PipelineManager::MaterialTakesLodBias) sets this, for
     // world draws; text and HUD keep the original's unbiased samples.
     bool lodBias = false;
+    // np-look34: the text/HUD bias this uiClass draw reads (kTakesUiBias; 0
+    // none, 1 glyph page, 2 other text/HUD art). Only a look with a text rule
+    // (PipelineManager::UiTakesLodBias, DC3 enhanced) sets it; the value is
+    // the scene block's uiLodBias / uiArtLodBias.
+    uint8_t uiBias = 0;
     // Text/HUD draw into a render-scaled frame: the standard shader samples
     // its diffuse texture at output-pixel centres (kOutputPixelScale =
     // PipelineManager::OutputPixelScale); false: at the fragment.
@@ -74,7 +79,7 @@ struct PipelineKey {
                hasDepth == o.hasDepth && alphaCut == o.alphaCut &&
                alphaWrite == o.alphaWrite && alphaToCoverage == o.alphaToCoverage &&
                cutoutCoverage == o.cutoutCoverage &&
-               depthBias == o.depthBias && lodBias == o.lodBias &&
+               depthBias == o.depthBias && lodBias == o.lodBias && uiBias == o.uiBias &&
                outputPixelSampling == o.outputPixelSampling &&
                outputPixelScale == o.outputPixelScale;
     }
@@ -96,6 +101,7 @@ struct PipelineKeyHash {
         h ^= std::hash<bool>{}(k.cutoutCoverage) + 0x9e3779b9 + (h << 6) + (h >> 2);
         h ^= std::hash<int32_t>{}(k.depthBias) + 0x9e3779b9 + (h << 6) + (h >> 2);
         h ^= std::hash<bool>{}(k.lodBias) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        h ^= std::hash<uint32_t>{}(k.uiBias) + 0x9e3779b9 + (h << 6) + (h >> 2);
         h ^= std::hash<bool>{}(k.outputPixelSampling) + 0x9e3779b9 + (h << 6) + (h >> 2);
         h ^= std::hash<float>{}(k.outputPixelScale) + 0x9e3779b9 + (h << 6) + (h >> 2);
         return h;
@@ -252,6 +258,10 @@ public:
     // without a pipeline being made.
     void SetMaterialTakesLodBias(bool takes) { mMaterialTakesLodBias = takes; }
     bool MaterialTakesLodBias() const { return mMaterialTakesLodBias; }
+    // np-look34: whether text/HUD pipelines read the text bias
+    // (milo::LookTakesUiLodBias; PipelineKey::uiBias). False by default.
+    void SetUiTakesLodBias(bool takes) { mUiTakesLodBias = takes; }
+    bool UiTakesLodBias() const { return mUiTakesLodBias; }
     // The kTakesLodBias a pipeline for `key` is created with (1 or 0).
     float LodBiasFlagFor(const PipelineKey& key) const { return key.lodBias ? 1.0f : 0.0f; }
     // A render-scaled frame's pixels per output pixel (1 = not scaled; the
@@ -338,6 +348,7 @@ private:
     bool mAlphaBlendMax = false;   // SetAlphaBlendMax
     bool mDynamicUniformOffsets = false;  // SetDynamicUniformOffsets
     bool mMaterialTakesLodBias = false;   // SetMaterialTakesLodBias
+    bool mUiTakesLodBias = false;         // SetUiTakesLodBias
     bool mAlphaFringeFade = true;         // SetAlphaFringeFade
     float mOutputPixelScale = 1.0f;       // SetOutputPixelScale
     float mOutputPixelScaleLo = 1.0f;     // SetOutputPixelScaleRange

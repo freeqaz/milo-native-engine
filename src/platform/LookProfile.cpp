@@ -11,6 +11,9 @@ namespace milo {
 
 namespace {
 
+// np-look34: the enhanced look's text bias (see README of lane item34b).
+constexpr float kEnhancedUiLodBias = -1.0f;
+
 LookSettings SettingsFor(LookProfile p) {
     LookSettings s;
     s.profile = p;
@@ -20,6 +23,11 @@ LookSettings SettingsFor(LookProfile p) {
         s.bitmapMipLevels = 0;  // whole authored chain ...
         s.maxAnisotropy = 16;   // ... filtered anisotropically
         s.uiMipLevels = 2;      // text/HUD keep the original's two levels
+        // np-look34: the text and HUD bias (LookSettings::uiLodBias). Pipelines
+        // read it so the tokens can move it; the value is set below.
+        s.uiTakesLodBias = true;
+        s.uiLodBias = kEnhancedUiLodBias;
+        s.uiLodBiasGlyphsOnly = true;
         // World textures: the LOD bias by render scale (MaterialLodBiasAt):
         // 0 at both ends (item 19 a, measured on the 3090 with the drift
         // protocol, three venues). At scale 1, -1 raised frame shimmer
@@ -63,6 +71,13 @@ LookSettings SettingsFor(LookProfile p) {
     s.noiseSnapsToOutputRows = enh;
     // np-look23 (c): the depth of field gathers by depth (LookProfile.h).
     s.postDofDepthWeight = enh;
+    // np-look36: the depth weight's near field (LookProfile.h).
+    // The near field and its spread by adapter class: on a discrete GPU; off
+    // on anything else until a handheld's timing says each fits there.
+    s.postDofNearField = enh;
+    s.postDofNearFieldIntegrated = false;
+    s.postDofNearSpread = enh;
+    s.postDofNearSpreadIntegrated = false;
     // np-look26 g: cutoutSampleTest stays off in every look. Measured against
     // the landed sharpened coverage it is a trade, not a gain (LookProfile.h);
     // the hair_edge inspection tokens turn it on.
@@ -217,6 +232,41 @@ bool SetLookLodBiasForInspection(bool useRule, float bias) {
     return true;
 }
 
+bool LookTakesUiLodBias(const LookSettings &look) { return look.uiTakesLodBias; }
+
+float UiGlyphLodBias(const LookSettings &look) { return look.uiTakesLodBias ? look.uiLodBias : 0.0f; }
+
+float UiArtLodBias(const LookSettings &look) {
+    return look.uiTakesLodBias && !look.uiLodBiasGlyphsOnly ? look.uiLodBias : 0.0f;
+}
+
+bool SetLookUiLodBiasForInspection(bool useRule, float bias) {
+    LookSettings &s = Mutable();
+    if (s.profile == LookProfile::Native) return false;
+    s.uiLodBias = useRule ? SettingsFor(s.profile).uiLodBias : bias;
+    fprintf(stderr, "[look] text lod bias %.2f%s (inspection, profile %s)\n", s.uiLodBias,
+            useRule ? " (the rule)" : "", LookProfileName(s.profile));
+    return true;
+}
+
+bool SetLookUiMipLevelsForInspection(int levels) {
+    LookSettings &s = Mutable();
+    if (s.profile == LookProfile::Native) return false;
+    s.uiMipLevels = levels < 0 ? SettingsFor(s.profile).uiMipLevels : levels;
+    fprintf(stderr, "[look] text mip levels %d%s (inspection, profile %s)\n", s.uiMipLevels,
+            levels < 0 ? " (the rule)" : "", LookProfileName(s.profile));
+    return true;
+}
+
+bool SetLookUiLodBiasScopeForInspection(int mode) {
+    LookSettings &s = Mutable();
+    if (s.profile == LookProfile::Native) return false;
+    s.uiLodBiasGlyphsOnly = mode < 0 ? SettingsFor(s.profile).uiLodBiasGlyphsOnly : mode != 0;
+    fprintf(stderr, "[look] text lod bias on glyphs only %d%s (inspection, profile %s)\n",
+            (int)s.uiLodBiasGlyphsOnly, mode < 0 ? " (the rule)" : "", LookProfileName(s.profile));
+    return true;
+}
+
 bool SetLookAnisotropyForInspection(unsigned short maxAnisotropy) {
     LookSettings &s = Mutable();
     if (s.profile == LookProfile::Native) return false;
@@ -237,6 +287,46 @@ bool SetLookNoiseRowsForInspection(int mode) {
     fprintf(stderr, "[look] noise map on output rows %d%s (inspection, profile %s)\n",
             (int)s.noiseSnapsToOutputRows, mode < 0 ? " (the rule)" : "", LookProfileName(s.profile));
     return true;
+}
+
+bool SetLookDofNearForInspection(int mode, bool spread) {
+    LookSettings &s = Mutable();
+    if (s.profile == LookProfile::Native) return false;
+    const LookSettings &r = SettingsFor(s.profile);
+    // Each has a value per adapter class. On and off force both, so the token
+    // means the same on any GPU; the rule returns each to the profile's.
+    if (!spread) {
+        s.postDofNearField = mode < 0 ? r.postDofNearField : mode != 0;
+        s.postDofNearFieldIntegrated = mode < 0 ? r.postDofNearFieldIntegrated : mode != 0;
+        fprintf(stderr, "[look] depth of field near field %d, %d on a non-discrete GPU%s (inspection, profile %s)\n",
+                (int)s.postDofNearField, (int)s.postDofNearFieldIntegrated, mode < 0 ? " (the rule)" : "",
+                LookProfileName(s.profile));
+        return true;
+    }
+    s.postDofNearSpread = mode < 0 ? r.postDofNearSpread : mode != 0;
+    s.postDofNearSpreadIntegrated = mode < 0 ? r.postDofNearSpreadIntegrated : mode != 0;
+    fprintf(stderr, "[look] depth of field near spread %d, %d on a non-discrete GPU%s (inspection, profile %s)\n",
+            (int)s.postDofNearSpread, (int)s.postDofNearSpreadIntegrated, mode < 0 ? " (the rule)" : "",
+            LookProfileName(s.profile));
+    return true;
+}
+
+bool LookDofNearField(const LookSettings &look, bool discreteGpu) {
+    return discreteGpu ? look.postDofNearField : look.postDofNearFieldIntegrated;
+}
+
+bool LookDofNearSpread(const LookSettings &look, bool discreteGpu) {
+    return discreteGpu ? look.postDofNearSpread : look.postDofNearSpreadIntegrated;
+}
+
+void LogLookAdapterClass(bool discreteGpu) {
+    static bool sLogged = false;
+    const LookSettings &s = Look();
+    if (sLogged || s.profile == LookProfile::Native) return;
+    sLogged = true;
+    fprintf(stderr, "[look] adapter class: %s; depth of field near field %d, near spread %d (profile %s)\n",
+            discreteGpu ? "discrete GPU" : "not a discrete GPU", (int)LookDofNearField(s, discreteGpu),
+            (int)LookDofNearSpread(s, discreteGpu), LookProfileName(s.profile));
 }
 
 bool SetLookDofDepthWeightForInspection(int mode) {

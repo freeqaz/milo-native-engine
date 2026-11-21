@@ -10701,3 +10701,176 @@ at 0.005 the ellipses were under it and showed as streaks), half axes 0.20 and 0
 - Seven sabotages, each caught: strength 0, the setting on for every profile, depth write on, depth
   compare Always, the `Crowd.cpp` call removed, the flush removed from `EndActivePass`, the warm
   removed.
+
+## 51. The text sampling rule: a LOD bias for glyph pages (lane np-gfx sharp, items 34 and 34b, branch np-look34, 2026-11-21)
+
+New work beyond the original. Text in the DC3 enhanced look was soft at 1080 rows and above, and the
+cause was not the one first assumed: no glyph is ever magnified. The glyph pages are drawn for twice
+720 rows, so a move name covers 0.297, 0.442 and 0.594 output pixels per texel at 720, 1080 and 1440
+rows; it is minified at every size up to 2160 rows. Text and HUD draws sample trilinear, with no
+anisotropy and no bias, from a sampler clamped to the first two mip levels (`LookSettings::uiMipLevels
+= 2`, the original's `min(NumMips()+1, 2)`). At 1080 rows that reads a glyph almost wholly from the
+half-size level, and its edge is two pixels wide.
+
+### 51.1 The rule is two numbers
+
+- `LookSettings::uiMipLevels` (existing) and `LookSettings::uiLodBias` (new), with
+  `uiLodBiasGlyphsOnly` and `uiTakesLodBias`. Enhanced: bias -1, glyph pages only, two levels. Retail
+  and Native: no bias, not taken; their text pipelines are the ones they had.
+- The bias is a uniform, so a token moves it on a held frame and compiles nothing:
+  `SceneUniforms::uiLodBias` (glyph pages) and `uiArtLodBias` (other HUD art; 0 while glyphs only), in
+  the two former pad slots (the struct stays 800 bytes), written per pass by `WriteSceneUniforms`;
+  `EnsureSceneUniformsCurrent` compares both, or a switch on a held frame would not reach the block.
+- Which value a draw reads is a pipeline constant: `kTakesUiBias` (0 none, 1 glyph page, 2 other
+  `uiClass` art), from `PipelineKey::uiBias`, set by `MaterialDrawUiBias(uiClass, glyphPage,
+  lookTakesUiLodBias)` in `Mesh_Wgpu.cpp`. `PipelineManager::SetUiTakesLodBias` is decided at init from
+  the look, as the world bias is; the fixed-key pre-warm queues both overlay variants under a look
+  with a text rule. A run started retail and switched to enhanced by token therefore keeps unbiased
+  text.
+- Shader (`diffuseSample`): at render scale 1, `textureSampleBias(.., materialLodBias() +
+  uiLodBias())`. Above 1, text samples with `textureSampleGrad` at output-pixel centres, which takes
+  no bias, so the gradients are multiplied by `exp2(uiLodBias())`. Text never takes the world bias
+  (`kTakesLodBias`), and world draws never take this one.
+
+### 51.2 Measured (3090, held frames, each rule switched by token on the same frame; dc3 archive `lanes/sharp/item34b/`)
+
+- Move-name stem, 10 to 90 % rise in output pixels, today against bias -1: 1.22 to 0.98 at 1280x720;
+  1.87 to 0.84 at 1920x1080 (1.88 to 0.84 at render scale 2); 1.90 to 0.79 at 2560x1440; 1.57 to 1.43
+  at 3840x2160. Stroke width at half height 3.20 to 3.25 pixels at 1080 rows; undershoot beside the
+  stem 0.003 of the step before and after; the drop shadow as dark. 640x360 and 960x540: the same
+  frames as before (the clamp makes the bias a no-op there).
+- Motion: the song list's detrended frame-to-frame flicker fell (3.19 to 2.08 % at 1080 rows) and no
+  rule raised a burst above the same-rule repeat.
+- Not adopted: the bias on all HUD art (the flashcards' line texture shows moire, edge energy +23 % at
+  720 rows); -1 with the clamp lifted (the same above 720 rows; at 360 rows it restores dropped
+  strokes but lowers stroke contrast 155 to 127); no bias with the clamp lifted (worse everywhere);
+  -0.5 (1.87 to 1.39 at 1080 rows), kept as a fallback.
+- Cost: no texture read added (one add, or one `exp2` and a multiply, per text fragment).
+
+### 51.3 Inspection and guards (dc3-decomp)
+
+- `SetLookUiLodBiasForInspection`, `SetLookUiMipLevelsForInspection`,
+  `SetLookUiLodBiasScopeForInspection`; DC3 tokens `{rnd native_look text_bias_off|text_bias_half|
+  text_bias_on|text_bias_rule}`, `text_levels_2|text_levels_all|text_levels_rule`,
+  `text_bias_glyphs|text_bias_all_ui|text_bias_scope_rule`. A level token makes new samplers and bind
+  groups, as the anisotropy tokens do.
+- `LookTextSamplingTest` (5): the profiles' values, which draws read which bias, the tokens and their
+  rules with the scene block rewritten on a held frame, no pipeline compiled on a switch, and the
+  shipped `diffuseSample` on the GPU reading the biased level of a three-level texture at scale 1 and
+  through the gradients at scale 2. Seven sabotages, each caught (one only after the test was
+  tightened).
+- Frames under 720 rows still drop thin strokes; that needs a size-dependent clamp and is not part of
+  this rule.
+
+## 52. The depth of field's near field (lane np-gfx sharp, items 35 and 36, branch np-look36, 2026-11-21)
+
+The enhanced look's depth-weighted blur (dc3 PLAN H-151: each downsample tap weighs `f^2`, `f` the
+blur factor at that tap, so an in-focus texel adds nothing to the blur) is symmetric in depth: a
+tap weighs the same whichever side of the focal plane it is on. That is right behind the focus (a blurred backdrop must not bleed a halo
+around a sharp dancer) and wrong in front of it. A blurred object in front of the focus should
+have a soft outline; with the weight, the blur at its edge holds only its own colour and the
+composite steps from that straight to the sharp figure behind, so an out-of-focus crowd member
+kept a cut-out outline harder than the original's (largest edge step 1.16 to 2.31 times the
+retail look's on held frames; found by the item 35 survey). The near field is the fix: in front
+of the focal plane the depth-blind blur comes back.
+
+Enhanced DC3 look only (`LookSettings::postDofNearField`, `postDofNearSpread`). The retail look
+and the Native profile take neither, and `DofPass::Run`'s two new arguments default off, so no
+other caller changes.
+
+Both are decided by adapter class, as supersampling is (`renderScale` / `renderScaleIntegrated`):
+`postDofNearField` and `postDofNearSpread` are the values on a discrete GPU (on),
+`postDofNearFieldIntegrated` and `postDofNearSpreadIntegrated` the values on anything else
+(integrated, CPU, unknown, the web build; off). `LookDofNearField(look, discreteGpu)` and
+`LookDofNearSpread(look, discreteGpu)` pick; `PostProcPass::Run` and the pre-warm ask them with
+`GpuDevice::IsDiscreteGpu()`, which is `AdapterInfo::adapterType == DiscreteGPU` as the device
+reported it. The reason is cost: the field adds texture reads to both blurs and the spread one
+more at every full-size pixel of the composite (52.2), and a handheld's integrated GPU had not
+been timed with either when this landed. With the field off the depth of field runs exactly the
+passes it ran before this section: the same shaders, the same target formats, the same reads.
+When that timing fits, the `...Integrated` values go on in `SettingsFor`.
+
+`LogLookAdapterClass(discreteGpu)` prints the outcome once, when the renderer's device is up
+(`WgpuRnd::InitGpuResources`): `[look] adapter class: discrete GPU; depth of field near field 1,
+near spread 1 (profile enhanced)`, or `not a discrete GPU ... 0 ... 0`. Nothing under the Native
+profile.
+
+### 52.1 The rule
+
+- `dof_near(z) = smoothstep(0.2, 0.6, -t)`, `t = z * c24.x + c24.y` (the same `t` the factor
+  uses; negative in front of the focal plane). It is exactly 0 at and behind the focus, so the
+  far field is the depth-weighted blur's to the pixel.
+- The field: where the centre pixel is in the near field, the composite's colour is
+  `mix(weighted blur, depth-blind blur, dof_near)`. The in-focus figure's colour shows through
+  the near object's blurred edge, as it does in the original.
+- The spread (`postDofNearSpread`): the mix amount of the composite becomes
+  `max(f, coverage)`, the coverage being the blurred near field. The near object's blur (the
+  weighted colour, which holds no in-focus colour) spreads a few pixels over the in-focus pixels
+  beside it, which is what a lens does and the original does not.
+
+### 52.2 The passes (`DofPass.cpp`, only with the depth weight on)
+
+- The half-size factor pre-pass has two forms. Without the near field it is what it was:
+  `fs_dw_factor_half` into an R16Float target (`f^2`). With it, `fs_dw_factor_half_near` writes
+  `f^2` and `dof_near` into an RG16Float target (`DofDepthWeightFactorHalfNear`). The target is
+  remade once when the near field is switched (`EnsureDepthWeightTextures(.., nearField)`).
+- `fs_down_tent_dwn` (two targets): the weighted quarter as before, and a second RGBA16Float
+  quarter holding the plain tent (depth-blind) with the tent-averaged near field in alpha. The
+  same 16 + 16 reads.
+- `fs_blur_near` (two targets): both quarters through the same 8 taps, horizontal and vertical.
+- `fs_composite_bspline_dwn`: the depth-blind B-spline is read only inside the near field (a
+  branch); the spread's coverage is one bilinear read per pixel, taken only when the uniform
+  `DofUniforms::near.x` is set. `DofUniforms` is 32 bytes.
+- Four pipelines, `DofDepthWeightFactorHalfNear`, `DofDownsampleTentNear`, `DofBlurNear`,
+  `DofCompositeNear`, warmed by `DofPass::Prewarm(format, gpu, enhanced, depthWeighted, nearField)`
+  from `WgpuRnd::PrewarmFixedKeyPipelines` when the look starts with the near field on for this
+  adapter class. The spread is a uniform and compiles nothing.
+- Reads added per pixel: the two blurs +8 per quarter texel each; the composite +4 inside the
+  near field, and with the spread +1 everywhere. Memory: two more RGBA16Float quarter targets, and
+  the half factor target grows from 2 to 4 bytes per texel. All of it only with the near field on.
+
+### 52.3 Measured (3090, held frames, each rule switched by token on the same frame; dc3 archive `lanes/sharp/item36/`)
+
+- Largest step across a near silhouette, as a ratio to the retail token on the same frame (today /
+  field / field and spread): streetside 1920x1080 scale 2, 1.65 / 0.80 / 0.37; houseparty
+  1920x1080 scale 2, 1.27 / 0.88 / 0.73; streetside 1268x713, 1.87 / 0.75 / 0.74; a dancer's own
+  hand reaching toward the camera at dclive 1280x720 (only partly in the near field), 1.21 / 1.21
+  / 0.86. The field alone does not soften that last case; the spread does.
+- The depth weight's halo measure at dclive is unchanged (5.9 levels with the rule off, with the field and with
+  the spread; 27.1 with the depth weight off). Wide shots and frames with no near object change
+  within the same-setting repeat. No opaque HUD pixel changes.
+- GPU time of the depth of field, 1920x1080 scale 1: 0.198 ms today, 0.198 with the field, 0.271
+  with the spread (+0.073). At render scale 2: 0.598 / 0.640 / 0.865 (+0.042, +0.267). The
+  composite's extra read at every full-size pixel is the bulk of the spread's cost.
+
+### 52.4 Inspection and guards (dc3-decomp)
+
+- `SetLookDofNearForInspection(mode, spread)` (1 / 0 / -1 for on, off, the profile's; refused
+  under Native); DC3 tokens `{rnd native_look dof_near_on|dof_near_off|dof_near_rule}` and
+  `dof_near_spread_on|dof_near_spread_off|dof_near_spread_rule`. The on and off tokens write
+  both adapter classes' values, so they mean the same on any GPU; a rule token returns each
+  class to the profile's. There is no environment variable. The switch back to the picture
+  before this section is `dof_near_off`, and on a non-discrete adapter that is the default.
+- `DC3LookPostTest.DofNearFieldSoftensANearObjectsEdgeAndLeavesTheFarField`: a bright in-focus
+  half beside a dark half in front of the focus. Largest edge step in levels per pixel: retail
+  107, weighted 209, field 108, field and spread 13. The same scene mirrored behind the focus
+  changes no pixel, no switch compiles a pipeline after the pre-warm, and the factor target the
+  device made is R16Float without the near field and RG16Float with it.
+  `DC3LookDofNear.FollowsTheLookAndItsSwitch`: the profiles' values and the tokens.
+  `DC3LookDofNear.TheNearFieldFollowsTheAdapterClass`: the class rule for the field and the
+  spread, and the tokens over it. Ten sabotages, each caught (the last three: the off path
+  writing the two-channel target, the field's helper ignoring the class, the field's on token
+  writing the discrete value only). The one line no native test reaches is `PostProcPass::Run`
+  passing the device's class: the build machine has no non-discrete adapter.
+- Both classes drawn on a held frame (streetside low state, the close-up `cu01`, 1280x720).
+  Discrete (the build machine's 3090, native): the rule's frame is the forced-on frame (92
+  pixels apart, none by more than 2 levels; the same setting twice is 7 to 95 pixels) and
+  42,284 pixels from the forced-off frame (16,066 by more than 8 levels). Non-discrete (the web
+  build, where the adapter type is not `DiscreteGPU`): the rule's frame is the `dof_near_off`
+  frame to the pixel (0 of 921,600, against two takes of each), 24,698 pixels from the field's
+  frame and 37,281 from the spread's, and the page logs `[look] adapter class: not a discrete
+  GPU; depth of field near field 0, near spread 0`. The on tokens work there too (the four
+  pipelines compile on first use, no validation error). Not drawn yet on a native integrated
+  adapter (the 890M, Apple's).
+- Not addressed: an edge between two blurred surfaces that are both behind the focus (the far
+  field's rule).
