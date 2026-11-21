@@ -900,6 +900,17 @@ inline float BloomMaskScale(const M &m, bool envFadeOutCancels = true) {
 // (DC3_DISPLAY_GAMMA=off for the pre-ramp front buffer, or a value to
 // override). rb3-xenon: 0, no ramp. See DC3PostChain.cpp.
 float DisplayGamma(bool presenting);
+// The display type the console corrects that ramp for before scan-out
+// (D3DDevice_SetGammaRamp -> D3D::GammaRampCorrected, gfx/DisplayRamp.h):
+// DisplayRamp::kDisplayTV by default, in every look (the console on an HDMI
+// or component TV); kDisplaySRGB (the ramp alone, a VGA-cabled console) with
+// DC3_DISPLAY_GAMMA=srgb. rb3-xenon: kDisplaySRGB.
+int DisplayGammaType();
+// {rnd native_look display_tv|display_srgb|display_off|display_rule}: force a
+// display type (kDisplayTV, kDisplaySRGB), 0 = no ramp, -1 = back to
+// DC3_DISPLAY_GAMMA / the default. Inspection only.
+void SetDisplayTypeForInspection(int type);
+int DisplayTypeForInspection();
 // ---- end np-gfx-post ----
 
 // ---- scene lighting --------------------------------------------------------
