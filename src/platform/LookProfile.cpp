@@ -56,6 +56,9 @@ LookSettings SettingsFor(LookProfile p) {
     s.postBloomFilter = enh;
     s.postDofFilter = enh;
     s.specularAA = enh;
+    // np-look23 (a): the noise map on whole output rows (LookProfile.h).
+    // Uniforms only, no cost but a memoised constant per size.
+    s.noiseSnapsToOutputRows = enh;
     return s;
 }
 
@@ -199,6 +202,15 @@ bool SetLookAnisotropyForInspection(unsigned short maxAnisotropy) {
     s.maxAnisotropy = maxAnisotropy ? maxAnisotropy : SettingsFor(s.profile).maxAnisotropy;
     fprintf(stderr, "[look] world max anisotropy %u%s (inspection, profile %s)\n", (unsigned)s.maxAnisotropy,
             maxAnisotropy ? "" : " (the rule)", LookProfileName(s.profile));
+    return true;
+}
+
+bool SetLookNoiseRowsForInspection(int mode) {
+    LookSettings &s = Mutable();
+    if (s.profile == LookProfile::Native) return false;
+    s.noiseSnapsToOutputRows = mode < 0 ? SettingsFor(s.profile).noiseSnapsToOutputRows : mode != 0;
+    fprintf(stderr, "[look] noise map on output rows %d%s (inspection, profile %s)\n",
+            (int)s.noiseSnapsToOutputRows, mode < 0 ? " (the rule)" : "", LookProfileName(s.profile));
     return true;
 }
 

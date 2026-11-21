@@ -692,6 +692,11 @@ struct MatHasBloomMultiplier<M, std::void_t<decltype(std::declval<const M &>().G
     : std::true_type {};
 constexpr bool kDC3RetailPost =
     PostProcHasBloomLocFactor<RndPostProc>::value && MatHasBloomMultiplier<RndMat>::value;
+// np-look23 (a): DC3's post-process noise map (noise_mono.tex, 768 rows down
+// any screen) is retiled to whole output rows and read at one fixed place in
+// each texel, so it cannot beat against the output (gfx/NoiseRows.h). DC3's
+// only: rb3-xenon, which also compiles this shape, keeps the authored uv.
+constexpr bool kNoiseSnapsToOutputRows = kDC3RetailModel;
 // The RB3 chain's EndWorld flush (WgpuRnd::FlushWorldPost) stays RB3's: DC3
 // already grades at EndWorld through NgRnd::DoPostProcess.
 constexpr bool kRetailPostChain = false;

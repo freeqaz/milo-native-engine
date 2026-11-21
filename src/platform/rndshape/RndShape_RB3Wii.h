@@ -606,6 +606,9 @@ inline bool PostProcNoiseMap(const RndPostProc *, PostProcNoise &) { return fals
 constexpr bool kRetailPostChain = true;
 // DC3's retail chain (RndShape_DC3.h, np-gfx-post) is the DC3 shape's only.
 constexpr bool kDC3RetailPost = false;
+// The noise map tied to output rows (RndShape_DC3.h, gfx/NoiseRows.h) is
+// dc3-decomp's only: RB3 samples its noise maps at the authored uv.
+constexpr bool kNoiseSnapsToOutputRows = false;
 // The frame at the output's own resolution (np-outres, RndShape_DC3.h) is
 // dc3-decomp's only: rb3 keeps its frame at the target's size.
 constexpr bool kOutputFollowsTarget = false;
