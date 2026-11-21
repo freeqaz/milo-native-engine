@@ -10914,9 +10914,12 @@ multi-tile systems all animate their uvs. Nothing sets these fields at run time.
 ### 53.3 Against the original (Xenia, matched shots; retail look, 1280x720, display curve off)
 
 - Throneroom's far smoke: the polygon edges are gone and the haze is soft and mottled, as the
-  original's. It is still lighter than the original's (mean luma right of the left column 66.3
-  against 42.6 to 45.9; the scene behind it is brighter on native too, 85.5 against 57 to 67
-  with every particle hidden) and its grain is weaker.
+  original's. With both sides held at the same song time (15.51 s) the area right of the left
+  column reads mean luma 42.3 against the original's 42.7, with the same spread (10th to 90th
+  percentile 35 to 50 against 34 to 51). Compare at the same song time, not only the same
+  camera: the clouds behind the smoke change brightness on the song clock (with the particles
+  hidden the same box reads 47 at 15.75 s and 81 at 20.02 s on one binary), and an earlier
+  reading of "lighter than the original's" came from frames about 5 s apart.
 - Houseparty's `light_pop`: hard-edged rectangles before, tapered soft streaks after, as the
   original's.
 - Streetside's `peak_hydrant`, forced to show on both sides: large angular shards before, small
