@@ -61,6 +61,7 @@ bool GpuDevice::Init(const GpuDeviceDesc& desc) {
     // depends on it), before the surface is first configured. A frame that
     // does not follow keeps the canvas's own buffer size, as before.
     mSizeDesc = WebFrameDesc(desc);
+    RegisterWebInstance();
     mFollowsTarget = desc.outputFollowsTarget && desc.logicalWidth > 0 && desc.logicalHeight > 0;
     // The virtual resolution whether or not the frame follows (GpuDevice.cpp).
     const bool hasLogical = desc.logicalWidth > 0 && desc.logicalHeight > 0;
@@ -273,8 +274,14 @@ bool GpuDevice::CanvasTargetSize(int& w, int& h) const {
 // pixels; when the drawn size moves (or at init), size the canvas's buffer to
 // it and configure the surface, once.
 bool GpuDevice::FollowTarget(int targetW, int targetH, bool atInit) {
+    GpuDeviceDesc shape = mSizeDesc;
+    if (mPortraitFrame) {
+        // 9:16: the logical shape on its side (SetPortraitFrame).
+        shape.logicalWidth = mSizeDesc.logicalHeight;
+        shape.logicalHeight = mSizeDesc.logicalWidth;
+    }
     const FrameSizes s =
-        ResolveFrameSizesWithCap(mSizeDesc, false, true, targetW, targetH, mRowCap);
+        ResolveFrameSizesWithCap(shape, false, true, targetW, targetH, mRowCap);
     if (!atInit && s.drawnW == mWidth && s.drawnH == mHeight) return false;
     emscripten_set_canvas_element_size(MILO_WEB_CANVAS_SELECTOR, s.drawnW, s.drawnH);
     ApplyFrameSizes(s, atInit);
@@ -293,9 +300,32 @@ bool GpuDevice::FollowCanvas() {
     int tw = 0, th = 0;
     // An empty box (a collapsed panel, display:none): keep the frame as it is.
     if (!CanvasTargetSize(tw, th)) return false;
-    if (!mCanvasSize.Offer(tw, th, emscripten_get_now())) return false;
+    const bool settled = mCanvasSize.Offer(tw, th, emscripten_get_now());
+    if (mPortraitWanted != mPortraitFrame) {
+        // The shape moved (SetPortraitFrame). The page changes the canvas's
+        // box with it; wait for that box to settle, unless the box did not
+        // move at all (then the settled one is the box).
+        const bool boxStill = tw == mCanvasSize.TakenWidth() && th == mCanvasSize.TakenHeight();
+        if (!settled && !boxStill) return false;
+        mPortraitFrame = mPortraitWanted;
+        printf("GpuDevice: frame shape %s\n", mPortraitFrame ? "portrait (9:16)" : "landscape (16:9)");
+        EM_ASM({ window.miloPortraitFrame = $0; }, mPortraitFrame ? 1 : 0);
+        return FollowTarget(mCanvasSize.TakenWidth(), mCanvasSize.TakenHeight(), false);
+    }
+    if (!settled) return false;
     return FollowTarget(tw, th, false);
 }
+
+// The page's switch for the frame's shape (GpuDevice::SetPortraitFrame).
+// The page has one canvas and one device: the last GpuDevice to Init.
+static GpuDevice* sWebGpu = nullptr;
+extern "C" EMSCRIPTEN_KEEPALIVE void milo_web_set_portrait_frame(int on) {
+    if (sWebGpu) sWebGpu->SetPortraitFrame(on != 0);
+}
+extern "C" EMSCRIPTEN_KEEPALIVE int milo_web_portrait_frame() {
+    return sWebGpu && sWebGpu->PortraitFrame() ? 1 : 0;
+}
+void GpuDevice::RegisterWebInstance() { sWebGpu = this; }
 
 void GpuDevice::ResizeSurface(int width, int height) {
     if (width <= 0 || height <= 0) return;
