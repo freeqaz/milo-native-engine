@@ -5,6 +5,7 @@
 #pragma once
 
 #include "gfx/FrameCost.h"
+#include "gfx/PerfWindow.h"
 #include "gfx/GpuDevice.h"
 #include "gfx/PipelineManager.h"
 #include "gfx/ShadowPass.h"
@@ -732,12 +733,7 @@ public:
     // Frame budget tracking (MILO_PERF env var)
     bool mPerfEnabled = false;
     double mFrameStartTime = 0.0;
-    double mPerfAccumTime = 0.0;
-    int mPerfFrameCount = 0;
-    float mPerfMaxFrameMs = 0.0f;
-    int mPerfDrawCallAccum = 0;
-    int mPerfInvisibleAccum = 0;   // draws not sent (DrawChangesNothing)
-    int mPerfBudgetViolations = 0;
+    milo::PerfWindow mPerfWindow;  // gfx/PerfWindow.h
 
     // Video recording (MILO_VIDEO env var)
     VideoEncoder mVideoEncoder;
