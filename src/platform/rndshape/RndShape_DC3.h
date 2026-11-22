@@ -568,8 +568,14 @@ constexpr bool kAlphaTestGreater = kDC3RetailModel;
 
 // ---- draw modes ------------------------------------------------------------
 // The Rnd::Mode WorldReflection::DrawShowing sets while it draws the mirrored
-// world (DC3 world/Reflection.cpp: SetDrawMode((Rnd::Mode)8)).
-constexpr int kDrawModeReflection = 8;
+// world. The two consumers of this shape number it differently: DC3 stores 8
+// (dc3 world/Reflection.cpp: SetDrawMode((Rnd::Mode)8)), and RB3 retail stores
+// 7 (band.exe WorldReflection::DrawShowing, `li r10,7` then `stw r10,0xfc(r11)`
+// -- Rnd +0xfc is the draw mode -- at 0x824E8994; rb3-xenon world/Reflection.cpp
+// matches it). This used to be 8 for both, so on
+// rb3-xenon no draw ever knew it was in the mirrored pass and the reflection
+// got no cull flip (kReflectionForcesReverseCull is false there).
+constexpr int kDrawModeReflection = kDC3RetailModel ? 8 : 7;
 // What culling a draw gets inside that mode. DC3's RndShader::CheckForceCull
 // (rndobj/Shader.cpp) sets D3D cull mode 6 -- the reverse of a regular
 // material's 2 -- for EVERY material while DrawMode() == 8, whatever its own
