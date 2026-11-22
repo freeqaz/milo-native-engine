@@ -114,7 +114,7 @@ LookAdapterClass ClassifyLookAdapter(LookAdapterType type, uint32_t vendorId, bo
 // np-look56: a browser's adapter (see above). appleInBrowser is the
 // Apple-in-a-browser constant's value, an argument so tests walk both.
 LookAdapterClass ClassifyWebLookAdapter(const char *vendor, bool hasBC, bool fallback, bool appleInBrowser);
-// kAppleInBrowser (LookProfile.cpp): false until a Mac in a browser is timed.
+// kAppleInBrowser (LookProfile.cpp): false until Safari is tried on a Mac.
 bool LookAppleInBrowser();
 // The facts' class: the web rule with kAppleInBrowser when f.web, else the
 // native rule.
