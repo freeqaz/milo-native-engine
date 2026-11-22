@@ -1,5 +1,5 @@
 // JoypadScriptHook — the seam between the scripted-input `wake` directive
-// (MILO_INPUT_SCRIPT, parsed in Joypad_Native.cpp) and the game that knows
+// (MILO_INPUT_SCRIPT, parsed in JoypadNativeSource.cpp) and the game that knows
 // whether a wake press is needed.
 //
 // Some Milo games swallow the first pad press that arrives while the game is
@@ -65,5 +65,21 @@ typedef JoypadScriptSelectState (*JoypadScriptSelectFn)(const char *name, int *d
 
 // Register (or, with nullptr, clear) the game's answer.
 void JoypadScriptSetSelectQuery(JoypadScriptSelectFn fn);
+
+// ---------------------------------------------------------------------------
+// The game's UI, as `wait_screen NAME` and `highlight` see it. Returns false
+// while the game has no UI; otherwise sets *screen to the current screen's
+// name (nullptr when there is none) and *inTransition to whether a screen
+// transition is running. wait_screen is satisfied once *screen is NAME with no
+// transition; highlight only asks its JoypadScriptSelectFn with no transition.
+// With none registered every wait times out (30 s) and highlight finds no list.
+// The engine's own JoypadPoll (Joypad_Native.cpp) registers DC3's TheUI.
+typedef bool (*JoypadScriptUiFn)(const char **screen, bool *inTransition);
+
+// Defined so a game can compile its answer only against an engine that has it.
+#define MILO_JOYPAD_SCRIPT_UI_QUERY 1
+
+// Register (or, with nullptr, clear) the game's answer.
+void JoypadScriptSetUiQuery(JoypadScriptUiFn fn);
 
 #endif // MILO_ENGINE_PLATFORM_JOYPADSCRIPTHOOK_H

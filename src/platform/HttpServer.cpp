@@ -57,7 +57,7 @@ static std::string JsonError(const std::string& msg) {
     return "{\"ok\":false,\"error\":\"" + JsonEscape(msg) + "\"}";
 }
 
-// Phase 4: Button name → bit position mapping (mirrors Joypad_Native.cpp ParseButtonName)
+// Phase 4: Button name → bit position mapping (mirrors JoypadNativeSource.cpp ParseButtonName)
 static int ParseHttpButtonName(const char* name) {
     if (!strcmp(name, "confirm") || !strcmp(name, "a"))      return 6;   // kPad_X
     if (!strcmp(name, "cancel")  || !strcmp(name, "b"))      return 5;   // kPad_Circle
