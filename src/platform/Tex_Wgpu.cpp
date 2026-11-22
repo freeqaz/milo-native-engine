@@ -770,6 +770,21 @@ struct GpuCubeTexData {
 
 static std::unordered_map<RndCubeTex*, GpuCubeTexData> sCubeTexGpuData;
 
+// Drop a cube map's GPU copy (np-gfx item 58). The table is keyed on the
+// RndCubeTex ADDRESS and GetGpuCubeTexView serves whatever entry says
+// `uploaded`, so without this a dead cube map's texture stayed on the GPU
+// until exit and the next RndCubeTex placed at its address drew the dead one's
+// faces. Called from RndCubeTex's HX_NATIVE destructor (as RndTex's calls
+// CleanupGpuTex) and from RndCubeTex::Update, so changed faces upload again on
+// the next draw. Safe with no entry and with no renderer.
+void CleanupGpuCubeTex(RndCubeTex* cubeTex) {
+    auto it = sCubeTexGpuData.find(cubeTex);
+    if (it == sCubeTexGpuData.end()) return;
+    // Cached bind groups pin the view (and through it the texture).
+    if (gWgpuRnd && it->second.view) gWgpuRnd->ForgetTextureView(it->second.view);
+    sCubeTexGpuData.erase(it);
+}
+
 int GetGpuCubeTexMipLevels(RndCubeTex* cubeTex) {
     auto it = sCubeTexGpuData.find(cubeTex);
     if (it == sCubeTexGpuData.end() || !it->second.uploaded || !it->second.texture) return -1;

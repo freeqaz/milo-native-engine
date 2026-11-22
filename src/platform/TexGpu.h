@@ -14,6 +14,11 @@ wgpu::TextureView GetGpuTexDepthView(RndTex* tex);
 // any other texture (rndshape::kSelfShadowTexType).
 wgpu::TextureView GetGpuTexDepthSampleView(RndTex* tex);
 wgpu::TextureView GetGpuCubeTexView(RndCubeTex* cubeTex);
+// Release a cube map's GPU copy and any cached bind group holding its view;
+// the next GetGpuCubeTexView uploads again. A no-op with no entry or no
+// renderer. A consumer's RndCubeTex calls it from its destructor and wherever
+// its faces change (dc3: rndobj/CubeTex.cpp, under HX_NATIVE).
+void CleanupGpuCubeTex(RndCubeTex* cubeTex);
 
 // The GPU texture behind a texture's view (null when it has none), for tests
 // that read one back. Byte-identical bitmaps share one (Tex_Wgpu.cpp).
