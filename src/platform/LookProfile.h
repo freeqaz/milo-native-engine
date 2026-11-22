@@ -313,8 +313,8 @@ struct LookSettings {
     // Where the samples agree: the composite without the rule, to the bit.
     // Decided by adapter class like the near field:
     // postDofEdge on a discrete GPU, ...Apple on an Apple GPU, ...Integrated
-    // on anything else. Enhanced: on / off (kAppleDofEdge, until the landing
-    // session's M3 timing) / off (until the 890M's timing). Retail and
+    // on anything else. Enhanced: on / off (kAppleDofEdge: timed on the M3,
+    // over its limit at every size) / off (the 890M is not timed). Retail and
     // Native: off. Inspection: {rnd native_look dof_edge_on|_off|_rule}.
     // LookDofEdge picks.
     bool postDofEdge = false;

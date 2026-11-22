@@ -27,8 +27,11 @@ constexpr float kEnhancedUiLodBias = -1.0f;
 // 1080 up. No Apple GPU other than the M3 was timed. One line each to change.
 constexpr bool kAppleDofNearField = true;
 constexpr bool kAppleDofNearSpread = true;
-// np-look51: the depth of field's edge rule on an Apple GPU. Off until the
-// landing session's M3 timing says its three extra depth loads per pixel fit.
+// np-look51: the depth of field's edge rule on an Apple GPU. Off: timed on
+// the M3 on 2026-11-22 it is over its limit at every size (+0.23 to +0.25 ms
+// against +0.10 at 1268x713, +0.32 to +0.35 against +0.20 at 1920x1080,
+// +0.53 against +0.35 at 2560x1440; dc3 PLAN H-180, the addendum). The
+// picture on Metal is correct, so this is a cost decision only.
 constexpr bool kAppleDofEdge = false;
 constexpr bool kAppleTexPassMsaa = true;
 constexpr bool kAppleTexPassScale = true;
@@ -136,7 +139,8 @@ LookSettings SettingsFor(LookProfile p) {
     s.postDofNearSpreadApple = enh && kAppleDofNearSpread;
     s.postDofNearSpreadIntegrated = false;
     // np-look51: the edge rule (LookProfile.h). On a discrete GPU; Apple's is
-    // kAppleDofEdge; anything else off until the 890M's timing.
+    // kAppleDofEdge (off, over the M3's limit); anything else off, the 890M
+    // not being timed.
     s.postDofEdge = enh;
     s.postDofEdgeApple = enh && kAppleDofEdge;
     s.postDofEdgeIntegrated = false;
