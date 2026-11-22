@@ -1,0 +1,804 @@
+// Milo native port - the engine's native pad input sources
+// (platform/JoypadNativeSource.h): GLFW gamepad + keyboard (windowed), the
+// page's keyboard + gamepad (web), the MILO_INPUT_SCRIPT script (headless) and
+// the debug server's buttons. Split out of Joypad_Native.cpp, whose JoypadPoll
+// (DC3's JoypadData) is now one consumer of JoypadNativeSourceRead; the code
+// below is that file's, moved, with the reads it did inline in its poll loop
+// gathered into JoypadNativeSourceRead in the same order.
+//
+// Headless input: set MILO_INPUT_SCRIPT to a text file with scripted actions.
+// Supports absolute frames, wait_screen directives, and relative offsets.
+// See scripts/dc3-input-flows/README.txt for full format docs.
+//
+// Script format (one directive per line, `#` comments):
+//   N button          press `button` for one frame at absolute input frame N
+//   +N button         ... N frames after the last satisfied wait_screen
+//   wait_screen name  block until the game's current screen is `name` and idle
+//                     (JoypadScriptUiFn, platform/JoypadScriptHook.h)
+//   N wake / +N wake  "the player presses the wake button": a no-op when the
+//                     game's JoypadScriptWakeNeededFn says it is already in
+//                     its pad-driven mode, otherwise a one-frame press of the
+//                     wake button (kPad_L3, or MILO_INPUT_WAKE_BUTTON). See
+//                     platform/JoypadScriptHook.h.
+//   [+N] highlight name  move the focused list's highlight onto the entry
+//                     `name` (down / up presses, closed loop through the game's
+//                     JoypadScriptSelectFn), starting at frame N (default: at
+//                     once); a wait like wait_screen, so `+N` lines after it
+//                     count from the frame it was satisfied.
+
+#include "os/Joypad.h"
+#include "platform/JoypadNativeSource.h"
+#include "platform/JoypadScriptHook.h"
+#include "platform/JoypadKeyMap.h"
+#include "platform/TextInput_Native.h"
+#ifdef DC3_HTTP_SERVER
+#include "platform/HttpServer.h"
+#endif
+
+#ifdef __EMSCRIPTEN__
+#include <emscripten/emscripten.h>
+#include <emscripten/html5.h>
+#else
+#include <GLFW/glfw3.h>
+#endif
+
+#include <cstdlib>
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <vector>
+#include <algorithm>
+
+#ifndef __EMSCRIPTEN__
+// Set by Rnd_Wgpu during Init()
+extern GLFWwindow *gNativeWindow;
+#endif
+
+// ============================================================================
+// Web keyboard state (JS keydown/keyup → shared bitmask read from C)
+// ============================================================================
+
+#ifdef __EMSCRIPTEN__
+#include <emscripten/em_asm.h>
+
+static bool sWebInputInitialized = false;
+
+// Read the current button bitmask from JS (set by keydown/keyup listeners)
+static unsigned int GetWebKeyButtons() {
+    return (unsigned int)EM_ASM_INT({ return window._dc3Keys || 0; });
+}
+
+// Clear stale key state — call during screen transitions so held keys
+// from menu navigation don't bleed into gameplay (e.g., Space/Start
+// triggering an immediate pause on game_screen).
+void JoypadWebClearKeys() {
+    EM_ASM({ window._dc3Keys = 0; });
+}
+
+// Poll the Gamepad API — returns bitmask matching JoypadButton enum.
+// navigator.getGamepads() returns a snapshot; we read pad 0.
+static unsigned int GetWebGamepadButtons() {
+    return (unsigned int)EM_ASM_INT({
+        var gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+        var gp = gamepads[0];
+        if (!gp || !gp.connected) return 0;
+        var b = 0;
+        var btn = gp.buttons;
+        // Standard gamepad mapping (same as GLFW layout)
+        if (btn[0] && btn[0].pressed)  b |= (1 << 6);  // A -> kPad_X
+        if (btn[1] && btn[1].pressed)  b |= (1 << 5);  // B -> kPad_Circle
+        if (btn[2] && btn[2].pressed)  b |= (1 << 7);  // X -> kPad_Square
+        if (btn[3] && btn[3].pressed)  b |= (1 << 4);  // Y -> kPad_Tri
+        if (btn[4] && btn[4].pressed)  b |= (1 << 2);  // LB -> kPad_L1
+        if (btn[5] && btn[5].pressed)  b |= (1 << 3);  // RB -> kPad_R1
+        if (btn[6] && btn[6].value > 0.3)  b |= (1 << 0);  // LT -> kPad_L2
+        if (btn[7] && btn[7].value > 0.3)  b |= (1 << 1);  // RT -> kPad_R2
+        if (btn[8] && btn[8].pressed)  b |= (1 << 8);  // Back -> kPad_Select
+        if (btn[9] && btn[9].pressed)  b |= (1 << 11); // Start -> kPad_Start
+        if (btn[10] && btn[10].pressed) b |= (1 << 9);  // L3 -> kPad_L3
+        if (btn[11] && btn[11].pressed) b |= (1 << 10); // R3 -> kPad_R3
+        if (btn[12] && btn[12].pressed) b |= (1 << 12); // DUp -> kPad_DUp
+        if (btn[13] && btn[13].pressed) b |= (1 << 14); // DDown -> kPad_DDown
+        if (btn[14] && btn[14].pressed) b |= (1 << 15); // DLeft -> kPad_DLeft
+        if (btn[15] && btn[15].pressed) b |= (1 << 13); // DRight -> kPad_DRight
+        return b;
+    });
+}
+
+static void InitWebInput() {
+    if (sWebInputInitialized) return;
+    sWebInputInitialized = true;
+
+    // Install JS keydown/keyup listeners that maintain a bitmask.
+    // While text input has capture (platform/TextInput_Native.h sets
+    // window._miloTextCapture), a key that types or edits text -- a one
+    // character event.key, or Backspace -- sets no bit: it is text, not a pad
+    // button. Arrows, Enter, Escape and Tab still do. A key pressed under
+    // capture therefore never becomes a pad press when capture ends, and
+    // keyup clears bits whatever the capture state.
+    // Bit positions match JoypadButton enum:
+    //   L2=0 R2=1 L1=2 R1=3 Tri=4 Circle=5 X=6 Square=7
+    //   Select=8 L3=9 R3=10 Start=11 DUp=12 DRight=13 DDown=14 DLeft=15
+    // EM_ASM JS blocks cannot contain C-style comments or unescaped braces in
+    // object literals, so we build the key map with bracket assignment.
+    EM_ASM({
+        window._dc3Keys = 0;
+        var m = new Object();
+        m['ArrowUp']    = 1<<12;
+        m['ArrowDown']  = 1<<14;
+        m['ArrowLeft']  = 1<<15;
+        m['ArrowRight'] = 1<<13;
+        m['w'] = 1<<12;
+        m['W'] = 1<<12;
+        m['s'] = 1<<14;
+        m['S'] = 1<<14;
+        m['a'] = 1<<15;
+        m['A'] = 1<<15;
+        m['d'] = 1<<13;
+        m['D'] = 1<<13;
+        m['Enter']     = 1<<6;
+        m['Escape']    = 1<<5;
+        m['Backspace'] = 1<<5;
+        m[' ']         = 1<<11;
+        m['Tab']       = 1<<8;
+        m['q'] = 1<<2;
+        m['Q'] = 1<<2;
+        m['e'] = 1<<3;
+        m['E'] = 1<<3;
+        m['z'] = 1<<0;
+        m['Z'] = 1<<0;
+        m['c'] = 1<<1;
+        m['C'] = 1<<1;
+        m['x'] = 1<<7;
+        m['X'] = 1<<7;
+        m['y'] = 1<<4;
+        m['Y'] = 1<<4;
+        var consume = new Object();
+        consume['ArrowUp'] = 1;
+        consume['ArrowDown'] = 1;
+        consume['ArrowLeft'] = 1;
+        consume['ArrowRight'] = 1;
+        consume[' '] = 1;
+        consume['Tab'] = 1;
+        consume['Escape'] = 1;
+        consume['Backspace'] = 1;
+        document.addEventListener('keydown', function(e) {
+            var bit = m[e.key];
+            if (bit) {
+                var text = window._miloTextCapture && (e.key.length == 1 || e.key == 'Backspace');
+                if (!text) window._dc3Keys |= bit;
+                if (consume[e.key]) e.preventDefault();
+            }
+        }, true);
+        document.addEventListener('keyup', function(e) {
+            var bit = m[e.key];
+            if (bit) {
+                window._dc3Keys &= ~bit;
+            }
+        }, true);
+        console.log('DC3 Web: keyboard input ready');
+    });
+
+    printf("DC3 Web: keyboard input initialized\n");
+}
+#endif // __EMSCRIPTEN__
+
+static const float kTriggerThreshold = 0.3f;
+
+// ============================================================================
+// Desktop keyboard map (platform/JoypadKeyMap.h)
+// ============================================================================
+
+const char *JoypadXboxButtonName(int button) {
+    switch (button) {
+    case kPad_L2:          return "LT";
+    case kPad_R2:          return "RT";
+    case kPad_L1:          return "LB";
+    case kPad_R1:          return "RB";
+    case kPad_Tri:         return "Y";
+    case kPad_Circle:      return "B";
+    case kPad_X:           return "A";
+    case kPad_Square:      return "X";
+    case kPad_Select:      return "Back";
+    case kPad_L3:          return "L3";
+    case kPad_R3:          return "R3";
+    case kPad_Start:       return "Start";
+    case kPad_DUp:         return "D-pad up";
+    case kPad_DRight:      return "D-pad right";
+    case kPad_DDown:       return "D-pad down";
+    case kPad_DLeft:       return "D-pad left";
+    case kPad_LStickUp:    return "LS up";
+    case kPad_LStickRight: return "LS right";
+    case kPad_LStickDown:  return "LS down";
+    case kPad_LStickLeft:  return "LS left";
+    case kPad_RStickUp:    return "RS up";
+    case kPad_RStickRight: return "RS right";
+    case kPad_RStickDown:  return "RS down";
+    case kPad_RStickLeft:  return "RS left";
+    default:               return "?";
+    }
+}
+
+#ifndef __EMSCRIPTEN__
+// Mirrors the web map in InitWebInput (minus its WASD D-pad). X, Y, Z and C are
+// free in every Milo port's map: rb3's own keyboard (rb3_joypad_native.cpp)
+// uses 1-5/A-S-D-F-G (frets), J/K (strum), Enter, Backspace, Esc, Tab, Q, E and
+// Space. Z/C sit either side of X under the left hand, as LT/RT sit either side
+// of the bumpers' Q/E row.
+static const JoypadKeyBinding kKeyBindings[] = {
+    {GLFW_KEY_UP,        kPad_DUp,     "Up",        "D-pad"},
+    {GLFW_KEY_DOWN,      kPad_DDown,   "Down",      "D-pad"},
+    {GLFW_KEY_LEFT,      kPad_DLeft,   "Left",      "D-pad"},
+    {GLFW_KEY_RIGHT,     kPad_DRight,  "Right",     "D-pad"},
+    {GLFW_KEY_ENTER,     kPad_X,       "Enter",     "A"},
+    {GLFW_KEY_ESCAPE,    kPad_Circle,  "Esc",       "B"},
+    {GLFW_KEY_BACKSPACE, kPad_Circle,  "Backspace", "B"},
+    {GLFW_KEY_X,         kPad_Square,  "X",         "X"},
+    {GLFW_KEY_Y,         kPad_Tri,     "Y",         "Y"},
+    {GLFW_KEY_SPACE,     kPad_Start,   "Space",     "Start"},
+    {GLFW_KEY_TAB,       kPad_Select,  "Tab",       "Back"},
+    {GLFW_KEY_Q,         kPad_L1,      "Q",         "LB"},
+    {GLFW_KEY_E,         kPad_R1,      "E",         "RB"},
+    {GLFW_KEY_Z,         kPad_L2,      "Z",         "LT"},
+    {GLFW_KEY_C,         kPad_R2,      "C",         "RT"},
+};
+static const int kNumKeyBindings = (int)(sizeof(kKeyBindings) / sizeof(kKeyBindings[0]));
+#else
+static const JoypadKeyBinding *const kKeyBindings = nullptr;
+static const int kNumKeyBindings = 0;
+#endif
+
+static JoypadQuitKeyFn gQuitKeyHandler = nullptr;
+
+const JoypadKeyBinding *JoypadKeyBindings(int *count) {
+    if (count) *count = kNumKeyBindings;
+    return kKeyBindings;
+}
+
+void JoypadSetQuitKeyHandler(JoypadQuitKeyFn fn) { gQuitKeyHandler = fn; }
+
+#ifndef __EMSCRIPTEN__
+static bool HostModifierHeld(JoypadKeyDownFn keyDown, void *ctx) {
+    return keyDown(GLFW_KEY_LEFT_CONTROL, ctx) || keyDown(GLFW_KEY_RIGHT_CONTROL, ctx) ||
+           keyDown(GLFW_KEY_LEFT_ALT, ctx) || keyDown(GLFW_KEY_RIGHT_ALT, ctx) ||
+           keyDown(GLFW_KEY_LEFT_SUPER, ctx) || keyDown(GLFW_KEY_RIGHT_SUPER, ctx);
+}
+#endif
+
+unsigned int JoypadKeyboardButtons(JoypadKeyDownFn keyDown, void *ctx) {
+#ifndef __EMSCRIPTEN__
+    // Every bound key is read, chord or not: with GLFW sticky keys a read is
+    // what consumes a tap, so a key tapped inside a host chord and left
+    // unread stays "pressed" and lands on the first poll after the modifier
+    // is let go (Alt+Enter toggled fullscreen and then pressed A, dc3 H-18).
+    // While text input has capture (platform/TextInput_Native.h) a key that
+    // types or edits text is not a pad button, and stays not one until it is
+    // released: TextInputPadKeyAllowed. With capture never turned on it
+    // returns `down` unchanged.
+    unsigned int buttons = 0;
+    for (int i = 0; i < kNumKeyBindings; i++) {
+        const bool down = keyDown(kKeyBindings[i].key, ctx);
+        if (TextInputPadKeyAllowed(i, kKeyBindings[i].key, down))
+            buttons |= (1u << kKeyBindings[i].button);
+    }
+    if (HostModifierHeld(keyDown, ctx)) return 0;
+    return buttons;
+#else
+    (void)keyDown;
+    (void)ctx;
+    return 0;
+#endif
+}
+
+bool JoypadKeyboardQuitChordHeld(JoypadKeyDownFn keyDown, void *ctx) {
+#ifndef __EMSCRIPTEN__
+    bool ctrl = keyDown(GLFW_KEY_LEFT_CONTROL, ctx) || keyDown(GLFW_KEY_RIGHT_CONTROL, ctx);
+    return ctrl && keyDown(GLFW_KEY_Q, ctx);
+#else
+    (void)keyDown;
+    (void)ctx;
+    return false;
+#endif
+}
+
+void JoypadPrintKeyMap(const char *prefix) {
+    std::string line = prefix ? prefix : "";
+    for (int i = 0; i < kNumKeyBindings;) {
+        int j = i;
+        std::string keys;
+        while (j < kNumKeyBindings && !strcmp(kKeyBindings[j].padName, kKeyBindings[i].padName)) {
+            if (j > i) keys += "/";
+            keys += kKeyBindings[j].keyName;
+            j++;
+        }
+        if (i > 0) line += ", ";
+        line += keys + " = " + kKeyBindings[i].padName;
+        i = j;
+    }
+    if (gQuitKeyHandler) line += ", Ctrl+Q = quit";
+    printf("%s\n", line.c_str());
+    fflush(stdout);
+}
+
+// ============================================================================
+// Headless scripted input
+// ============================================================================
+
+enum ScriptDirectiveType {
+    kDirectiveButton,
+    kDirectiveWaitScreen,
+    kDirectiveWake, // a button directive that asks gWakeNeeded first
+    kDirectiveHighlight, // press down/up until the focused list's highlight is on a name
+};
+
+struct ScriptDirective {
+    ScriptDirectiveType type;
+    int frame;
+    JoypadButton button;
+    char screenName[64];
+    bool relative;
+};
+
+static std::vector<ScriptDirective> gScript;
+static bool gInputScriptLoaded = false;
+static size_t gScriptCursor = 0;
+static bool gWaiting = false;
+static const char *gWaitTarget = nullptr;
+static int gWaitSatisfiedFrame = -1;
+static int gWaitStartFrame = -1;
+static const int kWaitTimeoutFrames = 30 * 60; // 30 seconds at 60fps
+static JoypadScriptWakeNeededFn gWakeNeeded = nullptr;
+static JoypadScriptSelectFn gSelectQuery = nullptr;
+// `highlight`: a press at most every kSelectStepFrames (the flows' own spacing for
+// list scrolls), and only while the game reports the list still.
+static const int kSelectStepFrames = 15;
+static const int kSelectTimeoutFrames = 60 * 60;
+static const int kSelectNotFoundFrames = 2 * 60;
+static bool gSelecting = false;
+static int gSelectStartFrame = -1;
+static int gSelectLastPress = -1;
+static int gSelectPresses = 0;
+
+static JoypadScriptUiFn gUiQuery = nullptr;
+
+void JoypadScriptSetWakeNeeded(JoypadScriptWakeNeededFn fn) { gWakeNeeded = fn; }
+void JoypadScriptSetSelectQuery(JoypadScriptSelectFn fn) { gSelectQuery = fn; }
+void JoypadScriptSetUiQuery(JoypadScriptUiFn fn) { gUiQuery = fn; }
+
+// The game's UI as the waits see it (JoypadScriptUiFn): false = no UI.
+static bool ScriptUi(const char **screen, bool *inTransition) {
+    *screen = nullptr;
+    *inTransition = false;
+    return gUiQuery && gUiQuery(screen, inTransition);
+}
+
+static JoypadButton ParseButtonName(const char *name) {
+    // Confirm / A
+    if (!strcmp(name, "confirm") || !strcmp(name, "a"))     return kPad_X;
+    // Cancel / B
+    if (!strcmp(name, "cancel") || !strcmp(name, "b"))      return kPad_Circle;
+    // Start
+    if (!strcmp(name, "start"))                              return kPad_Start;
+    // Option / Back / Select
+    if (!strcmp(name, "option") || !strcmp(name, "back") ||
+        !strcmp(name, "select"))                             return kPad_Select;
+    // D-pad
+    if (!strcmp(name, "up"))                                 return kPad_DUp;
+    if (!strcmp(name, "down"))                               return kPad_DDown;
+    if (!strcmp(name, "left"))                               return kPad_DLeft;
+    if (!strcmp(name, "right"))                              return kPad_DRight;
+    // Bumpers
+    if (!strcmp(name, "l1") || !strcmp(name, "lb"))          return kPad_L1;
+    if (!strcmp(name, "r1") || !strcmp(name, "rb"))          return kPad_R1;
+    // Triggers
+    if (!strcmp(name, "l2") || !strcmp(name, "lt"))          return kPad_L2;
+    if (!strcmp(name, "r2") || !strcmp(name, "rt"))          return kPad_R2;
+    // Face buttons by Xbox name
+    if (!strcmp(name, "x"))                                  return kPad_Square;
+    if (!strcmp(name, "y"))                                  return kPad_Tri;
+    // Sticks
+    if (!strcmp(name, "l3") || !strcmp(name, "ls"))          return kPad_L3;
+    if (!strcmp(name, "r3") || !strcmp(name, "rs"))          return kPad_R3;
+
+    return (JoypadButton)-1;
+}
+
+// The button a `wake` directive presses: MILO_INPUT_WAKE_BUTTON (a script
+// button name), else L3 -- the button the DC3-under-Xenia flows used.
+static JoypadButton ScriptWakeButton() {
+    const char *name = getenv("MILO_INPUT_WAKE_BUTTON");
+    if (name && name[0]) {
+        char buf[64];
+        size_t i = 0;
+        for (; name[i] && i < sizeof(buf) - 1; i++)
+            buf[i] = (name[i] >= 'A' && name[i] <= 'Z') ? name[i] + 32 : name[i];
+        buf[i] = '\0';
+        JoypadButton btn = ParseButtonName(buf);
+        if ((int)btn >= 0) return btn;
+        printf("DC3 Native: MILO_INPUT_WAKE_BUTTON: unknown button '%s', using l3\n", name);
+    }
+    return kPad_L3;
+}
+
+static void LoadInputScript() {
+    gInputScriptLoaded = true;
+    const char *path = getenv("MILO_INPUT_SCRIPT");
+    if (!path || !path[0]) return;
+
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        printf("DC3 Native: MILO_INPUT_SCRIPT: cannot open '%s'\n", path);
+        return;
+    }
+
+    char line[256];
+    int lineNum = 0;
+    while (fgets(line, sizeof(line), f)) {
+        lineNum++;
+        char *hash = strchr(line, '#');
+        if (hash) *hash = '\0';
+
+        // Try wait_screen directive
+        char screenBuf[64];
+        if (sscanf(line, " wait_screen %63s", screenBuf) == 1) {
+            ScriptDirective d = {};
+            d.type = kDirectiveWaitScreen;
+            strncpy(d.screenName, screenBuf, sizeof(d.screenName) - 1);
+            gScript.push_back(d);
+            continue;
+        }
+        // highlight <name>: at once (the name is kept as written: list
+        // entries are symbols, case and all)
+        if (sscanf(line, " highlight %63s", screenBuf) == 1) {
+            ScriptDirective d = {};
+            d.type = kDirectiveHighlight;
+            strncpy(d.screenName, screenBuf, sizeof(d.screenName) - 1);
+            d.frame = -1; // no start frame: begins when reached
+            gScript.push_back(d);
+            continue;
+        }
+
+        // Parse button: "+N button" (relative) or "N button" (absolute)
+        const char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p || *p == '\n') continue;
+
+        bool isRelative = false;
+        if (*p == '+') {
+            isRelative = true;
+            p++;
+        }
+
+        int frame;
+        char btnName[64];
+        char argBuf[64];
+        int nf = sscanf(p, "%d %63s %63s", &frame, btnName, argBuf);
+        if (nf < 2) continue;
+        if (nf == 3 && !strcmp(btnName, "highlight")) {
+            ScriptDirective d = {};
+            d.type = kDirectiveHighlight;
+            d.frame = frame;
+            d.relative = isRelative;
+            strncpy(d.screenName, argBuf, sizeof(d.screenName) - 1);
+            gScript.push_back(d);
+            continue;
+        }
+
+        for (char *c = btnName; *c; c++) {
+            if (*c >= 'A' && *c <= 'Z') *c += 32;
+        }
+
+        if (!strcmp(btnName, "wake")) {
+            ScriptDirective d = {};
+            d.type = kDirectiveWake;
+            d.frame = frame;
+            d.button = ScriptWakeButton();
+            d.relative = isRelative;
+            gScript.push_back(d);
+            continue;
+        }
+
+        JoypadButton btn = ParseButtonName(btnName);
+        if ((int)btn < 0) {
+            printf("DC3 Native: MILO_INPUT_SCRIPT:%d: unknown button '%s'\n", lineNum, btnName);
+            continue;
+        }
+
+        ScriptDirective d = {};
+        d.type = kDirectiveButton;
+        d.frame = frame;
+        d.button = btn;
+        d.relative = isRelative;
+        gScript.push_back(d);
+    }
+    fclose(f);
+
+    printf("DC3 Native: loaded %d script directives from '%s'\n", (int)gScript.size(), path);
+}
+
+// Stateful script executor. Processes directives in order, blocking on
+// wait_screen until the target screen is current and not in transition.
+static unsigned int GetScriptedButtons(int currentFrame) {
+    if (gScript.empty()) return 0;
+
+    unsigned int buttons = 0;
+
+    while (gScriptCursor < gScript.size()) {
+        ScriptDirective &d = gScript[gScriptCursor];
+
+        if (d.type == kDirectiveWaitScreen) {
+            if (!gWaiting) {
+                gWaiting = true;
+                gWaitTarget = d.screenName;
+                gWaitSatisfiedFrame = -1;
+                gWaitStartFrame = currentFrame;
+            }
+
+            const char *screen = nullptr;
+            bool inTransition = false;
+            const bool haveUi = ScriptUi(&screen, &inTransition);
+            bool satisfied = false;
+            if (haveUi && screen && !inTransition) {
+                satisfied = (strcmp(screen, gWaitTarget) == 0);
+            }
+
+            if (satisfied) {
+                gWaitSatisfiedFrame = currentFrame;
+                gWaiting = false;
+                printf("DC3 Input: wait_screen '%s' satisfied at frame %d\n",
+                    gWaitTarget, currentFrame);
+                gScriptCursor++;
+                continue;
+            }
+
+            if (currentFrame - gWaitStartFrame > kWaitTimeoutFrames) {
+                const char *actual = (haveUi && screen) ? screen : "<none>";
+                printf("DC3 Input: TIMEOUT waiting for '%s' (current='%s', %d frames)\n",
+                    gWaitTarget, actual, currentFrame - gWaitStartFrame);
+                gWaiting = false;
+                gWaitSatisfiedFrame = currentFrame;
+                gScriptCursor++;
+                continue;
+            }
+
+            break; // Still waiting
+        }
+
+        if (d.type == kDirectiveHighlight) {
+            if (!gSelecting && d.frame >= 0) {
+                int startFrame = d.relative
+                    ? (gWaitSatisfiedFrame >= 0 ? gWaitSatisfiedFrame + d.frame : d.frame)
+                    : d.frame;
+                if (currentFrame < startFrame) break; // not yet
+            }
+            if (!gSelecting) {
+                gSelecting = true;
+                gSelectStartFrame = currentFrame;
+                gSelectLastPress = -kSelectStepFrames;
+                gSelectPresses = 0;
+            }
+            int delta = 0;
+            JoypadScriptSelectState state = kJoypadSelectNoList;
+            if (gSelectQuery) {
+                const char *screen = nullptr;
+                bool inTransition = false;
+                if (ScriptUi(&screen, &inTransition) && !inTransition)
+                    state = gSelectQuery(d.screenName, &delta);
+            }
+            if (state == kJoypadSelectReady && delta == 0) {
+                printf("DC3 Input: highlight '%s' satisfied at frame %d (%d presses)\n",
+                    d.screenName, currentFrame, gSelectPresses);
+                gSelecting = false;
+                gWaitSatisfiedFrame = currentFrame;
+                gScriptCursor++;
+                continue;
+            }
+            // A list that has settled and still has no such entry will not grow
+            // one: give up after a short grace (the list may still be filling).
+            const bool gone = state == kJoypadSelectNotFound
+                && currentFrame - gSelectStartFrame > kSelectNotFoundFrames;
+            if (!gSelectQuery || gone || currentFrame - gSelectStartFrame > kSelectTimeoutFrames) {
+                static const char *const kWhy[] = {"no focused list", "no such entry",
+                                                   "list still moving", "highlight never arrived"};
+                printf("DC3 Input: TIMEOUT highlight '%s': %s (%d presses, %d frames); "
+                       "the rest of the script is abandoned\n",
+                    d.screenName, gSelectQuery ? kWhy[state] : "the game registered no select query",
+                    gSelectPresses, currentFrame - gSelectStartFrame);
+                gSelecting = false;
+                gScriptCursor = gScript.size();
+                break;
+            }
+            if (state == kJoypadSelectReady
+                && currentFrame - gSelectLastPress >= kSelectStepFrames) {
+                buttons |= (1 << (delta > 0 ? kPad_DDown : kPad_DUp));
+                gSelectLastPress = currentFrame;
+                gSelectPresses++;
+            }
+            break; // still selecting
+        }
+
+        if (d.type == kDirectiveButton || d.type == kDirectiveWake) {
+            int targetFrame = d.relative
+                ? (gWaitSatisfiedFrame >= 0 ? gWaitSatisfiedFrame + d.frame : d.frame)
+                : d.frame;
+
+            if (currentFrame == targetFrame) {
+                if (d.type == kDirectiveWake && gWakeNeeded && !gWakeNeeded()) {
+                    printf("DC3 Input: wake at frame %d: no-op (already awake)\n",
+                        currentFrame);
+                } else {
+                    if (d.type == kDirectiveWake)
+                        printf("DC3 Input: wake at frame %d: pressed button %d\n",
+                            currentFrame, (int)d.button);
+                    buttons |= (1 << d.button);
+                }
+                gScriptCursor++;
+                continue;
+            } else if (currentFrame > targetFrame) {
+                gScriptCursor++;
+                continue;
+            } else {
+                break; // Future event
+            }
+        }
+
+        gScriptCursor++;
+    }
+
+    return buttons;
+}
+
+// ============================================================================
+// The sources, read (platform/JoypadNativeSource.h)
+// ============================================================================
+
+void JoypadNativeSourceInit() {
+#ifdef __EMSCRIPTEN__
+    InitWebInput();
+#endif
+}
+
+// The script's input frame: one per poll, from 0. TheRnd.GetFrameID() is not
+// used: it can stall or jump (it is incremented in BeginDrawing, and the joypad
+// poll runs before BeginDrawing).
+static int sInputFrame = 0;
+static int sCurrentFrame = 0;
+
+int JoypadNativeSourceAdvance() {
+    // Lazy-load the input script on the first poll
+    if (!gInputScriptLoaded) LoadInputScript();
+    sCurrentFrame = sInputFrame++;
+    return sCurrentFrame;
+}
+
+bool JoypadNativeSourceScripted() {
+    if (!gInputScriptLoaded) LoadInputScript();
+    return !gScript.empty();
+}
+
+bool JoypadNativeSourceConnected(int pad) {
+#ifdef __EMSCRIPTEN__
+    return pad == 0;
+#else
+    if (gNativeWindow)
+        return pad == 0 || (glfwJoystickIsGamepad(pad) == GLFW_TRUE);
+    return pad == 0 && JoypadNativeSourceScripted();
+#endif
+}
+
+void JoypadNativeSourceRead(int pad, JoypadNativePadState *out) {
+    memset(out, 0, sizeof(*out));
+    out->connected = JoypadNativeSourceConnected(pad);
+    unsigned int newButtons = 0;
+
+#ifdef __EMSCRIPTEN__
+    if (pad == 0) {
+        // --- Web: keyboard + gamepad buttons (OR'd together) ---
+        newButtons = GetWebKeyButtons() | GetWebGamepadButtons();
+    }
+#else
+    if (gNativeWindow) {
+        // --- Windowed mode: GLFW Gamepad ---
+        GLFWgamepadstate gpState;
+        bool hasGamepad = (glfwJoystickIsGamepad(pad) && glfwGetGamepadState(pad, &gpState));
+
+        if (hasGamepad) {
+            // Face buttons (Xbox layout -> Milo PS-style enum)
+            if (gpState.buttons[GLFW_GAMEPAD_BUTTON_A])           newButtons |= (1 << kPad_X);
+            if (gpState.buttons[GLFW_GAMEPAD_BUTTON_B])           newButtons |= (1 << kPad_Circle);
+            if (gpState.buttons[GLFW_GAMEPAD_BUTTON_X])           newButtons |= (1 << kPad_Square);
+            if (gpState.buttons[GLFW_GAMEPAD_BUTTON_Y])           newButtons |= (1 << kPad_Tri);
+
+            // Bumpers
+            if (gpState.buttons[GLFW_GAMEPAD_BUTTON_LEFT_BUMPER]) newButtons |= (1 << kPad_L1);
+            if (gpState.buttons[GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER])newButtons |= (1 << kPad_R1);
+
+            // Menu buttons
+            if (gpState.buttons[GLFW_GAMEPAD_BUTTON_BACK])        newButtons |= (1 << kPad_Select);
+            if (gpState.buttons[GLFW_GAMEPAD_BUTTON_START])       newButtons |= (1 << kPad_Start);
+
+            // Thumbstick clicks
+            if (gpState.buttons[GLFW_GAMEPAD_BUTTON_LEFT_THUMB])  newButtons |= (1 << kPad_L3);
+            if (gpState.buttons[GLFW_GAMEPAD_BUTTON_RIGHT_THUMB]) newButtons |= (1 << kPad_R3);
+
+            // D-pad
+            if (gpState.buttons[GLFW_GAMEPAD_BUTTON_DPAD_UP])    newButtons |= (1 << kPad_DUp);
+            if (gpState.buttons[GLFW_GAMEPAD_BUTTON_DPAD_DOWN])  newButtons |= (1 << kPad_DDown);
+            if (gpState.buttons[GLFW_GAMEPAD_BUTTON_DPAD_LEFT])  newButtons |= (1 << kPad_DLeft);
+            if (gpState.buttons[GLFW_GAMEPAD_BUTTON_DPAD_RIGHT]) newButtons |= (1 << kPad_DRight);
+
+            // Triggers (remap [-1,1] -> [0,1])
+            float lt = (gpState.axes[GLFW_GAMEPAD_AXIS_LEFT_TRIGGER]  + 1.0f) * 0.5f;
+            float rt = (gpState.axes[GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER] + 1.0f) * 0.5f;
+            out->hasTriggers = true;
+            out->triggers[0] = lt;
+            out->triggers[1] = rt;
+            if (lt > kTriggerThreshold) newButtons |= (1 << kPad_L2);
+            if (rt > kTriggerThreshold) newButtons |= (1 << kPad_R2);
+
+            // Sticks
+            out->hasSticks = true;
+            out->sticks[0][0] = gpState.axes[GLFW_GAMEPAD_AXIS_LEFT_X];
+            out->sticks[0][1] = gpState.axes[GLFW_GAMEPAD_AXIS_LEFT_Y];
+            out->sticks[1][0] = gpState.axes[GLFW_GAMEPAD_AXIS_RIGHT_X];
+            out->sticks[1][1] = gpState.axes[GLFW_GAMEPAD_AXIS_RIGHT_Y];
+        }
+
+        // --- Keyboard as pad 0 fallback (platform/JoypadKeyMap.h) ---
+        if (pad == 0) {
+            // Sticky keys: a tap that starts and ends between two polls
+            // (a slow frame, `xdotool key`) still reads as pressed once,
+            // instead of being lost.
+            static GLFWwindow *sStickyWindow = nullptr;
+            if (sStickyWindow != gNativeWindow) {
+                glfwSetInputMode(gNativeWindow, GLFW_STICKY_KEYS, GLFW_TRUE);
+                sStickyWindow = gNativeWindow;
+            }
+            // Read each key at most once per poll, on first use: with
+            // sticky keys a second glfwGetKey of a tapped key would
+            // already say RELEASE.
+            struct KeySnapshot {
+                bool read[GLFW_KEY_LAST + 1];
+                bool down[GLFW_KEY_LAST + 1];
+            } snapshot;
+            memset(&snapshot, 0, sizeof(snapshot));
+            auto fromSnapshot = [](int key, void *ctx) -> bool {
+                KeySnapshot *s = (KeySnapshot *)ctx;
+                if (key < GLFW_KEY_SPACE || key > GLFW_KEY_LAST) return false;
+                if (!s->read[key]) {
+                    s->read[key] = true;
+                    s->down[key] = glfwGetKey(gNativeWindow, key) == GLFW_PRESS;
+                }
+                return s->down[key];
+            };
+            unsigned int kb = JoypadKeyboardButtons(fromSnapshot, &snapshot);
+            newButtons |= kb;
+            if (!hasGamepad) {
+                // A key is a fully pulled trigger.
+                out->hasTriggers = true;
+                out->triggers[0] = (kb & (1 << kPad_L2)) ? 1.0f : 0.0f;
+                out->triggers[1] = (kb & (1 << kPad_R2)) ? 1.0f : 0.0f;
+            }
+            // Quit chord: once per press.
+            static bool sQuitChordWasHeld = false;
+            bool quitHeld = JoypadKeyboardQuitChordHeld(fromSnapshot, &snapshot);
+            if (quitHeld && !sQuitChordWasHeld && gQuitKeyHandler) {
+                printf("Joypad: Ctrl+Q pressed: quitting\n");
+                gQuitKeyHandler();
+            }
+            sQuitChordWasHeld = quitHeld;
+        }
+    } else if (pad == 0) {
+        // --- Headless mode: scripted input (pad 0 only) ---
+        newButtons = GetScriptedButtons(sCurrentFrame);
+    }
+#endif // __EMSCRIPTEN__
+
+    // HTTP input injection (pad 0 only, works in both modes)
+#ifdef DC3_HTTP_SERVER
+    if (pad == 0 && TheHttpServer)
+        newButtons |= TheHttpServer->ConsumeHttpButtons();
+#endif
+
+    out->buttons = newButtons;
+}

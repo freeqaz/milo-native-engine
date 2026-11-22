@@ -398,6 +398,7 @@ set(MILO_ENGINE_PLATFORM_SOURCES
     src/platform/ContactShadowHook.cpp
     src/platform/TexBlendHook.cpp
     src/platform/Joypad_Native.cpp
+    src/platform/JoypadNativeSource.cpp # the native pad sources (script, GLFW, web) behind a game-agnostic header; Joypad_Native.cpp is DC3's consumer
     src/platform/Keyboard_Native.cpp
     src/platform/TextInput_Native.cpp   # text-editing input queue (chars + edit keys), capture vs the pad map
     src/platform/Keygen_Stub.cpp

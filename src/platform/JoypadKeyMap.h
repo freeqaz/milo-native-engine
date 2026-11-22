@@ -1,5 +1,5 @@
 // JoypadKeyMap — the desktop keyboard as pad 0 in a GLFW window
-// (Joypad_Native.cpp). One table, so the poll, the startup printout and the
+// (JoypadNativeSource.cpp). One table, so the poll, the startup printout and the
 // tests cannot disagree about which key is which button.
 //
 // Keys are GLFW key codes (GLFW_KEY_*). Buttons are JoypadButton values: Milo
@@ -14,7 +14,7 @@
 // Ctrl+Q does nothing.
 //
 // The web build keeps its own JavaScript copy of the map in
-// Joypad_Native.cpp (InitWebInput); keep the two in step.
+// JoypadNativeSource.cpp (InitWebInput); keep the two in step.
 
 #ifndef MILO_ENGINE_PLATFORM_JOYPADKEYMAP_H
 #define MILO_ENGINE_PLATFORM_JOYPADKEYMAP_H

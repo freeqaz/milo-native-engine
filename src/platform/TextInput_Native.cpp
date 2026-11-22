@@ -127,9 +127,9 @@ void PullWebEvents() {
 
 void InstallWebListener() {
     // EM_ASM blocks cannot hold C comments or object literals, so the tables
-    // are built by assignment (as Joypad_Native.cpp's InitWebInput does).
+    // are built by assignment (as JoypadNativeSource.cpp's InitWebInput does).
     //   _miloTextCapture  the capture switch, read by this listener and by the
-    //                     pad listener (Joypad_Native.cpp)
+    //                     pad listener (JoypadNativeSource.cpp)
     //   _miloTextQ        events for PullWebEvents
     //   _miloTextDown     event.code of every key now down
     //   _miloTextHeld     the keys that were down when capture turned on
