@@ -69,7 +69,25 @@ public:
     // The render pass's label (GPU timers), when the copy is not the present.
     void SetPassLabel(const char* label) { mLabel = label; }
 
+    // Upscale: a frame drawn SMALLER than its rectangle (a row cap, a thermal
+    // step) read with a Catmull-Rom cubic instead of one bilinear tap. The
+    // numbers are texture reads per output pixel: 9 or 5 bilinear reads, plus
+    // 3 gathers for the clamp to the four nearest texels (no overshoot, so no
+    // halo beside text). Bilinear (the default) is today's one tap; a scale of
+    // 1, a downscale (the box filter), the alpha-keeping copy and, unless
+    // SetUpscaleAtWholeScales, a whole-number scale (nearest) never use it.
+    enum class UpscaleFilter { Bilinear = 0, CatmullRom9, CatmullRom9Clamp, CatmullRom5, CatmullRom5Clamp };
+    void SetUpscaleFilter(UpscaleFilter f) { mUpscale = f; }
+    UpscaleFilter GetUpscaleFilter() const { return mUpscale; }
+    void SetUpscaleAtWholeScales(bool on) { mUpscaleAtWholeScales = on; }
+    // The filter the last Encode drew with (Bilinear when none applied).
+    UpscaleFilter LastUpscale() const { return mLastUpscale; }
+
 private:
+    UpscaleFilter mUpscale = UpscaleFilter::Bilinear;
+    UpscaleFilter mLastUpscale = UpscaleFilter::Bilinear;
+    bool mUpscaleAtWholeScales = false;
+    wgpu::RenderPipeline mUpPipe[5];
     bool mBoxFilter = false;
     bool mDither = false;
     bool mKeepAlpha = false;

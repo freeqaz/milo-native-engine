@@ -289,6 +289,7 @@ void GpuDevice::Shutdown() {
     mHeadlessView = nullptr;
     mHeadlessTex = nullptr;
     mPresentScale = PresentScale();
+    mLoggedPresentUpscale = -1;
     mFrameView = nullptr;
     mFrameTex = nullptr;
     mSurfaceTex = nullptr;
@@ -952,6 +953,20 @@ void GpuDevice::PresentFrame() {
                                             (int)mSurfaceTex.GetHeight());
         wgpu::CommandBuffer cmd = enc.Finish();
         mQueue.Submit(1, &cmd);
+        // np-present60: which filter the present stretches with, once per change.
+        const int up = (int)mPresentScale.LastUpscale();
+        const bool stretched = mPresentRect.w > (int)mFrameTex.GetWidth();
+        if (up != mLoggedPresentUpscale || stretched != mLoggedPresentStretched) {
+            mLoggedPresentUpscale = up;
+            mLoggedPresentStretched = stretched;
+            printf("GpuDevice: present %dx%d frame into %dx%d: %s\n", (int)mFrameTex.GetWidth(),
+                   (int)mFrameTex.GetHeight(), mPresentRect.w, mPresentRect.h,
+                   up ? "clamped Catmull-Rom upscale (5 reads + 3 gathers)"
+                   : !stretched ? "no upscale"
+                   : PresentRectIsIntegerScale(mPresentRect, (int)mFrameTex.GetWidth(), (int)mFrameTex.GetHeight())
+                       ? "nearest (whole-number scale)"
+                       : "bilinear (one tap)");
+        }
     } else {
         mPresentRect = {0, 0, (int)mSurfaceTex.GetWidth(), (int)mSurfaceTex.GetHeight()};
     }

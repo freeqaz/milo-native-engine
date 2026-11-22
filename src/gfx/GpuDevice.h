@@ -437,6 +437,22 @@ public:
 #endif
         mReadbackScale.SetDither(on);
     }
+    // np-present60: a frame drawn smaller than its present rectangle read with
+    // the clamped Catmull-Rom cubic instead of one bilinear tap
+    // (PresentScale::SetUpscaleFilter; LookSettings::presentUpscale asks each
+    // frame). The readback's PresentScale follows, so the two never disagree;
+    // a screenshot is the frame at its own size, which no upscale reaches.
+    void SetPresentUpscale(bool on) {
+        const PresentScale::UpscaleFilter f =
+            on ? PresentScale::UpscaleFilter::CatmullRom5Clamp : PresentScale::UpscaleFilter::Bilinear;
+#ifndef __EMSCRIPTEN__
+        mPresentScale.SetUpscaleFilter(f);
+#endif
+        mReadbackScale.SetUpscaleFilter(f);
+    }
+    bool PresentUpscale() const {
+        return mReadbackScale.GetUpscaleFilter() != PresentScale::UpscaleFilter::Bilinear;
+    }
     bool PresentDither() const {
 #ifndef __EMSCRIPTEN__
         if (!mPresentScale.Dither()) return false;
@@ -534,6 +550,8 @@ private:
     bool mFullscreenToggleRequested = false;
     int mWindowedX = 0, mWindowedY = 0, mWindowedW = 0, mWindowedH = 0;
     PresentScale mPresentScale;
+    int mLoggedPresentUpscale = -1;      // np-present60: the present's filter line
+    bool mLoggedPresentStretched = false;
     PresentRect mPresentRect;
     bool mSurfaceNeedsConfigure = false;
     bool mEverAcquired = false;

@@ -320,6 +320,18 @@ struct LookSettings {
     bool postDofEdge = false;
     bool postDofEdgeApple = false;
     bool postDofEdgeIntegrated = false;
+    // np-present60 (dc3 item 60): a frame drawn SMALLER than the rectangle the
+    // present fits it into (a row cap: a non-discrete GPU's 1080 rows on a
+    // larger window; a thermal step) is read with a clamped Catmull-Rom cubic
+    // (PresentScale::UpscaleFilter::CatmullRom5Clamp: 5 bilinear reads and 3
+    // gathers a pixel) instead of one bilinear tap. Measured on slanted edges
+    // stretched 1.32: the 10-90 rise 13 % narrower, no overshoot (the clamp to
+    // the four nearest texels). Nothing changes at a scale of 1, a downscale,
+    // or a whole-number scale (nearest). Every adapter class: the limit is the
+    // 890M's, and the pass does something only when the frame is stretched.
+    // Enhanced: on. Retail and Native: off (today's one tap, to the bit).
+    // Inspection: {rnd native_look present_up_on|_off|_rule}.
+    bool presentUpscale = false;
     // np-look23 (a): DC3's post noise map (noise_mono.tex) re-tiled so each
     // texel covers whole OUTPUT rows, read at one fixed place in the texel
     // (gfx/NoiseRows.h): the same fine lines on every row at every size and
@@ -616,6 +628,9 @@ bool LookDofNearSpread(const LookSettings &look, LookAdapterClass c);
 // tokens do. A switch on compiles the edge rule's composite once. False under
 // Native, changing nothing.
 bool SetLookDofEdgeForInspection(int mode);
+// {rnd native_look present_up_on|_off|_rule} (np-present60): presentUpscale
+// on, off or the profile's (1 / 0 / -1). False under Native, changing nothing.
+bool SetLookPresentUpscaleForInspection(int mode);
 // The edge rule for this adapter class: postDofEdge on a discrete GPU,
 // ...Apple on an Apple GPU, ...Integrated on anything else. Callers pass
 // GpuDevice::LookClass().

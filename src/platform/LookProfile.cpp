@@ -146,6 +146,8 @@ LookSettings SettingsFor(LookProfile p) {
     s.postDofEdge = enh;
     s.postDofEdgeApple = enh && kAppleDofEdge;
     s.postDofEdgeIntegrated = false;
+    // np-present60: the clamped cubic upscale in the present (LookProfile.h).
+    s.presentUpscale = enh;
     // np-look26 g: cutoutSampleTest stays off in every look. Measured against
     // the landed sharpened coverage it is a trade, not a gain (LookProfile.h);
     // the hair_edge inspection tokens turn it on.
@@ -381,6 +383,16 @@ bool SetLookDofNearForInspection(int mode, bool spread) {
             "[look] depth of field near spread %d, %d on a non-discrete GPU, %d on an Apple GPU%s "
             "(inspection, profile %s)\n",
             (int)s.postDofNearSpread, (int)s.postDofNearSpreadIntegrated, (int)s.postDofNearSpreadApple,
+            mode < 0 ? " (the rule)" : "", LookProfileName(s.profile));
+    return true;
+}
+
+bool SetLookPresentUpscaleForInspection(int mode) {
+    LookSettings &s = Mutable();
+    if (s.profile == LookProfile::Native) return false;
+    s.presentUpscale = mode < 0 ? SettingsFor(s.profile).presentUpscale : mode != 0;
+    fprintf(stderr, "[look] present upscale %s%s (inspection, profile %s)\n",
+            s.presentUpscale ? "clamped Catmull-Rom (5 reads + 3 gathers)" : "bilinear (one tap)",
             mode < 0 ? " (the rule)" : "", LookProfileName(s.profile));
     return true;
 }
