@@ -34,6 +34,13 @@ constexpr bool kAppleTexPassMsaa = true;
 constexpr bool kAppleTexPassScale = true;
 constexpr int kAppleTexPassMaxSide = 1536;
 constexpr int kAppleTexPassBaseRows = 720;
+// np-look56: the Apple class in a browser (ClassifyWebLookAdapter: vendor
+// "apple" with texture-compression-bc, not a fallback adapter, i.e. an Apple
+// silicon Mac). The class's values above were timed natively on the M3 (Dawn
+// on Metal); Safari is another WebGPU implementation, and Chrome on a Mac
+// was not timed either. Off until the landing session times a Mac in a
+// browser: until then such a Mac is other non-discrete, as before np-look56.
+constexpr bool kAppleInBrowser = false;
 
 LookSettings SettingsFor(LookProfile p) {
     LookSettings s;
@@ -395,6 +402,51 @@ LookAdapterClass ClassifyLookAdapter(LookAdapterType type, uint32_t vendorId, bo
     return LookAdapterClass::OtherNonDiscrete;
 }
 
+LookAdapterClass ClassifyWebLookAdapter(const char *vendor, bool hasBC, bool fallback, bool appleInBrowser) {
+    // A fallback adapter is a software rasteriser, whoever's name it carries.
+    if (fallback || !vendor) return LookAdapterClass::OtherNonDiscrete;
+    // Exact, case-sensitive: the specification's normalised identifiers are
+    // lower case (LookProfile.h). NVIDIA's browser-capable GPUs are discrete.
+    if (strcmp(vendor, "nvidia") == 0) return LookAdapterClass::Discrete;
+    // Without BC it is an iPhone or iPad, not a Mac.
+    if (strcmp(vendor, "apple") == 0 && hasBC && appleInBrowser) return LookAdapterClass::Apple;
+    return LookAdapterClass::OtherNonDiscrete;
+}
+
+bool LookAppleInBrowser() { return kAppleInBrowser; }
+
+LookAdapterClass ClassifyLookAdapter(const LookAdapterFacts &f) {
+    if (f.web) return ClassifyWebLookAdapter(f.webVendor, f.webHasBC, f.webFallback, kAppleInBrowser);
+    return ClassifyLookAdapter(f.type, f.vendorId, f.metalBackend);
+}
+
+void SetLookAdapterWebStrings(LookAdapterFacts &f, const char *vendor, size_t vendorLen, const char *architecture,
+                              size_t architectureLen) {
+    const auto copy = [](char *dst, const char *src, size_t len) {
+        // SIZE_MAX (WGPU_STRLEN): NUL-terminated.
+        if (src && len == (size_t)-1) len = strnlen(src, kLookAdapterWebStringSize);
+        const size_t n = src ? std::min(len, (size_t)kLookAdapterWebStringSize - 1) : 0;
+        if (n) memcpy(dst, src, n);
+        dst[n] = '\0';
+    };
+    copy(f.webVendor, vendor, vendorLen);
+    copy(f.webArchitecture, architecture, architectureLen);
+}
+
+namespace {
+// What the class was decided from, for the two class lines: the native
+// facts, or the browser's.
+void DescribeLookAdapter(const LookAdapterFacts &a, char *buf, size_t size) {
+    const char *backend = a.backendName ? a.backendName : "unknown";
+    if (a.web)
+        snprintf(buf, size, "browser vendor \"%s\", architecture \"%s\", texture-compression-bc %d, fallback %d, "
+                 "backend %s", a.webVendor, a.webArchitecture, (int)a.webHasBC, (int)a.webFallback, backend);
+    else
+        snprintf(buf, size, "type %s, vendor 0x%04x, backend %s", LookAdapterTypeName(a.type), (unsigned)a.vendorId,
+                 backend);
+}
+}  // namespace
+
 const char *LookAdapterClassName(LookAdapterClass c) {
     switch (c) {
     case LookAdapterClass::Discrete: return "discrete GPU";
@@ -451,14 +503,14 @@ void PrintLookAdapterClass(const LookAdapterFacts &adapter) {
     const LookSettings &s = Look();
     if (s.profile == LookProfile::Native) return;
     const LookAdapterClass c = ClassifyLookAdapter(adapter);
+    char from[192];
+    DescribeLookAdapter(adapter, from, sizeof(from));
     fprintf(stderr,
             "[look] adapter class: %s; depth of field near field %d, near spread %d, edge %d, texture pass "
-            "msaa %d, scale %d (cap %d, base rows %d) [type %s, vendor 0x%04x, backend %s] (profile %s)\n",
+            "msaa %d, scale %d (cap %d, base rows %d) [%s] (profile %s)\n",
             LookAdapterClassName(c), (int)LookDofNearField(s, c), (int)LookDofNearSpread(s, c),
             (int)LookDofEdge(s, c), (int)LookTexPassMsaa(s, c), (int)LookTexPassScale(s, c), LookTexPassMaxSide(s, c),
-            LookTexPassBaseRows(s, c), LookAdapterTypeName(adapter.type),
-            (unsigned)adapter.vendorId, adapter.backendName ? adapter.backendName : "unknown",
-            LookProfileName(s.profile));
+            LookTexPassBaseRows(s, c), from, LookProfileName(s.profile));
 }
 
 // The adapter LogLookAdapterClass was given, and the class token's choice
@@ -495,12 +547,13 @@ bool SetLookAdapterClassForInspection(bool useAdapter, LookAdapterClass forced) 
     const char *is = own == LookAdapterClass::Discrete ? "a discrete GPU"
                      : own == LookAdapterClass::Apple  ? "an Apple GPU (not a discrete GPU)"
                                                        : "not a discrete GPU";
+    char from[192];
+    DescribeLookAdapter(a, from, sizeof(from));
     fprintf(stderr,
-            "[look] adapter class forced for inspection: %s; the adapter is %s [type %s, vendor 0x%04x, "
-            "backend %s]; depth of field near field %d, near spread %d, edge %d, texture pass msaa %d, "
+            "[look] adapter class forced for inspection: %s; the adapter is %s [%s]; depth of field near "
+            "field %d, near spread %d, edge %d, texture pass msaa %d, "
             "scale %d (cap %d, base rows %d) (profile %s)\n",
-            LookAdapterClassName(forced), is, LookAdapterTypeName(a.type), (unsigned)a.vendorId,
-            a.backendName ? a.backendName : "unknown", (int)LookDofNearField(s, forced),
+            LookAdapterClassName(forced), is, from, (int)LookDofNearField(s, forced),
             (int)LookDofNearSpread(s, forced), (int)LookDofEdge(s, forced), (int)LookTexPassMsaa(s, forced), (int)LookTexPassScale(s, forced),
             LookTexPassMaxSide(s, forced), LookTexPassBaseRows(s, forced), LookProfileName(s.profile));
     return true;

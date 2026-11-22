@@ -91,6 +91,29 @@ bool GpuDevice::Init(const GpuDeviceDesc& desc) {
             mAdapter = std::move(adapter);
             mHasBCCompression = mAdapter.HasFeature(wgpu::FeatureName::TextureCompressionBC);
 
+            // np-look56: the look's adapter class, from what the browser says
+            // about its GPU (milo::ClassifyWebLookAdapter: the vendor string,
+            // BC, fallback). emdawnwebgpu fills only the strings from the
+            // page's GPUAdapterInfo; adapterType is CPU for a fallback adapter
+            // and Unknown otherwise, vendorID 0, backendType WebGPU.
+            // Look rules only (GpuDevice::LookClass()): nothing that sizes the
+            // frame changes. mDiscreteGpu stays false on the web, the web
+            // never supersamples (render scale 1), and the row cap stays
+            // WebOutputRowCap's (texture-compression-bc).
+            {
+                wgpu::AdapterInfo info{};
+                mAdapter.GetInfo(&info);
+                mLookAdapter = milo::LookAdapterFacts{};
+                mLookAdapter.web = true;
+                mLookAdapter.backendName = "WebGPU";
+                mLookAdapter.type = info.adapterType == wgpu::AdapterType::CPU ? milo::LookAdapterType::Cpu
+                                                                               : milo::LookAdapterType::Unknown;
+                mLookAdapter.webFallback = info.adapterType == wgpu::AdapterType::CPU;
+                mLookAdapter.webHasBC = mHasBCCompression;
+                milo::SetLookAdapterWebStrings(mLookAdapter, info.vendor.data, info.vendor.length,
+                                               info.architecture.data, info.architecture.length);
+            }
+
             // Request device
             wgpu::DeviceDescriptor deviceDesc{};
             wgpu::FeatureName bcFeature = wgpu::FeatureName::TextureCompressionBC;
