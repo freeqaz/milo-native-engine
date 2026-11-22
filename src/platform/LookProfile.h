@@ -287,8 +287,8 @@ struct LookSettings {
     // postDofNearSpread are the values on a discrete GPU, the ...Apple pair on
     // an Apple GPU (LookAdapterClass, np-look49), the ...Integrated pair on
     // anything else (integrated, CPU, unknown, a browser not on NVIDIA).
-    // Enhanced: on / Apple on (timed on an M3) / off, the last until a
-    // handheld's timing says each fits (dc3 PLAN H-165). LookDofNearField /
+    // Enhanced: on in all three (Apple timed on an M3, the other class on the
+    // GPD's 890M, dof57; dc3 PLAN H-165). LookDofNearField /
     // LookDofNearSpread pick, and with the field off the depth of field runs
     // exactly the passes it ran before np-look36. LogLookAdapterClass prints
     // the choice once.
