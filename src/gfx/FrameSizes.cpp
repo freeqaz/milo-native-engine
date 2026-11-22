@@ -42,20 +42,29 @@ FrameSizes ResolveFrameSizesWithCap(const GpuDeviceDesc& desc, bool discreteGpu,
         const PresentRect r = FitPresentRect(desc.logicalWidth, desc.logicalHeight, targetW, targetH);
         s.outputW = r.w;
         s.outputH = r.h;
+        // The cap and the floor measure the frame's SHORT side: its rows for
+        // the usual landscape shape, its columns for a portrait one (a phone
+        // held upright, GpuDevice::SetPortraitFrame), so a 9:16 frame under a
+        // 1080-row cap is 1080x1920, not 608x1080.
+        const bool portrait = desc.logicalHeight > desc.logicalWidth;
+        const int shortSide = portrait ? s.outputW : s.outputH;
+        const int logicalShort = portrait ? desc.logicalWidth : desc.logicalHeight;
+        const int logicalLong = portrait ? desc.logicalHeight : desc.logicalWidth;
+        int fixedShort = 0;
         const int cap = rowCap;
-        if (cap > 0 && s.outputH > cap) {
-            // The logical shape, cap rows tall (1920x1080 for 16:9 at 1080).
-            // From the logical size, not the fitted rectangle, whose own
-            // rounding (2079x1169 for a dpr-3 phone's box) would carry into
-            // the capped width (1921).
-            s.outputW = (int)((double)desc.logicalWidth * cap / desc.logicalHeight + 0.5);
-            s.outputH = cap;
-        }
-        if (presentsToSurface && s.outputH < kOutputMinRows) {
-            // The floor (kOutputMinRows), at the logical shape: 640x360 for
-            // 16:9, whatever the box (an empty one included).
-            s.outputW = (int)((double)desc.logicalWidth * kOutputMinRows / desc.logicalHeight + 0.5);
-            s.outputH = kOutputMinRows;
+        // The logical shape, cap rows tall (1920x1080 for 16:9 at 1080).
+        // From the logical size, not the fitted rectangle, whose own
+        // rounding (2079x1169 for a dpr-3 phone's box) would carry into
+        // the capped width (1921).
+        if (cap > 0 && shortSide > cap) fixedShort = cap;
+        // The floor (kOutputMinRows), at the logical shape: 640x360 for
+        // 16:9, whatever the box (an empty one included).
+        const int cappedShort = fixedShort > 0 ? fixedShort : shortSide;
+        if (presentsToSurface && cappedShort < kOutputMinRows) fixedShort = kOutputMinRows;
+        if (fixedShort > 0) {
+            const int longSide = (int)((double)logicalLong * fixedShort / logicalShort + 0.5);
+            s.outputW = portrait ? fixedShort : longSide;
+            s.outputH = portrait ? longSide : fixedShort;
         }
     } else if (presentsToSurface && desc.frameWidth > 0 && desc.frameHeight > 0) {
         s.outputW = desc.frameWidth;

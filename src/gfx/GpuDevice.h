@@ -494,6 +494,18 @@ public:
     // frame that does not follow (it keeps the canvas's own buffer size).
     bool FollowCanvas();
     int FrameReconfigures() const { return mFrameReconfigures; }
+    // The frame's shape on web: false (the default) fits the logical shape
+    // (16:9) into the canvas's box; true fits it turned on its side (9:16),
+    // for a phone held upright during a song (dc3 PLAN W-37 step 2). The
+    // consumer's virtual resolution and its viewports do not change: a
+    // full-screen viewport covers the whole portrait frame, so its cameras
+    // must take their aspect from the frame (WindowWidth/Height). Taken at
+    // the next FollowCanvas, with the canvas's settled box. The page sets it
+    // with milo_web_set_portrait_frame(0|1); read back by
+    // milo_web_portrait_frame() (the frame's shape, not the request).
+    void SetPortraitFrame(bool on) { mPortraitWanted = on; }
+    bool PortraitFrame() const { return mPortraitFrame; }
+    void RegisterWebInstance();
 #endif
     // The frame follows its target (GpuDeviceDesc::outputFollowsTarget).
     bool FollowsTarget() const { return mFollowsTarget; }
@@ -586,6 +598,8 @@ private:
 #ifdef __EMSCRIPTEN__
     RowCapChoice mWebRowCap;
     SettledSize mCanvasSize{kWebResizeSettleMs};
+    bool mPortraitWanted = false;
+    bool mPortraitFrame = false;
     int mFrameReconfigures = 0;
     bool FollowTarget(int targetW, int targetH, bool atInit);
     bool CanvasTargetSize(int& w, int& h) const;
