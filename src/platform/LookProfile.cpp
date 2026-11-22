@@ -40,11 +40,11 @@ constexpr int kAppleTexPassBaseRows = 720;
 // np-look56: the Apple class in a browser (ClassifyWebLookAdapter: vendor
 // "apple" with texture-compression-bc, not a fallback adapter, i.e. an Apple
 // silicon Mac). The class's values above were timed natively on the M3 (Dawn
-// on Metal). In Chrome on the M3 the class draws correctly (the landing
-// session's run, 2026-11-22: dc3 PLAN H-184); Safari is another WebGPU
-// implementation, was not run, and the vendor string does not tell the two
-// apart. Off until Safari is tried on a Mac: until then such a Mac is other
-// non-discrete, as before np-look56.
+// on Metal). In headless Chrome on the M3 the class draws correctly, but the
+// game page makes about 40 frames a second there in every class (the landing
+// session's run, 2026-11-22: dc3 PLAN H-184), and Safari, another WebGPU
+// implementation the vendor string cannot tell from Chrome, was not run. Off
+// until both are settled: such a Mac is other non-discrete, as before.
 constexpr bool kAppleInBrowser = false;
 
 LookSettings SettingsFor(LookProfile p) {
