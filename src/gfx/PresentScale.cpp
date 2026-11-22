@@ -73,7 +73,87 @@ struct VsOut {
     let t = (bayer[(px.y & 3u) * 4u + (px.x & 3u)] + 0.5) / 16.0;
     return vec4f(floor(c.rgb * 255.0 + t) / 255.0, c.a);
 }
+
+// Upscale (PresentScale::SetUpscaleFilter): a frame drawn SMALLER than its
+// rectangle, read with a Catmull-Rom cubic (B = 0, C = 1/2) instead of one
+// bilinear tap. Per axis the four texel weights at fraction f past the texel
+// centre below the sample are the cubic's; the middle two are summed into one
+// bilinear read placed at w2 / (w1 + w2) between them, so the 4x4 footprint
+// costs 3x3 = 9 bilinear reads (fs_up_cr9), or 5 with the four corner reads
+// dropped and the rest renormalised (fs_up_cr5). The clamped forms (_c) keep
+// the result between the smallest and largest of the four nearest texels
+// (three textureGathers, r g b): the cubic's negative lobes can no longer
+// overshoot beside a glyph's stem, so a hard edge rises faster than bilinear
+// without the light or dark halo a sharpening filter leaves. ClampToEdge: the
+// frame's border texels repeat outward, nothing bleeds in from outside it.
+struct CrAxis {
+    w0: vec2f, w12: vec2f, w3: vec2f,
+    u0: vec2f, u12: vec2f, u3: vec2f,
+};
+
+fn cr_axis(uv: vec2f) -> CrAxis {
+    let dims = vec2f(textureDimensions(frameTex));
+    let pos = uv * dims - 0.5;
+    let base = floor(pos);
+    let f = pos - base;
+    let w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+    let w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    let w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+    let w3 = f * f * (-0.5 + 0.5 * f);
+    var a: CrAxis;
+    a.w0 = w0;
+    a.w12 = w1 + w2;
+    a.w3 = w3;
+    a.u0 = (base - 0.5) / dims;
+    a.u12 = (base + 0.5 + w2 / (w1 + w2)) / dims;
+    a.u3 = (base + 2.5) / dims;
+    return a;
+}
+
+fn tap(x: f32, y: f32) -> vec3f {
+    return textureSampleLevel(frameTex, frameSampler, vec2f(x, y), 0.0).rgb;
+}
+
+fn cr9(uv: vec2f) -> vec3f {
+    let a = cr_axis(uv);
+    return (tap(a.u0.x, a.u0.y) * a.w0.x + tap(a.u12.x, a.u0.y) * a.w12.x + tap(a.u3.x, a.u0.y) * a.w3.x) * a.w0.y +
+           (tap(a.u0.x, a.u12.y) * a.w0.x + tap(a.u12.x, a.u12.y) * a.w12.x + tap(a.u3.x, a.u12.y) * a.w3.x) * a.w12.y +
+           (tap(a.u0.x, a.u3.y) * a.w0.x + tap(a.u12.x, a.u3.y) * a.w12.x + tap(a.u3.x, a.u3.y) * a.w3.x) * a.w3.y;
+}
+
+fn cr5(uv: vec2f) -> vec3f {
+    let a = cr_axis(uv);
+    let wt = a.w12.x * a.w0.y;
+    let wl = a.w0.x * a.w12.y;
+    let wc = a.w12.x * a.w12.y;
+    let wr = a.w3.x * a.w12.y;
+    let wb = a.w12.x * a.w3.y;
+    let c = tap(a.u12.x, a.u0.y) * wt + tap(a.u0.x, a.u12.y) * wl + tap(a.u12.x, a.u12.y) * wc +
+            tap(a.u3.x, a.u12.y) * wr + tap(a.u12.x, a.u3.y) * wb;
+    return c / (wt + wl + wc + wr + wb);
+}
+
+// The four texels nearest uv, per channel: (min, max).
+fn near4(uv: vec2f, c: vec3f) -> vec3f {
+    let dims = vec2f(textureDimensions(frameTex));
+    let g = (floor(uv * dims - 0.5) + 1.0) / dims;  // the corner the four share
+    let r = textureGather(0, frameTex, frameSampler, g);
+    let gg = textureGather(1, frameTex, frameSampler, g);
+    let b = textureGather(2, frameTex, frameSampler, g);
+    let lo = vec3f(min(min(r.x, r.y), min(r.z, r.w)), min(min(gg.x, gg.y), min(gg.z, gg.w)),
+                   min(min(b.x, b.y), min(b.z, b.w)));
+    let hi = vec3f(max(max(r.x, r.y), max(r.z, r.w)), max(max(gg.x, gg.y), max(gg.z, gg.w)),
+                   max(max(b.x, b.y), max(b.z, b.w)));
+    return clamp(c, lo, hi);
+}
+
+@fragment fn fs_up_cr9(in: VsOut) -> @location(0) vec4f { return vec4f(cr9(in.uv), 1.0); }
+@fragment fn fs_up_cr9_c(in: VsOut) -> @location(0) vec4f { return vec4f(near4(in.uv, cr9(in.uv)), 1.0); }
+@fragment fn fs_up_cr5(in: VsOut) -> @location(0) vec4f { return vec4f(cr5(in.uv), 1.0); }
+@fragment fn fs_up_cr5_c(in: VsOut) -> @location(0) vec4f { return vec4f(near4(in.uv, cr5(in.uv)), 1.0); }
 )WGSL";
+
+const char* const kUpscaleEntry[] = {nullptr, "fs_up_cr9", "fs_up_cr9_c", "fs_up_cr5", "fs_up_cr5_c"};
 
 // The dither writes 8-bit levels of the value it is given, so only into a
 // linear 8-bit target (an sRGB target quantises after its encode).
@@ -174,9 +254,42 @@ PresentRect PresentScale::Encode(wgpu::Device& device, wgpu::CommandEncoder& enc
         mBoxPipe = CreateCountedRenderPipeline(device, &pd);
         mBoxDitherPipe = nullptr;
         mCopyPipe = nullptr;
+        for (wgpu::RenderPipeline& p : mUpPipe) p = nullptr;
         mFormat = targetFormat;
     }
     const bool box = mBoxFilter && rect.w < fw && rect.h < fh;
+    // The upscale filter: only for a frame drawn smaller than its rectangle on
+    // both axes, never for the alpha-keeping copy, and at a whole-number scale
+    // only when asked for (SetUpscaleAtWholeScales); otherwise the one tap.
+    const bool whole = PresentRectIsIntegerScale(rect, fw, fh);
+    const int up = (mUpscale != UpscaleFilter::Bilinear && !box && !mKeepAlpha && rect.w > fw &&
+                    rect.h > fh && (!whole || mUpscaleAtWholeScales))
+                       ? (int)mUpscale
+                       : 0;
+    if (up && !mUpPipe[up]) {
+        // Only once that filter is asked for: with the setter never called, none.
+        wgpu::PipelineLayoutDescriptor pld{};
+        pld.bindGroupLayoutCount = 1;
+        pld.bindGroupLayouts = &mBGL;
+        wgpu::PipelineLayout pl = device.CreatePipelineLayout(&pld);
+        wgpu::ColorTargetState ct{};
+        ct.format = targetFormat;
+        ct.writeMask = wgpu::ColorWriteMask::All;
+        wgpu::FragmentState frag{};
+        frag.module = mShader;
+        frag.entryPoint = kUpscaleEntry[up];
+        frag.targetCount = 1;
+        frag.targets = &ct;
+        wgpu::RenderPipelineDescriptor pd{};
+        pd.label = "PresentScaleUpscale";
+        pd.layout = pl;
+        pd.vertex.module = mShader;
+        pd.vertex.entryPoint = "vs_full";
+        pd.fragment = &frag;
+        pd.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+        mUpPipe[up] = CreateCountedRenderPipeline(device, &pd);
+    }
+    mLastUpscale = (UpscaleFilter)up;
     if (mKeepAlpha && !box && !mCopyPipe) {
         // Only once an alpha-keeping one-tap copy is asked for.
         wgpu::PipelineLayoutDescriptor pld{};
@@ -224,7 +337,7 @@ PresentRect PresentScale::Encode(wgpu::Device& device, wgpu::CommandEncoder& enc
         pd.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
         mBoxDitherPipe = CreateCountedRenderPipeline(device, &pd);
     }
-    const bool nearest = PresentRectIsIntegerScale(rect, fw, fh);
+    const bool nearest = whole && !up;  // the cubic's taps are bilinear reads
     if (frame && (frame.Get() != mBoundFrame.Get() || nearest != mBoundNearest || !mBindGroup)) {
         wgpu::BindGroupEntry be[2]{};
         be[0].binding = 0;
@@ -254,7 +367,11 @@ PresentRect PresentScale::Encode(wgpu::Device& device, wgpu::CommandEncoder& enc
     wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&rp);
     if (frame && rect.w > 0 && rect.h > 0) {
         pass.SetViewport((float)rect.x, (float)rect.y, (float)rect.w, (float)rect.h, 0.0f, 1.0f);
-        pass.SetPipeline(dither ? mBoxDitherPipe : box ? mBoxPipe : mKeepAlpha ? mCopyPipe : mPipe);
+        pass.SetPipeline(dither ? mBoxDitherPipe
+                         : box  ? mBoxPipe
+                         : up   ? mUpPipe[up]
+                         : mKeepAlpha ? mCopyPipe
+                                      : mPipe);
         pass.SetBindGroup(0, mBindGroup);
         pass.Draw(3);
     }
