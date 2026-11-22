@@ -2108,8 +2108,9 @@ void WgpuRnd::BeginDrawing() {
     // level survives the box filter down (PresentScale::SetDither); the look
     // can change at runtime ({rnd native_look ...}), so every frame.
     mGpu.SetPresentDither(milo::Look().postPrecision);
-    // np-present60: a stretched frame's upscale filter, the same way.
-    mGpu.SetPresentUpscale(milo::Look().presentUpscale);
+    // np-present60: a stretched frame's upscale filter, the same way, by
+    // adapter class (LookPresentUpscale).
+    mGpu.SetPresentUpscale(milo::LookPresentUpscale(milo::Look(), mGpu.LookClass()));
     // Acquire next frame
     if (mGpu.IsHeadless()) {
         mFrameView = mGpu.AcquireHeadlessFrame();

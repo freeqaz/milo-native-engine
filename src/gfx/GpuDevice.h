@@ -439,8 +439,9 @@ public:
     }
     // np-present60: a frame drawn smaller than its present rectangle read with
     // the clamped Catmull-Rom cubic instead of one bilinear tap
-    // (PresentScale::SetUpscaleFilter; LookSettings::presentUpscale asks each
-    // frame). The readback's PresentScale follows, so the two never disagree;
+    // (PresentScale::SetUpscaleFilter; milo::LookPresentUpscale for
+    // LookClass() asks each frame). The readback's PresentScale follows, so
+    // the two never disagree;
     // a screenshot is the frame at its own size, which no upscale reaches.
     void SetPresentUpscale(bool on) {
         const PresentScale::UpscaleFilter f =

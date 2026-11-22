@@ -147,7 +147,10 @@ LookSettings SettingsFor(LookProfile p) {
     s.postDofEdgeApple = enh && kAppleDofEdge;
     s.postDofEdgeIntegrated = false;
     // np-present60: the clamped cubic upscale in the present (LookProfile.h).
+    // On a discrete GPU; Apple's and anything else's off, neither being timed.
     s.presentUpscale = enh;
+    s.presentUpscaleApple = false;
+    s.presentUpscaleIntegrated = false;
     // np-look26 g: cutoutSampleTest stays off in every look. Measured against
     // the landed sharpened coverage it is a trade, not a gain (LookProfile.h);
     // the hair_edge inspection tokens turn it on.
@@ -390,9 +393,14 @@ bool SetLookDofNearForInspection(int mode, bool spread) {
 bool SetLookPresentUpscaleForInspection(int mode) {
     LookSettings &s = Mutable();
     if (s.profile == LookProfile::Native) return false;
-    s.presentUpscale = mode < 0 ? SettingsFor(s.profile).presentUpscale : mode != 0;
-    fprintf(stderr, "[look] present upscale %s%s (inspection, profile %s)\n",
-            s.presentUpscale ? "clamped Catmull-Rom (5 reads + 3 gathers)" : "bilinear (one tap)",
+    const LookSettings &r = SettingsFor(s.profile);
+    s.presentUpscale = mode < 0 ? r.presentUpscale : mode != 0;
+    s.presentUpscaleIntegrated = mode < 0 ? r.presentUpscaleIntegrated : mode != 0;
+    s.presentUpscaleApple = mode < 0 ? r.presentUpscaleApple : mode != 0;
+    fprintf(stderr,
+            "[look] present upscale (clamped Catmull-Rom, 5 reads + 3 gathers, for the one tap) %d, %d on a "
+            "non-discrete GPU, %d on an Apple GPU%s (inspection, profile %s)\n",
+            (int)s.presentUpscale, (int)s.presentUpscaleIntegrated, (int)s.presentUpscaleApple,
             mode < 0 ? " (the rule)" : "", LookProfileName(s.profile));
     return true;
 }
@@ -515,6 +523,10 @@ bool LookDofNearSpread(const LookSettings &look, LookAdapterClass c) {
 
 bool LookDofEdge(const LookSettings &look, LookAdapterClass c) {
     return PickByClass(c, look.postDofEdge, look.postDofEdgeApple, look.postDofEdgeIntegrated);
+}
+
+bool LookPresentUpscale(const LookSettings &look, LookAdapterClass c) {
+    return PickByClass(c, look.presentUpscale, look.presentUpscaleApple, look.presentUpscaleIntegrated);
 }
 
 void PrintLookAdapterClass(const LookAdapterFacts &adapter) {

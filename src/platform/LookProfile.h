@@ -327,11 +327,18 @@ struct LookSettings {
     // gathers a pixel) instead of one bilinear tap. Measured on slanted edges
     // stretched 1.32: the 10-90 rise 13 % narrower, no overshoot (the clamp to
     // the four nearest texels). Nothing changes at a scale of 1, a downscale,
-    // or a whole-number scale (nearest). Every adapter class: the limit is the
-    // 890M's, and the pass does something only when the frame is stretched.
-    // Enhanced: on. Retail and Native: off (today's one tap, to the bit).
-    // Inspection: {rnd native_look present_up_on|_off|_rule}.
+    // or a whole-number scale (nearest). Decided by adapter class like the
+    // depth of field's edge rule: presentUpscale on a discrete GPU, ...Apple
+    // on an Apple GPU, ...Integrated on anything else. Enhanced: on (the
+    // pass alone on an RTX 3090, 1920x1080 into 2560x1440: 0.073 ms against
+    // 0.036) / off / off: neither an M3 nor an 890M has timed it, and those
+    // are the adapters whose frames a row cap or a thermal step stretches
+    // (dc3 item 60: the 890M's limit is 0.25 ms over the one tap). Retail
+    // and Native: off (today's one tap, to the bit). Inspection:
+    // {rnd native_look present_up_on|_off|_rule}. LookPresentUpscale picks.
     bool presentUpscale = false;
+    bool presentUpscaleApple = false;
+    bool presentUpscaleIntegrated = false;
     // np-look23 (a): DC3's post noise map (noise_mono.tex) re-tiled so each
     // texel covers whole OUTPUT rows, read at one fixed place in the texel
     // (gfx/NoiseRows.h): the same fine lines on every row at every size and
@@ -629,8 +636,13 @@ bool LookDofNearSpread(const LookSettings &look, LookAdapterClass c);
 // Native, changing nothing.
 bool SetLookDofEdgeForInspection(int mode);
 // {rnd native_look present_up_on|_off|_rule} (np-present60): presentUpscale
-// on, off or the profile's (1 / 0 / -1). False under Native, changing nothing.
+// on, off or the profile's (1 / 0 / -1), all three classes' fields as the
+// edge rule's tokens do. False under Native, changing nothing.
 bool SetLookPresentUpscaleForInspection(int mode);
+// The present's upscale for this adapter class: presentUpscale on a discrete
+// GPU, ...Apple on an Apple GPU, ...Integrated on anything else. Callers pass
+// GpuDevice::LookClass().
+bool LookPresentUpscale(const LookSettings &look, LookAdapterClass c);
 // The edge rule for this adapter class: postDofEdge on a discrete GPU,
 // ...Apple on an Apple GPU, ...Integrated on anything else. Callers pass
 // GpuDevice::LookClass().
