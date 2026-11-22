@@ -310,20 +310,44 @@ struct DownNearOut {
     let scene = textureLoad(sceneTex, p, 0);
     let b = blur_bspline(in.uv);
     let rgbW = mix(scene.rgb, b.rgb / max(b.a, 1e-4), clamp(b.a * 16.0, 0.0, 1.0));
-    let z = textureLoad(depthTex, min(p, vec2i(textureDimensions(depthTex)) - 1), 0);
+    let q = min(p, vec2i(textureDimensions(depthTex)) - 1);
+    var z = textureLoad(depthTex, q, 0);
+    var n = dof_near(z);
+    let cov = clamp(textureSampleLevel(nearTex, samp, in.uv, 0.0).a, 0.0, 1.0);
+    // dof57: a pixel on a near object's silhouette whose sample 0 is behind
+    // it took sample 0's depth, so it kept the resolved scene -- the near
+    // object's hard anti-aliased edge -- at weight 1 - a, while its
+    // neighbours on both sides were replaced by the blurs: a dotted one-pixel
+    // line along the near object's original silhouette, darker or lighter
+    // than both sides by up to half the object's contrast. Such a pixel takes
+    // the depth of its nearest sample in the near field, so it is replaced
+    // like the near object's own pixels. Only where sample 0 is not in the
+    // near field and the near coverage reaches it (a branch: +3 depth loads
+    // in a band around a near object, none elsewhere); a pixel whose samples
+    // are all outside the near field keeps sample 0, to the bit.
+    if (n == 0.0 && cov > 0.0) {
+        let count = min(i32(textureNumSamples(depthTex)), 4);
+        for (var i = 1; i < count; i++) {
+            let zi = textureLoad(depthTex, q, i);
+            let ni = dof_near(zi);
+            if (ni > n) {
+                n = ni;
+                z = zi;
+            }
+        }
+    }
     let f = dof_factor(z);
-    let n = dof_near(z);
-    // The depth-blind colour only where the centre is in the near field (a
-    // branch: 4 reads there, none elsewhere); the spread's coverage from one
-    // bilinear read everywhere (the coverage is itself blurred). +1 read per
-    // pixel outside the near field.
+    // The depth-blind colour only where the pixel is in the near field (a
+    // branch: 4 reads there, none elsewhere); the near coverage from one
+    // bilinear read everywhere (the coverage is itself blurred), the spread's
+    // amount with it.
     var rgb = rgbW;
     if (n > 0.0) {
         rgb = mix(rgbW, blur_bspline_near(in.uv).rgb, n);
     }
     var a = f;
     if (dof.near.x > 0.0) {
-        a = max(f, clamp(textureSampleLevel(nearTex, samp, in.uv, 0.0).a, 0.0, 1.0));
+        a = max(f, cov);
     }
     return vec4f(clamp(mix(scene.rgb, rgb, a), vec3f(0.0), vec3f(1.0)), scene.a);
 }

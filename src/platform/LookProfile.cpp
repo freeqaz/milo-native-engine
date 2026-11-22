@@ -131,15 +131,20 @@ LookSettings SettingsFor(LookProfile p) {
     // np-look23 (c): the depth of field gathers by depth (LookProfile.h).
     s.postDofDepthWeight = enh;
     // np-look36: the depth weight's near field (LookProfile.h).
-    // The near field and its spread by adapter class: on a discrete GPU; off
-    // on anything else until a handheld's timing says each fits there. An
-    // Apple GPU: kAppleDofNearField / kAppleDofNearSpread (np-look49).
+    // The near field and its spread by adapter class: on in every class. An
+    // Apple GPU: kAppleDofNearField / kAppleDofNearSpread (np-look49). The
+    // other non-discrete class (dof57): timed on the GPD's Radeon 890M
+    // (Vulkan, render scale 1) on 2026-11-22, frame GPU time over the field
+    // off, mean of 8 rounds, worst of two venues: field +0.075 ms and field
+    // with spread +0.08 at 1268x713 against a limit of +0.13; +0.17 and +0.19
+    // at 1920x1080 against +0.25. This class is also a browser not on NVIDIA,
+    // which nothing timed.
     s.postDofNearField = enh;
     s.postDofNearFieldApple = enh && kAppleDofNearField;
-    s.postDofNearFieldIntegrated = false;
+    s.postDofNearFieldIntegrated = enh;
     s.postDofNearSpread = enh;
     s.postDofNearSpreadApple = enh && kAppleDofNearSpread;
-    s.postDofNearSpreadIntegrated = false;
+    s.postDofNearSpreadIntegrated = enh;
     // np-look51: the edge rule (LookProfile.h). On a discrete GPU; Apple's is
     // kAppleDofEdge (off, over the M3's limit); anything else off, the 890M
     // not being timed.
