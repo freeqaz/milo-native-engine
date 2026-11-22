@@ -2397,36 +2397,15 @@ void WgpuRnd::EndDrawing() {
 
     WriteFrameTimes();
 
-    // Frame budget tracking (MILO_PERF)
+    // Frame budget tracking (MILO_PERF): gfx/PerfWindow.h -- frames drawn per
+    // 5 s of wall time, and how long each took to render.
     if (mPerfEnabled && mFrameStartTime > 0.0) {
-        double now = PerfNow();
-        float frameMs = (float)((now - mFrameStartTime) * 1000.0);
-        if (frameMs > mPerfMaxFrameMs) mPerfMaxFrameMs = frameMs;
-        if (frameMs > 16.67f) mPerfBudgetViolations++;
-        mPerfAccumTime += (now - mFrameStartTime);
-        mPerfDrawCallAccum += GetMeshDrawCallsThisFrame();
-        mPerfInvisibleAccum += GetInvisibleMeshDrawsSkippedThisFrame();
-        mPerfFrameCount++;
-
-        // Log every 5 seconds
-        if (mPerfAccumTime >= 5.0) {
-            float avgMs = (float)(mPerfAccumTime / mPerfFrameCount * 1000.0);
-            float fps = (float)(mPerfFrameCount / mPerfAccumTime);
-            float avgDraws = (float)mPerfDrawCallAccum / mPerfFrameCount;
-            // "draws" counts the meshes asked for; the ones that could change
-            // nothing and were not sent follow in brackets.
-            char notSent[48] = "";
-            if (mPerfInvisibleAccum > 0)
-                snprintf(notSent, sizeof(notSent), " (%.0f not sent: invisible)",
-                         (float)mPerfInvisibleAccum / mPerfFrameCount);
-            fprintf(stderr, "[PERF] %.1f fps | avg %.2fms | max %.2fms | %d violations (>16.67ms) | %.0f draws/frame%s\n",
-                    fps, avgMs, mPerfMaxFrameMs, mPerfBudgetViolations, avgDraws, notSent);
-            mPerfAccumTime = 0.0;
-            mPerfFrameCount = 0;
-            mPerfMaxFrameMs = 0.0f;
-            mPerfDrawCallAccum = 0;
-            mPerfInvisibleAccum = 0;
-            mPerfBudgetViolations = 0;
+        if (mPerfWindow.AddFrame(mFrameStartTime, PerfNow(), GetMeshDrawCallsThisFrame(),
+                                 GetInvisibleMeshDrawsSkippedThisFrame())) {
+            char line[256];
+            mPerfWindow.Format(line, sizeof(line));
+            fprintf(stderr, "%s\n", line);
+            mPerfWindow.Reset();
         }
     }
 }
