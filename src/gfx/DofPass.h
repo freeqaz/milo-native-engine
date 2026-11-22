@@ -54,7 +54,26 @@ public:
              wgpu::TextureFormat sceneFormat, const wgpu::TextureView& depthView,
              uint32_t depthSamples, int sceneW, int sceneH, GpuDevice& gpu,
              bool enhanced = false, bool depthWeighted = false, bool nearField = false,
-             bool nearSpread = false);
+             bool nearSpread = false, bool edge = false,
+             const wgpu::TextureView& colorSampleView = wgpu::TextureView());
+    // np-look51, with `enhanced` only (LookSettings::postDofEdge, the edge
+    // rule) and `colorSampleView` (the multisampled colour the scene was
+    // resolved from, depthSamples samples, same size; a texture with
+    // TextureBinding, read with textureLoad): the composite that runs reads
+    // every depth sample of the pixel, not sample 0 alone. Where they all give
+    // sample 0's factor and near value (within 1/1024) it is the composite
+    // without the rule, to the bit, with no colour load. Elsewhere it
+    // composites per sample: out = scene + (1/N) sum_i a_i (rgb_i - col_i),
+    // each sample with its own factor (and near value, with `nearField`) and
+    // its own colour col_i, added to the resolved scene. So a pixel an
+    // in-focus figure covers c of over a blurred background is c * figure +
+    // (1 - c) * blur, where sample 0 alone kept it whole or replaced it whole
+    // by the blur (a one-sample stair-stepped outline in close-ups), and a
+    // near object's samples blur by their own near value. Without
+    // `colorSampleView` the composites without the rule run. A separate entry
+    // point per composite (..._edge, DofComposite...Edge, their own layouts),
+    // so with `edge` off the composite that runs is the one before np-look51;
+    // the retail composite never takes it.
     // np-look36, with `depthWeighted` only (LookSettings::postDofNearField):
     // the depth weight keeps an in-focus figure out of the blur on BOTH sides
     // of the focal plane, so an out-of-focus object in front of a dancer kept
@@ -87,6 +106,7 @@ public:
     // Whether the last Run took the depth-weighted path (tests).
     bool LastRunDepthWeighted() const { return mLastDepthWeighted; }
     bool LastRunNearField() const { return mLastNearField; }
+    bool LastRunEdge() const { return mLastEdge; }
     // The half factor target's own format, as the device made it (tests).
     wgpu::TextureFormat FactorTargetFormat() const {
         return mDwFactor ? mDwFactor.GetFormat() : wgpu::TextureFormat::Undefined;
@@ -112,12 +132,15 @@ public:
     // `depthWeighted` (LookSettings::postDofDepthWeight too) also compiles
     // the depth-weighted factor pre-pass, downsample, blur and composite.
     // `nearField` (postDofNearField too): the near field's three as well.
+    // `edge` (postDofEdge, with `enhanced`): the edge rule's composite for the
+    // same path.
     void Prewarm(wgpu::TextureFormat format, GpuDevice& gpu, bool enhanced = false,
-                 bool depthWeighted = false, bool nearField = false) {
+                 bool depthWeighted = false, bool nearField = false, bool edge = false) {
         EnsurePipelines(format, gpu);
         if (enhanced) EnsureEnhancedPipelines(gpu);
         if (enhanced && depthWeighted) EnsureDepthWeightPipelines(gpu);
         if (enhanced && depthWeighted && nearField) EnsureNearPipelines(gpu);
+        if (enhanced && edge) EnsureEdgePipelines(gpu, depthWeighted, depthWeighted && nearField);
     }
     bool EnhancedReady() const { return (bool)mDownTentPipe && (bool)mCompositeBSplinePipe; }
     // Bind groups from `cache` (null: four created per run); dc3 PLAN H-66.
@@ -131,6 +154,7 @@ private:
                                   wgpu::TextureFormat format = wgpu::TextureFormat::Undefined,
                                   uint32_t targets = 1);
     void EnsureNearPipelines(GpuDevice& gpu);
+    void EnsureEdgePipelines(GpuDevice& gpu, bool depthWeighted, bool nearField);
     void EnsureNearTextures(int w, int h, GpuDevice& gpu);
     void EnsureDepthWeightPipelines(GpuDevice& gpu);
     void EnsureDepthWeightTextures(int w, int h, GpuDevice& gpu, bool nearField = false);
@@ -173,6 +197,12 @@ private:
     bool mLastNearField = false;
     // Whether the half factor target was made with the near field's channel.
     bool mDwFactorNear = false;
+    // np-look51, `edge`: the edge rule's composite per path, Prewarm or first use;
+    // their layouts are the composites' plus the multisampled colour (10).
+    wgpu::BindGroupLayout mCompositeEdgeBGL, mCompositeNearEdgeBGL;
+    wgpu::PipelineLayout mCompositeEdgePL, mCompositeNearEdgePL;
+    wgpu::RenderPipeline mCompositeBSplineEdgePipe, mCompositeDwEdgePipe, mCompositeNearEdgePipe;
+    bool mLastEdge = false;
     wgpu::Sampler mSampler;               // linear, clamp
     // One buffer per pass: Queue::WriteBuffer lands at Submit, ahead of every
     // pass in the frame, so passes sharing a buffer would read the same data.

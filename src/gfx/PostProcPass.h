@@ -28,17 +28,22 @@ public:
     void Init(GpuDevice& gpu);
     // `depthView` is a depth-only view of the scene depth (`depthSamples`
     // samples, intermediate-sized); depth of field reads it.
+    // `colorSampleView` (np-look51): the multisampled colour the intermediate
+    // was resolved from (the same samples and size), for the depth of field's
+    // edge rule (DofPass::Run); without it the rule does not run.
     void Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& intermediateView,
              const wgpu::Texture& intermediateTex, int intermediateW, int intermediateH,
              const wgpu::TextureView& depthView, uint32_t depthSamples,
-             wgpu::TextureView& frameView, wgpu::TextureView& blackTexView, GpuDevice& gpu);
+             wgpu::TextureView& frameView, wgpu::TextureView& blackTexView, GpuDevice& gpu,
+             const wgpu::TextureView& colorSampleView = wgpu::TextureView());
     void Terminate();
     // The depth of field's pipelines for a `format` intermediate (DofPass::Prewarm).
     // `enhanced`: also the enhanced look's tent / B-spline pipelines.
     // `depthWeighted`: the depth-weighted ones too (np-look23 c).
+    // `edge`: the edge rule's composite for that path (np-look51).
     void PrewarmDof(wgpu::TextureFormat format, GpuDevice& gpu, bool enhanced = false,
-                    bool depthWeighted = false, bool nearField = false) {
-        mDof.Prewarm(format, gpu, enhanced, depthWeighted, nearField);
+                    bool depthWeighted = false, bool nearField = false, bool edge = false) {
+        mDof.Prewarm(format, gpu, enhanced, depthWeighted, nearField, edge);
     }
     // The DC3 chain's enhanced-look bloom pipelines (RB3RetailPost::PrewarmDC3Enhanced).
     void PrewarmDC3Enhanced(bool precision, bool filter, GpuDevice& gpu) {

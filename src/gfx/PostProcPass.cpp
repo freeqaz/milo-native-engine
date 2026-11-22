@@ -547,11 +547,22 @@ static bool NearFieldDof(const P*, bool worldGrade, bool spread, milo::LookAdapt
     }
 }
 
+// np-look51: the edge rule (LookSettings::postDofEdge), with EnhancedDof only
+// (DofPass ignores it otherwise), decided by adapter class (milo::LookDofEdge).
+template <class P>
+static bool EdgeDof(const P*, bool worldGrade, milo::LookAdapterClass adapter) {
+    if constexpr (rndshape::kDC3RetailPost && sizeof(P) > 0) {
+        return worldGrade && milo::LookDofEdge(milo::Look(), adapter);
+    } else {
+        return false;
+    }
+}
+
 void PostProcPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& intermediateView,
                        const wgpu::Texture& intermediateTex, int intermediateW, int intermediateH,
                        const wgpu::TextureView& depthView, uint32_t depthSamples,
                        wgpu::TextureView& frameView, wgpu::TextureView& blackTexView,
-                       GpuDevice& gpu) {
+                       GpuDevice& gpu, const wgpu::TextureView& colorSampleView) {
     EnsurePipeline(gpu);
 
     // The beams are this frame's only, whichever composite runs.
@@ -580,7 +591,8 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& i
                             depthSamples, intermediateW, intermediateH, gpu, EnhancedDof(pp, mWorldGrade),
                             DepthWeightedDof(pp, mWorldGrade),
                             NearFieldDof(pp, mWorldGrade, false, gpu.LookClass()),
-                            NearFieldDof(pp, mWorldGrade, true, gpu.LookClass()))) {
+                            NearFieldDof(pp, mWorldGrade, true, gpu.LookClass()),
+                            EdgeDof(pp, mWorldGrade, gpu.LookClass()), colorSampleView)) {
         sceneView = mDof.OutputView();
     }
 

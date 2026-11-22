@@ -589,6 +589,15 @@ public:
     static constexpr uint32_t kMSAASamples = 4;
     wgpu::Texture mMsaaTex;
     wgpu::TextureView mMsaaView;
+    // The 4x colour the post's intermediate is resolved from, for the depth of
+    // field's edge rule (np-look51); none when the frame is not multisampled
+    // or the target does not match the intermediate's size.
+    wgpu::TextureView MsaaSampleView() const {
+        return kMSAASamples > 1 && mMsaaTex && (int)mMsaaTex.GetWidth() == mIntermediateWidth &&
+                       (int)mMsaaTex.GetHeight() == mIntermediateHeight
+                   ? mMsaaView
+                   : wgpu::TextureView();
+    }
     int mMsaaWidth = 0;
     int mMsaaHeight = 0;
 
