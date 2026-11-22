@@ -147,10 +147,11 @@ LookSettings SettingsFor(LookProfile p) {
     s.postDofEdgeApple = enh && kAppleDofEdge;
     s.postDofEdgeIntegrated = false;
     // np-present60: the clamped cubic upscale in the present (LookProfile.h).
-    // On a discrete GPU; Apple's and anything else's off, neither being timed.
+    // On a discrete GPU and on anything else (the 890M timed it under its
+    // limit, np-present60b); Apple's off, the M3 not being timed.
     s.presentUpscale = enh;
     s.presentUpscaleApple = false;
-    s.presentUpscaleIntegrated = false;
+    s.presentUpscaleIntegrated = enh;
     // np-look26 g: cutoutSampleTest stays off in every look. Measured against
     // the landed sharpened coverage it is a trade, not a gain (LookProfile.h);
     // the hair_edge inspection tokens turn it on.

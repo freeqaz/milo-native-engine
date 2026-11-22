@@ -331,10 +331,13 @@ struct LookSettings {
     // depth of field's edge rule: presentUpscale on a discrete GPU, ...Apple
     // on an Apple GPU, ...Integrated on anything else. Enhanced: on (the
     // pass alone on an RTX 3090, 1920x1080 into 2560x1440: 0.073 ms against
-    // 0.036) / off / off: neither an M3 nor an 890M has timed it, and those
-    // are the adapters whose frames a row cap or a thermal step stretches
-    // (dc3 item 60: the 890M's limit is 0.25 ms over the one tap). Retail
-    // and Native: off (today's one tap, to the bit). Inspection:
+    // 0.036) / off / on. The 890M timed it under its limit of 0.25 ms over
+    // the one tap (np-present60b, 2026-11-22: one tap about 0.28 ms, the
+    // cubic +0.004 ms into 2560x1440 and +0.012 into 2536x1426, means of
+    // three runs whose spread is about 0.01; the pass is bound by its writes,
+    // so the extra reads hide). Apple off: the M3 has not timed it, and an
+    // Apple GPU's frame is the one a thermal step stretches. Retail and
+    // Native: off (today's one tap, to the bit). Inspection:
     // {rnd native_look present_up_on|_off|_rule}. LookPresentUpscale picks.
     bool presentUpscale = false;
     bool presentUpscaleApple = false;
