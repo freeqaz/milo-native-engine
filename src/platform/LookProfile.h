@@ -28,6 +28,7 @@
 // MILO_OUTPUT_MAX_ROWS (outputMaxRowsExplicit), the output resolution's cap.
 // ─────────────────────────────────────────────────────────────────────────────
 
+#include <cstddef>
 #include <cstdint>
 
 namespace milo {
@@ -48,8 +49,23 @@ enum class LookProfile : unsigned char {
 //     silicon; Dawn reports it IntegratedGPU). Through MoltenVK (the Vulkan
 //     backend) it is not Apple; nor is an Intel Mac's Intel graphics (0x8086),
 //     nor a CPU or unknown-type adapter whatever its vendor.
-//   OtherNonDiscrete: everything else (integrated, CPU, unknown, the web
-//     build): the rules exactly as the one non-discrete class had them.
+//   OtherNonDiscrete: everything else (integrated, CPU, unknown): the rules
+//     exactly as the one non-discrete class had them.
+// np-look56, the web build: a browser reports no adapter type, vendor id or
+// backend (emdawnwebgpu's wgpuAdapterGetInfo gives Unknown, 0 and WebGPU), so
+// there the class is decided from the browser's GPUAdapterInfo instead
+// (LookAdapterFacts::web): vendor "nvidia" on an adapter that is not a
+// fallback adapter is Discrete; vendor "apple" with texture-compression-bc
+// (an Apple silicon Mac; an iPhone or iPad has no BC), not a fallback, is
+// Apple only while the Apple-in-a-browser constant (kAppleInBrowser,
+// LookProfile.cpp) is on, and OtherNonDiscrete while it is off; anything else
+// ("amd", "intel", "arm", "qualcomm", empty, unknown, any fallback adapter)
+// is OtherNonDiscrete. An AMD or Intel string does not tell a desktop card
+// from a handheld's integrated GPU. The vendor is compared exactly,
+// case-sensitively: the WebGPU specification gives a normalised lower-case
+// identifier, and anything else is not one ("NVIDIA" is OtherNonDiscrete).
+// As for the native facts, nothing that sizes the frame reads it: the web
+// build's IsDiscreteGpu() stays false, render scale 1, the row cap as before.
 // An enum class so a bool can never be passed where a class is wanted.
 enum class LookAdapterClass : unsigned char {
     Discrete,
@@ -70,18 +86,39 @@ constexpr uint32_t kAppleGpuVendorId = 0x106B;
 
 // What the class is decided from, recorded by GpuDevice when it gets its
 // adapter. backendName is for the log line only (a string literal).
+// web: the facts are a browser's (GpuDevice_Web.cpp), and the class is
+// decided from webVendor, webHasBC and webFallback alone (type, vendorId and
+// metalBackend carry what emdawnwebgpu reports, which says nothing). The
+// strings are copied in (SetLookAdapterWebStrings), truncated to fit, so the
+// facts stay plain data that copies.
+constexpr int kLookAdapterWebStringSize = 32;
 struct LookAdapterFacts {
     LookAdapterType type = LookAdapterType::Unknown;
     uint32_t vendorId = 0;
     bool metalBackend = false;
     const char *backendName = "unknown";
+    bool web = false;
+    char webVendor[kLookAdapterWebStringSize] = {};        // GPUAdapterInfo.vendor
+    char webArchitecture[kLookAdapterWebStringSize] = {};  // .architecture (log line only)
+    bool webHasBC = false;                                  // texture-compression-bc
+    bool webFallback = false;                               // .isFallbackAdapter
 };
+// Copies vendor / architecture (len bytes each, not NUL-terminated; null =
+// empty; SIZE_MAX = NUL-terminated) into f.webVendor / f.webArchitecture,
+// truncated to fit.
+void SetLookAdapterWebStrings(LookAdapterFacts &f, const char *vendor, size_t vendorLen, const char *architecture,
+                              size_t architectureLen);
 
 // The classification, a pure function of the three facts.
 LookAdapterClass ClassifyLookAdapter(LookAdapterType type, uint32_t vendorId, bool metalBackend);
-inline LookAdapterClass ClassifyLookAdapter(const LookAdapterFacts &f) {
-    return ClassifyLookAdapter(f.type, f.vendorId, f.metalBackend);
-}
+// np-look56: a browser's adapter (see above). appleInBrowser is the
+// Apple-in-a-browser constant's value, an argument so tests walk both.
+LookAdapterClass ClassifyWebLookAdapter(const char *vendor, bool hasBC, bool fallback, bool appleInBrowser);
+// kAppleInBrowser (LookProfile.cpp): false; the comment there says why.
+bool LookAppleInBrowser();
+// The facts' class: the web rule with kAppleInBrowser when f.web, else the
+// native rule.
+LookAdapterClass ClassifyLookAdapter(const LookAdapterFacts &f);
 // "discrete GPU", "Apple GPU (not a discrete GPU)", "not a discrete GPU".
 const char *LookAdapterClassName(LookAdapterClass c);
 // "discrete", "integrated", "cpu", "unknown".
@@ -249,7 +286,7 @@ struct LookSettings {
     // read at every full-size pixel of the composite. postDofNearField and
     // postDofNearSpread are the values on a discrete GPU, the ...Apple pair on
     // an Apple GPU (LookAdapterClass, np-look49), the ...Integrated pair on
-    // anything else (integrated, CPU, unknown, the web build).
+    // anything else (integrated, CPU, unknown, a browser not on NVIDIA).
     // Enhanced: on / Apple on (timed on an M3) / off, the last until a
     // handheld's timing says each fits (dc3 PLAN H-165). LookDofNearField /
     // LookDofNearSpread pick, and with the field off the depth of field runs
@@ -276,8 +313,8 @@ struct LookSettings {
     // Where the samples agree: the composite without the rule, to the bit.
     // Decided by adapter class like the near field:
     // postDofEdge on a discrete GPU, ...Apple on an Apple GPU, ...Integrated
-    // on anything else. Enhanced: on / off (kAppleDofEdge, until the landing
-    // session's M3 timing) / off (until the 890M's timing). Retail and
+    // on anything else. Enhanced: on / off (kAppleDofEdge: timed on the M3,
+    // over its limit at every size) / off (the 890M is not timed). Retail and
     // Native: off. Inspection: {rnd native_look dof_edge_on|_off|_rule}.
     // LookDofEdge picks.
     bool postDofEdge = false;
