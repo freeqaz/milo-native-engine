@@ -813,6 +813,107 @@ fn rb3SkinSpecPoint(surfaceNormal: vec3f, viewDir: vec3f, lightDir: vec3f,
     return cp.rgb * lightColor * (lobe * sin2 * sin2);
 }
 
+// RB3's X360 skin DIFFUSE, for the native light arm (scene.skinSpecModel 1,
+// rb3-xenon only), from the same shipped permutation, standard
+// 0000022040031037. Ucode instruction numbers:
+//   Nd   diffuse normal, the normal map's x and y scaled by c14.x =
+//        1 - deNormal (ins 22, 36, 41; normalized ins 45-47). The specular
+//        normal Ns takes the map at full strength (ins 38-39, 48).
+//   box  boxD = sum over the faces c80..c85 (+X -X +Y -Y +Z -Z) of
+//        sat(+-Nd_axis) x face, linear weights (ins 46, 53-55, 59-60, 65, 71,
+//        77-78). The faces hold the approx lights, each folded with weight
+//        sat(+-L_axis)^2 (BoxMapLighting::ApplyQueuedLights); no ambient.
+//   back-of-box  boxB = the same sum along -V (ins 29-31, 34, 37, 40, 43-44),
+//        weighted by rimD^rimPow, rimD = (1 - sat(V . Nd)) (0.5 Nd.z + 0.5)
+//        (ins 49, 67-68, 86, 89, 91, 95): box term = boxD (1 + boxB rimD^rp)
+//        (ins 96-97).
+//   wrap a point light adds a_i c_i wrap(Nd . L_i), per channel
+//        sat(x (0.55, 0.6, 0.65) + (0.45, 0.4, 0.35)) -- red wraps furthest
+//        (ins 54-58, 82-83, 98, 101). No N . L gate.
+//   back each point also gives b_i = a_i c_i sat(-L_i . V)
+//        (1 - sat(V . Ns)^2)^rp (0.5 Ns.z + 0.5) (ins 69, 75-76, 91, 94-95,
+//        99-103, 106).
+//   out  diffuse = c0 (c1 + box + wrap) texel (1 + c63.rgb sum b_i)
+//        (ins 70, 104-105, 109-110), c0 the material colour, c1 the
+//        ambient (NgMat::SetupAmbient), c63 = (rim rgb, max(rim power, 0.5))
+//        (NgMat::SetRegularShaderConst kPS_RimColor). No vertex colour reaches
+//        it (standard.vs fetches it only for prelit materials), and no rim
+//        add: the rim colour lives only in the back factor.
+// The native arm's directional lights stand in for the approx lights and its
+// point lights for the real ones.
+var<private> gRb3SkinNs: vec3f = vec3f(0.0, 0.0, 1.0);
+var<private> gRb3SkinBack: vec3f = vec3f(0.0);
+
+fn rb3SkinDiffuseOn() -> bool {
+    return scene.skinSpecModel > 0.5 && shaderVariationIs(material.shaderVariation, kShaderVariationSkin);
+}
+
+fn rb3SkinRimPower() -> f32 {
+    return max(material.rimColor.a, 0.5);
+}
+
+// Ns: the normal map at full strength (no deNormal), as ins 38-39 build it.
+fn rb3SkinSpecNormal(surfaceInput: VertexOutput, nd: vec3f) -> vec3f {
+    if (!isEnabled(material.hasNormalMap)) {
+        return nd;
+    }
+    let normalSample = textureSampleBias(normalMapTex, mapSampler, surfaceInput.uv, materialLodBias());
+    let tangentSpaceNormal = blendDetailNormal(decodeTangentSpaceNormal(normalSample), surfaceInput.uv);
+    return normalize(normalize(surfaceInput.worldTangent) * tangentSpaceNormal.x +
+                     normalize(surfaceInput.worldBitangent) * tangentSpaceNormal.y +
+                     normalize(surfaceInput.worldNormal) * tangentSpaceNormal.z);
+}
+
+fn rb3SkinWrap(nDotL: f32) -> vec3f {
+    return saturate(nDotL * vec3f(0.55, 0.6, 0.65) + vec3f(0.45, 0.4, 0.35));
+}
+
+fn rb3SkinBoxEval(faces: array<vec3f, 6>, n: vec3f) -> vec3f {
+    let p = max(n, vec3f(0.0));
+    let q = max(-n, vec3f(0.0));
+    return p.x * faces[0] + q.x * faces[1] + p.y * faces[2] + q.y * faces[3] +
+           p.z * faces[4] + q.z * faces[5];
+}
+
+// The approx-light box term boxD (1 + boxB rimD^rp), with the native arm's
+// directional lights folded into the six faces as ApplyQueuedLights folds them.
+fn rb3SkinBoxDiffuse(nd: vec3f, viewDir: vec3f) -> vec3f {
+    var faces: array<vec3f, 6>;
+    for (var i = 0; i < 6; i++) {
+        faces[i] = vec3f(0.0);
+    }
+    let count = i32(scene.numLights);
+    for (var i = 0; i < 4; i++) {
+        if (i >= count) {
+            break;
+        }
+        let l = normalize(-scene.lightDirs[i].xyz);
+        let c = scene.lightColors[i].rgb;
+        let p = max(l, vec3f(0.0));
+        let q = max(-l, vec3f(0.0));
+        let wp = p * p;
+        let wq = q * q;
+        faces[0] += wp.x * c;
+        faces[1] += wq.x * c;
+        faces[2] += wp.y * c;
+        faces[3] += wq.y * c;
+        faces[4] += wp.z * c;
+        faces[5] += wq.z * c;
+    }
+    let boxD = rb3SkinBoxEval(faces, nd);
+    let boxB = rb3SkinBoxEval(faces, -viewDir);
+    let rimD = (1.0 - saturate(dot(viewDir, nd))) * (0.5 * nd.z + 0.5);
+    return boxD * (1.0 + boxB * pow(rimD, rb3SkinRimPower()));
+}
+
+// Point light i's back factor b_i (gRb3SkinBack sums them).
+fn rb3SkinPointBack(viewDir: vec3f, lightDir: vec3f, lightColor: vec3f) -> vec3f {
+    let ns = gRb3SkinNs;
+    let vn = saturate(dot(viewDir, ns));
+    return lightColor * (saturate(dot(-lightDir, viewDir)) *
+                         pow(1.0 - vn * vn, rb3SkinRimPower()) * (0.5 * ns.z + 0.5));
+}
+
 fn computeSkinLight(
     surfaceNormal: vec3f,
     viewDir: vec3f,
@@ -831,6 +932,10 @@ fn computeSkinLight(
     lighting.diffuse = lightColor * skinDiffuse * warmShadowTint;
 
     if (scene.skinSpecModel > 0.5) {
+        // RB3 X360: the approx lights reach skin diffuse only through the box
+        // map, which shadeStandard evaluates once over all of them
+        // (rb3SkinBoxDiffuse), so this light adds no diffuse of its own here.
+        lighting.diffuse = vec3f(0.0);
         lighting.specular = rb3SkinSpecDirectional(surfaceNormal, viewDir, lightDir, lightColor,
                                                    specularSample);
         return lighting;
@@ -948,6 +1053,15 @@ fn computePointLight(
     lighting.diffuse = lightColor * lambert;
 
     if (isSkinMaterial && scene.skinSpecModel > 0.5) {
+        // RB3 X360 skin diffuse: the per-channel wrap, and this light's back
+        // factor (rb3SkinPointBack), with no N . L gate.
+        // Retail lights skin with two points at most (NgEnviron::Select keeps
+        // the first two real point lights; RB3 ships no 3-point skin
+        // permutation), so a third or fourth native point adds no diffuse.
+        if (lightIndex < 2) {
+            lighting.diffuse = lightColor * rb3SkinWrap(dot(surfaceNormal, lightDir));
+            gRb3SkinBack += rb3SkinPointBack(viewDir, lightDir, lightColor);
+        }
         lighting.specular = rb3SkinSpecPoint(surfaceNormal, viewDir, lightDir, lightColor,
                                              specularSample);
         return lighting;
@@ -1873,9 +1987,10 @@ fn shadeStandard(surfaceInput: VertexOutput) -> vec4f {
         }
     } else if (isEnabled(material.prelit)) {
         vertexTint = rawVtx;                          // prelit: authored colour verbatim
-    } else if (isEnabled(surfaceInput.isSkinned)) {
+    } else if (isEnabled(surfaceInput.isSkinned) && !rb3SkinDiffuseOn()) {
         vertexTint = skinnedTint;                     // skinned char: desaturated shading
     }                                                 // static non-prelit venue: white (suppress)
+                                                      // RB3 X360 skin: none (rb3SkinBoxDiffuse)
     // RB3 shades in gamma space (material.gammaShading): retail's standard.ps
     // multiplies the texel, the material colour and the lighting sum exactly
     // as stored and authored, and writes the product to an 8-bit
@@ -2010,6 +2125,12 @@ fn shadeStandard(surfaceInput: VertexOutput) -> vec4f {
         viewDir = normalize(scene.cameraPos - surfaceInput.worldPos);
         specularSample = textureSampleBias(specularMapTex, mapSampler, surfaceInput.uv, materialLodBias());
     }
+    // RB3 X360 skin diffuse in the native arm (rb3SkinBoxDiffuse): Nd is
+    // surfaceNormal (deNormal applied), Ns the map at full strength.
+    let rb3Skin = nativeLit && rb3SkinDiffuseOn();
+    if (rb3Skin) {
+        gRb3SkinNs = rb3SkinSpecNormal(surfaceInput, surfaceNormal);
+    }
     var shadowFactor = 1.0;
     var totalLighting = emptyLightingTerms();
     if (nativeLit) {
@@ -2054,6 +2175,10 @@ fn shadeStandard(surfaceInput: VertexOutput) -> vec4f {
             totalLighting.specular += lightContribution.specular;
         }
 
+        if (rb3Skin) {
+            totalLighting.diffuse += rb3SkinBoxDiffuse(surfaceNormal, viewDir);
+        }
+
         // Projected light (kFakeSpot with gobo texture)
         if (scene.numProjLights > 0.5) {
             let projLightDir = normalize(-scene.projLightDir.xyz);
@@ -2088,6 +2213,13 @@ fn shadeStandard(surfaceInput: VertexOutput) -> vec4f {
         }
     } else if (retailLight) {
         finalColor = retailShade(surfaceInput, baseColor.rgb, ambientLight, rawVtx, prelitAmbient);
+    } else if (rb3Skin) {
+        // RB3 X360 skin: c0 (c1 + box + wrap) texel (1 + c63.rgb sum b_i),
+        // no soft clip (the 8-bit target is retail's only clamp).
+        finalColor =
+            baseColor.rgb * (ambientLight + totalLighting.diffuse * shadowFactor) *
+                (1.0 + material.rimColor.rgb * gRb3SkinBack) +
+            totalLighting.specular * shadowFactor;
     } else {
         // GX-faithful: soft-saturate the (ambient + diffuse) lighting sum before
         // it modulates the texture so a hot multi-light venue moment tints the
@@ -2131,7 +2263,10 @@ fn shadeStandard(surfaceInput: VertexOutput) -> vec4f {
     // map in the texel (above); the native rim and reflection adds are the
     // other models'.
     if (scene.retailLighting < 1.5) {
-        finalColor += computeRimLighting(surfaceNormal, viewDir, surfaceInput.uv);
+        // RB3 X360 skin has no rim add: its rim colour is the back factor.
+        if (!rb3Skin) {
+            finalColor += computeRimLighting(surfaceNormal, viewDir, surfaceInput.uv);
+        }
         finalColor += computeEnvironmentReflection(surfaceNormal, viewDir, specularSample);
     }
     // RB3 colour modulation scales the shaded colour, additive terms included:
