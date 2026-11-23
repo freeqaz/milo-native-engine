@@ -2,8 +2,11 @@
 // (MILO_ENGINE_GPU_BACKEND=dc3, MILO_ENGINE_RNDOBJ_SHAPE=dc3). Built for both
 // consumers of the DC3 shape; every body below is selected by
 // rndshape::kDC3RetailModel (RndShape_DC3.h), which is true for dc3-decomp and
-// false for rb3-xenon, so rb3-xenon gets `return false` / no-ops and keeps
-// WgpuRnd::WriteSceneUniforms' own environ block exactly as before.
+// false for rb3-xenon. rb3-xenon takes the bodies under
+// rndshape::kRB3RetailLight instead: RB3's own X360 model, the engine's
+// retail form 1 (WriteRB3XenonRetail / FillRB3XenonApprox, lane A62); before
+// that it got `return false` / no-ops and the heuristic arm in
+// WgpuRnd::WriteSceneUniforms.
 //
 // What the Xbox 360 image does, from the matched decomp (dc3-decomp
 // src/system/rndobj/Env_NG.cpp, BoxMap.cpp, Mat_NG.cpp, Shader.cpp; the
@@ -451,6 +454,123 @@ void FillDC3Approx(E *env, M *mesh, float box[6][4], float retail[4]) {
     }
 }
 
+// ---- rb3-xenon: RB3's own Xbox 360 light model (rndshape::kRB3RetailLight) --
+// The engine's retail form 1, the one the shader's retailLighting 1 branch
+// runs (docs/native/dc3-backend-for-rb3-wii.md section 9), fed from the
+// consumer's own decomp rather than reconstructed:
+//  * c1 = the environ's ambient, unscaled (NgMat::SetupAmbient; a material
+//    with use_environ off gets 1 through rndshape::MatUnlit);
+//  * real lights: NgEnviron::Select (band.exe TU5 fn_82B86738) keeps at most
+//    TWO point lights, in mLightsReal order, each Showing with a non-zero
+//    packed colour (CheckPointLight / SetPointLightRegisters): c64+i =
+//    (position, 1 / (falloffStart - range)), c67+i = (colour, -range * that),
+//    or (.., 0) / (.., 1) when falloffStart >= range;
+//  * c109..c111 = the colour transform under use_color_adjust, and the AO
+//    strength c24 under mAOEnabled (the shader's AO also needs the mesh's
+//    HasAOCalc, FillRB3XenonApprox);
+//  * the box map: per mesh, below.
+// Fog keeps the form the heuristic arm wrote (linear, fogEnabled 1); RB3's
+// fog microcode was not read for this lane.
+template <class E>
+void WriteRB3XenonRetail(SceneUniforms &s, E *env) {
+    s.retailLighting = 1.0f;      // 1: RB3's form of the retail model
+    s.pointFalloffMode = 2.0f;    // retail's linear falloff
+    s.venueHighlightLumaMode = 0.0f;
+    s.numLights = 0.0f;           // no directionals: approx lights are the box map
+    const Hmx::Color &amb = env->AmbientColor();
+    s.ambientColor[0] = amb.red;
+    s.ambientColor[1] = amb.green;
+    s.ambientColor[2] = amb.blue;
+    s.ambientColor[3] = 1.0f;
+    if (env->FogEnable()) {
+        s.fogEnabled = 1.0f;
+        s.fogStart = env->FogStart();
+        s.fogEnd = env->FogEnd();
+        const Hmx::Color &fc = env->FogColor();
+        s.fogColor[0] = fc.red;
+        s.fogColor[1] = fc.green;
+        s.fogColor[2] = fc.blue;
+    }
+    int numPoint = 0;
+    for (auto it = env->LightsReal().begin(); it != env->LightsReal().end() && numPoint < 2;
+         ++it) {
+        auto *L = *it;
+        if (!L || L->GetType() != std::remove_pointer_t<decltype(L)>::kPoint) continue;
+        if (!L->Showing() || L->GetColor().Pack() == 0) continue;
+        const Transform &xfm = L->WorldXfm();
+        float slope = 0.0f, rangeScale = 1.0f;
+        if (L->FalloffStart() < L->Range()) {
+            slope = 1.0f / (L->FalloffStart() - L->Range());
+            rangeScale = -(L->Range() * slope);
+        }
+        const Hmx::Color &c = L->GetColor();
+        s.pointLightPos[numPoint][0] = xfm.v.x;
+        s.pointLightPos[numPoint][1] = xfm.v.y;
+        s.pointLightPos[numPoint][2] = xfm.v.z;
+        s.pointLightPos[numPoint][3] = slope;
+        s.pointLightColors[numPoint][0] = c.red;
+        s.pointLightColors[numPoint][1] = c.green;
+        s.pointLightColors[numPoint][2] = c.blue;
+        s.pointLightColors[numPoint][3] = rangeScale;
+        s.pointLightRanges[numPoint] = L->Range();
+        numPoint++;
+    }
+    s.numPointLights = (float)numPoint;
+    s.aoStrength = (env->AOEnabled() && env->AOStrength() > 0.003f) ? env->AOStrength() : 0.0f;
+    s.colorAdjust = env->UseColorAdjust() ? 1.0f : 0.0f;
+    if (s.colorAdjust > 0.5f) {
+        const Transform &cx = env->ColorXfm();
+        const float *m0 = &cx.m.x.x;
+        const float *m1 = &cx.m.y.x;
+        const float *m2 = &cx.m.z.x;
+        const float t[3] = {cx.v.x, cx.v.y, cx.v.z};
+        for (int c = 0; c < 3; c++) {
+            s.colorXfm[c][0] = m0[c];
+            s.colorXfm[c][1] = m1[c];
+            s.colorXfm[c][2] = m2[c];
+            s.colorXfm[c][3] = t[c];
+        }
+    }
+}
+
+// The per-mesh box map, as retail's mesh draw computes it: DxMesh::DrawShowing
+// (band.exe TU5 fn_82738E38+0x58) calls fn_82418DC0, which
+//  * returns unless RndMesh::sUpdateApproxLight is set (+0x20, the byte at
+//    0x82C6FC24), the draw mode is 0 (+0x2c..+0x3c) and there is a current
+//    environ (+0x40..+0x4c);
+//  * takes the mesh's world sphere centre when MakeWorldSphere succeeds with
+//    a radius > 0, else its world origin (+0x50..+0xb0);
+//  * calls the environ's UpdateApproxLighting (vtable +0x58) there (+0xb4..
+//    +0xc8).
+// Character::DrawLodOrShadow clears sUpdateApproxLight and evaluates once at
+// the character's sphere centre (rb3-xenon char/Character.cpp, which runs
+// natively). Both land in c80..c85 through the decomp's own
+// NgEnviron::UpdateApproxLighting and BoxMapLighting, and WgpuShaderMgr keeps
+// the registers it was handed, so the draw reads them back as they stand.
+// Native's NgEnviron::Select (the HX_NATIVE body) does not evaluate the box
+// or count real lights, so the "a real light raises the approx count to 1"
+// clause is not reached; the shader's retailLightsOn() also tests points.
+template <class E, class M>
+void FillRB3XenonApprox(E *env, M *mesh, float box[6][4], float retail[4]) {
+    // Mesh::Draw: TheShaderMgr.SetMeshInfo(boneCount, HasAOCalc()).
+    retail[0] = mesh->HasAOCalc() ? 1.0f : 0.0f;
+    if (!env) return;
+    if (M::sUpdateApproxLight && TheRnd.DrawMode() == 0) {
+        Sphere sphere;
+        Vector3 pos = mesh->WorldXfm().v;
+        if (mesh->MakeWorldSphere(sphere, false) && sphere.GetRadius() > 0.0f) pos = sphere.center;
+        env->UpdateApproxLighting(&pos);
+    }
+    retail[1] = (float)env->NumLights_Approx();
+    for (int i = 0; i < 6; i++) {
+        const float *v = rndshape::CapturedVConstant(0x50 + i);
+        box[i][0] = v[0];
+        box[i][1] = v[1];
+        box[i][2] = v[2];
+        box[i][3] = 1.0f;
+    }
+}
+
 } // namespace
 
 namespace rndshape {
@@ -459,6 +579,15 @@ bool WriteSceneLighting(SceneUniforms &s, RndCam *cam) {
     if constexpr (kDC3RetailModel) {
         WriteDC3Retail(s, static_cast<typename DependentEnvT<SceneUniforms>::type *>(
                               RndEnviron::Current()), cam);
+        return true;
+    } else if constexpr (kRB3RetailLight) {
+        // The heuristic arm's own condition: an environ with its ambient/fog
+        // owner. Anything else keeps WriteSceneUniforms' default (no environ).
+        auto *env = static_cast<typename DependentEnvT<SceneUniforms>::type *>(
+            RndEnviron::Current());
+        (void)cam;
+        if (!env || !env->AmbientFogOwner()) return false;
+        WriteRB3XenonRetail(s, env);
         return true;
     } else {
         (void)s;
@@ -471,6 +600,12 @@ void FillMeshApproxLighting(RndMesh *mesh, float box[6][4], float retail[4]) {
         if (!mesh) return;
         FillDC3Approx(static_cast<typename DependentEnvT<RndMesh>::type *>(RndEnviron::Current()),
                       mesh, box, retail);
+    } else if constexpr (kRB3RetailLight) {
+        if (!mesh) return;
+        auto *env = static_cast<typename DependentEnvT<RndMesh>::type *>(RndEnviron::Current());
+        // Only a frame WriteSceneLighting lit with the retail model reads it.
+        if (env && !env->AmbientFogOwner()) env = nullptr;
+        FillRB3XenonApprox(env, mesh, box, retail);
     } else {
         (void)mesh;
         (void)box;

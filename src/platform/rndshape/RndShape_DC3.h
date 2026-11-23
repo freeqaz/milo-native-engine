@@ -80,6 +80,36 @@ constexpr bool kDC3RetailModelFor =
     std::is_base_of<RndDrawable, typename DependentEnvT<T>::type>::value;
 constexpr bool kDC3RetailModel = kDC3RetailModelFor<void>;
 
+// rb3-xenon: RB3's own Xbox 360 light model, the engine's retail form 1
+// (SceneUniforms.retailLighting 1, docs/native/dc3-backend-for-rb3-wii.md
+// section 9; the shader branch the RB3-Wii shape also drives). Retail RB3
+// X360 standard shading is c0 * (c1 ambient + box(N) + at most two point
+// lights) * texel, the box map c80..c85 written per mesh by
+// NgEnviron::UpdateApproxLighting (rb3-xenon rndobj/Env_NG.cpp). Before
+// lane A62 rb3-xenon lit through WgpuRnd::WriteSceneUniforms' heuristic arm
+// (approx lights as top-4 directionals by name, a 0.08 ambient floor, a 0.35
+// fill, an energy cap, soft clip), none of which retail has.
+//
+// Detected structurally: not DC3, and an environ that runs RB3's own approx
+// lighting -- the virtual UpdateApproxLighting(const Vector3 *) that
+// NgEnviron overrides, plus the local/global approx switches it reads.
+// RndEnviron is complete here (kDC3RetailModelFor's is_base_of needs that),
+// so a false answer is a real absence, not an incomplete type; the rb3-app
+// gate rb3_app_check_retail_light_model() requires it true for rb3-xenon.
+template <class E, class = void> struct HasRB3ApproxLighting : std::false_type {};
+template <class E>
+struct HasRB3ApproxLighting<
+    E, std::void_t<decltype(std::declval<E &>().UpdateApproxLighting(
+                       static_cast<const Vector3 *>(nullptr))),
+                   decltype(std::declval<const E &>().UsesApproxLocal()),
+                   decltype(std::declval<const E &>().UsesApproxGlobal()),
+                   decltype(std::declval<const E &>().NumLights_Approx())> >
+    : std::true_type {};
+template <class T>
+constexpr bool kRB3RetailLightFor =
+    !kDC3RetailModelFor<T> && HasRB3ApproxLighting<typename DependentEnvT<T>::type>::value;
+constexpr bool kRB3RetailLight = kRB3RetailLightFor<void>;
+
 // Whether a material ignores lighting entirely (register colour x texture, no
 // ambient, lights or vertex colour). DC3 (retail model): a material with
 // use_environ off that is not prelit. RndShaderStandard::CalcShaderOpts gates
@@ -89,7 +119,12 @@ constexpr bool kDC3RetailModel = kDC3RetailModelFor<void>;
 // doc). rb3-xenon: no such state.
 template <class T>
 inline bool MatUnlit(const T &m) {
-    if constexpr (kDC3RetailModelFor<T>) return m && !m->UseEnviron() && !m->Prelit();
+    // rb3-xenon (kRB3RetailLightFor): the same rule, RB3's own -- its
+    // RndShaderStandard::CalcShaderOpts gates both light bits on
+    // mat->UseEnviron() (rndobj/Shader.cpp) and NgMat::SetupAmbient loads
+    // (1,1,1,1) into c1 when use_environ is off (rndobj/Mat_NG.cpp).
+    if constexpr (kDC3RetailModelFor<T> || kRB3RetailLightFor<T>)
+        return m && !m->UseEnviron() && !m->Prelit();
     else { (void)m; return false; }
 }
 // Whether a prelit material's vertex colour is its ambient term (lights add
@@ -98,7 +133,9 @@ inline bool MatUnlit(const T &m) {
 // without use_environ (0x100 with c1 = 1) is the vertex colour as authored.
 template <class T>
 inline bool MatPrelitAmbient(const T &m) {
-    if constexpr (kDC3RetailModelFor<T>) return m && m->Prelit() && m->UseEnviron();
+    // rb3-xenon: RB3 standard.vs prelit bit 8, as the RB3-Wii shape reads it.
+    if constexpr (kDC3RetailModelFor<T> || kRB3RetailLightFor<T>)
+        return m && m->Prelit() && m->UseEnviron();
     else { (void)m; return false; }
 }
 // The retail material terms (RndShape.h), from DC3's RndShaderStandard::
@@ -110,11 +147,23 @@ inline bool MatPrelitAmbient(const T &m) {
 //   GetPerPixelLit(); then normal map (5), specular map (1), rim (37:
 //   RimRGB().Pack() != 0, c61 = (rgb, max(power, 0.5))), rim map (15);
 //   c14 = 1 - deNormal.
-// rb3-xenon keeps the dc3 shader's own model.
+// rb3-xenon (kRB3RetailLightFor) takes the same terms from RB3's own
+// CalcShaderOpts (rb3-xenon rndobj/Shader.cpp, RndShaderStandard at band.exe
+// TU5 fn_824A66E8): specular on SpecularRGB().Pack(), per-pixel on
+// AllowPerPixel && GetPerPixelLit, then normal map, specular map (only with
+// specular), rim on RimRGB().Pack() (not gated on specular), rim-under and
+// rim map; it has no flip_normal ("Retail RB3 X360 has no mFlipNormal here").
 template <class T>
 inline bool MatRetailTerms(const T &m, RetailMatTerms &t) {
-    if constexpr (kDC3RetailModelFor<T>) {
+    if constexpr (kDC3RetailModelFor<T> || kRB3RetailLightFor<T>) {
         if (!m || !m->UseEnviron()) return false;
+        // rb3-xenon skin keeps the native skin arm (the shipped skin
+        // permutation, standard_wgsl.inc rb3SkinDiffuseOn; kSkinSpecRB3Xenon),
+        // which reads the material's own fields and, under the retail light
+        // model, the real box map. The generic retail terms would zero them.
+        if constexpr (kRB3RetailLightFor<T>) {
+            if (m->GetShaderVariation() == kShaderVariationSkin) return false;
+        }
         const Hmx::Color &spec = m->GetSpecularRGB();
         t.specular = spec.Pack() != 0;
         if (t.specular) {
@@ -141,7 +190,7 @@ inline bool MatRetailTerms(const T &m, RetailMatTerms &t) {
             t.rimMap = t.rim && m->GetRimMap() != nullptr;
             t.rimTex = m->GetRimMap();
             t.deNormal = m->GetDeNormal();
-            t.flipNormal = m->GetCull() == kCullBackwards;
+            if constexpr (kDC3RetailModelFor<T>) t.flipNormal = m->GetCull() == kCullBackwards;
         }
         return true;
     } else {
@@ -585,8 +634,8 @@ constexpr int kDrawModeReflection = kDC3RetailModel ? 8 : 7;
 constexpr bool kReflectionForcesReverseCull = kDC3RetailModel;
 
 // ---- skin specular on the native light arm ---------------------------------
-// rb3-xenon's frames fall to WgpuRnd's native (heuristic) light arm, which
-// gave a skin material (shader_variation 1) an unnormalised Blinn lobe per
+// rb3-xenon's frames used to fall to WgpuRnd's native (heuristic) light arm,
+// which gave a skin material (shader_variation 1) an unnormalised Blinn lobe per
 // light at the spec map's colour, power max(power * map alpha, 0.1). RB3's
 // shipped X360 skin permutation (xbox_shaders `standard`
 // 0000022040031037: skin, rim, normal + spec maps, 2 points; ucode
@@ -601,7 +650,11 @@ constexpr bool kReflectionForcesReverseCull = kDC3RetailModel;
 // (BoxMapLighting::ApplyQueuedLights). So a skin texel facing the camera has
 // almost no specular. SceneUniforms.skinSpecModel = 1 selects that form in the
 // native arm (standard_wgsl.inc rb3SkinSpecDirectional and rb3SkinSpecPoint). rb3-xenon only: DC3 never
-// reaches the native arm (WriteDC3Retail claims every frame).
+// reaches the native arm (WriteDC3Retail claims every frame). Since lane A62
+// rb3-xenon lights through RB3's retail model (kRB3RetailLight); a skin
+// material keeps this arm there (MatRetailTerms declines it), with the box
+// faces the real c80..c85 instead of folded directionals and the points
+// retail's two (standard_wgsl.inc rb3SkinRetailBox, rb3SkinSpecBox).
 constexpr bool kSkinSpecRB3Xenon = !kDC3RetailModel;
 
 // ---- camera select ---------------------------------------------------------
@@ -894,8 +947,8 @@ constexpr bool kMapsFollowTexWrap = kDC3RetailModel;
 // srgb_lut; the guest front buffer is the _raw.ppm), i.e. against a reference
 // one encode brighter than the image. Against the recovered front buffer the
 // gamma-space model moves every frame metric toward retail
-// (rb3-scout/a60/HANDOFF.md). The light model rb3-xenon runs is still the
-// engine's heuristic arm (WriteSceneLighting declines for it), not retail's.
+// (rb3-scout/a60/HANDOFF.md). Since lane A62 the light model rb3-xenon runs is
+// retail's too (kRB3RetailLight), not the engine's heuristic arm.
 constexpr bool kGammaSpaceShading = true;
 // A Multiply-blend material is lit like any other (np-gfx-light round 3).
 // NgMat::SetBasicState gives kBlendMultiply src ZERO / dest SRCCOLOR and fade

@@ -2771,15 +2771,16 @@ void WgpuRnd::WriteSceneUniforms() {
         if (gobo) gobo->PresyncBitmap();
         mProjLightTexView = gobo ? GetGpuTexView(gobo) : nullptr;
     } else if (env && rndshape::EnvHasAmbientFogOwner(env)) {
-        // The engine's heuristic light model. WHO STILL REACHES THIS ARM: rb3-xenon
-        // (the dc3 render shape without DC3's HX_NATIVE accessors, so
-        // WriteSceneLighting returns false there) -- its captures are pinned
-        // byte-identical by each lane's rb3-render A/B -- and RB3-Wii on any
-        // frame its own RB3WiiSceneLighting declines (it returns false when
-        // neither its retail model nor its venue-light arm applies). DC3 never
-        // does: its shape claims every frame through WriteDC3Retail
-        // (retailLighting 2) since np-gfx-light round 1. Do not delete this arm
-        // while those render with it; do not tune it for DC3, which never sees it.
+        // The engine's heuristic light model. WHO STILL REACHES THIS ARM: RB3-Wii
+        // on any frame its own RB3WiiSceneLighting declines (it returns false
+        // when neither its retail model nor its venue-light arm applies).
+        // rb3-xenon no longer does since lane A62: its shape claims every frame
+        // with an environ through WriteRB3XenonRetail (retailLighting 1, RB3's
+        // X360 model; rndshape::kRB3RetailLight), the same condition as this
+        // arm's. DC3 never does: its shape claims every frame through
+        // WriteDC3Retail (retailLighting 2) since np-gfx-light round 1. Do not
+        // delete this arm while RB3-Wii renders with it; do not tune it for
+        // DC3 or rb3-xenon, which never see it.
         // Ambient color (with minimum floor for visibility)
         const Hmx::Color& amb = env->AmbientColor();
         float minAmbient = 0.08f;
