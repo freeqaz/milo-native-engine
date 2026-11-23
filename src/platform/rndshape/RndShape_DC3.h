@@ -873,14 +873,30 @@ constexpr bool kAlphaFringeFade = !kDC3RetailModel;
 // dc3-decomp (kDC3RetailModel) only; rb3-xenon keeps the repeating sampler.
 constexpr bool kMapsFollowTexWrap = kDC3RetailModel;
 // ---- end np-gfx-post ----
-// DC3 shades in gamma space, as the image does: no bitmap format DxRnd uses
-// carries a gamma sign (rnddx9/Rnd.cpp D3DFormatForBitmap: DXT1/3/5, DXN,
-// A8R8G8B8, A1R5G5B5, X8R8G8B8), the frame is a D3DFMT_A8R8G8B8 EDRAM surface
-// (Rnd_Xbox.cpp), and no standard.ps permutation decodes or encodes, so the
-// shader multiplies texel, material colour and lighting as stored and the
-// target saturates the product (material.gammaShading). rb3-xenon keeps the
-// linear model with the sRGB output encode.
-constexpr bool kGammaSpaceShading = kDC3RetailModel;
+// Both consumers of this shape shade in gamma space, as both images do: no
+// bitmap format DxRnd uses carries a gamma sign (rnddx9/Rnd.cpp
+// D3DFormatForBitmap: DXT1/3/5, DXN, A8R8G8B8, A1R5G5B5, X8R8G8B8), the frame
+// is a D3DFMT_A8R8G8B8 EDRAM surface (Rnd_Xbox.cpp), and no standard.ps
+// permutation decodes or encodes, so the shader multiplies texel, material
+// colour and lighting as stored and the target saturates the product
+// (material.gammaShading).
+//
+// rb3-xenon (lane A60): RB3 TU5's DxRnd::D3DFormatForBitmap is band.exe
+// fn_827333C8 (rb3-xenon rnddx9/Rnd.cpp, 100% matched); its format words are
+// DXT1 0x1A200152, DXT3 0x1A200153, DXT5 0x1A200154, DXN 0x1A200171,
+// A8R8G8B8 0x18280186 (the lis/ori pairs at fn_827333C8+0x34..+0x90), all with
+// the four gamma sign fields (bits 9..16) zero, and RB3's shipped xbox_shaders
+// standard.ps permutations contain no log/exp
+// (milo-native-engine docs/native/dc3-backend-for-rb3-wii.md 10.1). rb3-xenon
+// used to keep the linear model with the sRGB output encode, which drew its
+// venues hazy and grey; that choice had been fitted against xenia frame dumps
+// that xenia itself sRGB-encodes (xenia vulkan_command_processor_headless.cc
+// srgb_lut; the guest front buffer is the _raw.ppm), i.e. against a reference
+// one encode brighter than the image. Against the recovered front buffer the
+// gamma-space model moves every frame metric toward retail
+// (rb3-scout/a60/HANDOFF.md). The light model rb3-xenon runs is still the
+// engine's heuristic arm (WriteSceneLighting declines for it), not retail's.
+constexpr bool kGammaSpaceShading = true;
 // A Multiply-blend material is lit like any other (np-gfx-light round 3).
 // NgMat::SetBasicState gives kBlendMultiply src ZERO / dest SRCCOLOR and fade
 // params (1,1,1,1), and nothing in CalcShaderOpts or SetupAmbient looks at the
