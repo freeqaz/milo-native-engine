@@ -844,6 +844,20 @@ fn rb3SkinSpecPoint(surfaceNormal: vec3f, viewDir: vec3f, lightDir: vec3f,
 var<private> gRb3SkinNs: vec3f = vec3f(0.0, 0.0, 1.0);
 var<private> gRb3SkinBack: vec3f = vec3f(0.0);
 
+// rb3-xenon in the native light arm (scene.skinSpecModel 1 is set for that
+// shape alone: rndshape::kSkinSpecRB3Xenon). Retail RB3 X360 standard.vs
+// fetches the vertex colour only for a prelit material; a mesh with
+// HasAOCalc keeps its baked spherical-harmonic visibility there (r the
+// constant band, a/g/b the x/y/z bands remapped to [0, 1]), never colour or
+// opacity. So a non-prelit draw takes neither its tint nor its alpha from
+// the vertex. Read as opacity, the x band (about 0.5) went into the crowd
+// impostor target's alpha and failed the card's alpha cut (WorldCrowd ctor,
+// band.exe TU5 fn_824E68D0+0x288: threshold 0x80) on about half of each
+// character; read as tint it mottled every crowd character's clothes.
+fn rb3XenonVertexIsNotColour() -> bool {
+    return scene.skinSpecModel > 0.5;
+}
+
 fn rb3SkinDiffuseOn() -> bool {
     return scene.skinSpecModel > 0.5 && shaderVariationIs(material.shaderVariation, kShaderVariationSkin);
 }
@@ -1987,7 +2001,8 @@ fn shadeStandard(surfaceInput: VertexOutput) -> vec4f {
         }
     } else if (isEnabled(material.prelit)) {
         vertexTint = rawVtx;                          // prelit: authored colour verbatim
-    } else if (isEnabled(surfaceInput.isSkinned) && !rb3SkinDiffuseOn()) {
+    } else if (isEnabled(surfaceInput.isSkinned) && !rb3SkinDiffuseOn() &&
+               !rb3XenonVertexIsNotColour()) {
         vertexTint = skinnedTint;                     // skinned char: desaturated shading
     }                                                 // static non-prelit venue: white (suppress)
                                                       // RB3 X360 skin: none (rb3SkinBoxDiffuse)
@@ -2006,6 +2021,9 @@ fn shadeStandard(surfaceInput: VertexOutput) -> vec4f {
     // per_pixel_lit, the AO permutations carry the ambient AO factor into the
     // output alpha (c1.w * ao * c0.w).
     var vertexAlpha = surfaceInput.color.a;
+    if (!retailLight && !isEnabled(material.prelit) && rb3XenonVertexIsNotColour()) {
+        vertexAlpha = 1.0;
+    }
     if (retailLight && !isEnabled(material.prelit)) {
         vertexAlpha = 1.0;
         if (!(isEnabled(material.retailFlags.x) && retailLightsOn())) {
