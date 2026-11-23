@@ -627,6 +627,8 @@ void WgpuRnd::Terminate() {
     mDepthTex = nullptr;
     mDepthView = nullptr;
     mDepthSampleView = nullptr;
+    mPostWorldDepthTex = nullptr;
+    mPostWorldDepthView = nullptr;
     mWhiteTex = nullptr;
     mWhiteTexView = nullptr;
     mFlatNormalTex = nullptr;
@@ -807,7 +809,10 @@ void WgpuRnd::ClearDepthForOverlay() {
     colorAtt.loadOp = wgpu::LoadOp::Load; // preserve color from venue
 
     wgpu::RenderPassDepthStencilAttachment depthAtt{};
-    depthAtt.view = mDepthView;
+    depthAtt.view = FrameDepthView();
+    mPostWorldDepthClearPending = false;        // cleared here
+    mLastFramePassPostWorldDepth = mWorldDepthResolved && mPostWorldDepthView;
+    mLastFramePassDepthCleared = true;
     depthAtt.depthLoadOp = wgpu::LoadOp::Clear; // clear depth for overlay
     depthAtt.depthStoreOp = wgpu::StoreOp::Store;
     depthAtt.depthClearValue = 1.0f;
@@ -952,6 +957,17 @@ void FlushPostProcessingForOverlay() {
     gWgpuRndInstance.FlushPostProcessingForOverlay();
 }
 
+void NativeFrameDepthState(int out[4]) {
+    gWgpuRndInstance.FrameDepthState(out);
+}
+
+void WgpuRnd::FrameDepthState(int out[4]) const {
+    out[0] = mWorldDepthResolved ? 1 : 0;
+    out[1] = mLastFramePassPostWorldDepth ? 1 : 0;
+    out[2] = mLastFramePassDepthCleared ? 1 : 0;
+    out[3] = (mDepthTex && mDepthSampleView && FrameDepthView().Get() != mDepthView.Get()) ? 1 : 0;
+}
+
 void WgpuRnd::RunDC3SpotBeams() {
     if constexpr (rndshape::kDC3RetailPost) {
         // NgSpotlightDrawer::RenderScene (run by its DoPost, inside
@@ -1069,14 +1085,26 @@ void WgpuRnd::DoWorldEnd() {
 // bit 46), which samples the colour through GetCurrentFrameTex; the depth's
 // readers (soft particles, motion blur's velocity buffer, depth of field) are
 // not drawn from it (dc3-backend-for-rb3-wii.md section 22). Retail's resolve
-// also clears the EDRAM, because its post chain redraws the frame from the
-// buffer; the frame pass here keeps its contents, so nothing is cleared.
+// also clears the EDRAM colour, because its post chain redraws the frame from
+// the buffer; the frame pass here keeps its colour, so that is not cleared.
+// The same resolve clears depth and stencil (D3DRESOLVE_CLEARDEPTHSTENCIL,
+// ClearZ 0.0 = far under reverse Z), and that clear IS kept
+// (rndshape::kWorldEndClearsDepth): the frame pass continues on
+// mPostWorldDepthTex, cleared, so UI drawn with z mode "normal" after the world
+// (the song list's row backings) is not hidden by the world behind it, while
+// mDepthTex keeps the world's depth for the post chain, as mFrontBufferDepth.
 void WgpuRnd::SavePreBuffer() {
     if (mPreSavedThisFrame) return;
     if (!mFrameView || !mFramePassValid || mActiveTargetTex || !mFramePassColorTex) return;
     const bool resume = mInPass;
     EndActivePass();
     CopyWorldToPreBuffer();
+    if constexpr (rndshape::kWorldEndClearsDepth) {
+        if (mPostWorldDepthView) {
+            mWorldDepthResolved = true;
+            mPostWorldDepthClearPending = true;
+        }
+    }
     if (resume) {
         BeginFramePass(false);
         mLastSceneCam = nullptr;  // the new pass has no scene bind group yet
@@ -1751,12 +1779,18 @@ void WgpuRnd::BeginFramePass(bool clear) {
         maskInAlpha ? 0.0 : 1.0
     };
 
+    // After the world end (SavePreBuffer) the first frame pass clears the
+    // post-world depth, as retail's resolve did.
+    const bool clearDepth = clear || (mWorldDepthResolved && mPostWorldDepthClearPending);
+    if (mWorldDepthResolved) mPostWorldDepthClearPending = false;
     wgpu::RenderPassDepthStencilAttachment depthAtt{};
-    depthAtt.view = mDepthView;
-    depthAtt.depthLoadOp = clear ? wgpu::LoadOp::Clear : wgpu::LoadOp::Load;
+    depthAtt.view = FrameDepthView();
+    mLastFramePassPostWorldDepth = mWorldDepthResolved && mPostWorldDepthView;
+    mLastFramePassDepthCleared = clearDepth;
+    depthAtt.depthLoadOp = clearDepth ? wgpu::LoadOp::Clear : wgpu::LoadOp::Load;
     depthAtt.depthStoreOp = wgpu::StoreOp::Store;
     depthAtt.depthClearValue = 1.0f;
-    depthAtt.stencilLoadOp = clear ? wgpu::LoadOp::Clear : wgpu::LoadOp::Load;
+    depthAtt.stencilLoadOp = clearDepth ? wgpu::LoadOp::Clear : wgpu::LoadOp::Load;
     depthAtt.stencilStoreOp = wgpu::StoreOp::Store;
     depthAtt.stencilClearValue = 0;
 
@@ -1975,6 +2009,8 @@ void WgpuRnd::BeginDrawing() {
     mFrameInOverlay = false;
     mWorldPostDone = false;
     mPreSavedThisFrame = false;
+    mWorldDepthResolved = false;
+    mPostWorldDepthClearPending = false;
     mTexBlendPass.BeginFrame();
     // Load-time pipeline warm (PipelineManager::WarmAsync): take in what
     // finished, issue the next few. Nothing queued: one empty check.
@@ -2517,6 +2553,12 @@ void WgpuRnd::CreateDepthTexture(int w, int h) {
         mDepthSampleView = mDepthTex.CreateView(&dv);
         mDepthWidth = w;
         mDepthHeight = h;
+        if constexpr (rndshape::kWorldEndClearsDepth) {
+            desc.label = "DepthStencilPostWorld";
+            desc.usage = wgpu::TextureUsage::RenderAttachment;
+            mPostWorldDepthTex = mGpu.CreateTexture(desc);
+            mPostWorldDepthView = mPostWorldDepthTex.CreateView();
+        }
     }
 
 }

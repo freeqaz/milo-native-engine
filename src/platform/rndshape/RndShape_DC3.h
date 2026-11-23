@@ -828,6 +828,15 @@ struct PostProcHasColorModulation<
     P, std::void_t<decltype(std::declval<const P &>().GetColorModulation())>> : std::true_type {};
 constexpr bool kRetailPostChain =
     !kDC3RetailPost && PostProcHasColorModulation<RndPostProc>::value;
+// Retail DxRnd::SavePreBuffer (DxRnd::DoWorldEnd's last call) resolves the
+// world's colour with D3DRESOLVE_CLEARDEPTHSTENCIL (flags 0x300, ClearZ 0.0 =
+// far under the default reverse Z), so everything drawn after the world (the UI
+// and HUD) starts on a cleared depth buffer, while the world's depth stays
+// readable in mFrontBufferDepth (the resolve just before, flags 0x14). Both
+// DC3-lineage titles: rb3-xenon band.exe TU5 fn_8273B3B8 (+0xB8 li r4,0x300,
+// +0xC0 the resolve), dc3-decomp rnddx9/Rnd_Xbox.cpp DxRnd::SavePreBuffer.
+// WgpuRnd::SavePreBuffer reproduces it (Rnd_Wgpu.h, FrameDepthView).
+constexpr bool kWorldEndClearsDepth = true;
 // DC3_RETAIL_POST (rndshape/DC3PostChain.cpp): unset or anything else = 1 (the
 // retail chain), "0" = 0 (PostProcPass's previous composite), "raw" = 2 (the
 // scene ungraded), "mask" = 3 / "bloom" = 4 (the chain showing the bloom mask /
