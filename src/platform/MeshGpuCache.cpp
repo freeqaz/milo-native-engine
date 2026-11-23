@@ -98,6 +98,14 @@ bool GameMarksTextGlyphMeshes() {
     return hook && hook->MarksTextGlyphMeshes();
 }
 
+namespace {
+bool sGameGlyphAtlasesKeepRGB = false;
+}
+
+void SetGameGlyphAtlasesKeepRGB(bool keepRGB) { sGameGlyphAtlasesKeepRGB = keepRGB; }
+
+bool GameGlyphAtlasesKeepRGB() { return sGameGlyphAtlasesKeepRGB; }
+
 void InvalidateGpuMesh(RndMesh* mesh) {
     auto it = sMeshGpuData.find(mesh);
     if (it != sMeshGpuData.end()) {
