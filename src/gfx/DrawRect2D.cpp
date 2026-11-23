@@ -251,7 +251,8 @@ void DrawRect2D::Draw(wgpu::RenderPassEncoder& pass, const Hmx::Rect& rect, RndM
     // Rnd pixel space (Width()×Height()), so we must map [0,Width] → NDC [-1,1].
     float w = (float)rndshape::TheRndRef().Width();
     float h = (float)rndshape::TheRndRef().Height();
-    // DC3: into a texture target, the target's own pixels (kRectTargetPixels).
+    // Xbox shape (DC3 and rb3-xenon): into a texture target, the target's own
+    // pixels (kRectTargetPixels).
     if (rndshape::kRectTargetPixels && gWgpuRnd) {
         if (RndTex* target = gWgpuRnd->ActiveTargetTex()) {
             w = (float)target->Width();

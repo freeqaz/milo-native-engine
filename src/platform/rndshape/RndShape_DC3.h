@@ -652,9 +652,15 @@ inline bool MatPrelit(RndMat *m) { return m->Prelit(); }
 // A rect drawn while a texture is the render target is in that target's own
 // pixels: DxRnd::DrawRect sets D3DRS_VIEWPORTENABLE 0 (and HalfPixelOffset 1),
 // so its pre-transformed vertices are the bound surface's coordinates whatever
-// the virtual screen is (dc3-decomp src/system/rnddx9/Rnd.cpp). DC3 only:
-// rb3-xenon keeps the virtual-screen mapping it renders with today.
-constexpr bool kRectTargetPixels = kDC3RetailModel;
+// the virtual screen is (dc3-decomp src/system/rnddx9/Rnd.cpp). rb3-xenon too:
+// band.exe TU5's DxRnd::DrawRect (fn_82733538) sets its own transform at
+// +0x500..+0x524 and calls SetRenderState_ViewportEnable(0) at +0x52C..+0x538,
+// the same code, and MatSwap::Compose (fn_8229F268 +0x2DC/+0x2E4) sizes the
+// outfit composite's rect from diffTex->mWidth/mHeight. Under the virtual-screen
+// mapping a 512x256 head *_diffuse_output got only its top-left 40% x 36% (a
+// 1024x512 torso 80% x 71%), the rest stayed at the target's clear colour, and
+// the band's faces and limbs drew black.
+constexpr bool kRectTargetPixels = true;
 
 // ---- post-processing -------------------------------------------------------
 // The grain strength the post-process shader adds per pixel, as authored. Only
