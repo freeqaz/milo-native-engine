@@ -182,6 +182,15 @@ static void FillFlipNormal(bool flipNormal, MaterialUniforms& uni) {
     if (flipNormal) uni.colorMod[3] |= 1u << 10;
 }
 
+// fade_out (RndMat mFadeout, rndshape::MatFadesOut): bit 11 of colorMod.w,
+// which the fragment shader reads as materialFadesOut and answers by scaling
+// its output alpha by the environ's left/right fade (SceneUniforms
+// lrFadeLeft/lrFadeRight). Set after FillColorMod.
+template <class MatT>
+static void FillFadeOut(const MatT& mat, MaterialUniforms& uni) {
+    if (rndshape::MatFadesOut(mat)) uni.colorMod[3] |= 1u << 11;
+}
+
 bool TextMeshKeepsAtlasRGB(RndMesh* mesh, RndMat* mat, bool skinned) {
     // A game that says all its atlases keep colour in RGB (rb3-xenon: the Xbox
     // 360 font pages are drawn with the font's own material and sampled like
@@ -513,6 +522,7 @@ MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh, const UiDraw
     FillRefract(mat, matUni, texViews);
     FillScreenAligned(mat, matUni);
     FillFlipNormal(flipNormal, matUni);
+    FillFadeOut(mat, matUni);
 
     // --- Environment cube map ---
     RndCubeTex* environMap = mat->GetEnvironMap();
@@ -642,6 +652,7 @@ MaterialParams BuildPassMaterialParams(BaseMaterial* rawNextPass, const UiDrawTe
     FillRefract(nextPass, npMatUni, npTexViews);
     FillScreenAligned(nextPass, npMatUni);
     FillFlipNormal(npFlipNormal, npMatUni);
+    FillFadeOut(nextPass, npMatUni);
 
     // Multi-pass materials don't set their own sampler -- caller reuses primary material's sampler
     result.heuristics = 0;

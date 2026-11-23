@@ -273,6 +273,9 @@ struct SceneUniforms {
     selfShadowClip: mat4x4f,
     selfShadowColor: vec4f,   // c107; .w = 1 when the map applies
     selfShadowDir: vec4f,     // c108
+    // The environ's left/right fade planes (UniformStructs.h; lrFade below).
+    lrFadeLeft: vec4f,
+    lrFadeRight: vec4f,
 };
 
 @group(0) @binding(0) var<uniform> scene: SceneUniforms;
@@ -452,6 +455,20 @@ fn materialScreenAligned() -> bool {
 // the lit side of a backwards-culled surface is the side that is drawn.
 fn materialFlipNormal() -> bool {
     return ((material.colorMod.w >> 10u) & 1u) != 0u;
+}
+// Bit 11 of colorMod.w: the material declares fade_out (RndMat mFadeout,
+// rndshape::MatFadesOut), so the environ's fade applies to it.
+fn materialFadesOut() -> bool {
+    return ((material.colorMod.w >> 11u) & 1u) != 0u;
+}
+// The environ's left/right fade for a fade_out material (NgEnviron::Select's
+// planes, c53/c54): 1 when the scene block carries no fade (all zero).
+fn lrFade(worldPos: vec3f) -> f32 {
+    if (!materialFadesOut() || (all(scene.lrFadeLeft == vec4f(0.0)) && all(scene.lrFadeRight == vec4f(0.0)))) {
+        return 1.0;
+    }
+    let p = vec4f(worldPos, 1.0);
+    return saturate(dot(scene.lrFadeLeft, p)) * saturate(dot(scene.lrFadeRight, p));
 }
 // The world normal both vertex shaders hand on (and cross the bitangent from).
 fn vsOrientNormal(worldNormal: vec3f) -> vec3f {
@@ -2366,7 +2383,7 @@ fn shadeStandard(surfaceInput: VertexOutput) -> vec4f {
     }
     // ---- end np-gfx-post ----
 
-    return vec4f(finalColor, baseColor.a);
+    return vec4f(finalColor, baseColor.a * lrFade(surfaceInput.worldPos));
 }
 
 @fragment

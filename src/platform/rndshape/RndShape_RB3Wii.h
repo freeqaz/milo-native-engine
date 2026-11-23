@@ -250,6 +250,8 @@ inline bool ColorModAlphaIsBandSelector(const MatView &, int) { return false; }
 // Screen-aligned texture coordinates are DC3's (RndShape_DC3.h
 // MatScreenAligned); RB3 keeps the vertex UVs.
 inline bool MatScreenAligned(const MatView &) { return false; }
+// fade_out materials are rb3-xenon's (RndShape_DC3.h MatFadesOut).
+inline bool MatFadesOut(const MatView &) { return false; }
 
 // The DC3 image's texture-transform rows (RndShape_DC3.h MatRetailTexXfmRows);
 // RB3 keeps the generic rows FillTexGen writes.
@@ -310,6 +312,8 @@ inline float EnvFogStart(RndEnviron *e) { return e->GetFogStart(); }
 inline float EnvFogEnd(RndEnviron *e) { return e->GetFogEnd(); }
 inline ObjPtrList<RndLight> &EnvLightsApprox(RndEnviron *e) { return e->mLightsApprox; }
 inline ObjPtrList<RndLight> &EnvLightsReal(RndEnviron *e) { return e->mLightsReal; }
+// The environ's left/right fade is rb3-xenon's (RndShape_DC3.h EnvLRFadePlanes).
+inline bool EnvLRFadePlanes(RndEnviron *, float *, float *) { return false; }
 
 // ---- light -----------------------------------------------------------------
 inline RndTex *LightTexture(RndLight *l) { return l->mTexture; }

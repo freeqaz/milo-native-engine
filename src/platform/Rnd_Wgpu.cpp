@@ -2742,6 +2742,8 @@ void WgpuRnd::WriteSceneUniforms() {
 
     // Environment (fog, ambient, lights)
     RndEnviron* env = rndshape::CurrentEnv();
+    // The environ's left/right fade (fade_out materials only; zero planes = none).
+    if (env) rndshape::EnvLRFadePlanes(env, scene.lrFadeLeft, scene.lrFadeRight);
     if (rndshape::kRenderTargetStoresLinear && mActiveTargetTex) scene.outputLinear = 1.0f;
     if (rndshape::WriteSceneLighting(scene, cam)) {
         // The content's own lighting model (RB3-Wii: rndshape/RB3WiiSceneLighting.cpp;
