@@ -455,9 +455,10 @@ struct LookSettings {
     //    per adapter class (np-look49), as the switch is: texPassMaxSide /
     //    texPassBaseRows discrete, ...Apple, ...Integrated anything else
     //    (LookTexPassMaxSide / LookTexPassBaseRows); the numbers above are the
-    //    discrete class's, which the Integrated pair also carries. Apple:
-    //    cap 1536, base rows 720 (timed on an M3: 1024 up to 720 rows, 1536
-    //    from 1080 rows up). Width()/
+    //    discrete class's. Apple: cap 1536, base rows 720 (timed on an M3:
+    //    1024 up to 720 rows, 1536 from 1080 rows up). Other non-discrete
+    //    (np-rtt-int1024): cap 1024, base rows 360 (timed on the 890M: a 1024
+    //    projection stays 1024, 4 samples, at every output size). Width()/
     //    Height() of the RndTex do not change, and every reader of them sees
     //    the texture's own size: viewports stay in its pixels (FrameViewport
     //    scales them to the attachment), a CPU readback is box-filtered back
