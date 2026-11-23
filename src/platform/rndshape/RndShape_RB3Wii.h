@@ -608,6 +608,9 @@ inline bool PostProcNoiseMap(const RndPostProc *, PostProcNoise &) { return fals
 // PostProcPass's flicker modulation, applied as NgPostProc::ModulateColorXfm
 // applies mColorModulation (to the 3x3 part only).
 constexpr bool kRetailPostChain = true;
+// The Xbox 360 world-end depth clear (RndShape_DC3.h) is DxRnd's: the RB3-Wii
+// shape keeps one depth buffer through the frame, as before.
+constexpr bool kWorldEndClearsDepth = false;
 // DC3's retail chain (RndShape_DC3.h, np-gfx-post) is the DC3 shape's only.
 constexpr bool kDC3RetailPost = false;
 // The noise map tied to output rows (RndShape_DC3.h, gfx/NoiseRows.h) is

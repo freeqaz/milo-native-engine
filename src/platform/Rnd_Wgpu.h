@@ -442,6 +442,7 @@ public:
     // to the framebuffer (bypassing post-proc). Used for HUD overlay that
     // should not be affected by bloom/DOF.
     void FlushPostProcessingForOverlay();
+    void FrameDepthState(int out[4]) const;  // NativeFrameDepthState
     // RB3 (rndshape::kRetailPostChain): grade the world now, at Rnd::EndWorld,
     // as retail NgRnd does, and carry on drawing the rest of the frame (note
     // highway, HUD, menus) over the graded image in the same MSAA + depth
@@ -583,6 +584,25 @@ public:
     wgpu::Texture mDepthTex;
     wgpu::TextureView mDepthView;
     wgpu::TextureView mDepthSampleView;  // depth aspect only, for sampling
+    // The depth/stencil the frame draws into after the world has ended
+    // (rndshape::kWorldEndClearsDepth). Retail DxRnd::SavePreBuffer resolves
+    // the world's depth to mFrontBufferDepth and clears the EDRAM depth, so the
+    // UI/HUD drawn after the world is never tested against it, while the
+    // world's depth stays readable by the post chain. Here mDepthTex keeps the
+    // world's depth (mDepthSampleView, point tests) and the frame pass moves
+    // to this one, cleared on its first use in the frame.
+    wgpu::Texture mPostWorldDepthTex;
+    wgpu::TextureView mPostWorldDepthView;
+    bool mWorldDepthResolved = false;      // this frame's world end has moved the frame pass
+    bool mPostWorldDepthClearPending = false;  // ... and its first pass must clear it
+    // The last frame pass opened (NativeFrameDepthState): its depth attachment
+    // was the post-world one, and it cleared depth on open.
+    bool mLastFramePassPostWorldDepth = false;
+    bool mLastFramePassDepthCleared = false;
+    // The depth/stencil attachment the frame pass draws into now.
+    const wgpu::TextureView& FrameDepthView() const {
+        return mWorldDepthResolved && mPostWorldDepthView ? mPostWorldDepthView : mDepthView;
+    }
     int mDepthWidth = 0;
     int mDepthHeight = 0;
 
@@ -767,3 +787,10 @@ bool ReadbackGpuRenderTarget(RndTex* tex, std::vector<uint8_t>& texels, int& w, 
 // Free function wrapper — callable from engine code via extern declaration.
 // Flushes PostProc to framebuffer, then starts a new pass for HUD overlay.
 void FlushPostProcessingForOverlay();
+// The frame pass's depth after the world end (rndshape::kWorldEndClearsDepth),
+// for a game's construct-only gate: out[0] the frame has resolved the world's
+// depth (SavePreBuffer ran), out[1] the last frame pass opened draws into the
+// post-world depth attachment, out[2] that pass cleared depth on open, out[3]
+// the frame now draws into a depth other than the world's, which stays the
+// sampled one (post chain, point tests).
+void NativeFrameDepthState(int out[4]);
