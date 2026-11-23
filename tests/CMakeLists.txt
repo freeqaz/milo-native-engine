@@ -227,16 +227,23 @@ file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tmp")
 # parallel exhausts GPU device handles / fds and causes spurious SEGVs, so the
 # whole suite is serialized via a shared RESOURCE_LOCK (run ctest with -j1).
 #
-# The ENVIRONMENT property is a single semicolon-list of VAR=value entries. The
-# separators are escaped (\;) so CMake keeps the whole thing as ONE argument to
-# set_tests_properties — otherwise gtest_discover_tests serializes each entry as
-# a separate argument and CTest silently keeps only the first (CTest 4.x quirk).
+# The ENVIRONMENT property is a plain CMake list of VAR=value entries, passed
+# exactly as dc3's milo-tests passes its MILO_TEST_ENV. (This used to escape
+# the separators as \; to work around a CTest 4.x serialization quirk; under
+# CMake 4.5's GoogleTest module that produced ONE entry, so every test ran with
+# TMPDIR set to the whole string and DC3_DATA unset, and every asset test
+# failed in EnsureEngineInit with "no game data". Measured 2026-11-23:
+# 125 of 201 failed that way.)
 # DC3_AUDIO_TESTS=1 enables the mogg-decode tests. dc3 gates them off by default
 # to avoid audio-device contention under parallel ctest; here the whole suite is
 # serialized (-j1 via RESOURCE_LOCK) and AudioDevice is headless-skipped, so the
 # mogg decode path runs cleanly and is part of the gate.
 set(_MILO_TEST_ENV
-    "TMPDIR=${CMAKE_CURRENT_BINARY_DIR}/tmp\;DC3_DATA=${MILO_TEST_DATA_DIR}\;MILO_LIB=${MILO_TEST_MILO_LIB}\;DC3_REPO_ROOT=${DC3_RUNTIME_ROOT}\;DC3_AUDIO_TESTS=1")
+    "TMPDIR=${CMAKE_CURRENT_BINARY_DIR}/tmp"
+    "DC3_DATA=${MILO_TEST_DATA_DIR}"
+    "MILO_LIB=${MILO_TEST_MILO_LIB}"
+    "DC3_REPO_ROOT=${DC3_RUNTIME_ROOT}"
+    "DC3_AUDIO_TESTS=1")
 gtest_discover_tests(milo-engine-tests
     PROPERTIES
         RESOURCE_LOCK milo_engine_runtime
