@@ -10,6 +10,7 @@
 #include "platform/Rnd_Wgpu.h"
 #include "platform/TexGpu.h"
 #include "gfx/FrameCapture.h"
+#include "gfx/AmbientAlpha.h"
 #include "rndobj/Mat.h"
 #include "platform/rndshape/RndShape.h"
 #include "platform/LookProfile.h"
@@ -180,6 +181,18 @@ static void FillScreenAligned(const MatT& mat, MaterialUniforms& uni) {
 // (dc3-retail-lighting.md section 11). Set after FillColorMod.
 static void FillFlipNormal(bool flipNormal, MaterialUniforms& uni) {
     if (flipNormal) uni.colorMod[3] |= 1u << 10;
+}
+
+// The ambient constant c1's source (rndshape::MatAmbientIsEnviron, retail
+// NgMat::SetupAmbient, band.exe TU5 fn_824A9090 +0x18): bit 11 of colorMod.w
+// (gfx/AmbientAlpha.h), which the fragment shader reads in retailC1Alpha and
+// answers by multiplying the output alpha by the scene ambient's w, the
+// current environ's ambient alpha. Taken from the material's own use_environ,
+// not from the shader's prelit / unlit terms, which the native text and
+// overlay heuristics force. Set after FillColorMod.
+template <class MatT>
+static void FillAmbientSource(const MatT& mat, MaterialUniforms& uni) {
+    if (rndshape::MatAmbientIsEnviron(mat)) uni.colorMod[3] |= kMatAmbientIsEnvironBit;
 }
 
 bool TextMeshKeepsAtlasRGB(RndMesh* mesh, RndMat* mat, bool skinned) {
@@ -513,6 +526,7 @@ MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh, const UiDraw
     FillRefract(mat, matUni, texViews);
     FillScreenAligned(mat, matUni);
     FillFlipNormal(flipNormal, matUni);
+    FillAmbientSource(mat, matUni);
 
     // --- Environment cube map ---
     RndCubeTex* environMap = mat->GetEnvironMap();
@@ -642,6 +656,7 @@ MaterialParams BuildPassMaterialParams(BaseMaterial* rawNextPass, const UiDrawTe
     FillRefract(nextPass, npMatUni, npTexViews);
     FillScreenAligned(nextPass, npMatUni);
     FillFlipNormal(npFlipNormal, npMatUni);
+    FillAmbientSource(nextPass, npMatUni);
 
     // Multi-pass materials don't set their own sampler -- caller reuses primary material's sampler
     result.heuristics = 0;

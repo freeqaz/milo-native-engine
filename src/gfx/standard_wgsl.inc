@@ -453,6 +453,20 @@ fn materialScreenAligned() -> bool {
 fn materialFlipNormal() -> bool {
     return ((material.colorMod.w >> 10u) & 1u) != 0u;
 }
+// Bit 11 of colorMod.w: the material's ambient constant c1 is the current
+// environ's ambient (retail use_environ, NgMat::SetupAmbient band.exe TU5
+// fn_824A9090), so c1.w, the environ's ambient alpha, is a factor of the
+// output alpha as in every non-pseudo-HDR standard program (standard_10:
+// `mul o2, c1, c0`, `mul oC0, r0, r2`). Set only under the RB3 X360 retail
+// light model (retailLighting 1), the one writer of a scene ambient w other
+// than 1. The CPU mirror is gfx/AmbientAlpha.h RetailC1Alpha.
+fn retailC1Alpha() -> f32 {
+    let rb3RetailModel = scene.retailLighting > 0.5 && scene.retailLighting < 1.5;
+    if (rb3RetailModel && ((material.colorMod.w >> 11u) & 1u) != 0u) {
+        return scene.ambientColor.w;
+    }
+    return 1.0;
+}
 // The world normal both vertex shaders hand on (and cross the bitangent from).
 fn vsOrientNormal(worldNormal: vec3f) -> vec3f {
     return select(worldNormal, -worldNormal, materialFlipNormal());
@@ -1988,7 +2002,9 @@ fn diffuseSample(uv: vec2f, fragPos: vec2f) -> vec4f {
 
 // === Fragment Shader ===
 fn shadeStandard(surfaceInput: VertexOutput) -> vec4f {
-    let materialAlpha = material.color.a;
+    // c0.w x c1.w (retailC1Alpha: 1 except for an environ material under the
+    // RB3 X360 retail light model).
+    let materialAlpha = material.color.a * retailC1Alpha();
     // Vertex colour is the per-vertex baked lighting / AO. In the original
     // engine it is "Use vertex color and alpha for base or ambient" — i.e. it
     // ONLY contributes to the base colour when the material is prelit

@@ -92,6 +92,7 @@ set(MILO_ENGINE_TEST_SOURCES
     test_mogg_v0xe.cpp
     test_extract_bik.cpp
     test_skin_golden.cpp
+    test_environ_ambient_alpha.cpp
 )
 
 # FFmpeg (Bink) — the parent scope detected it as MILO_ENGINE_HAVE_FFMPEG; reuse.
