@@ -762,9 +762,21 @@ fn computeStandardLight(
 // c n(p) sat(V . R)^p (1 - sat(V . N)^2)^2, and the approx lights reach skin
 // only through the box reflection rimf^2 n(p) boxPow(reflect(-V, N), p), a
 // directional light folding into the box faces with weight sat(+-L_axis)^2.
+// c2 is NgMat::SetRegularShaderConst's kPS_Specular: the PRIMARY specular
+// colour, with w = max(specular alpha, 0.5) floored on the CPU, so without a
+// spec map p = max(power, 0.5) too. The permutation reads no c19 (specular2):
+// skin has no second lobe. Retail gates the term on the specular colour alone
+// (RndShaderStandard::CalcShaderOpts: mSpecular = SpecularRGB().Pack() != 0,
+// the map only under mSpecular), never on the power; ucode 61-89 has no N.L
+// gate on the point lobe.
+fn rb3SkinHasSpecular() -> bool {
+    let packed = vec3u(vec3i(material.specularColor.rgb * 255.0)) & vec3u(0xffu);
+    return any(packed != vec3u(0u));
+}
+
 fn rb3SkinSpecColorPower(specularSample: vec4f) -> vec4f {
     var color = material.specularColor.rgb;
-    var power = material.specularPower;
+    var power = max(material.specularPower, 0.5);
     if (isEnabled(material.hasSpecularMap)) {
         color *= specularSample.rgb;
         power = max(power * specularSample.a, 0.5);
@@ -774,7 +786,7 @@ fn rb3SkinSpecColorPower(specularSample: vec4f) -> vec4f {
 
 fn rb3SkinSpecDirectional(surfaceNormal: vec3f, viewDir: vec3f, lightDir: vec3f,
                           lightColor: vec3f, specularSample: vec4f) -> vec3f {
-    if (material.specularPower <= 0.0) {
+    if (!rb3SkinHasSpecular()) {
         return vec3f(0.0);
     }
     let cp = rb3SkinSpecColorPower(specularSample);
@@ -790,7 +802,7 @@ fn rb3SkinSpecDirectional(surfaceNormal: vec3f, viewDir: vec3f, lightDir: vec3f,
 
 fn rb3SkinSpecPoint(surfaceNormal: vec3f, viewDir: vec3f, lightDir: vec3f,
                     lightColor: vec3f, specularSample: vec4f) -> vec3f {
-    if (material.specularPower <= 0.0) {
+    if (!rb3SkinHasSpecular()) {
         return vec3f(0.0);
     }
     let cp = rb3SkinSpecColorPower(specularSample);
