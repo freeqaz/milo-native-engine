@@ -146,9 +146,18 @@ const kW = array<f32, 15>(0.0159283932, 0.0270778369, 0.0424231887, 0.0612547919
 }
 
 // The graded frame copied back over the main pass after the world-end flush
-// (RB3RetailPost::Blit), one texel per pixel.
+// (RB3RetailPost::Blit), one texel per pixel, alpha included: the composite
+// writes alpha 1, as the composite at EndDrawing did before the grade moved
+// to EndWorld. The frame's alpha held the bloom mask only until the
+// composite consumed it (the mask lives in the intermediate scene target,
+// which the chain read). Writing 0 here left the finished frame transparent
+// (alpha 0 under everything but the few later draws that write alpha), which
+// every readback reported; the surface is Opaque, so nothing displayed it.
+// Retail's postprocess.ps writes oC0.w as well (a byproduct of the
+// permutation, e.g. 0x14 writes sat(scene.a)) to a front buffer whose alpha
+// the scanout does not display, so the value has no retail meaning to keep.
 @fragment fn fs_copy(in: VOut) -> @location(0) vec4f {
-    return vec4f(textureLoad(srcTex, vec2i(in.pos.xy), 0).rgb, 0.0);
+    return textureLoad(srcTex, vec2i(in.pos.xy), 0);
 }
 
 @fragment fn fs_composite(in: VOut) -> @location(0) vec4f {
