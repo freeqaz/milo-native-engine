@@ -183,6 +183,10 @@ static void FillFlipNormal(bool flipNormal, MaterialUniforms& uni) {
 }
 
 bool TextMeshKeepsAtlasRGB(RndMesh* mesh, RndMat* mat, bool skinned) {
+    // A game that says all its atlases keep colour in RGB (rb3-xenon: the Xbox
+    // 360 font pages are drawn with the font's own material and sampled like
+    // any texture) needs no per-mesh answer. Asked only for a text mesh.
+    if (GameGlyphAtlasesKeepRGB()) return true;
     GameRenderHook* hook = GetGameRenderHook();
     if (!hook) return false;
     RndCam* cam = RndCam::Current();

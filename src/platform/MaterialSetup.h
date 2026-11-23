@@ -144,8 +144,9 @@ MaterialParams BuildPassMaterialParams(BaseMaterial* pass, const UiDrawTerms& ui
 // A text mesh's material routes atlas alpha into RGB (useAlphaAsRGB), right for
 // an atlas that keeps glyphs in alpha with RGB == 0. True when the game's
 // render hook says this mesh's font atlas carries glyph colour in RGB instead
-// (DrawMaterialPolicy::isColorIcon), so the RGB must be sampled. False with no
-// hook registered.
+// (DrawMaterialPolicy::isColorIcon), so the RGB must be sampled, or when the
+// game said all its atlases do (SetGameGlyphAtlasesKeepRGB, MeshGpuCache.h).
+// False with neither.
 class RndMesh;
 bool TextMeshKeepsAtlasRGB(RndMesh* mesh, RndMat* mat, bool skinned);
 

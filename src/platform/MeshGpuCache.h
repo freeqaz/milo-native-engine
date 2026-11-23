@@ -77,6 +77,17 @@ void SetMeshDebugLabel(RndMesh* mesh, const char* label);
 void SetGameMarksTextGlyphMeshes(bool marks);
 bool GameMarksTextGlyphMeshes();
 
+// The same promise as GameRenderHook::QueryDrawMaterialPolicy().isColorIcon, for
+// a game whose font atlases all keep the glyph's colour in RGB and that
+// registers no render hook (rb3-xenon's rb3-app). The engine's text path routes
+// a page's atlas ALPHA into RGB (useAlphaAsRGB), which is right only for an
+// atlas whose RGB is 0; with this set, a text mesh samples the atlas RGB as any
+// textured draw does. Off by default: a consumer that neither sets it nor has a
+// hook that says so keeps the alpha route. GameGlyphAtlasesKeepRGB() reports
+// this setting only (the hook is still asked per mesh, TextMeshKeepsAtlasRGB).
+void SetGameGlyphAtlasesKeepRGB(bool keepRGB);
+bool GameGlyphAtlasesKeepRGB();
+
 // Set depth bias for a mesh (used by viewer to push combined meshes behind splits).
 void SetMeshDepthBias(RndMesh* mesh, int32_t bias);
 
