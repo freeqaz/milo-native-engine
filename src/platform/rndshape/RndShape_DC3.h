@@ -584,6 +584,25 @@ constexpr int kDrawModeReflection = kDC3RetailModel ? 8 : 7;
 // follows that; rb3-xenon keeps the flip of the material's own cull it had.
 constexpr bool kReflectionForcesReverseCull = kDC3RetailModel;
 
+// ---- skin specular on the native light arm ---------------------------------
+// rb3-xenon's frames fall to WgpuRnd's native (heuristic) light arm, which
+// gave a skin material (shader_variation 1) an unnormalised Blinn lobe per
+// light at the spec map's colour, power max(power * map alpha, 0.1). RB3's
+// shipped X360 skin permutation (xbox_shaders `standard`
+// 0000022040031037: skin, rim, normal + spec maps, 2 points; ucode
+// instructions 27/28/56/73-89/107-112) instead takes specular colour c2.rgb x
+// map.rgb, p = max(c2.w x map.a, 0.5), n(p) = p / 2pi + 1 / pi, and lights
+// with
+//   points: c_i a_i n(p) sat(V . R_i)^p (1 - sat(V . N)^2)^2
+//   approx: rimf^2 n(p) boxPow(reflect(-V, N), p),
+//           rimf = (1 - sat(V . N)) (0.5 N.z + 0.5),
+// the approx lights reaching the box faces with weight sat(+-L_axis)^2
+// (BoxMapLighting::ApplyQueuedLights). So a skin texel facing the camera has
+// almost no specular. SceneUniforms.skinSpecModel = 1 selects that form in the
+// native arm (standard_wgsl.inc nativeSkinSpecRB3). rb3-xenon only: DC3 never
+// reaches the native arm (WriteDC3Retail claims every frame).
+constexpr bool kSkinSpecRB3Xenon = !kDC3RetailModel;
+
 // ---- camera select ---------------------------------------------------------
 // DC3's RndCam::Select ends by handing the renderer the camera's viewport --
 // mScreenRect scaled to the target, depth range mZRange -- through

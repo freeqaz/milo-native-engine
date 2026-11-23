@@ -25,7 +25,7 @@ struct SceneUniforms {
     float fogEnd;
     float fogEnabled;
     float uiArtLodBias;       // f32: np-look34 LOD bias of other uiClass art, read by kTakesUiBias 2 pipelines (LookProfile UiArtLodBias)
-    float _pad1;
+    float skinSpecModel;      // f32: 1 = RB3 X360 skin specular in the native light arm (rndshape::kSkinSpecRB3Xenon), else 0
     float lightDirs[4][4];    // array<vec4f, 4> — direction per light
     float lightColors[4][4];  // array<vec4f, 4> — color per light
     float ambientColor[4];    // vec4f

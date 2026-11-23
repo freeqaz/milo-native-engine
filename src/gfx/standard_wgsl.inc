@@ -216,7 +216,7 @@ struct SceneUniforms {
     fogEnabled: f32,
     // np-look34: the LOD bias of other text/HUD art (kTakesUiBias 2).
     uiArtLodBias: f32,
-    _pad1: f32,
+    skinSpecModel: f32,   // 1 = RB3 X360 skin specular, native arm (nativeSkinSpecRB3)
     // Multi-light (up to 4 directional lights)
     lightDirs: array<vec4f, 4>,
     lightColors: array<vec4f, 4>,
@@ -754,6 +754,53 @@ fn computeStandardLight(
     return lighting;
 }
 
+// RB3's X360 skin specular, for the native light arm (scene.skinSpecModel 1,
+// rb3-xenon only: rndshape::kSkinSpecRB3Xenon in RndShape_DC3.h carries the
+// derivation). From the shipped permutation standard 0000022040031037 (skin,
+// rim, normal + spec maps, 2 points): colour c2.rgb x map.rgb, power
+// p = max(c2.w x map.a, 0.5), lobe n(p) = p / 2pi + 1 / pi; a point light adds
+// c n(p) sat(V . R)^p (1 - sat(V . N)^2)^2, and the approx lights reach skin
+// only through the box reflection rimf^2 n(p) boxPow(reflect(-V, N), p), a
+// directional light folding into the box faces with weight sat(+-L_axis)^2.
+fn rb3SkinSpecColorPower(specularSample: vec4f) -> vec4f {
+    var color = material.specularColor.rgb;
+    var power = material.specularPower;
+    if (isEnabled(material.hasSpecularMap)) {
+        color *= specularSample.rgb;
+        power = max(power * specularSample.a, 0.5);
+    }
+    return vec4f(color, power);
+}
+
+fn rb3SkinSpecDirectional(surfaceNormal: vec3f, viewDir: vec3f, lightDir: vec3f,
+                          lightColor: vec3f, specularSample: vec4f) -> vec3f {
+    if (material.specularPower <= 0.0) {
+        return vec3f(0.0);
+    }
+    let cp = rb3SkinSpecColorPower(specularSample);
+    let vn = saturate(dot(viewDir, surfaceNormal));
+    let rimf = (1.0 - vn) * (0.5 * surfaceNormal.z + 0.5);
+    let reflected = 2.0 * dot(viewDir, surfaceNormal) * surfaceNormal - viewDir;
+    let wPos = max(lightDir, vec3f(0.0));
+    let wNeg = max(-lightDir, vec3f(0.0));
+    let box = dot(wPos * wPos, pow(saturate(reflected), vec3f(cp.w))) +
+              dot(wNeg * wNeg, pow(saturate(-reflected), vec3f(cp.w)));
+    return cp.rgb * lightColor * (rimf * rimf * (cp.w * 0.1591549 + 0.3183099) * box);
+}
+
+fn rb3SkinSpecPoint(surfaceNormal: vec3f, viewDir: vec3f, lightDir: vec3f,
+                    lightColor: vec3f, specularSample: vec4f) -> vec3f {
+    if (material.specularPower <= 0.0) {
+        return vec3f(0.0);
+    }
+    let cp = rb3SkinSpecColorPower(specularSample);
+    let vn = saturate(dot(viewDir, surfaceNormal));
+    let sin2 = 1.0 - vn * vn;
+    let reflected = 2.0 * dot(surfaceNormal, lightDir) * surfaceNormal - lightDir;
+    let lobe = (cp.w * 0.1591549 + 0.3183099) * pow(saturate(dot(viewDir, reflected)), cp.w);
+    return cp.rgb * lightColor * (lobe * sin2 * sin2);
+}
+
 fn computeSkinLight(
     surfaceNormal: vec3f,
     viewDir: vec3f,
@@ -770,6 +817,12 @@ fn computeSkinLight(
     let shadowZone = smoothstep(0.0, 0.5, rawNdotL);
     let warmShadowTint = mix(vec3f(0.85, 0.45, 0.25), vec3f(1.0), shadowZone);
     lighting.diffuse = lightColor * skinDiffuse * warmShadowTint;
+
+    if (scene.skinSpecModel > 0.5) {
+        lighting.specular = rb3SkinSpecDirectional(surfaceNormal, viewDir, lightDir, lightColor,
+                                                   specularSample);
+        return lighting;
+    }
 
     let halfVector = normalize(lightDir + viewDir);
     let specularDot = max(dot(surfaceNormal, halfVector), 0.0);
@@ -847,7 +900,8 @@ fn computePointLight(
     viewDir: vec3f,
     worldPos: vec3f,
     lightIndex: i32,
-    specularSample: vec4f
+    specularSample: vec4f,
+    isSkinMaterial: bool
 ) -> LightingTerms {
     var lighting = emptyLightingTerms();
     let lightPos = scene.pointLightPos[lightIndex].xyz;
@@ -880,6 +934,12 @@ fn computePointLight(
 
     let lambert = max(dot(surfaceNormal, lightDir), 0.0);
     lighting.diffuse = lightColor * lambert;
+
+    if (isSkinMaterial && scene.skinSpecModel > 0.5) {
+        lighting.specular = rb3SkinSpecPoint(surfaceNormal, viewDir, lightDir, lightColor,
+                                             specularSample);
+        return lighting;
+    }
 
     if (material.specularPower > 0.0 && lambert > 0.0) {
         let halfVector = normalize(lightDir + viewDir);
@@ -1975,7 +2035,8 @@ fn shadeStandard(surfaceInput: VertexOutput) -> vec4f {
                 viewDir,
                 surfaceInput.worldPos,
                 pointLightIndex,
-                specularSample
+                specularSample,
+                isSkinMaterial
             );
             totalLighting.diffuse += lightContribution.diffuse;
             totalLighting.specular += lightContribution.specular;
