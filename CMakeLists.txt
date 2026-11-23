@@ -394,6 +394,7 @@ set(MILO_ENGINE_PLATFORM_SOURCES
     src/platform/FxSendNative.cpp
     src/platform/GameRenderHook.cpp
     src/platform/PointTestHook.cpp
+    src/platform/TextGlyphMarks.cpp   # glyph-page marks; dependency-free (rb3-milo compiles it alone)
     src/platform/SpotBeamHook.cpp
     src/platform/ContactShadowHook.cpp
     src/platform/TexBlendHook.cpp
