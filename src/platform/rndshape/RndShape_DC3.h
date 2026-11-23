@@ -590,7 +590,8 @@ constexpr bool kReflectionForcesReverseCull = kDC3RetailModel;
 // light at the spec map's colour, power max(power * map alpha, 0.1). RB3's
 // shipped X360 skin permutation (xbox_shaders `standard`
 // 0000022040031037: skin, rim, normal + spec maps, 2 points; ucode
-// instructions 27/28/56/73-89/107-112) instead takes specular colour c2.rgb x
+// instructions 27/28 colour and power, 56 lobe, 61-89 point lights, 64-107
+// box reflection, 112 output) instead takes specular colour c2.rgb x
 // map.rgb, p = max(c2.w x map.a, 0.5), n(p) = p / 2pi + 1 / pi, and lights
 // with
 //   points: c_i a_i n(p) sat(V . R_i)^p (1 - sat(V . N)^2)^2
@@ -599,7 +600,7 @@ constexpr bool kReflectionForcesReverseCull = kDC3RetailModel;
 // the approx lights reaching the box faces with weight sat(+-L_axis)^2
 // (BoxMapLighting::ApplyQueuedLights). So a skin texel facing the camera has
 // almost no specular. SceneUniforms.skinSpecModel = 1 selects that form in the
-// native arm (standard_wgsl.inc nativeSkinSpecRB3). rb3-xenon only: DC3 never
+// native arm (standard_wgsl.inc rb3SkinSpecDirectional and rb3SkinSpecPoint). rb3-xenon only: DC3 never
 // reaches the native arm (WriteDC3Retail claims every frame).
 constexpr bool kSkinSpecRB3Xenon = !kDC3RetailModel;
 

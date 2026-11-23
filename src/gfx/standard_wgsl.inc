@@ -216,7 +216,7 @@ struct SceneUniforms {
     fogEnabled: f32,
     // np-look34: the LOD bias of other text/HUD art (kTakesUiBias 2).
     uiArtLodBias: f32,
-    skinSpecModel: f32,   // 1 = RB3 X360 skin specular, native arm (nativeSkinSpecRB3)
+    skinSpecModel: f32,   // 1 = RB3 X360 skin specular, native arm (rb3SkinSpecDirectional/Point)
     // Multi-light (up to 4 directional lights)
     lightDirs: array<vec4f, 4>,
     lightColors: array<vec4f, 4>,
