@@ -65,13 +65,17 @@ uint64_t GpuMeshUploadCount();
 void SetMeshDebugLabel(RndMesh* mesh, const char* label);
 
 // Mark a mesh as an RndText glyph page (called by the game's text code where it
-// creates the page mesh). Read through IsMarkedTextGlyphMesh(); honoured only
-// when the render hook's MarksTextGlyphMeshes() says the game marks its pages
-// (MeshDrawsAsGlyph, platform/MaterialSetup.h). Kept apart from the GPU buffer
-// entries so ClearMeshGpuCache() does not drop it; CleanupGpuMesh() (the mesh
-// is being destroyed) does.
-void MarkTextGlyphMesh(RndMesh* mesh);
-bool IsMarkedTextGlyphMesh(RndMesh* mesh);
+// creates the page mesh): MarkTextGlyphMesh / IsMarkedTextGlyphMesh, declared in
+// platform/TextGlyphMarks.h (its own dependency-free TU). Honoured only when
+// GameMarksTextGlyphMeshes() below says the game marks its pages.
+#include "platform/TextGlyphMarks.h"
+// The same promise as GameRenderHook::MarksTextGlyphMeshes(), for a game that
+// marks its glyph pages but registers no render hook (rb3-xenon's rb3-app).
+// Off by default: a consumer that neither registers a hook saying so nor
+// calls this keeps the inferred rule (an unnamed mesh is a glyph page).
+// GameMarksTextGlyphMeshes() is true when either says so.
+void SetGameMarksTextGlyphMeshes(bool marks);
+bool GameMarksTextGlyphMeshes();
 
 // Set depth bias for a mesh (used by viewer to push combined meshes behind splits).
 void SetMeshDepthBias(RndMesh* mesh, int32_t bias);

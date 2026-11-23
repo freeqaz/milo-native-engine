@@ -3,6 +3,8 @@
 // Contains: upload logic, MikkTSpace tangent generation, frame stats, side table.
 
 #include "platform/MeshGpuCache.h"
+#include "platform/TextGlyphMarks.h"
+#include "platform/GameRenderHook.h"
 #include "gfx/FrameCost.h"
 #include "platform/Rnd_Wgpu.h"
 #include "gfx/VertexFormats.h"
@@ -24,7 +26,6 @@ extern "C" {
 // ============================================================================
 
 static std::unordered_map<RndMesh*, GpuMeshData> sMeshGpuData;
-static std::unordered_set<RndMesh*> sTextGlyphMeshes;
 
 // ============================================================================
 // Frame statistics
@@ -82,15 +83,19 @@ int GetMeshDrawCallsThisFrame() {
 
 void CleanupGpuMesh(RndMesh* mesh) {
     sMeshGpuData.erase(mesh);
-    sTextGlyphMeshes.erase(mesh);
+    UnmarkTextGlyphMesh(mesh);
 }
 
-void MarkTextGlyphMesh(RndMesh* mesh) {
-    if (mesh) sTextGlyphMeshes.insert(mesh);
+namespace {
+bool sGameMarksTextGlyphMeshes = false;
 }
 
-bool IsMarkedTextGlyphMesh(RndMesh* mesh) {
-    return mesh && sTextGlyphMeshes.count(mesh) != 0;
+void SetGameMarksTextGlyphMeshes(bool marks) { sGameMarksTextGlyphMeshes = marks; }
+
+bool GameMarksTextGlyphMeshes() {
+    if (sGameMarksTextGlyphMeshes) return true;
+    GameRenderHook* hook = GetGameRenderHook();
+    return hook && hook->MarksTextGlyphMeshes();
 }
 
 void InvalidateGpuMesh(RndMesh* mesh) {
