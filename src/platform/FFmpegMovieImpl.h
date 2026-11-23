@@ -60,6 +60,8 @@ struct SwrContext;
 // Feature mark for consumers' tests: movies play their Bink sound track through
 // MovieAudioSource, and the picture follows its clock.
 #define MILO_MOVIE_AUDIO_SOURCE 1
+// Feature mark: FFmpegMovieImpl::BeginFromMemory / MovieMemoryReader.
+#define MILO_MOVIE_MEMORY 1
 
 // A movie's sound track on the engine mixer.  The producer (the movie's Poll,
 // main thread) places stereo float frames at TIMELINE positions -- frames of
@@ -113,6 +115,57 @@ private:
     std::atomic<int64_t> mSilenceRendered;
 };
 
+// A movie held in memory, as the demuxer reads it (AVIO read/seek).
+//
+// Retail opens a PRELOADED movie from its buffer, not from its file: RB3 TU5's
+// Movie::Impl::CheckOpen (band.exe fn_82745428) keeps the FileLoader's buffer
+// as mPreloadBuf and calls MovieOpen(mPreloadBuf, 0x4000400), whose BinkOpen
+// gets BINKFROMMEMORY (0x04000000) | BINKNOFRAMEBUFFERS (0x400).  That buffer
+// may be the only copy: a cached .milo embeds the movie's bytes in the object
+// (TexMovie's Load hands Begin its stream; FileLoader reads the bytes out of
+// it), and there is no file to open.
+//
+// Byte order.  Bink on the 360 reads the file as native (big-endian) 32-bit
+// words, so the Xbox data is word-swapped: the tag reads "iKIB", not "BIKi".
+// Retail swaps a PC-order buffer ("BIKi") the other way before BinkOpen
+// (CheckOpen's EndianSwapBuffer).  FFmpeg's bink demuxer and decoder read the
+// PC order, so a buffer whose first word is a byte-reversed Bink tag is read
+// through a word-unswapping view: the caller's bytes are never modified (a
+// cached Save writes them back as they were loaded).  A swapped buffer must be
+// a whole number of words, as EndianSwapBuffer asserts.
+//
+// Lifetime: the reader does NOT copy.  `data` must stay valid and unchanged for
+// as long as the reader is in use.
+class MovieMemoryReader {
+public:
+    MovieMemoryReader(const void *data, int64_t size);
+
+    // False for a null/empty buffer, or a swapped one that is not whole words.
+    bool Valid() const { return mValid; }
+    // The buffer is in the 360's word-swapped order (first word "iKIB"/"2BK...").
+    bool WordSwapped() const { return mSwapped; }
+    int64_t Size() const { return mSize; }
+    int64_t Pos() const { return mPos; }
+    // AVIO read: up to `size` bytes at the position, in PC byte order;
+    // AVERROR_EOF at the end.
+    int Read(uint8_t *buf, int size);
+    // AVIO seek: SEEK_SET/SEEK_CUR/SEEK_END (AVSEEK_FORCE ignored); AVSEEK_SIZE
+    // returns the size.  A target outside [0, size] fails with AVERROR(EINVAL)
+    // and leaves the position where it was.
+    int64_t Seek(int64_t offset, int whence);
+
+    // True when the first four bytes are a Bink 1 ("BIK") or Bink 2 ("KB2") tag
+    // with its bytes reversed.
+    static bool IsWordSwappedBink(const void *data, int64_t size);
+
+private:
+    const uint8_t *mData;
+    int64_t mSize;
+    int64_t mPos;
+    bool mSwapped;
+    bool mValid;
+};
+
 class FFmpegMovieImpl : public MovieImpl {
 public:
     FFmpegMovieImpl();
@@ -142,6 +195,23 @@ public:
     virtual int NumFrames() const override { return mNumFrames; }
     virtual void SetVolume(float db) override;
 
+    // Open a movie held in memory (retail: MovieOpen(mPreloadBuf, BINKFROMMEMORY
+    // | BINKNOFRAMEBUFFERS) for a preloaded movie, see MovieMemoryReader).
+    // `name` only names the movie in messages and helps FFmpeg's probe; noSound,
+    // loop and track are BeginFromFile's.  Returns false, with nothing open, for
+    // a null/empty/non-word buffer or bytes FFmpeg cannot open as a movie.
+    //
+    // Lifetime: the bytes are NOT copied.  `data` must stay valid and unchanged
+    // until End(), the next BeginFromFile/BeginFromMemory, or destruction --
+    // retail's own contract: Impl::End closes the HBINK (MovieClose) before it
+    // MemFrees mPreloadBuf.
+    bool BeginFromMemory(const void *data, int size, const char *name, bool noSound,
+                         bool loop, int track);
+    // The movie open now was opened by BeginFromMemory (probe for consumers'
+    // gates), and the reader's view of it.
+    bool OpenFromMemory() const { return mOpen && mMemory != nullptr; }
+    const MovieMemoryReader *MemoryReader() const { return mMemory; }
+
     void Terminate();
 
     // Tests: when non-zero, a movie's sound track goes to a MovieAudioSource
@@ -156,7 +226,9 @@ public:
     bool Looping() const { return mLoop; }
 
 private:
+    bool FinishBegin(const char *name, bool noSound, bool loop, int track);
     bool OpenVideo(const char *path);
+    bool OpenStreams(const char *name);
     bool OpenAudio(int track);
     bool ReadPacket();
     void DecodeAudioPacket(AVPacket *pkt);
@@ -176,6 +248,9 @@ private:
     // FFmpeg as a path relative to the working directory (PLAN G-15).
     class File *mFile;
     AVIOContext *mAvio;
+    // Or the caller's buffer, for a movie opened by BeginFromMemory (the
+    // AVIO's opaque; owned here, the bytes it views are not).
+    MovieMemoryReader *mMemory;
 
     // FFmpeg state
     AVFormatContext *mFmtCtx;
