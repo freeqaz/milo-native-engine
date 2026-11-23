@@ -10,6 +10,11 @@
 // It is kept apart from the GPU buffer entries, so ClearMeshGpuCache() does not
 // drop a mark; CleanupGpuMesh() (the mesh is being destroyed) does, through
 // UnmarkTextGlyphMesh().
+// A consumer that compiles this file without MeshGpuCache.cpp (rb3-milo, where
+// CleanupGpuMesh is a link stub) never erases a mark, so a mesh address reused
+// after a delete could read as a glyph page there. Harmless while nothing in such
+// a target reads IsMarkedTextGlyphMesh(); call UnmarkTextGlyphMesh() from that
+// target's mesh teardown before it starts to.
 
 class RndMesh;
 
