@@ -87,7 +87,7 @@ struct SceneUniforms {
     float selfShadowClip[16];      // mat4x4f
     float selfShadowColor[4];      // vec4f
     float selfShadowDir[4];        // vec4f
-    // The environ's left/right fade (NgEnviron::Select, VConstant/PConstant
+    // The environ's left/right fade (NgEnviron::Select = band.exe TU5 fn_82B86738, VConstant/PConstant
     // 0x35 and 0x36): two planes over the world position, each fade =
     // saturate(dot(plane, (worldPos, 1))), 0 at the out edge and 1 at the
     // opaque edge; a side with out == opaque is (0, 0, 0, 1). Filled only when

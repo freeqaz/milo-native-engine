@@ -295,7 +295,7 @@ inline ObjPtrList<RndLight> &EnvLightsReal(RndEnviron *e) { return e->LightsReal
 // The environ's left/right fade, detected: only a game whose RndEnviron
 // exposes LRFade() (rb3-xenon) takes it; dc3-decomp's does not, so its scene
 // block keeps zero planes and its frames do not change. The planes are
-// NgEnviron::Select's (rb3-xenon rndobj/Env_NG.cpp; band.exe TU5
+// NgEnviron::Select's (band.exe TU5 fn_82B86738; rb3-xenon rndobj/Env_NG.cpp;
 // NgEnviron::Select uploads them as VConstant/PConstant 0x35 and 0x36), built
 // only when the environ fades out (mFadeOut and FadeEnd != FadeStart).
 // The depth half of that fade (constant 0x37: end, 1 / (end - start), max)

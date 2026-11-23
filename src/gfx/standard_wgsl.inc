@@ -461,8 +461,8 @@ fn materialFlipNormal() -> bool {
 fn materialFadesOut() -> bool {
     return ((material.colorMod.w >> 11u) & 1u) != 0u;
 }
-// The environ's left/right fade for a fade_out material (NgEnviron::Select's
-// planes, c53/c54): 1 when the scene block carries no fade (all zero).
+// The environ's left/right fade for a fade_out material (the planes of NgEnviron::Select,
+// band.exe TU5 fn_82B86738, c53/c54): 1 when the scene block carries no fade (all zero).
 fn lrFade(worldPos: vec3f) -> f32 {
     if (!materialFadesOut() || (all(scene.lrFadeLeft == vec4f(0.0)) && all(scene.lrFadeRight == vec4f(0.0)))) {
         return 1.0;
