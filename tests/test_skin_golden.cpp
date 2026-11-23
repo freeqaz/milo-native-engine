@@ -628,18 +628,23 @@ TEST_F(SkinGolden, ShellInvariantAxisOracle) {
 
     Hmx::Matrix3 I3(Vector3(1,0,0), Vector3(0,1,0), Vector3(0,0,1));
     // liveW: a nontrivial live bone rotation (the pose). rest == I (off == inv(rest) == I).
-    Transform live; live.v.Set(0,0,0); RotateAboutY(I3, 0.7f, live.m);
+    // (Rot.h has no free RotateAboutY(const Matrix3&, float, Matrix3&) -- only X and Z;
+    //  rotating the identity about Y is MakeRotMatrixY, the inline Rot.h builder.)
+    Transform live; live.v.Set(0,0,0); MakeRotMatrixY(0.7f, live.m);
     // R87: the 87deg own-rest conjugation baked into the offset (== A.S1/Tier-1 signal).
     const float theta = 1.518f; // ~87 deg
     Transform r87; r87.v.Set(0,0,0); RotateAboutZ(I3, theta, r87.m);
 
+    // Vector3 has no binary operator- (decomp math is out-parameter style).
+    auto Dist = [](const Vector3 &a, const Vector3 &b) {
+        Vector3 d; Subtract(a, b, d); return Length(d); };
     auto skinBy = [](const Vector3 &p, const Transform &t) {
         Vector3 o; Multiply(p, t, o); return o; };
     auto isoDistort = [&](const std::vector<Vector3> &s) {
         double sum = 0; int np = 0;
         for (int a = 0; a < N; a++) for (int c = a + 1; c < N; c++) {
-            float db = Length(bind[a] - bind[c]); if (db < 1e-3f) continue;
-            float ds = Length(s[a] - s[c]);
+            float db = Dist(bind[a], bind[c]); if (db < 1e-3f) continue;
+            float ds = Dist(s[a], s[c]);
             sum += std::fabs(ds - db) / db; np++;
         }
         return np ? (float)(sum / np) : -1.f; };
@@ -656,7 +661,7 @@ TEST_F(SkinGolden, ShellInvariantAxisOracle) {
         RotateAboutZ(I3, 0.20f + 0.13f * i, di.m);
         Transform decT; Multiply(di, live, decT);
         sDec[i] = skinBy(bind[i], decT);
-        shellSum += Length(sSpace[i] - sCoh[i]);
+        shellSum += Dist(sSpace[i], sCoh[i]);
         meanR += Length(bind[i]);
     }
     meanR /= N;

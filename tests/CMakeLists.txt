@@ -40,7 +40,11 @@ include(GoogleTest)
 # Locate the dc3-decomp checkout that supplies the not-yet-factored core runtime
 # AND the test assets. Defaults to the sibling repo next to milo-native-engine.
 # -----------------------------------------------------------------------------
-get_filename_component(_DEFAULT_DC3 "${CMAKE_SOURCE_DIR}/../dc3-decomp" ABSOLUTE)
+if(MILO_ENGINE_DC3_ROOT)
+    set(_DEFAULT_DC3 "${MILO_ENGINE_DC3_ROOT}")   # cmake/dc3-reference.cmake's choice
+else()
+    get_filename_component(_DEFAULT_DC3 "${CMAKE_SOURCE_DIR}/../dc3-decomp" ABSOLUTE)
+endif()
 set(DC3_RUNTIME_ROOT "${_DEFAULT_DC3}" CACHE PATH
     "dc3-decomp checkout: supplies the Milo core runtime + native glue + test assets")
 
@@ -54,6 +58,30 @@ if(NOT EXISTS "${DC3_RUNTIME_ROOT}/src/system/utl/Symbol.cpp")
 endif()
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/dc3_runtime_sources.cmake)
+
+# Rot guard. dc3_runtime_sources.cmake is generated from dc3's real milo-tests
+# target; when dc3 renames or deletes a file the list goes stale. Refuse to
+# configure, naming every missing file and the regeneration command, rather than
+# let CMake stop on the first "Cannot find source file" (or, worse, a hand edit
+# drop the file and leave its replacement out of the link).
+set(_dc3rt_missing)
+foreach(_src IN LISTS DC3_RUNTIME_SOURCES DC3_RUNTIME_LIBRARY_SOURCES)
+    if(NOT EXISTS "${_src}")
+        list(APPEND _dc3rt_missing "${_src}")
+    endif()
+endforeach()
+if(_dc3rt_missing)
+    list(LENGTH _dc3rt_missing _dc3rt_missing_n)
+    list(JOIN _dc3rt_missing "\n    " _dc3rt_missing_lines)
+    message(FATAL_ERROR
+        "milo-engine-tests: ${_dc3rt_missing_n} source(s) in tests/dc3_runtime_sources.cmake "
+        "(generated from dc3 ${DC3_RUNTIME_GENERATED_FROM}) do not exist under "
+        "DC3_RUNTIME_ROOT=${DC3_RUNTIME_ROOT}:\n    ${_dc3rt_missing_lines}\n"
+        "The list has rotted against this dc3 checkout. Regenerate it from a configured "
+        "dc3 native build:\n"
+        "    python3 tests/gen_dc3_runtime_sources.py --build-dir ${DC3_RUNTIME_ROOT}/native/build\n"
+        "Do not hand-edit the list.")
+endif()
 
 # -----------------------------------------------------------------------------
 # Engine-only test subset (roadmap §0.2).
@@ -94,6 +122,13 @@ set(MILO_ENGINE_TEST_SOURCES
     test_skin_golden.cpp
 )
 
+# dc3-owned static libraries milo-tests links (nativeui, songbrowser_ui; imgui
+# comes from the engine). dc3 compiles them with its host-STL shim first on the
+# include path (a directory-level include there); give them the engine's copy
+# of the same shim so every TU in this binary sees one std::vector shape.
+include_directories(BEFORE ${MILO_ENGINE_HOST_STL_SHIM_DIR})
+dc3_runtime_libraries()
+
 # FFmpeg (Bink) — the parent scope detected it as MILO_ENGINE_HAVE_FFMPEG; reuse.
 add_executable(milo-engine-tests
     ${MILO_ENGINE_TEST_SOURCES}
@@ -102,9 +137,11 @@ add_executable(milo-engine-tests
 
 # Consumer context: reference decomp headers + matched-fork compat flags, exactly
 # as the engine .cpp are compiled (so test/runtime TUs share one ABI + STL shape).
-target_compile_options(milo-engine-tests PRIVATE ${MILO_ENGINE_DECOMP_COMPAT_FLAGS})
+# The test TUs and the dc3 runtime TUs compile in dc3 milo-tests' own context
+# (DC3_RUNTIME_COMPILE_OPTIONS/_DEFINITIONS, generated from it), not a copy of it.
+target_compile_options(milo-engine-tests PRIVATE ${DC3_RUNTIME_COMPILE_OPTIONS})
 target_compile_definitions(milo-engine-tests PRIVATE
-    HX_NATIVE=1 MILO_DEBUG=1 _DEBUG=1
+    ${DC3_RUNTIME_COMPILE_DEFINITIONS}
     ${MILO_ENGINE_DECOMP_DEFINITIONS})
 if(MILO_ENGINE_HAVE_FFMPEG)
     target_compile_definitions(milo-engine-tests PRIVATE HX_FFMPEG=1)
@@ -117,28 +154,21 @@ endif()
 target_include_directories(milo-engine-tests BEFORE PRIVATE
     ${CMAKE_SOURCE_DIR}/include)
 target_include_directories(milo-engine-tests PRIVATE
-    ${MILO_ENGINE_DECOMP_INCLUDE_DIRS}
-    ${DC3_RUNTIME_ROOT}/native/src
-    ${DC3_RUNTIME_ROOT}/native/include
+    ${DC3_RUNTIME_INCLUDE_DIRS}
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${FFMPEG_INCLUDE_DIRS})
+target_include_directories(milo-engine-tests SYSTEM PRIVATE
+    ${DC3_RUNTIME_SYSTEM_INCLUDE_DIRS})
 
 # Decomp PCH (Object.h/Debug.h + heavy transitive includes), as the engine uses.
 if(MILO_ENGINE_DECOMP_PCH AND NOT "${MILO_ENGINE_DECOMP_PCH}" STREQUAL "")
     target_precompile_headers(milo-engine-tests PRIVATE
         "$<$<COMPILE_LANGUAGE:CXX>:${MILO_ENGINE_DECOMP_PCH}>")
 endif()
-# These TUs conflict with the decomp PCH (same carve-outs dc3's milo-tests makes):
-#   Jpeg.cpp                 jpeg jmorecfg.h INT32 (long) vs xdk win_types INT32 (int)
-#   HttpServer.cpp           httplib heavy / its own includes
-#   engine_stubs_generated   generated glue compiled without the PCH context
-# (The bundled C sources — oggvorbis/*.c, tomcrypt/*.c, obj/DataFlex.c — are
-#  auto-excluded because the PCH genex is CXX-only.)
-set_source_files_properties(
-    ${DC3_RUNTIME_ROOT}/src/system/jpeg/Jpeg.cpp
-    ${DC3_RUNTIME_ROOT}/native/src/platform/HttpServer.cpp
-    ${DC3_RUNTIME_ROOT}/native/src/engine_stubs_generated.cpp
-    PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+# Per-source carve-outs (no PCH for Jpeg/HttpServer/engine_stubs_generated,
+# json-c as C++ without MS compat, ...): generated from dc3's milo-tests, so
+# they follow dc3 instead of being a second hand-kept copy.
+dc3_runtime_source_props()
 
 # Link: the engine static lib + GTest + the platform libs the engine pulls in.
 # --allow-multiple-definition / --unresolved-symbols=ignore-all mirror dc3's
@@ -146,13 +176,20 @@ set_source_files_properties(
 # of stub/real symbol pairs; the decomp intentionally relies on first-wins).
 target_link_libraries(milo-engine-tests PRIVATE
     milo-engine
+    ${DC3_RUNTIME_LIBRARIES}
     GTest::gtest GTest::gtest_main)
 if(NOT EMSCRIPTEN)
     if(NOT APPLE)
+        # --no-undefined, as dc3's milo-tests links. This used to be
+        # --unresolved-symbols=ignore-all + --warn-unresolved-symbols, which made
+        # the link unable to report a missing symbol at all: a source list missing
+        # 57 dc3 files linked "green" with 159 lazily-bound holes and the binary
+        # died in EnsureEngineInit with a symbol lookup error. A missing source
+        # must fail here, at link time. --allow-multiple-definition stays: the
+        # decomp has intentional stub/real pairs (dc3 keeps it for the same reason).
         target_link_options(milo-engine-tests PRIVATE
             -rdynamic
-            -Wl,--unresolved-symbols=ignore-all
-            -Wl,--warn-unresolved-symbols
+            -Wl,--no-undefined
             -Wl,--allow-multiple-definition)
         target_link_libraries(milo-engine-tests PRIVATE dl curl jpeg vorbis vorbisfile ogg z)
     else()
