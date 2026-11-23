@@ -973,6 +973,11 @@ set(DC3_RUNTIME_LIB_songbrowser_ui_SOURCES
 list(APPEND DC3_RUNTIME_LIBRARY_SOURCES ${DC3_RUNTIME_LIB_songbrowser_ui_SOURCES})
 set(DC3_RUNTIME_LIBRARIES)
 macro(dc3_runtime_libraries)
+    if(NOT TARGET imgui)
+        message(FATAL_ERROR "milo-engine-tests: dc3's milo-tests links `imgui`, which is not dc3 source;"
+            " the engine build must provide a target of that name.")
+    endif()
+    list(APPEND DC3_RUNTIME_LIBRARIES imgui)
     add_library(dc3rt_nativeui STATIC ${DC3_RUNTIME_LIB_nativeui_SOURCES})
     target_include_directories(dc3rt_nativeui PUBLIC
         ${DC3_RUNTIME_ROOT}/native/src
@@ -990,9 +995,4 @@ macro(dc3_runtime_libraries)
     target_compile_features(dc3rt_songbrowser_ui PUBLIC cxx_std_17)
     target_link_libraries(dc3rt_songbrowser_ui PUBLIC dc3rt_nativeui)
     list(APPEND DC3_RUNTIME_LIBRARIES dc3rt_songbrowser_ui)
-    if(NOT TARGET imgui)
-        message(FATAL_ERROR "milo-engine-tests: dc3's milo-tests links `imgui`, which is not dc3 source;"
-            " the engine build must provide a target of that name.")
-    endif()
-    list(APPEND DC3_RUNTIME_LIBRARIES imgui)
 endmacro()

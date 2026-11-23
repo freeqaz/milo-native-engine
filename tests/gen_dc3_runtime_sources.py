@@ -205,7 +205,9 @@ def main():
     # dc3-owned static libraries milo-tests links (nativeui, songbrowser_ui, ...).
     libs = []
     def walk(tid, seen):
-        for dep in by_id[tid].get("dependencies", []):
+        # sorted by name: the file API's dependency order is not stable across
+        # reconfigures, and the output must be (a regen with no dc3 change is a no-op)
+        for dep in sorted(by_id[tid].get("dependencies", []), key=lambda x: by_id[x["id"]]["name"]):
             d = by_id[dep["id"]]
             if d["name"] == ENGINE_TARGET or d["name"] in seen:
                 continue
@@ -227,7 +229,7 @@ def main():
         linc = [rel(i["path"]) for i in cg.get("includes", []) if rel(i["path"])
                 and not os.path.relpath(os.path.realpath(i["path"]), native_src).startswith("build")]
         lopts = [tok for f in _fragments(cg) for tok in f.split()]
-        ldeps = [by_id[x["id"]]["name"] for x in d.get("dependencies", [])]
+        ldeps = sorted(by_id[x["id"]]["name"] for x in d.get("dependencies", []))
         lib_blocks.append((d["name"], srcs, linc, lopts, ldeps))
 
     head = subprocess.run(["git", "-C", dc3_root, "rev-parse", "--short=12", "HEAD"],
