@@ -521,6 +521,8 @@ constexpr bool kAlphaTestGreater = false;  // native ">= threshold" kept
 constexpr int kDrawModeReflection = 7;
 // RB3 flips each material's own cull in the mirror (see RndShape_DC3.h).
 constexpr bool kReflectionForcesReverseCull = false;
+// The native arm's skin specular keeps its own form (RndShape_DC3.h).
+constexpr bool kSkinSpecRB3Xenon = false;
 
 // ---- camera select ---------------------------------------------------------
 // RB3's shared RndCam::Select sets no viewport. On the Wii the platform camera

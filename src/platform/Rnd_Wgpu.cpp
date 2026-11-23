@@ -2695,6 +2695,9 @@ static void CamSceneMatrices(RndCam* cam, float* viewProj, float* viewOut) {
 void WgpuRnd::WriteSceneUniforms() {
     SceneUniforms scene{};
     memset(&scene, 0, sizeof(scene));
+    // Read only by the native light arm's skin specular (RndShape_DC3.h
+    // kSkinSpecRB3Xenon): 1 for rb3-xenon, 0 for DC3 and RB3-Wii.
+    scene.skinSpecModel = rndshape::kSkinSpecRB3Xenon ? 1.0f : 0.0f;
 
     // Camera
     RndCam* cam = RndCam::Current();
