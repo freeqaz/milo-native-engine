@@ -341,6 +341,57 @@ inline float EnvFogEnd(RndEnviron *e) { return e->FogEnd(); }
 inline ObjPtrList<RndLight> &EnvLightsApprox(RndEnviron *e) { return e->LightsApprox(); }
 inline ObjPtrList<RndLight> &EnvLightsReal(RndEnviron *e) { return e->LightsReal(); }
 
+// The environ's left/right fade, detected: only a game whose RndEnviron
+// exposes LRFade() (rb3-xenon) takes it; dc3-decomp's does not, so its scene
+// block keeps zero planes and its frames do not change. The planes are
+// NgEnviron::Select's (band.exe TU5 fn_82B86738; rb3-xenon rndobj/Env_NG.cpp;
+// NgEnviron::Select uploads them as VConstant/PConstant 0x35 and 0x36), built
+// only when the environ fades out (mFadeOut and FadeEnd != FadeStart).
+// The depth half of that fade (constant 0x37: end, 1 / (end - start), max)
+// is not implemented.
+template <class E, class = void> struct EnvHasLRFade : std::false_type {};
+template <class E>
+struct EnvHasLRFade<E, std::void_t<decltype(std::declval<const E &>().LRFade()),
+                                   decltype(std::declval<const E &>().LRFadeRef())>>
+    : std::true_type {};
+template <class E>
+inline bool EnvLRFadePlanes(E *e, float left[4], float right[4]) {
+    if constexpr (!EnvHasLRFade<E>::value) {
+        (void)e; (void)left; (void)right;
+        return false;
+    } else {
+        if (!e || !e->FadeOut() || e->FadeEnd() == e->FadeStart()) return false;
+        const auto &lr = e->LRFade();
+        const Transform ref = e->LRFadeRef();
+        Vector3 dir = ref.m.x;
+        Normalize(dir, dir);
+        const float refDot = Dot(ref.v, dir);
+        left[0] = left[1] = left[2] = 0.0f; left[3] = 1.0f;
+        right[0] = right[1] = right[2] = 0.0f; right[3] = 1.0f;
+        if (lr.x != lr.y) {
+            const float s = 1.0f / (lr.y - lr.x);
+            left[0] = dir.x * s; left[1] = dir.y * s; left[2] = dir.z * s;
+            left[3] = -((lr.x + refDot) * s);
+        }
+        if (lr.z != lr.w) {
+            const float s = 1.0f / (lr.z - lr.w);
+            right[0] = dir.x * s; right[1] = dir.y * s; right[2] = dir.z * s;
+            right[3] = -((lr.w + refDot) * s);
+        }
+        return true;
+    }
+}
+// A material that declares fade_out (RndMat mFadeout), detected the same way.
+template <class T, class = void> struct MatHasFadeOut : std::false_type {};
+template <class T>
+struct MatHasFadeOut<T, std::void_t<decltype(std::declval<const T &>()->FadeOut())>>
+    : std::true_type {};
+template <class T>
+inline bool MatFadesOut(const T &m) {
+    if constexpr (MatHasFadeOut<T>::value && EnvHasLRFade<RndEnviron>::value) return m && m->FadeOut();
+    else { (void)m; return false; }
+}
+
 // ---- light -----------------------------------------------------------------
 inline RndTex *LightTexture(RndLight *l) { return l->GetTexture(); }
 inline Transform LightProjection(RndLight *l) { return l->Projection(); }

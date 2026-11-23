@@ -87,8 +87,17 @@ struct SceneUniforms {
     float selfShadowClip[16];      // mat4x4f
     float selfShadowColor[4];      // vec4f
     float selfShadowDir[4];        // vec4f
+    // The environ's left/right fade (NgEnviron::Select = band.exe TU5 fn_82B86738, VConstant/PConstant
+    // 0x35 and 0x36): two planes over the world position, each fade =
+    // saturate(dot(plane, (worldPos, 1))), 0 at the out edge and 1 at the
+    // opaque edge; a side with out == opaque is (0, 0, 0, 1). Filled only when
+    // the shape answers rndshape::EnvLRFadePlanes (an environ that fades out);
+    // all zero otherwise, which the shader reads as "no fade". Applied to the
+    // output alpha of materials that declare fade_out (colorMod.w bit 11).
+    float lrFadeLeft[4];           // vec4f
+    float lrFadeRight[4];          // vec4f
 };
-static_assert(sizeof(SceneUniforms) == 800, "SceneUniforms must match WGSL layout");
+static_assert(sizeof(SceneUniforms) == 832, "SceneUniforms must match WGSL layout");
 
 struct MaterialUniforms {
     float color[4];             // vec4f
