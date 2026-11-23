@@ -371,7 +371,10 @@ void WriteDC3Retail(SceneUniforms &s, E *env, RndCam *cam) {
         s.ambientColor[0] = amb.red;
         s.ambientColor[1] = amb.green;
         s.ambientColor[2] = amb.blue;
-        s.ambientColor[3] = 1.0f;
+        // c1.w: the environ's ambient alpha, as NgMat::SetupAmbient loads it
+        // (fn_8269CCA8). The shader multiplies it into the output alpha of a
+        // use_environ material (gfx/AmbientAlpha.h, retailLighting 2 too).
+        s.ambientColor[3] = amb.alpha;
         // NgEnviron::Select: c91 = (end, 1 / (end - start), 0, 1), c90 = colour.
         if (env->FogEnable()) {
             s.fogEnabled = 2.0f;   // 2: the exponential form above

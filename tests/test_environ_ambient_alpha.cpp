@@ -7,9 +7,12 @@
 // standard_110, standard_20010). RB3's UI fades whole groups through an
 // environ's ambient_alpha (movie_pause.milo fade.env, fade_text.env).
 //
+// DC3 does the same (NgMat::SetupAmbient 373307D9 fn_8269CCA8; DC3's
+// standard_100010030011 PS `muls_prev r0.___w, c1.w`, `mul oC0, r0, r1`), and
+// its UI hides and fades groups this way (cursor.milo depth_buffer_*.env,
+// mic.env, meter.env authored at ambient alpha 0; lane A77's milo scan).
 // This suite builds in DC3's context, so it checks the decomp-agnostic
-// contract (RetailC1Alpha and its WGSL mirror) and that DC3 cannot change by
-// construction; the RB3 shape's half (MatAmbientIsEnviron, the scene writer's
+// contract (RetailC1Alpha and its WGSL mirror) and DC3's shape; the RB3 shape's half (MatAmbientIsEnviron, the scene writer's
 // w) is gated in rb3-xenon (native/src/rb3_app_gates.cpp).
 
 #include "test_helpers.h"
@@ -62,10 +65,25 @@ TEST(EnvironAmbientAlpha, MaterialThatIgnoresTheEnvironKeepsOne) {
     EXPECT_EQ(RetailC1Alpha(kColorModWFadesOutBit, 1.0f, 0.0f), 1.0f);
 }
 
+TEST(EnvironAmbientAlpha, DC3LightModelTakesTheEnvironAlpha) {
+    // DC3 (2): NgMat::SetupAmbient (373307D9 fn_8269CCA8) loads the environ's
+    // ambient, w included, into c1 for a use_environ material, and DC3's
+    // standard programs carry c1.w to oC0.w (standard_100010030011 PS
+    // `muls_prev r0.___w, c1.w`). cursor.milo's depth_buffer_left.env is
+    // authored at 0, omg_visualizer's Environ.env at 0.4.
+    EXPECT_EQ(RetailC1Alpha(kMatAmbientIsEnvironBit, 2.0f, 0.0f), 0.0f);
+    EXPECT_EQ(RetailC1Alpha(kMatAmbientIsEnvironBit, 2.0f, 0.4f), 0.4f);
+    EXPECT_EQ(RetailC1Alpha(kMatAmbientIsEnvironBit, 2.0f, 0.5f), 0.5f);
+    // use_environ off under DC3's model: c1 = (1, 1, 1, 1).
+    EXPECT_EQ(RetailC1Alpha(0u, 2.0f, 0.0f), 1.0f);
+    EXPECT_EQ(RetailC1Alpha(OtherColorModWFields(), 2.0f, 0.0f), 1.0f);
+}
+
 TEST(EnvironAmbientAlpha, OtherLightModelsKeepOne) {
-    // DC3 (2) and the heuristic arm (0) read c1.w = 1 even with the bit set.
-    EXPECT_EQ(RetailC1Alpha(kMatAmbientIsEnvironBit, 2.0f, 0.5f), 1.0f);
+    // The heuristic arm (0) reads c1.w = 1 even with the bit set, and so
+    // does anything past DC3's model.
     EXPECT_EQ(RetailC1Alpha(kMatAmbientIsEnvironBit, 0.0f, 0.5f), 1.0f);
+    EXPECT_EQ(RetailC1Alpha(kMatAmbientIsEnvironBit, 3.0f, 0.5f), 1.0f);
 }
 
 TEST(EnvironAmbientAlpha, BitDoesNotCollideWithTheOtherColorModFields) {
@@ -134,9 +152,9 @@ TEST(EnvironAmbientAlpha, ShaderMirrorsTheContract) {
     ASSERT_NE(wgsl, nullptr);
     // The bit, the light-model gate and the scene ambient's w ...
     const std::string body = std::string("fn retailC1Alpha() -> f32 {\n"
-                                         "    let rb3RetailModel = scene.retailLighting > 0.5 && "
-                                         "scene.retailLighting < 1.5;\n"
-                                         "    if (rb3RetailModel && ((material.colorMod.w >> ") +
+                                         "    let retailModel = scene.retailLighting > 0.5 && "
+                                         "scene.retailLighting < 2.5;\n"
+                                         "    if (retailModel && ((material.colorMod.w >> ") +
                              std::to_string(kColorModWAmbientIsEnvironShift) +
                              "u) & 1u) != 0u) {\n"
                              "        return scene.ambientColor.w;\n"
@@ -148,17 +166,18 @@ TEST(EnvironAmbientAlpha, ShaderMirrorsTheContract) {
     EXPECT_NE(strstr(wgsl, "let materialAlpha = material.color.a * retailC1Alpha();"), nullptr);
 }
 
-// DC3 by construction: its shape never marks a material's c1 as the environ's
-// (so the shader's factor is exactly 1), with use_environ on or off, prelit
-// or not.
-TEST_F(EnvironAmbientAlphaTest, DC3ShapeNeverMarksTheMaterial) {
+// DC3's shape marks a material's c1 as the environ's exactly when the
+// material has use_environ on (NgMat::SetupAmbient fn_8269CCA8 tests only
+// that), prelit or not.
+TEST_F(EnvironAmbientAlphaTest, DC3ShapeMarksUseEnvironMaterials) {
     EXPECT_FALSE(rndshape::kRB3RetailLight);
+    EXPECT_TRUE(rndshape::kDC3RetailModel);
     for (int useEnv = 0; useEnv < 2; useEnv++) {
         for (int prelit = 0; prelit < 2; prelit++) {
             RndMat *mat = Hmx::Object::New<RndMat>();
             mat->SetUseEnv(useEnv != 0);
             mat->SetPreLit(prelit != 0);
-            EXPECT_FALSE(rndshape::MatAmbientIsEnviron(rndshape::Mat(mat)))
+            EXPECT_EQ(rndshape::MatAmbientIsEnviron(rndshape::Mat(mat)), useEnv != 0)
                 << "use_environ " << useEnv << " prelit " << prelit;
             delete mat;
         }

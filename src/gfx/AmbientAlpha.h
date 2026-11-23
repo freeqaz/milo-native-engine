@@ -21,10 +21,11 @@
 // the current environ's ambient (the environ is part of the scene block's key,
 // WgpuRnd::EnsureSceneUniformsCurrent), so its w carries the environ's
 // ambient alpha, and the material says whether its c1 is that ambient or 1.
-// Only the RB3 X360 retail light model (rndshape::kRB3RetailLight,
-// retailLighting 1) writes a w other than 1 or sets the material bit; DC3
-// (retailLighting 2) and RB3-Wii (retailLighting 1, w = 1, bit never set)
-// read c1.w = 1, which multiplies exactly.
+// The RB3 X360 retail light model (rndshape::kRB3RetailLight, retailLighting
+// 1) and DC3's (kDC3RetailModel, retailLighting 2; DC3 NgMat::SetupAmbient
+// fn_8269CCA8, its standard_100010030011 PS carries c1.w to oC0.w) write the
+// environ's alpha and set the material bit; RB3-Wii (retailLighting 1, w = 1,
+// bit never set) reads c1.w = 1, which multiplies exactly.
 
 #pragma once
 
@@ -40,7 +41,8 @@ constexpr uint32_t kMatAmbientIsEnvironBit = kColorModWAmbientIsEnvironBit;
 // c1.w for a draw: the scene block's ambient alpha when the material takes
 // the environ's ambient under the RB3 retail light model, else 1.
 inline float RetailC1Alpha(uint32_t colorModW, float retailLighting, float sceneAmbientW) {
-    const bool rb3RetailModel = retailLighting > 0.5f && retailLighting < 1.5f;
-    return (rb3RetailModel && (colorModW & kMatAmbientIsEnvironBit) != 0u) ? sceneAmbientW
-                                                                          : 1.0f;
+    // retailLighting 1 (RB3 X360) or 2 (DC3); 0 (the native arm) keeps 1.
+    const bool retailModel = retailLighting > 0.5f && retailLighting < 2.5f;
+    return (retailModel && (colorModW & kMatAmbientIsEnvironBit) != 0u) ? sceneAmbientW
+                                                                       : 1.0f;
 }

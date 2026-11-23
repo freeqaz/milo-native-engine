@@ -474,12 +474,14 @@ fn lrFade(worldPos: vec3f) -> f32 {
 // is the current environ's ambient (retail use_environ, NgMat::SetupAmbient
 // band.exe TU5 fn_824A9090), so c1.w, the environ's ambient alpha, is a factor of the
 // output alpha as in every non-pseudo-HDR standard program (standard_10:
-// `mul o2, c1, c0`, `mul oC0, r0, r2`). Set only under the RB3 X360 retail
-// light model (retailLighting 1), the one writer of a scene ambient w other
-// than 1. The CPU mirror is gfx/AmbientAlpha.h RetailC1Alpha.
+// `mul o2, c1, c0`, `mul oC0, r0, r2`). Set under the RB3 X360 retail light
+// model (retailLighting 1) and DC3's (retailLighting 2; DC3 NgMat::SetupAmbient
+// fn_8269CCA8, standard_100010030011 `muls_prev r0.___w, c1.w`), the writers of
+// a scene ambient w other than 1. The CPU mirror is gfx/AmbientAlpha.h
+// RetailC1Alpha.
 fn retailC1Alpha() -> f32 {
-    let rb3RetailModel = scene.retailLighting > 0.5 && scene.retailLighting < 1.5;
-    if (rb3RetailModel && ((material.colorMod.w >> 12u) & 1u) != 0u) {
+    let retailModel = scene.retailLighting > 0.5 && scene.retailLighting < 2.5;
+    if (retailModel && ((material.colorMod.w >> 12u) & 1u) != 0u) {
         return scene.ambientColor.w;
     }
     return 1.0;
