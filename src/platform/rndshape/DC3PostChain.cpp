@@ -340,10 +340,10 @@ namespace {
 // ModulateColorXfm, which scales the RndColorXfm 3x3 by mColorModulation
 // (+0x12C) before it loads c92..c94. DoBloom (fn_82B884A0): doBloom =
 // BloomIntensity() > 0 || bloomColor.alpha > 0, c6 = bloomColor.rgb *
-// BloomIntensity(). The texture noise is NOT taken into this chain: RB3's
-// composite (gfx/RB3RetailPost) has only the generic composite's procedural
-// grain, which lane A49 measured as the wrong noise for rb3-xenon (retail
-// CheckNoise, fn_82B89100, samples mNoiseMap), so it stays at 0 here.
+// BloomIntensity(). The procedural grain stays at 0 (lane A49 measured it as
+// the wrong noise for rb3-xenon): retail CheckNoise (fn_82B89100) samples
+// mNoiseMap, which PostProcPass::FillRB3Chain adds after this (lane A58), as
+// the DC3 chain takes it.
 template <class P>
 void FillRB3(const P *pp, RetailPostParams &out) {
     if constexpr (!PostProcHasColorModulation<P>::value || PostProcHasBloomLocFactor<P>::value) {

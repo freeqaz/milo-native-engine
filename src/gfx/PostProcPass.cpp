@@ -583,6 +583,18 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& i
     // DC3: NgDOFProc is one of the registered post processors, so
     // {rnd toggle_all_postprocs} (Rnd::DoPostProcess skipping every DoPost)
     // turns the depth of field off with the rest of the chain.
+    // rb3-xenon has no {rnd native_post_skip}: MILO_RB3_POST_SKIP=<mask> sets
+    // the same inspection mask once (kRetailPostChain consumers only).
+    if constexpr (rndshape::kRetailPostChain) {
+        static const bool sEnvRead = [] {
+            if (const char* e = getenv("MILO_RB3_POST_SKIP")) {
+                sInspectSkip = (unsigned)strtoul(e, nullptr, 0);
+                fprintf(stderr, "RB3 post: inspection skip mask 0x%x\n", sInspectSkip);
+            }
+            return true;
+        }();
+        (void)sEnvRead;
+    }
     wgpu::TextureView sceneView = intermediateView;
     bool dofRuns = true;
     if constexpr (rndshape::kDC3RetailPost) dofRuns = !rndshape::PostProcDisabled();
@@ -600,10 +612,9 @@ void PostProcPass::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& i
         if (const int mode = rndshape::RetailPostMode()) {
             float dt = StepTime();
             RetailPostParams rp;
-            if (mode != 2) rndshape::FillRetailPost(pp, StepFlicker(pp, dt), rp);
-            if (mode == 3 || mode == 4) rp.debugView = mode - 2;
-            if (mode == 5) rp.bloom = false;
-            if (mode == 6) rp.debugView = 3;
+            // StepFlicker only when the chain grades (as before: raw skips it).
+            const float flicker = mode != 2 ? StepFlicker(pp, dt) : 1.0f;
+            FillRB3Chain(pp, mode, flicker, NoiseOutputRows(intermediateH, gpu), rp);
             rp.time = mNoiseTime;
             if (spotBeams && mode != 2) {
                 rp.spotBeams = spotBeams;
@@ -750,6 +761,34 @@ int PostProcPass::NoiseOutputRows(int h, const GpuDevice& gpu) {
     const int drawn = gpu.WindowHeight();
     if (drawn <= 0) return h;
     return (int)std::lround((double)h * gpu.OutputHeight() / drawn);
+}
+
+void PostProcPass::FillRB3Chain(RndPostProc* pp, int mode, float flicker, int outputRows,
+                                RetailPostParams& rp) {
+    rp = RetailPostParams();
+    if (!pp) return;
+    if (mode != 2) {
+        rndshape::FillRetailPost(pp, flicker, rp);
+        // NgPostProc::CheckNoise (band.exe TU5 fn_82B89100), for a consumer
+        // whose RndPostProc exposes the noise map (rndshape::PostProcNoiseMap;
+        // rb3-xenon): the map, its seeds and scales, as the DC3 chain takes
+        // them. Without the accessors (the RB3-Wii shape) nothing changes.
+        bool midtone = false;
+        wgpu::TextureView map;
+        if (!(sInspectSkip & kSkipNoise) &&
+            NoiseConstants(pp, rp.noiseSeeds, rp.noiseParams, rp.noiseSnap, map, midtone, outputRows)) {
+            rp.noiseMap = map;
+            rp.noiseMidtone = midtone ? 1.0f : 0.0f;
+        }
+    }
+    if (mode == 3 || mode == 4) rp.debugView = mode - 2;
+    if (mode == 5) rp.bloom = false;
+    if (mode == 6) rp.debugView = 3;
+    if (sInspectSkip & kSkipBloom) rp.bloom = false;
+    if (sInspectSkip & kSkipColorXfm) {
+        const float id[3][4] = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}};
+        std::memcpy(rp.xfm, id, sizeof(id));
+    }
 }
 
 bool PostProcPass::NoiseRowsSnapped(const milo::LookSettings& look) {
