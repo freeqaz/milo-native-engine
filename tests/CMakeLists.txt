@@ -119,6 +119,7 @@ set(MILO_ENGINE_TEST_SOURCES
     test_mogg_decode.cpp
     test_mogg_v0xe.cpp
     test_extract_bik.cpp
+    test_movie_memory.cpp
     test_skin_golden.cpp
     test_environ_ambient_alpha.cpp
 )

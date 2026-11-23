@@ -181,11 +181,81 @@ static int64_t MovieFileSeek(void *opaque, int64_t offset, int whence) {
 }
 
 // ---------------------------------------------------------------------------
+// Memory IO (a preloaded movie: retail's BinkOpen(buf, BINKFROMMEMORY))
+// ---------------------------------------------------------------------------
+
+bool MovieMemoryReader::IsWordSwappedBink(const void *data, int64_t size) {
+    if (!data || size < 4)
+        return false;
+    const uint8_t *b = static_cast<const uint8_t *>(data);
+    // Word 0 is the tag: "BIK" + revision (Bink 1) or "KB2" + revision
+    // (Bink 2).  Reversed, the revision comes first.
+    return (b[3] == 'B' && b[2] == 'I' && b[1] == 'K')
+        || (b[3] == 'K' && b[2] == 'B' && b[1] == '2');
+}
+
+MovieMemoryReader::MovieMemoryReader(const void *data, int64_t size)
+    : mData(static_cast<const uint8_t *>(data)), mSize(data && size > 0 ? size : 0), mPos(0),
+      mSwapped(IsWordSwappedBink(data, size)), mValid(false) {
+    // EndianSwapBuffer asserts size % 4 == 0: a swapped movie is whole words.
+    mValid = mSize > 0 && (!mSwapped || mSize % 4 == 0);
+}
+
+int MovieMemoryReader::Read(uint8_t *buf, int size) {
+    if (!mValid || size <= 0)
+        return size < 0 ? AVERROR(EINVAL) : 0;
+    int64_t left = mSize - mPos;
+    if (left <= 0)
+        return AVERROR_EOF;
+    int n = (int)std::min<int64_t>(left, size);
+    if (!mSwapped) {
+        memcpy(buf, mData + mPos, n);
+    } else {
+        // Byte p of the PC-order file is byte p ^ 3 of the 360's words.
+        for (int i = 0; i < n; i++)
+            buf[i] = mData[(mPos + i) ^ 3];
+    }
+    mPos += n;
+    return n;
+}
+
+int64_t MovieMemoryReader::Seek(int64_t offset, int whence) {
+    if (whence & AVSEEK_SIZE)
+        return mSize;
+    int64_t target;
+    switch (whence & ~AVSEEK_FORCE) {
+    case SEEK_SET:
+        target = offset;
+        break;
+    case SEEK_CUR:
+        target = mPos + offset;
+        break;
+    case SEEK_END:
+        target = mSize + offset;
+        break;
+    default:
+        return AVERROR(EINVAL);
+    }
+    if (!mValid || target < 0 || target > mSize)
+        return AVERROR(EINVAL);
+    mPos = target;
+    return mPos;
+}
+
+static int MovieMemoryRead(void *opaque, uint8_t *buf, int size) {
+    return static_cast<MovieMemoryReader *>(opaque)->Read(buf, size);
+}
+
+static int64_t MovieMemorySeek(void *opaque, int64_t offset, int whence) {
+    return static_cast<MovieMemoryReader *>(opaque)->Seek(offset, whence);
+}
+
+// ---------------------------------------------------------------------------
 // FFmpegMovieImpl
 // ---------------------------------------------------------------------------
 
 FFmpegMovieImpl::FFmpegMovieImpl()
-    : mFile(nullptr), mAvio(nullptr), mFmtCtx(nullptr), mVideoCtx(nullptr), mVideoStreamIdx(-1),
+    : mFile(nullptr), mAvio(nullptr), mMemory(nullptr), mFmtCtx(nullptr), mVideoCtx(nullptr), mVideoStreamIdx(-1),
       mSwsCtx(nullptr), mPacket(nullptr), mAvFrame(nullptr),
       mAudioCtx(nullptr), mAudioStreamIdx(-1), mAudioTrack(-1), mSwr(nullptr),
       mAudioFrame(nullptr), mAudioOut(nullptr), mAudioOnDevice(false), mDemuxEOF(false),
@@ -234,7 +304,59 @@ bool FFmpegMovieImpl::BeginFromFile(
         MILO_WARN("FFmpegMovieImpl: failed to open %s", path);
         return false;
     }
+    return FinishBegin(path, noSound, loop, track);
+}
 
+bool FFmpegMovieImpl::BeginFromMemory(
+    const void *data, int size, const char *name, bool noSound, bool loop, int track
+) {
+    Close();
+
+    if (!name)
+        name = "(memory)";
+    mFilename = name;
+    mLoop = loop;
+
+    mMemory = new MovieMemoryReader(data, size);
+    if (!mMemory->Valid()) {
+        MILO_WARN("FFmpegMovieImpl: %s: no movie in a %d-byte buffer%s", name, size,
+                  mMemory->WordSwapped() ? " (word-swapped, not whole words)" : "");
+        Close();
+        return false;
+    }
+    const int kAvioBufSize = 64 * 1024;
+    unsigned char *avioBuf = (unsigned char *)av_malloc(kAvioBufSize);
+    if (avioBuf)
+        mAvio = avio_alloc_context(avioBuf, kAvioBufSize, 0, mMemory, MovieMemoryRead,
+                                   nullptr, MovieMemorySeek);
+    else
+        mAvio = nullptr;
+    if (!mAvio)
+        av_free(avioBuf);
+    mFmtCtx = mAvio ? avformat_alloc_context() : nullptr;
+    if (!mAvio || !mFmtCtx) {
+        Close();
+        return false;
+    }
+    mFmtCtx->pb = mAvio;
+    mFmtCtx->flags |= AVFMT_FLAG_CUSTOM_IO;
+    int ret = avformat_open_input(&mFmtCtx, name, nullptr, nullptr);
+    if (ret < 0) {
+        char errbuf[128];
+        av_strerror(ret, errbuf, sizeof(errbuf));
+        MILO_WARN("FFmpegMovieImpl: avformat_open_input(%s, %d bytes in memory): %s", name,
+                  size, errbuf);
+        Close(); // avformat_open_input freed mFmtCtx; the custom IO is ours
+        return false;
+    }
+    if (!OpenStreams(name)) {
+        MILO_WARN("FFmpegMovieImpl: failed to open %s (%d bytes in memory)", name, size);
+        return false;
+    }
+    return FinishBegin(name, noSound, loop, track);
+}
+
+bool FFmpegMovieImpl::FinishBegin(const char *path, bool noSound, bool loop, int track) {
     mReady = true;
     mOpen = true;
     mCurrentFrame = 0;
@@ -256,9 +378,11 @@ bool FFmpegMovieImpl::BeginFromFile(
     if (!noSound)
         OpenAudio(binkTrack);
 
-    printf("FFmpegMovieImpl: opened %s (%dx%d, %d frames at %.2f fps, sound %s, track %d)\n",
+    printf("FFmpegMovieImpl: opened %s (%dx%d, %d frames at %.2f fps, sound %s, track %d%s)\n",
            path, mVideoWidth, mVideoHeight, mNumFrames, mFrameRate,
-           mAudioOut ? (mAudioOnDevice ? "on device" : "detached") : "off", mAudioTrack);
+           mAudioOut ? (mAudioOnDevice ? "on device" : "detached") : "off", mAudioTrack,
+           mMemory ? (mMemory->WordSwapped() ? ", from memory, word-swapped" : ", from memory")
+                   : "");
 
     return true;
 }
@@ -301,8 +425,12 @@ bool FFmpegMovieImpl::OpenVideo(const char *path) {
         Close(); // avformat_open_input freed mFmtCtx; the custom IO is ours
         return false;
     }
+    return OpenStreams(path);
+}
 
-    ret = avformat_find_stream_info(mFmtCtx, nullptr);
+// After avformat_open_input: the video stream, its decoder and the RGBA scaler.
+bool FFmpegMovieImpl::OpenStreams(const char * /*name*/) {
+    int ret = avformat_find_stream_info(mFmtCtx, nullptr);
     if (ret < 0) {
         Close();
         return false;
@@ -742,6 +870,10 @@ void FFmpegMovieImpl::Close() {
         delete mFile;
         mFile = nullptr;
     }
+    // The reader only views the caller's bytes; the caller frees them, after
+    // this (retail: Impl::End's MovieClose, then MemFree(mPreloadBuf)).
+    delete mMemory;
+    mMemory = nullptr;
     mRGBABuffer.clear();
     mOpen = false;
     mReady = false;
