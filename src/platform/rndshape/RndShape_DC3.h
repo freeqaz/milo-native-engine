@@ -756,19 +756,41 @@ constexpr bool kDC3RetailPost =
 // each texel, so it cannot beat against the output (gfx/NoiseRows.h). DC3's
 // only: rb3-xenon, which also compiles this shape, keeps the authored uv.
 constexpr bool kNoiseSnapsToOutputRows = kDC3RetailModel;
-// The RB3 chain's EndWorld flush (WgpuRnd::FlushWorldPost) stays RB3's: DC3
-// already grades at EndWorld through NgRnd::DoPostProcess.
-constexpr bool kRetailPostChain = false;
+// lane A55: Rock Band 3's own Xbox 360 chain (gfx/RB3RetailPost, the shape the
+// RB3-Wii consumer runs), for a consumer whose RndPostProc carries retail
+// RB3's post state and not DC3's. Retail band.exe TU5 NgPostProc::DoPost
+// (fn_82B89A08, NgPostProc vtable slot 3) runs DoBloom (fn_82B884A0: c6 =
+// bloomColor * BloomIntensity(), no BloomLocFactor; no per-material bloom
+// multiplier) and then ModulateColorXfm (the RndColorXfm 3x3 scaled by
+// mColorModulation, +0x12C). So the detector is the colour modulation
+// accessor in a shape without DC3's chain: rb3-xenon declares
+// RndPostProc::GetColorModulation() under HX_NATIVE; dc3-decomp has DC3's
+// chain (kDC3RetailPost) and keeps it. As on the RB3-Wii shape, the grade
+// moves to Rnd::EndWorld (WgpuRnd::DoPostProcess -> FlushWorldPost), so the
+// UI drawn after the world stays ungraded. DC3 already grades at EndWorld
+// through its NgRnd::DoPostProcess.
+template <class P, class = void> struct PostProcHasColorModulation : std::false_type {};
+template <class P>
+struct PostProcHasColorModulation<
+    P, std::void_t<decltype(std::declval<const P &>().GetColorModulation())>> : std::true_type {};
+constexpr bool kRetailPostChain =
+    !kDC3RetailPost && PostProcHasColorModulation<RndPostProc>::value;
 // DC3_RETAIL_POST (rndshape/DC3PostChain.cpp): unset or anything else = 1 (the
 // retail chain), "0" = 0 (PostProcPass's previous composite), "raw" = 2 (the
 // scene ungraded), "mask" = 3 / "bloom" = 4 (the chain showing the bloom mask /
 // the bloom term; for inspection), "grade" = 5 (the chain without bloom),
 // "velocity" = 6 (the chain, showing DoVelocity's velocity target instead).
-// Always 0 without kDC3RetailPost (rb3-xenon).
+// Without kDC3RetailPost: with kRetailPostChain (rb3-xenon), the RB3 shape's
+// MILO_RB3_RETAIL_POST grammar (RndShape_RB3Wii.h: unset = 1 the chain, "0"
+// = PostProcPass's generic composite, "raw" 2, "mask" 3, "bloom" 4, "grade"
+// 5, "beams" 6); else always 0.
 int RetailPostMode();
 // The frame's alpha carries the bloom mask this frame.
 inline bool RetailBloomMaskActive() {
-    if constexpr (!kDC3RetailPost) {
+    if constexpr (kRetailPostChain) {
+        const int m = RetailPostMode();
+        return m == 1 || m == 3 || m == 4 || m == 6;
+    } else if constexpr (!kDC3RetailPost) {
         return false;
     } else {
         const int m = RetailPostMode();
@@ -917,7 +939,13 @@ constexpr bool kIntensifyScalesAlpha = kDC3RetailModel;
 template <class M>
 inline bool AllowsBloomMaskFor(const M &m, int blend, bool alphaWrite) {
     using Raw = std::remove_cv_t<std::remove_pointer_t<std::decay_t<M>>>;
-    if constexpr (!kDC3RetailPost || !MatHasBloomMultiplier<Raw>::value) {
+    if constexpr (kRetailPostChain && sizeof(Raw) > 0) {
+        // RB3's NgMat::AllowHDR (rb3-xenon rndobj/Mat_NG.cpp): not
+        // alpha-blended, alpha-cut or alpha-writing.
+        if (!m) return false;
+        return !(blend == (int)Raw::kBlendSrcAlpha || blend == (int)Raw::kBlendSrcAlphaAdd ||
+                 blend == (int)Raw::kPreMultAlpha || m->GetAlphaCut() || alphaWrite);
+    } else if constexpr (!kDC3RetailPost || !MatHasBloomMultiplier<Raw>::value) {
         (void)m;
         (void)blend;
         (void)alphaWrite;
@@ -936,7 +964,20 @@ inline bool AllowsBloomMask(const M &m) {
 template <class M>
 inline float BloomMaskScale(const M &m, bool envFadeOutCancels = true) {
     using Raw = std::remove_cv_t<std::remove_pointer_t<std::decay_t<M>>>;
-    if constexpr (!kDC3RetailPost || !MatHasBloomMultiplier<Raw>::value) {
+    if constexpr (kRetailPostChain && sizeof(Raw) > 0) {
+        // RB3's pseudo-HDR mask (standard.ps bit 22), the positive scale the
+        // standard shader reads as the RB3 mask: c7's 1/threshold. The same
+        // environ fade-out test as CalcShaderOpts (!fadeOut).
+        if (!m || !RetailBloomMaskActive()) return 0.0f;
+        const RndPostProc *pp = RndPostProc::Current();
+        if (!pp) return 0.0f;
+        if (envFadeOutCancels) {
+            const RndEnviron *env = RndEnviron::Current();
+            if (env && env->FadeOut() && env->FadeEnd() != env->FadeStart()) return 0.0f;
+        }
+        if (!AllowsBloomMask(m)) return 0.0f;
+        return BloomLumaScale(pp);
+    } else if constexpr (!kDC3RetailPost || !MatHasBloomMultiplier<Raw>::value) {
         (void)m;
         return 0.0f;
     } else {

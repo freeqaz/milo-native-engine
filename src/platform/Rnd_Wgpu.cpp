@@ -1027,6 +1027,16 @@ void WgpuRnd::FlushWorldPost() {
     }
 }
 
+#ifdef MILO_RNDOBJ_SHAPE_HAS_NGRND
+// lane A55: rb3-xenon's Rnd::EndWorld (retail band.exe TU5) runs DoWorldEnd then
+// DoPostProcess, and retail NgRnd grades the world there. Only RB3's chain
+// moves the grade here (FlushWorldPost is a no-op without kRetailPostChain).
+void WgpuRnd::DoPostProcess() {
+    WgpuRndBase::DoPostProcess();
+    if constexpr (rndshape::kRetailPostChain) FlushWorldPost();
+}
+#endif
+
 #ifndef MILO_RNDOBJ_SHAPE_HAS_NGRND
 // RB3-Wii's Rnd::EndWorld runs DoWorldEnd then DoPostProcess; the world's grade
 // belongs there (retail NgRnd resolves the scene and runs NgPostProc at
