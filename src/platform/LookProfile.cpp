@@ -46,6 +46,23 @@ constexpr int kAppleTexPassBaseRows = 720;
 // implementation the vendor string cannot tell from Chrome, was not run. Off
 // until both are settled: such a Mac is other non-discrete, as before.
 constexpr bool kAppleInBrowser = false;
+// np-rtt-int1024: the other non-discrete class's texture pass (H-175's step 1
+// and H-176's step 2, LookTexPassMsaa / LookTexPassScale) is on, with the cap
+// on the longer side at 1024 and the base rows the discrete class's 360. Timed
+// on the GPD's Radeon 890M (Vulkan, render scale 1) by peer session
+// dc3-decomp-9c, rttsize57 run (dc3 3eb227def, engine fe848a9), Break It Down,
+// the state `rtt_on + rtt_cap_1024 + rtt_rows_rule` minus `rtt_off`: +0.069 ms
+// at 1268x713 against a limit of +0.15, +0.071 at 1920x1080 against +0.30.
+// A cap of 1536 cost +0.194 (over) and +0.205 (passes), 2048 +0.334 and
+// +0.354 (both over). Step 1 alone (the earlier rtt57 run) cost +0.062 /
+// +0.103, so the cap adds almost nothing on top of it: a 1024 projection
+// stays 1024 with 4 samples at every output size. The Radeon 610M agreed
+// (+0.50 ms at 1024, ~0.061 scaled to the 890M). This class is also a
+// browser not on NVIDIA (and an Apple Mac in a browser, kAppleInBrowser),
+// which nothing timed.
+constexpr bool kIntegratedTexPassMsaa = true;
+constexpr bool kIntegratedTexPassScale = true;
+constexpr int kIntegratedTexPassMaxSide = 1024;
 
 LookSettings SettingsFor(LookProfile p) {
     LookSettings s;
@@ -100,30 +117,30 @@ LookSettings SettingsFor(LookProfile p) {
     // np-look32: soft contact shadows under the crowd (LookSettings::crowdContactShadow).
     s.crowdContactShadow = enh;
     // np-look47 step 1: a render-to-texture target drawn like the frame
-    // (LookProfile.h), 4x MSAA resolved into it. On a discrete GPU. Off on
-    // anything else until a handheld's timing says it fits: measured on the
-    // 3090, it adds ~0.025 ms to the texture pass at 1024x1024; scaled by the
-    // 890M's fill and bandwidth (8-15x) that is 0.19-0.36 ms, over the 0.15 ms
-    // a 1268x713 Break It Down frame may take (item 47 README). An Apple GPU:
-    // kAppleTexPassMsaa (np-look49).
+    // (LookProfile.h), 4x MSAA resolved into it. On a discrete GPU (the 3090:
+    // ~0.025 ms on the texture pass at 1024x1024). An Apple GPU:
+    // kAppleTexPassMsaa (np-look49). Anything else: kIntegratedTexPassMsaa
+    // (np-rtt-int1024, timed on the 890M; the estimate from the 3090 of
+    // 0.19-0.36 ms that kept it off was 3-5x the measured +0.062).
     s.texPassMsaa = enh;
     s.texPassMsaaApple = enh && kAppleTexPassMsaa;
-    s.texPassMsaaIntegrated = false;
+    s.texPassMsaaIntegrated = enh && kIntegratedTexPassMsaa;
     // np-look47 step 2: the target's GPU texture sized for the output's rows.
-    // On a discrete GPU only, as step 1: on the 3090 steps 1+2 add ~0.05 ms at
-    // 1536 (540 rows) and ~0.10 ms at 2048 (720 rows and above); 144 MiB a
-    // target at 2048 with 4 samples (36 at 1024). An Apple GPU:
-    // kAppleTexPassScale, with its own cap and rows (below).
+    // On a discrete GPU: on the 3090 steps 1+2 add ~0.05 ms at 1536 (540
+    // rows) and ~0.10 ms at 2048 (720 rows and above); 144 MiB a target at
+    // 2048 with 4 samples (36 at 1024). An Apple GPU: kAppleTexPassScale,
+    // anything else kIntegratedTexPassScale, each with its own cap and rows
+    // (below).
     s.texPassScale = enh;
     s.texPassScaleApple = enh && kAppleTexPassScale;
-    s.texPassScaleIntegrated = false;
+    s.texPassScaleIntegrated = enh && kIntegratedTexPassScale;
     // The size rule's two numbers per class, in every profile (they only act
-    // with texPassScale). The Integrated pair is the discrete one: unused
-    // while texPassScaleIntegrated is off, and a forced-on handheld gets the
-    // discrete class's size, as it did with one pair.
+    // with texPassScale). The other non-discrete class: the cap
+    // kIntegratedTexPassMaxSide (1024, the size the 890M timed), the base
+    // rows the discrete class's.
     s.texPassMaxSideApple = kAppleTexPassMaxSide;
     s.texPassBaseRowsApple = kAppleTexPassBaseRows;
-    s.texPassMaxSideIntegrated = s.texPassMaxSide;
+    s.texPassMaxSideIntegrated = kIntegratedTexPassMaxSide;
     s.texPassBaseRowsIntegrated = s.texPassBaseRows;
     // np-look23 (a): the noise map on whole output rows (LookProfile.h).
     // Uniforms only, no cost but a memoised constant per size.
