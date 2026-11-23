@@ -1055,8 +1055,13 @@ fn computePointLight(
     if (isSkinMaterial && scene.skinSpecModel > 0.5) {
         // RB3 X360 skin diffuse: the per-channel wrap, and this light's back
         // factor (rb3SkinPointBack), with no N . L gate.
-        lighting.diffuse = lightColor * rb3SkinWrap(dot(surfaceNormal, lightDir));
-        gRb3SkinBack += rb3SkinPointBack(viewDir, lightDir, lightColor);
+        // Retail lights skin with two points at most (NgEnviron::Select keeps
+        // the first two real point lights; RB3 ships no 3-point skin
+        // permutation), so a third or fourth native point adds no diffuse.
+        if (lightIndex < 2) {
+            lighting.diffuse = lightColor * rb3SkinWrap(dot(surfaceNormal, lightDir));
+            gRb3SkinBack += rb3SkinPointBack(viewDir, lightDir, lightColor);
+        }
         lighting.specular = rb3SkinSpecPoint(surfaceNormal, viewDir, lightDir, lightColor,
                                              specularSample);
         return lighting;
