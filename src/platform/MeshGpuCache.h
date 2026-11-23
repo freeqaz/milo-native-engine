@@ -72,6 +72,13 @@ void SetMeshDebugLabel(RndMesh* mesh, const char* label);
 // is being destroyed) does.
 void MarkTextGlyphMesh(RndMesh* mesh);
 bool IsMarkedTextGlyphMesh(RndMesh* mesh);
+// The same promise as GameRenderHook::MarksTextGlyphMeshes(), for a game that
+// marks its glyph pages but registers no render hook (rb3-xenon's rb3-app).
+// Off by default: a consumer that neither registers a hook saying so nor
+// calls this keeps the inferred rule (an unnamed mesh is a glyph page).
+// GameMarksTextGlyphMeshes() is true when either says so.
+void SetGameMarksTextGlyphMeshes(bool marks);
+bool GameMarksTextGlyphMeshes();
 
 // Set depth bias for a mesh (used by viewer to push combined meshes behind splits).
 void SetMeshDepthBias(RndMesh* mesh, int32_t bias);

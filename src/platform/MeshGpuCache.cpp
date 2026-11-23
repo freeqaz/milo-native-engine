@@ -3,6 +3,7 @@
 // Contains: upload logic, MikkTSpace tangent generation, frame stats, side table.
 
 #include "platform/MeshGpuCache.h"
+#include "platform/GameRenderHook.h"
 #include "gfx/FrameCost.h"
 #include "platform/Rnd_Wgpu.h"
 #include "gfx/VertexFormats.h"
@@ -91,6 +92,18 @@ void MarkTextGlyphMesh(RndMesh* mesh) {
 
 bool IsMarkedTextGlyphMesh(RndMesh* mesh) {
     return mesh && sTextGlyphMeshes.count(mesh) != 0;
+}
+
+namespace {
+bool sGameMarksTextGlyphMeshes = false;
+}
+
+void SetGameMarksTextGlyphMeshes(bool marks) { sGameMarksTextGlyphMeshes = marks; }
+
+bool GameMarksTextGlyphMeshes() {
+    if (sGameMarksTextGlyphMeshes) return true;
+    GameRenderHook* hook = GetGameRenderHook();
+    return hook && hook->MarksTextGlyphMeshes();
 }
 
 void InvalidateGpuMesh(RndMesh* mesh) {

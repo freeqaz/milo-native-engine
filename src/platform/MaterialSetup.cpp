@@ -193,17 +193,16 @@ bool TextMeshKeepsAtlasRGB(RndMesh* mesh, RndMat* mat, bool skinned) {
 bool MeshDrawsAsGlyph(RndMesh* mesh, bool skinned) {
     if (!mesh) return false;
     // A game that marks its glyph pages is asked positively: only a marked
-    // mesh is a glyph page.
-    GameRenderHook* hook = GetGameRenderHook();
-    if (hook && hook->MarksTextGlyphMeshes()) return IsMarkedTextGlyphMesh(mesh);
+    // mesh is a glyph page (GameMarksTextGlyphMeshes: its render hook says so,
+    // or it said so without one).
+    if (GameMarksTextGlyphMeshes()) return IsMarkedTextGlyphMesh(mesh);
     // Otherwise infer it: RndText's pages are unnamed and never skinned.
     return !mesh->Name()[0] && !skinned;
 }
 
 bool MeshShadesAsText(RndMesh* mesh) {
     if (!mesh) return false;
-    GameRenderHook* hook = GetGameRenderHook();
-    if (hook && hook->MarksTextGlyphMeshes()) return IsMarkedTextGlyphMesh(mesh);
+    if (GameMarksTextGlyphMeshes()) return IsMarkedTextGlyphMesh(mesh);
     return !mesh->Name()[0];
 }
 
