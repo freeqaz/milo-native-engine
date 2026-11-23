@@ -4,9 +4,11 @@
 // ModulateColorXfm, CheckNoise, CheckChromaticAberration, CheckVignette,
 // CheckMotionBlur), and
 // the display ramp (DxRnd::SetupGamma). Built for the DC3 shape on the dc3
-// backend, i.e. for dc3-decomp AND rb3-xenon; everything here is gated on
-// rndshape::kDC3RetailPost, which only dc3-decomp's accessors turn on, so
-// rb3-xenon's mode is 0 and its output is unchanged.
+// backend, i.e. for dc3-decomp AND rb3-xenon; the DC3 chain is gated on
+// rndshape::kDC3RetailPost, which only dc3-decomp's accessors turn on. Lane
+// A55: rb3-xenon's RndPostProc::GetColorModulation() turns on
+// rndshape::kRetailPostChain instead, and RetailPostMode / FillRetailPost
+// below then serve RB3's own X360 chain (FillRB3).
 #include "gfx/DisplayRamp.h"
 #include "platform/rndshape/RndShape.h"
 #include "gfx/RB3RetailPost.h"
@@ -110,7 +112,20 @@ bool TakeVelocityFrame(bool &ready, float &scale, RndCam *&cam) {
 }
 
 int RetailPostMode() {
-    if constexpr (!kDC3RetailPost) {
+    if constexpr (kRetailPostChain) {
+        // lane A55: RB3's own chain (rb3-xenon), with the RB3-Wii shape's
+        // knob and grammar (rndshape/RB3WiiPostChain.cpp).
+        static int s = -1;
+        if (s < 0) {
+            const char *e = getenv("MILO_RB3_RETAIL_POST");
+            s = !e ? 1 : (e[0] == '0') ? 0 : (strcmp(e, "raw") == 0) ? 2
+                : (strcmp(e, "mask") == 0) ? 3 : (strcmp(e, "bloom") == 0) ? 4
+                : (strcmp(e, "grade") == 0) ? 5 : (strcmp(e, "beams") == 0) ? 6 : 1;
+            fprintf(stderr, "RB3 post: retail X360 chain mode %d (MILO_RB3_RETAIL_POST=%s)\n", s,
+                    e ? e : "unset");
+        }
+        return s;
+    } else if constexpr (!kDC3RetailPost) {
         return 0;
     } else {
         static int s = -1;
@@ -317,10 +332,67 @@ void FillDC3(const P *pp, float flickerMul, RetailPostParams &out) {
 }
 } // namespace
 
+namespace {
+// lane A55: RB3's own X360 chain (kRetailPostChain, rb3-xenon), as the
+// RB3-Wii shape fills it (rndshape/RB3WiiPostChain.cpp) but with the colour
+// modulation the game computed: retail band.exe TU5 NgPostProc::DoPost
+// (fn_82B89A08) runs RndPostProc::DoPost (UpdateColorModulation) and then
+// ModulateColorXfm, which scales the RndColorXfm 3x3 by mColorModulation
+// (+0x12C) before it loads c92..c94. DoBloom (fn_82B884A0): doBloom =
+// BloomIntensity() > 0 || bloomColor.alpha > 0, c6 = bloomColor.rgb *
+// BloomIntensity(). The procedural grain stays at 0 (lane A49 measured it as
+// the wrong noise for rb3-xenon): retail CheckNoise (fn_82B89100) samples
+// mNoiseMap, which PostProcPass::FillRB3Chain adds after this (lane A58), as
+// the DC3 chain takes it.
+template <class P>
+void FillRB3(const P *pp, RetailPostParams &out) {
+    if constexpr (!PostProcHasColorModulation<P>::value || PostProcHasBloomLocFactor<P>::value) {
+        (void)pp;
+        (void)out;
+    } else {
+        const float intensity = pp->BloomIntensity();
+        const Hmx::Color &bc = pp->GetBloomColor();
+        out.bloom = intensity > 0.0f || bc.alpha > 0.0f;
+        out.bloomColor[0] = bc.red * intensity;
+        out.bloomColor[1] = bc.green * intensity;
+        out.bloomColor[2] = bc.blue * intensity;
+        out.bloomLumaScale = BloomLumaScale(pp);
+        const float mod = pp->GetColorModulation();
+        const Transform &t = pp->GetColorXfm().mColorXfm;
+        const Vector3 *rows[3] = {&t.m.x, &t.m.y, &t.m.z};
+        for (int i = 0; i < 3; i++) {
+            const float vi = i == 0 ? t.v.x : i == 1 ? t.v.y : t.v.z;
+            for (int j = 0; j < 3; j++) {
+                const Vector3 &r = *rows[j];
+                out.xfm[i][j] = (i == 0 ? r.x : i == 1 ? r.y : r.z) * mod;
+            }
+            out.xfm[i][3] = vi;
+        }
+        out.vignetteIntensity = pp->GetVignetteIntensity();
+        const Hmx::Color &vc = pp->GetVignetteColor();
+        out.vignetteColor[0] = vc.red;
+        out.vignetteColor[1] = vc.green;
+        out.vignetteColor[2] = vc.blue;
+        out.vignetteColor[3] = vc.alpha;
+        out.posterLevels = pp->GetPosterLevels();
+        out.posterMin = pp->GetPosterMin();
+        out.chromaticOffset = pp->GetChromaticAberrationOffset();
+        out.chromaticSharpen = pp->GetChromaticSharpen() ? 1.0f : 0.0f;
+        out.noiseIntensity = 0.0f;
+        out.noiseMidtone = 0.0f;
+    }
+}
+} // namespace
+
 void FillRetailPost(const RndPostProc *pp, float flickerMul, RetailPostParams &out) {
     out = RetailPostParams();
     if (!pp) return;
-    FillDC3(pp, flickerMul, out);
+    if constexpr (kRetailPostChain) {
+        (void)flickerMul;
+        FillRB3(pp, out);
+    } else {
+        FillDC3(pp, flickerMul, out);
+    }
 }
 
 } // namespace rndshape

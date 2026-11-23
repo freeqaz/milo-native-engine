@@ -339,8 +339,9 @@ public:
 
     // (UiShadesInGammaSpace, retired in np-gfx-light round 3: its one
     // implementer was dc3, whose render shape already shades every draw in
-    // gamma space -- rndshape::kGammaSpaceShading = kDC3RetailModel -- so the
-    // hook could only ever OR true into true. rb3 and rb3-xenon never set it.)
+    // gamma space -- rndshape::kGammaSpaceShading, true for both DC3-shape
+    // consumers since lane A60 -- so the hook could only ever OR true into
+    // true. rb3 and rb3-xenon never set it.)
 
     // Does the game's UI take the retail material terms the engine's generic
     // UI path replaces? When true, a draw in the overlay phase (everything the

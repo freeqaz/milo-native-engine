@@ -22,6 +22,9 @@
 //                out = sat(dp4(c92..c94, (c, 1)))           colour transform
 //                with c6 = bloomColor.rgb * BloomIntensity() and c92..94 the
 //                RndColorXfm matrix (3x3 scaled by the flicker modulation).
+//                Between the screen blend (+ beams) and the matrix, bit 2
+//                (bit 47 midtone) overlays NgPostProc::CheckNoise's map
+//                (band.exe TU5 fn_82B89100), sampled trilinear; see fs_composite.
 //
 // The scene's alpha IS the bloom mask, as on retail: the dc3 standard shader
 // writes the luma mask for the materials rndshape::BloomMaskScale admits, every
@@ -108,6 +111,9 @@ struct RetailPostParams {
     float screenAspect = 0.5625f;     // TheRnd.Height() / Width() (yRatio)
     // NgPostProc::CheckNoise: mNoiseMap on sampler 13 (null: no noise), c112
     // seeds, c113 = (baseScale.xy, topScale or 1 when stationary, intensity).
+    // Both chains: RB3's composite takes it too (lane A58; band.exe TU5
+    // fn_82B89100, RB3's shipped postprocess.ps bits 2 / 47), and then
+    // ignores the procedural grain (noiseIntensity).
     wgpu::TextureView noiseMap;
     float noiseSeeds[4] = {0, 0, 0, 0};
     float noiseParams[4] = {0, 0, 0, 0};

@@ -25,8 +25,13 @@ struct CompositeUniforms {
     float misc0[4];           // vignetteIntensity, posterLevels, posterMin, chromaticOffset
     float misc1[4];           // chromaticSharpen, noiseIntensity, noiseMidtone, time
     float spot[4];            // c91.x, c127.x, c127.y, w = 1 when beams are bound
+    // NgPostProc::CheckNoise (band.exe TU5 fn_82B89100): the noise map's
+    // constants, as the DC3 chain carries them (RetailPostParams::noiseMap).
+    float noiseSeeds[4];      // c112
+    float noiseParams[4];     // c113: baseScale.xy, topScale (1 stationary), intensity
+    float noiseMode[4];       // x: 0 no map, 1 overlay (bit 2), 2 midtone (bit 47); y/z/w: NoiseRows snap
 };
-static_assert(sizeof(CompositeUniforms) == 128, "CompositeUniforms layout");
+static_assert(sizeof(CompositeUniforms) == 176, "CompositeUniforms layout");
 
 const char* kShader = R"WGSL(
 struct PassUB {
@@ -44,6 +49,9 @@ struct CompUB {
     misc0: vec4f,
     misc1: vec4f,
     spot: vec4f,
+    noiseSeeds: vec4f,
+    noiseParams: vec4f,
+    noiseMode: vec4f,
 };
 
 // kQuant8 (DC3, whose sets are 8-bit, mBloomFormat): each pass writes a whole
@@ -75,6 +83,8 @@ fn set_write(c: vec4f) -> vec4f {
 @group(0) @binding(5) var bloom2: texture_2d<f32>;
 @group(0) @binding(7) var spotBeams: texture_2d<f32>;
 @group(0) @binding(8) var spotFog: texture_2d<f32>;
+@group(0) @binding(9) var noiseTex: texture_2d<f32>;
+@group(0) @binding(10) var noiseSamp: sampler;
 
 struct VOut {
     @builtin(position) pos: vec4f,
@@ -191,6 +201,45 @@ const kW = array<f32, 15>(0.0159283932, 0.0270778369, 0.0424231887, 0.0612547919
         let fog = textureSampleLevel(spotFog, samp, in.uv, 0.0).r;
         c += beam * (fog * cu.spot.z + cu.spot.y) * cu.spot.x;
     }
+    // Option bits 2 / 47: NgPostProc::CheckNoise's map (band.exe TU5
+    // fn_82B89100: only when mNoiseIntensity and mNoiseMap are both set; the
+    // map on sampler 13, linear and wrapping). From RB3's shipped
+    // xbox_shaders, postprocess.ps 0x14 / 0x200014 / 0x8000000200014 /
+    // 0x800000000014: n = map((uv + c112.xy) * c113.xy) *
+    // map((uv + c112.zw) * c113.xy * c113.z), overlay-blended at c113.w into
+    // the screen (+ beams) result S, unclamped, before the matrix. Plain:
+    // per channel 2nS below 0.5, 1 - 2(1-n)(1-S) above. Midtone (bit 47):
+    // sqrt(n), the branch on L = (0.3, 0.59, 0.11).S, weight c113.w * 6.75 L
+    // (1-L)^2. The same microcode as dc3's (RB3RetailPostDC3 grade_dc3).
+    if (cu.noiseMode.x > 0.5) {
+        var baseUv = (in.uv + cu.noiseSeeds.xy) * cu.noiseParams.xy;
+        var topUv = (in.uv + cu.noiseSeeds.zw) * cu.noiseParams.xy * cu.noiseParams.z;
+        if (cu.noiseMode.y > 0.5) {
+            let mapH = f32(textureDimensions(noiseTex).y);
+            baseUv.y = (floor(baseUv.y * mapH) + 0.5 + cu.noiseMode.z) / mapH;
+            topUv.y = (floor(topUv.y * mapH) + 0.5 + cu.noiseMode.w) / mapH;
+        }
+        // tfetch2D with the computed LOD, trilinear (CheckNoise's filter 1 is
+        // min / mag linear and fetch-constant mip filter 1, linear): the map's
+        // mips, not level 0. Level 0 at the authored scales aliases into a
+        // per-pixel speckle (lane A58: detail 63 against retail's 6.8).
+        let n = textureSample(noiseTex, noiseSamp, baseUv).rgb *
+                textureSample(noiseTex, noiseSamp, topUv).rgb;
+        let s = c;
+        let intensity = cu.noiseParams.w;
+        if (cu.noiseMode.x < 1.5) {
+            let lo = 2.0 * n * s;
+            let hi = 1.0 - 2.0 * (1.0 - n) * (1.0 - s);
+            c = mix(s, select(hi, lo, s < vec3f(0.5)), intensity);
+        } else {
+            let r = sqrt(n);
+            let luma = dot(s, vec3f(0.3, 0.59, 0.11));
+            let lo = 2.0 * r * s;
+            let hi = 1.0 - 2.0 * (1.0 - r) * (1.0 - s);
+            let k = intensity * 6.75 * luma * (1.0 - luma) * (1.0 - luma);
+            c = s + k * (select(hi, lo, luma <= 0.5) - s);
+        }
+    }
     let c4 = vec4f(c, 1.0);
     c = clamp(vec3f(dot(cu.xfm0, c4), dot(cu.xfm1, c4), dot(cu.xfm2, c4)),
               vec3f(0.0), vec3f(1.0));
@@ -208,8 +257,9 @@ const kW = array<f32, 15>(0.0159283932, 0.0270778369, 0.0424231887, 0.0612547919
         let k = 1.0 - smoothstep(0.4, 1.0, dist) * vig;
         c = mix(cu.vignetteColor.rgb, c, k);
     }
+    // The procedural grain (the RB3-Wii shape's; never with a noise map).
     let noise = cu.misc1.y;
-    if (noise != 0.0) {
+    if (noise != 0.0 && cu.noiseMode.x < 0.5) {
         let px = in.uv * texSize;
         let n1 = fract(sin(dot(px + cu.misc1.w * 43.17, vec2f(12.9898, 78.233))) * 43758.5453);
         let nv = (n1 - 0.5) * noise;
@@ -238,6 +288,14 @@ void RB3RetailPost::EnsurePipelines(GpuDevice& gpu) {
     auto& dev = gpu.Device();
     if (!mSampler) Init(gpu);
     mFrameFormat = gpu.SurfaceFormat();
+    if (!mNoiseSampler) {
+        // NgPostProc::CheckNoise (fn_82B89100): SetTextureFilter(0xd, 1),
+        // i.e. D3D min / mag filter linear and the fetch constant's mip filter
+        // (dword 3 bits 23-24) = 1, linear; SetTextureClamp(0xd, 0) (wrap).
+        SamplerDesc nd{};
+        nd.mipmapFilter = wgpu::MipmapFilterMode::Linear;
+        mNoiseSampler = gpu.GetSampler(nd);
+    }
 
     wgpu::ShaderSourceWGSL src;
     src.code = kShader;
@@ -272,15 +330,16 @@ void RB3RetailPost::EnsurePipelines(GpuDevice& gpu) {
         mPassBGL = dev.CreateBindGroupLayout(&d);
     }
     {
-        wgpu::BindGroupLayoutEntry e[8] = {texEntry(0), samp, {}, texEntry(3), texEntry(4), texEntry(5),
-                                           texEntry(7), texEntry(8)};
+        wgpu::BindGroupLayoutEntry e[10] = {texEntry(0), samp, {}, texEntry(3), texEntry(4), texEntry(5),
+                                            texEntry(7), texEntry(8), texEntry(9), samp};
+        e[9].binding = 10;
         e[2].binding = 6;
         e[2].visibility = wgpu::ShaderStage::Fragment;
         e[2].buffer.type = wgpu::BufferBindingType::Uniform;
         e[2].buffer.minBindingSize = sizeof(CompositeUniforms);
         e[2].buffer.hasDynamicOffset = true;
         wgpu::BindGroupLayoutDescriptor d{};
-        d.entryCount = 8;
+        d.entryCount = 10;
         d.entries = e;
         mCompositeBGL = dev.CreateBindGroupLayout(&d);
     }
@@ -481,11 +540,20 @@ void RB3RetailPost::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& 
     cu.spot[1] = p.spotBase;
     cu.spot[2] = p.spotSmoke;
     cu.spot[3] = haveSpot ? 1.0f : 0.0f;
+    const bool haveNoise = (bool)p.noiseMap;
+    if (haveNoise) {
+        std::memcpy(cu.noiseSeeds, p.noiseSeeds, sizeof(cu.noiseSeeds));
+        std::memcpy(cu.noiseParams, p.noiseParams, sizeof(cu.noiseParams));
+        cu.noiseMode[0] = p.noiseMidtone > 0.5f ? 2.0f : 1.0f;
+        cu.noiseMode[1] = p.noiseSnap[0];
+        cu.noiseMode[2] = p.noiseSnap[1];
+        cu.noiseMode[3] = p.noiseSnap[2];
+    }
     const uint32_t off = NextSlot();
     gpu.Queue().WriteBuffer(mUniforms, off, &cu, sizeof(cu));
 
     const bool haveBloom = p.bloom && mView[0][0];
-    wgpu::BindGroupEntry e[8] = {};
+    wgpu::BindGroupEntry e[10] = {};
     e[0].binding = 0;
     e[0].textureView = sceneView;
     e[1].binding = 1;
@@ -501,9 +569,13 @@ void RB3RetailPost::Run(wgpu::CommandEncoder& encoder, const wgpu::TextureView& 
     e[6].textureView = haveSpot ? p.spotBeams : mBlackView;
     e[7].binding = 8;
     e[7].textureView = haveSpot && p.spotFog ? p.spotFog : mBlackView;
+    e[8].binding = 9;
+    e[8].textureView = haveNoise ? p.noiseMap : mBlackView;
+    e[9].binding = 10;
+    e[9].sampler = mNoiseSampler;
     wgpu::BindGroupDescriptor bgd{};
     bgd.layout = mCompositeBGL;
-    bgd.entryCount = 8;
+    bgd.entryCount = 10;
     bgd.entries = e;
     wgpu::BindGroup bg = Group(gpu, bgd);
 

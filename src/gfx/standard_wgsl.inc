@@ -801,6 +801,25 @@ fn rb3SkinSpecDirectional(surfaceNormal: vec3f, viewDir: vec3f, lightDir: vec3f,
     return cp.rgb * lightColor * (rimf * rimf * (cp.w * 0.1591549 + 0.3183099) * box);
 }
 
+// The approx-light half of the skin specular when the faces are the real box
+// map: rimf^2 n(p) sum_face sat(+-R_axis)^p face, which is what
+// rb3SkinSpecDirectional sums light by light from the folded directionals.
+fn rb3SkinSpecBox(surfaceNormal: vec3f, viewDir: vec3f, specularSample: vec4f) -> vec3f {
+    if (!rb3SkinHasSpecular()) {
+        return vec3f(0.0);
+    }
+    let cp = rb3SkinSpecColorPower(specularSample);
+    let vn = saturate(dot(viewDir, surfaceNormal));
+    let rimf = (1.0 - vn) * (0.5 * surfaceNormal.z + 0.5);
+    let r = 2.0 * dot(viewDir, surfaceNormal) * surfaceNormal - viewDir;
+    let pp = pow(saturate(r), vec3f(cp.w));
+    let pn = pow(saturate(-r), vec3f(cp.w));
+    let box = pp.x * object.boxLight[0].rgb + pn.x * object.boxLight[1].rgb +
+              pp.y * object.boxLight[2].rgb + pn.y * object.boxLight[3].rgb +
+              pp.z * object.boxLight[4].rgb + pn.z * object.boxLight[5].rgb;
+    return cp.rgb * (rimf * rimf * (cp.w * 0.1591549 + 0.3183099)) * box;
+}
+
 fn rb3SkinSpecPoint(surfaceNormal: vec3f, viewDir: vec3f, lightDir: vec3f,
                     lightColor: vec3f, specularSample: vec4f) -> vec3f {
     if (!rb3SkinHasSpecular()) {
@@ -892,10 +911,20 @@ fn rb3SkinBoxEval(faces: array<vec3f, 6>, n: vec3f) -> vec3f {
 
 // The approx-light box term boxD (1 + boxB rimD^rp), with the native arm's
 // directional lights folded into the six faces as ApplyQueuedLights folds them.
-fn rb3SkinBoxDiffuse(nd: vec3f, viewDir: vec3f) -> vec3f {
+// Under the retail light model (scene.retailLighting 1, rb3-xenon:
+// rndshape::kRB3RetailLight) the faces are the real box map, c80..c85 as
+// NgEnviron::UpdateApproxLighting wrote them for this draw.
+fn rb3SkinRetailBox() -> bool {
+    return scene.retailLighting > 0.5;
+}
+
+fn rb3SkinFaces() -> array<vec3f, 6> {
     var faces: array<vec3f, 6>;
     for (var i = 0; i < 6; i++) {
-        faces[i] = vec3f(0.0);
+        faces[i] = select(vec3f(0.0), object.boxLight[i].rgb, rb3SkinRetailBox());
+    }
+    if (rb3SkinRetailBox()) {
+        return faces;
     }
     let count = i32(scene.numLights);
     for (var i = 0; i < 4; i++) {
@@ -915,6 +944,11 @@ fn rb3SkinBoxDiffuse(nd: vec3f, viewDir: vec3f) -> vec3f {
         faces[4] += wp.z * c;
         faces[5] += wq.z * c;
     }
+    return faces;
+}
+
+fn rb3SkinBoxDiffuse(nd: vec3f, viewDir: vec3f) -> vec3f {
+    let faces = rb3SkinFaces();
     let boxD = rb3SkinBoxEval(faces, nd);
     let boxB = rb3SkinBoxEval(faces, -viewDir);
     let rimD = (1.0 - saturate(dot(viewDir, nd))) * (0.5 * nd.z + 0.5);
@@ -2131,7 +2165,10 @@ fn shadeStandard(surfaceInput: VertexOutput) -> vec4f {
     // menu quad, a DC3 character lit by retailShade) paid the nine compare
     // taps and the specular fetch for values no branch then read.
     let flatShade = (isEnabled(material.prelit) && !prelitAmbient) || isEnabled(material.unlit);
-    let nativeLit = !retailLight && !flatShade;
+    // rb3-xenon skin under the retail light model keeps the native skin arm
+    // (rb3SkinDiffuseOn), fed the real box map and retail's point lights.
+    let rb3SkinRetail = retailLight && !flatShade && rb3SkinDiffuseOn();
+    let nativeLit = (!retailLight || rb3SkinRetail) && !flatShade;
     let nativeAdds = scene.retailLighting < 1.5 &&
         (length(material.rimColor.rgb) > 0.0 || isEnabled(material.environMapStrength));
     let isSkinMaterial = shaderVariationIs(material.shaderVariation, kShaderVariationSkin);
@@ -2196,6 +2233,9 @@ fn shadeStandard(surfaceInput: VertexOutput) -> vec4f {
 
         if (rb3Skin) {
             totalLighting.diffuse += rb3SkinBoxDiffuse(surfaceNormal, viewDir);
+            if (rb3SkinRetailBox()) {
+                totalLighting.specular += rb3SkinSpecBox(surfaceNormal, viewDir, specularSample);
+            }
         }
 
         // Projected light (kFakeSpot with gobo texture)
@@ -2230,7 +2270,7 @@ fn shadeStandard(surfaceInput: VertexOutput) -> vec4f {
             // the AO permutation still scales it.
             finalColor *= surfaceInput.retailAO.x;
         }
-    } else if (retailLight) {
+    } else if (retailLight && !rb3Skin) {
         finalColor = retailShade(surfaceInput, baseColor.rgb, ambientLight, rawVtx, prelitAmbient);
     } else if (rb3Skin) {
         // RB3 X360 skin: c0 (c1 + box + wrap) texel (1 + c63.rgb sum b_i),

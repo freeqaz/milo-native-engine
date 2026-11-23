@@ -23,7 +23,10 @@ public:
     // with and without each. kSkipDof the depth of field, kSkipBloom the bloom
     // sets (screen blend, glare and streak), kSkipMotionBlur the feedback blur,
     // kSkipVelocity the camera velocity blur. 0 (the default) changes nothing.
-    enum : unsigned { kSkipDof = 1, kSkipBloom = 2, kSkipMotionBlur = 4, kSkipVelocity = 8 };
+    // RB3's chain (kRetailPostChain, rb3-xenon: MILO_RB3_POST_SKIP) also takes
+    // kSkipColorXfm (the identity matrix) and kSkipNoise (no noise map).
+    enum : unsigned { kSkipDof = 1, kSkipBloom = 2, kSkipMotionBlur = 4, kSkipVelocity = 8,
+                      kSkipColorXfm = 16, kSkipNoise = 32 };
     static inline unsigned sInspectSkip = 0;
     void Init(GpuDevice& gpu);
     // `depthView` is a depth-only view of the scene depth (`depthSamples`
@@ -113,6 +116,15 @@ public:
     // `outputRows` high and a map `mapH` tall when NoiseRowsSnapped(Look()),
     // through the memo; otherwise every constant untouched and snap zero.
     void SnapNoiseConstants(int outputRows, int mapH, float seeds[4], float params[4], float snap[3]);
+    // RB3's own X360 chain (rndshape::kRetailPostChain; rb3-xenon): the
+    // parameters Run hands RB3RetailPost for `pp` in retail-post `mode` (not
+    // 0), `flicker` the colour modulation's flicker step and `outputRows` the
+    // frame's rows: FillRetailPost, then NgPostProc::CheckNoise's map (band.exe
+    // TU5 fn_82B89100; only with mNoiseIntensity and mNoiseMap both set and a
+    // GPU view of the map), then the inspection mode and mask. Public so a
+    // consumer's gate can check the chain keeps the noise (lane A58).
+    void FillRB3Chain(RndPostProc* pp, int mode, float flicker, int outputRows,
+                      RetailPostParams& rp);
     // NoiseConstants' memo, for the tests (its `computes` counter).
     const NoiseRowSnapCache& NoiseRowSnapMemo() const { return mNoiseRowSnap; }
 private:

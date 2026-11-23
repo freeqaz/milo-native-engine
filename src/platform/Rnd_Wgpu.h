@@ -302,6 +302,14 @@ public:
     // DoWorldEnd of its own; retail's lives in the platform renderer, which
     // WgpuRnd stands in for.
     void DoWorldEnd() override;
+#ifdef MILO_RNDOBJ_SHAPE_HAS_NGRND
+    // Rnd::EndWorld's post step on the NgRnd shape: the consumer's
+    // NgRnd::DoPostProcess (each PostProcessor's DoPost), then, with
+    // rndshape::kRetailPostChain (RB3's X360 chain, rb3-xenon), the world's
+    // grade at that point (FlushWorldPost), as on the RB3-Wii shape. Without
+    // it (dc3-decomp) only the consumer's DoPostProcess runs, as before.
+    void DoPostProcess() override;
+#endif
 
     // Retail DxRnd::SavePreBuffer's colour half: copy the world, as it stands
     // at world end, into the pre-process buffer (mPreTex). Retail resolves the

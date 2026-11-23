@@ -80,6 +80,36 @@ constexpr bool kDC3RetailModelFor =
     std::is_base_of<RndDrawable, typename DependentEnvT<T>::type>::value;
 constexpr bool kDC3RetailModel = kDC3RetailModelFor<void>;
 
+// rb3-xenon: RB3's own Xbox 360 light model, the engine's retail form 1
+// (SceneUniforms.retailLighting 1, docs/native/dc3-backend-for-rb3-wii.md
+// section 9; the shader branch the RB3-Wii shape also drives). Retail RB3
+// X360 standard shading is c0 * (c1 ambient + box(N) + at most two point
+// lights) * texel, the box map c80..c85 written per mesh by
+// NgEnviron::UpdateApproxLighting (rb3-xenon rndobj/Env_NG.cpp). Before
+// lane A62 rb3-xenon lit through WgpuRnd::WriteSceneUniforms' heuristic arm
+// (approx lights as top-4 directionals by name, a 0.08 ambient floor, a 0.35
+// fill, an energy cap, soft clip), none of which retail has.
+//
+// Detected structurally: not DC3, and an environ that runs RB3's own approx
+// lighting -- the virtual UpdateApproxLighting(const Vector3 *) that
+// NgEnviron overrides, plus the local/global approx switches it reads.
+// RndEnviron is complete here (kDC3RetailModelFor's is_base_of needs that),
+// so a false answer is a real absence, not an incomplete type; the rb3-app
+// gate rb3_app_check_retail_light_model() requires it true for rb3-xenon.
+template <class E, class = void> struct HasRB3ApproxLighting : std::false_type {};
+template <class E>
+struct HasRB3ApproxLighting<
+    E, std::void_t<decltype(std::declval<E &>().UpdateApproxLighting(
+                       static_cast<const Vector3 *>(nullptr))),
+                   decltype(std::declval<const E &>().UsesApproxLocal()),
+                   decltype(std::declval<const E &>().UsesApproxGlobal()),
+                   decltype(std::declval<const E &>().NumLights_Approx())> >
+    : std::true_type {};
+template <class T>
+constexpr bool kRB3RetailLightFor =
+    !kDC3RetailModelFor<T> && HasRB3ApproxLighting<typename DependentEnvT<T>::type>::value;
+constexpr bool kRB3RetailLight = kRB3RetailLightFor<void>;
+
 // Whether a material ignores lighting entirely (register colour x texture, no
 // ambient, lights or vertex colour). DC3 (retail model): a material with
 // use_environ off that is not prelit. RndShaderStandard::CalcShaderOpts gates
@@ -89,7 +119,12 @@ constexpr bool kDC3RetailModel = kDC3RetailModelFor<void>;
 // doc). rb3-xenon: no such state.
 template <class T>
 inline bool MatUnlit(const T &m) {
-    if constexpr (kDC3RetailModelFor<T>) return m && !m->UseEnviron() && !m->Prelit();
+    // rb3-xenon (kRB3RetailLightFor): the same rule, RB3's own -- its
+    // RndShaderStandard::CalcShaderOpts gates both light bits on
+    // mat->UseEnviron() (rndobj/Shader.cpp) and NgMat::SetupAmbient loads
+    // (1,1,1,1) into c1 when use_environ is off (rndobj/Mat_NG.cpp).
+    if constexpr (kDC3RetailModelFor<T> || kRB3RetailLightFor<T>)
+        return m && !m->UseEnviron() && !m->Prelit();
     else { (void)m; return false; }
 }
 // Whether a prelit material's vertex colour is its ambient term (lights add
@@ -98,7 +133,9 @@ inline bool MatUnlit(const T &m) {
 // without use_environ (0x100 with c1 = 1) is the vertex colour as authored.
 template <class T>
 inline bool MatPrelitAmbient(const T &m) {
-    if constexpr (kDC3RetailModelFor<T>) return m && m->Prelit() && m->UseEnviron();
+    // rb3-xenon: RB3 standard.vs prelit bit 8, as the RB3-Wii shape reads it.
+    if constexpr (kDC3RetailModelFor<T> || kRB3RetailLightFor<T>)
+        return m && m->Prelit() && m->UseEnviron();
     else { (void)m; return false; }
 }
 // The retail material terms (RndShape.h), from DC3's RndShaderStandard::
@@ -110,11 +147,23 @@ inline bool MatPrelitAmbient(const T &m) {
 //   GetPerPixelLit(); then normal map (5), specular map (1), rim (37:
 //   RimRGB().Pack() != 0, c61 = (rgb, max(power, 0.5))), rim map (15);
 //   c14 = 1 - deNormal.
-// rb3-xenon keeps the dc3 shader's own model.
+// rb3-xenon (kRB3RetailLightFor) takes the same terms from RB3's own
+// CalcShaderOpts (rb3-xenon rndobj/Shader.cpp, RndShaderStandard at band.exe
+// TU5 fn_824A66E8): specular on SpecularRGB().Pack(), per-pixel on
+// AllowPerPixel && GetPerPixelLit, then normal map, specular map (only with
+// specular), rim on RimRGB().Pack() (not gated on specular), rim-under and
+// rim map; it has no flip_normal ("Retail RB3 X360 has no mFlipNormal here").
 template <class T>
 inline bool MatRetailTerms(const T &m, RetailMatTerms &t) {
-    if constexpr (kDC3RetailModelFor<T>) {
+    if constexpr (kDC3RetailModelFor<T> || kRB3RetailLightFor<T>) {
         if (!m || !m->UseEnviron()) return false;
+        // rb3-xenon skin keeps the native skin arm (the shipped skin
+        // permutation, standard_wgsl.inc rb3SkinDiffuseOn; kSkinSpecRB3Xenon),
+        // which reads the material's own fields and, under the retail light
+        // model, the real box map. The generic retail terms would zero them.
+        if constexpr (kRB3RetailLightFor<T>) {
+            if (m->GetShaderVariation() == kShaderVariationSkin) return false;
+        }
         const Hmx::Color &spec = m->GetSpecularRGB();
         t.specular = spec.Pack() != 0;
         if (t.specular) {
@@ -141,7 +190,7 @@ inline bool MatRetailTerms(const T &m, RetailMatTerms &t) {
             t.rimMap = t.rim && m->GetRimMap() != nullptr;
             t.rimTex = m->GetRimMap();
             t.deNormal = m->GetDeNormal();
-            t.flipNormal = m->GetCull() == kCullBackwards;
+            if constexpr (kDC3RetailModelFor<T>) t.flipNormal = m->GetCull() == kCullBackwards;
         }
         return true;
     } else {
@@ -585,8 +634,8 @@ constexpr int kDrawModeReflection = kDC3RetailModel ? 8 : 7;
 constexpr bool kReflectionForcesReverseCull = kDC3RetailModel;
 
 // ---- skin specular on the native light arm ---------------------------------
-// rb3-xenon's frames fall to WgpuRnd's native (heuristic) light arm, which
-// gave a skin material (shader_variation 1) an unnormalised Blinn lobe per
+// rb3-xenon's frames used to fall to WgpuRnd's native (heuristic) light arm,
+// which gave a skin material (shader_variation 1) an unnormalised Blinn lobe per
 // light at the spec map's colour, power max(power * map alpha, 0.1). RB3's
 // shipped X360 skin permutation (xbox_shaders `standard`
 // 0000022040031037: skin, rim, normal + spec maps, 2 points; ucode
@@ -601,7 +650,11 @@ constexpr bool kReflectionForcesReverseCull = kDC3RetailModel;
 // (BoxMapLighting::ApplyQueuedLights). So a skin texel facing the camera has
 // almost no specular. SceneUniforms.skinSpecModel = 1 selects that form in the
 // native arm (standard_wgsl.inc rb3SkinSpecDirectional and rb3SkinSpecPoint). rb3-xenon only: DC3 never
-// reaches the native arm (WriteDC3Retail claims every frame).
+// reaches the native arm (WriteDC3Retail claims every frame). Since lane A62
+// rb3-xenon lights through RB3's retail model (kRB3RetailLight); a skin
+// material keeps this arm there (MatRetailTerms declines it), with the box
+// faces the real c80..c85 instead of folded directionals and the points
+// retail's two (standard_wgsl.inc rb3SkinRetailBox, rb3SkinSpecBox).
 constexpr bool kSkinSpecRB3Xenon = !kDC3RetailModel;
 
 // ---- camera select ---------------------------------------------------------
@@ -756,19 +809,41 @@ constexpr bool kDC3RetailPost =
 // each texel, so it cannot beat against the output (gfx/NoiseRows.h). DC3's
 // only: rb3-xenon, which also compiles this shape, keeps the authored uv.
 constexpr bool kNoiseSnapsToOutputRows = kDC3RetailModel;
-// The RB3 chain's EndWorld flush (WgpuRnd::FlushWorldPost) stays RB3's: DC3
-// already grades at EndWorld through NgRnd::DoPostProcess.
-constexpr bool kRetailPostChain = false;
+// lane A55: Rock Band 3's own Xbox 360 chain (gfx/RB3RetailPost, the shape the
+// RB3-Wii consumer runs), for a consumer whose RndPostProc carries retail
+// RB3's post state and not DC3's. Retail band.exe TU5 NgPostProc::DoPost
+// (fn_82B89A08, NgPostProc vtable slot 3) runs DoBloom (fn_82B884A0: c6 =
+// bloomColor * BloomIntensity(), no BloomLocFactor; no per-material bloom
+// multiplier) and then ModulateColorXfm (the RndColorXfm 3x3 scaled by
+// mColorModulation, +0x12C). So the detector is the colour modulation
+// accessor in a shape without DC3's chain: rb3-xenon declares
+// RndPostProc::GetColorModulation() under HX_NATIVE; dc3-decomp has DC3's
+// chain (kDC3RetailPost) and keeps it. As on the RB3-Wii shape, the grade
+// moves to Rnd::EndWorld (WgpuRnd::DoPostProcess -> FlushWorldPost), so the
+// UI drawn after the world stays ungraded. DC3 already grades at EndWorld
+// through its NgRnd::DoPostProcess.
+template <class P, class = void> struct PostProcHasColorModulation : std::false_type {};
+template <class P>
+struct PostProcHasColorModulation<
+    P, std::void_t<decltype(std::declval<const P &>().GetColorModulation())>> : std::true_type {};
+constexpr bool kRetailPostChain =
+    !kDC3RetailPost && PostProcHasColorModulation<RndPostProc>::value;
 // DC3_RETAIL_POST (rndshape/DC3PostChain.cpp): unset or anything else = 1 (the
 // retail chain), "0" = 0 (PostProcPass's previous composite), "raw" = 2 (the
 // scene ungraded), "mask" = 3 / "bloom" = 4 (the chain showing the bloom mask /
 // the bloom term; for inspection), "grade" = 5 (the chain without bloom),
 // "velocity" = 6 (the chain, showing DoVelocity's velocity target instead).
-// Always 0 without kDC3RetailPost (rb3-xenon).
+// Without kDC3RetailPost: with kRetailPostChain (rb3-xenon), the RB3 shape's
+// MILO_RB3_RETAIL_POST grammar (RndShape_RB3Wii.h: unset = 1 the chain, "0"
+// = PostProcPass's generic composite, "raw" 2, "mask" 3, "bloom" 4, "grade"
+// 5, "beams" 6); else always 0.
 int RetailPostMode();
 // The frame's alpha carries the bloom mask this frame.
 inline bool RetailBloomMaskActive() {
-    if constexpr (!kDC3RetailPost) {
+    if constexpr (kRetailPostChain) {
+        const int m = RetailPostMode();
+        return m == 1 || m == 3 || m == 4 || m == 6;
+    } else if constexpr (!kDC3RetailPost) {
         return false;
     } else {
         const int m = RetailPostMode();
@@ -851,14 +926,30 @@ constexpr bool kAlphaFringeFade = !kDC3RetailModel;
 // dc3-decomp (kDC3RetailModel) only; rb3-xenon keeps the repeating sampler.
 constexpr bool kMapsFollowTexWrap = kDC3RetailModel;
 // ---- end np-gfx-post ----
-// DC3 shades in gamma space, as the image does: no bitmap format DxRnd uses
-// carries a gamma sign (rnddx9/Rnd.cpp D3DFormatForBitmap: DXT1/3/5, DXN,
-// A8R8G8B8, A1R5G5B5, X8R8G8B8), the frame is a D3DFMT_A8R8G8B8 EDRAM surface
-// (Rnd_Xbox.cpp), and no standard.ps permutation decodes or encodes, so the
-// shader multiplies texel, material colour and lighting as stored and the
-// target saturates the product (material.gammaShading). rb3-xenon keeps the
-// linear model with the sRGB output encode.
-constexpr bool kGammaSpaceShading = kDC3RetailModel;
+// Both consumers of this shape shade in gamma space, as both images do: no
+// bitmap format DxRnd uses carries a gamma sign (rnddx9/Rnd.cpp
+// D3DFormatForBitmap: DXT1/3/5, DXN, A8R8G8B8, A1R5G5B5, X8R8G8B8), the frame
+// is a D3DFMT_A8R8G8B8 EDRAM surface (Rnd_Xbox.cpp), and no standard.ps
+// permutation decodes or encodes, so the shader multiplies texel, material
+// colour and lighting as stored and the target saturates the product
+// (material.gammaShading).
+//
+// rb3-xenon (lane A60): RB3 TU5's DxRnd::D3DFormatForBitmap is band.exe
+// fn_827333C8 (rb3-xenon rnddx9/Rnd.cpp, 100% matched); its format words are
+// DXT1 0x1A200152, DXT3 0x1A200153, DXT5 0x1A200154, DXN 0x1A200171,
+// A8R8G8B8 0x18280186 (the lis/ori pairs at fn_827333C8+0x34..+0x90), all with
+// the four gamma sign fields (bits 9..16) zero, and RB3's shipped xbox_shaders
+// standard.ps permutations contain no log/exp
+// (milo-native-engine docs/native/dc3-backend-for-rb3-wii.md 10.1). rb3-xenon
+// used to keep the linear model with the sRGB output encode, which drew its
+// venues hazy and grey; that choice had been fitted against xenia frame dumps
+// that xenia itself sRGB-encodes (xenia vulkan_command_processor_headless.cc
+// srgb_lut; the guest front buffer is the _raw.ppm), i.e. against a reference
+// one encode brighter than the image. Against the recovered front buffer the
+// gamma-space model moves every frame metric toward retail
+// (rb3-scout/a60/HANDOFF.md). Since lane A62 the light model rb3-xenon runs is
+// retail's too (kRB3RetailLight), not the engine's heuristic arm.
+constexpr bool kGammaSpaceShading = true;
 // A Multiply-blend material is lit like any other (np-gfx-light round 3).
 // NgMat::SetBasicState gives kBlendMultiply src ZERO / dest SRCCOLOR and fade
 // params (1,1,1,1), and nothing in CalcShaderOpts or SetupAmbient looks at the
@@ -917,7 +1008,13 @@ constexpr bool kIntensifyScalesAlpha = kDC3RetailModel;
 template <class M>
 inline bool AllowsBloomMaskFor(const M &m, int blend, bool alphaWrite) {
     using Raw = std::remove_cv_t<std::remove_pointer_t<std::decay_t<M>>>;
-    if constexpr (!kDC3RetailPost || !MatHasBloomMultiplier<Raw>::value) {
+    if constexpr (kRetailPostChain && sizeof(Raw) > 0) {
+        // RB3's NgMat::AllowHDR (rb3-xenon rndobj/Mat_NG.cpp): not
+        // alpha-blended, alpha-cut or alpha-writing.
+        if (!m) return false;
+        return !(blend == (int)Raw::kBlendSrcAlpha || blend == (int)Raw::kBlendSrcAlphaAdd ||
+                 blend == (int)Raw::kPreMultAlpha || m->GetAlphaCut() || alphaWrite);
+    } else if constexpr (!kDC3RetailPost || !MatHasBloomMultiplier<Raw>::value) {
         (void)m;
         (void)blend;
         (void)alphaWrite;
@@ -936,7 +1033,20 @@ inline bool AllowsBloomMask(const M &m) {
 template <class M>
 inline float BloomMaskScale(const M &m, bool envFadeOutCancels = true) {
     using Raw = std::remove_cv_t<std::remove_pointer_t<std::decay_t<M>>>;
-    if constexpr (!kDC3RetailPost || !MatHasBloomMultiplier<Raw>::value) {
+    if constexpr (kRetailPostChain && sizeof(Raw) > 0) {
+        // RB3's pseudo-HDR mask (standard.ps bit 22), the positive scale the
+        // standard shader reads as the RB3 mask: c7's 1/threshold. The same
+        // environ fade-out test as CalcShaderOpts (!fadeOut).
+        if (!m || !RetailBloomMaskActive()) return 0.0f;
+        const RndPostProc *pp = RndPostProc::Current();
+        if (!pp) return 0.0f;
+        if (envFadeOutCancels) {
+            const RndEnviron *env = RndEnviron::Current();
+            if (env && env->FadeOut() && env->FadeEnd() != env->FadeStart()) return 0.0f;
+        }
+        if (!AllowsBloomMask(m)) return 0.0f;
+        return BloomLumaScale(pp);
+    } else if constexpr (!kDC3RetailPost || !MatHasBloomMultiplier<Raw>::value) {
         (void)m;
         return 0.0f;
     } else {
