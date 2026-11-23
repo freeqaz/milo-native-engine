@@ -4,9 +4,11 @@
 // ModulateColorXfm, CheckNoise, CheckChromaticAberration, CheckVignette,
 // CheckMotionBlur), and
 // the display ramp (DxRnd::SetupGamma). Built for the DC3 shape on the dc3
-// backend, i.e. for dc3-decomp AND rb3-xenon; everything here is gated on
-// rndshape::kDC3RetailPost, which only dc3-decomp's accessors turn on, so
-// rb3-xenon's mode is 0 and its output is unchanged.
+// backend, i.e. for dc3-decomp AND rb3-xenon; the DC3 chain is gated on
+// rndshape::kDC3RetailPost, which only dc3-decomp's accessors turn on. Lane
+// A55: rb3-xenon's RndPostProc::GetColorModulation() turns on
+// rndshape::kRetailPostChain instead, and RetailPostMode / FillRetailPost
+// below then serve RB3's own X360 chain (FillRB3).
 #include "gfx/DisplayRamp.h"
 #include "platform/rndshape/RndShape.h"
 #include "gfx/RB3RetailPost.h"

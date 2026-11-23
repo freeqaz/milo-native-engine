@@ -321,7 +321,7 @@ set(MILO_ENGINE_GFX_RNDOBJ_SOURCES
     src/gfx/VertexFormats.cpp
     src/gfx/ShadowPass.cpp
     src/gfx/PostProcPass.cpp
-    src/gfx/RB3RetailPost.cpp   # rndobj-free; run by PostProcPass only for the rb3wii shape
+    src/gfx/RB3RetailPost.cpp   # rndobj-free; RB3's chain (rb3wii shape, and rb3-xenon via kRetailPostChain) and DC3's
     src/gfx/RB3RetailPostDC3.cpp # rndobj-free; DC3's chain on the same targets (rndshape::kDC3RetailPost)
     src/gfx/DisplayRamp.cpp     # rndobj-free; run by WgpuRnd::EndDrawing when rndshape::DisplayGamma() > 0
     src/gfx/PointTestPass.cpp   # rndobj-free; WgpuRnd's flare occlusion queries (platform/PointTestHook.h)
