@@ -91,7 +91,12 @@ TEST_F(RndCamProjectionTest, PerspectiveWorldToScreenMatchesExpectedFrustumEdges
 
     cam->WorldToScreen(Vector3(0.0f, depth, depth * tanHalf), screen);
     EXPECT_NEAR(screen.x, 0.5f, 2.0e-3f);
-    EXPECT_NEAR(screen.y, 1.0f, 2.0e-3f);
+    // Top edge of the frustum is screen y = 0: screen y grows DOWN. The image
+    // projects through mWorldProjectXfm, whose m.z.y is -1/tan(fov/2)
+    // (Cam.s UpdateLocal 82628694/98). This used to expect 1.0 -- the
+    // mirrored value the old native-only body produced. (Ported from dc3
+    // native/tests, d74c2b4b8, which fixed RndCam::WorldToScreen.)
+    EXPECT_NEAR(screen.y, 0.0f, 2.0e-3f);
 }
 
 TEST_F(RndCamProjectionTest, TranslatedCameraKeepsForwardPointCentered) {
@@ -159,7 +164,10 @@ TEST_F(RndCamProjectionTest, ChooseModeDebugUiCamHackPushesApproximateLayoutOffs
     Vector2 screen;
     float depth = cam->WorldToScreen(Vector3(-107.6f, -8.0f, -62.5f), screen);
     EXPECT_GT(depth, 0.0f);
-    EXPECT_LT(screen.y, 0.0f);
+    // The label sits far BELOW the raised camera, so it is pushed off the
+    // bottom (screen y grows down, as in the image). Used to expect y < 0,
+    // the mirrored value of the old native-only WorldToScreen (dc3 d74c2b4b8).
+    EXPECT_GT(screen.y, 1.0f);
 }
 
 TEST_F(RndCamProjectionTest, OrthographicProjectionMatchesExpectedMatrix) {
@@ -249,7 +257,14 @@ TEST_F(RndCamProjectionTest, HamListRibbonUsesUniformSpacingForFiveVisibleItems)
     }
 }
 
-TEST_F(RndCamProjectionTest, UIListMeshDrawTemporarilyShowsHiddenTemplateMesh) {
+// UIListMeshElement::Draw (827C2888, 100% matched, 106/106 instructions) hands
+// the list's template mesh to DrawShowing() exactly as the file ships it --
+// hidden -- and never touches its Showing flag. This test used to pin a native
+// SetShowing(true)/restore around the call, which existed only because the
+// native RndMesh::DrawShowing refused hidden named meshes; the image's
+// DxMesh::DrawShowing (826229B0) has no such test. (Ported from dc3
+// native/tests, 564dd8ca7.)
+TEST_F(RndCamProjectionTest, UIListMeshDrawDrawsHiddenTemplateMeshAsShipped) {
     TestUIListMesh listMesh;
     HiddenTemplateMesh mesh;
     RndMat *mat = Hmx::Object::New<RndMat>();
@@ -266,7 +281,8 @@ TEST_F(RndCamProjectionTest, UIListMeshDrawTemporarilyShowsHiddenTemplateMesh) {
     element.Draw(tf, 1.0f, nullptr, nullptr);
 
     EXPECT_EQ(mesh.mDrawShowingCalls, 1);
-    EXPECT_TRUE(mesh.mShowingInsideDraw);
+    EXPECT_FALSE(mesh.mShowingInsideDraw)
+        << "the image draws the template with its Showing flag as shipped (false)";
     EXPECT_FALSE(mesh.Showing());
 }
 
