@@ -10,6 +10,8 @@
 #include "platform/Rnd_Wgpu.h"
 #include "platform/TexGpu.h"
 #include "gfx/FrameCapture.h"
+#include "gfx/AmbientAlpha.h"
+#include "gfx/ColorModW.h"
 #include "rndobj/Mat.h"
 #include "platform/rndshape/RndShape.h"
 #include "platform/LookProfile.h"
@@ -132,7 +134,7 @@ static void FillColorMod(const MatT& mat, MaterialUniforms& uni) {
     uni.colorMod[3] = (uint32_t)mode;
     // Bit 8: the texel alpha is a band selector, not coverage, so the shader's
     // alpha fringe fade skips it (rndshape::ColorModAlphaIsBandSelector).
-    if (rndshape::ColorModAlphaIsBandSelector(mat, mode)) uni.colorMod[3] |= 1u << 8;
+    if (rndshape::ColorModAlphaIsBandSelector(mat, mode)) uni.colorMod[3] |= kColorModWBandSelectorBit;
 }
 
 // World refraction (rndshape::MatRefract, dc3-backend-for-rb3-wii.md
@@ -158,7 +160,7 @@ static void FillRefract(const MatT& mat, MaterialUniforms& uni,
                         WgpuRnd::MaterialTexViews& views) {
     rndshape::RefractTerms r;
     if (!rndshape::MatRefract(mat, r)) return;
-    uni.colorMod[3] |= FloatToHalfBits(r.strength) << 16;
+    uni.colorMod[3] |= FloatToHalfBits(r.strength) << kColorModWRefractStrengthShift;
     views.refractNormal = ResolveMap(r.normalTex, gWgpuRnd->FlatNormalTexView());
 }
 
@@ -169,7 +171,7 @@ static void FillRefract(const MatT& mat, MaterialUniforms& uni,
 // not its UV, to the texgen rows. Set after FillColorMod, which assigns w.
 template <class MatT>
 static void FillScreenAligned(const MatT& mat, MaterialUniforms& uni) {
-    if (rndshape::MatScreenAligned(mat)) uni.colorMod[3] |= 1u << 9;
+    if (rndshape::MatScreenAligned(mat)) uni.colorMod[3] |= kColorModWScreenAlignedBit;
 }
 
 // DC3's flip_normal (ShaderOptions bit 54, RndShaderStandard::CalcShaderOpts:
@@ -179,16 +181,28 @@ static void FillScreenAligned(const MatT& mat, MaterialUniforms& uni) {
 // and the tangent does not, as the shipped microcode does
 // (dc3-retail-lighting.md section 11). Set after FillColorMod.
 static void FillFlipNormal(bool flipNormal, MaterialUniforms& uni) {
-    if (flipNormal) uni.colorMod[3] |= 1u << 10;
+    if (flipNormal) uni.colorMod[3] |= kColorModWFlipNormalBit;
 }
 
-// fade_out (RndMat mFadeout, rndshape::MatFadesOut): bit 11 of colorMod.w,
-// which the fragment shader reads as materialFadesOut and answers by scaling
+// fade_out (RndMat mFadeout, rndshape::MatFadesOut): bit 11 of colorMod.w
+// (gfx/ColorModW.h), which the fragment shader reads as materialFadesOut and answers by scaling
 // its output alpha by the environ's left/right fade (SceneUniforms
 // lrFadeLeft/lrFadeRight). Set after FillColorMod.
 template <class MatT>
 static void FillFadeOut(const MatT& mat, MaterialUniforms& uni) {
-    if (rndshape::MatFadesOut(mat)) uni.colorMod[3] |= 1u << 11;
+    if (rndshape::MatFadesOut(mat)) uni.colorMod[3] |= kColorModWFadesOutBit;
+}
+
+// The ambient constant c1's source (rndshape::MatAmbientIsEnviron, retail
+// NgMat::SetupAmbient, band.exe TU5 fn_824A9090 +0x18): bit 12 of colorMod.w
+// (gfx/ColorModW.h), which the fragment shader reads in retailC1Alpha and
+// answers by multiplying the output alpha by the scene ambient's w, the
+// current environ's ambient alpha. Taken from the material's own use_environ,
+// not from the shader's prelit / unlit terms, which the native text and
+// overlay heuristics force. Set after FillColorMod.
+template <class MatT>
+static void FillAmbientSource(const MatT& mat, MaterialUniforms& uni) {
+    if (rndshape::MatAmbientIsEnviron(mat)) uni.colorMod[3] |= kColorModWAmbientIsEnvironBit;
 }
 
 bool TextMeshKeepsAtlasRGB(RndMesh* mesh, RndMat* mat, bool skinned) {
@@ -523,6 +537,7 @@ MaterialParams BuildMaterialParams(RndMat* rawMat, bool isTextMesh, const UiDraw
     FillScreenAligned(mat, matUni);
     FillFlipNormal(flipNormal, matUni);
     FillFadeOut(mat, matUni);
+    FillAmbientSource(mat, matUni);
 
     // --- Environment cube map ---
     RndCubeTex* environMap = mat->GetEnvironMap();
@@ -653,6 +668,7 @@ MaterialParams BuildPassMaterialParams(BaseMaterial* rawNextPass, const UiDrawTe
     FillScreenAligned(nextPass, npMatUni);
     FillFlipNormal(npFlipNormal, npMatUni);
     FillFadeOut(nextPass, npMatUni);
+    FillAmbientSource(nextPass, npMatUni);
 
     // Multi-pass materials don't set their own sampler -- caller reuses primary material's sampler
     result.heuristics = 0;

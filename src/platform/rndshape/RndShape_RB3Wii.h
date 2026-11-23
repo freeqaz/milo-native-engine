@@ -253,6 +253,10 @@ inline bool MatScreenAligned(const MatView &) { return false; }
 // fade_out materials are rb3-xenon's (RndShape_DC3.h MatFadesOut).
 inline bool MatFadesOut(const MatView &) { return false; }
 
+// The environ's ambient alpha in c1.w is the RB3 X360 retail model's
+// (RndShape_DC3.h MatAmbientIsEnviron); the Wii path keeps c1.w = 1.
+inline bool MatAmbientIsEnviron(const MatView &) { return false; }
+
 // The DC3 image's texture-transform rows (RndShape_DC3.h MatRetailTexXfmRows);
 // RB3 keeps the generic rows FillTexGen writes.
 inline bool MatRetailTexXfmRows(const MatView &, float *, float *) { return false; }

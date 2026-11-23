@@ -138,6 +138,19 @@ inline bool MatPrelitAmbient(const T &m) {
         return m && m->Prelit() && m->UseEnviron();
     else { (void)m; return false; }
 }
+// Whether a material's ambient constant c1 is the current environ's ambient,
+// alpha included (gfx/AmbientAlpha.h). rb3-xenon: NgMat::SetupAmbient
+// (band.exe TU5 fn_824A9090) +0x18 tests use_environ and loads the environ's
+// ambient into c1, else (1, 1, 1, 1). Only the RB3 retail light model says
+// so: DC3's writer keeps the scene ambient's w at 1 and its image was not
+// re-read for this (docs/native/dc3-retail-lighting.md "ambient alpha"), so
+// it stays as it was.
+template <class T>
+inline bool MatAmbientIsEnviron(const T &m) {
+    if constexpr (kRB3RetailLightFor<T>)
+        return m && m->UseEnviron();
+    else { (void)m; return false; }
+}
 // The retail material terms (RndShape.h), from DC3's RndShaderStandard::
 // CalcShaderOpts (100% matched) and NgMat::SetRegularShaderConst:
 //   any of them only when the draw has a real or an approx light (the shader

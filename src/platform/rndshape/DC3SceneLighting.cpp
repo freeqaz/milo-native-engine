@@ -458,8 +458,9 @@ void FillDC3Approx(E *env, M *mesh, float box[6][4], float retail[4]) {
 // The engine's retail form 1, the one the shader's retailLighting 1 branch
 // runs (docs/native/dc3-backend-for-rb3-wii.md section 9), fed from the
 // consumer's own decomp rather than reconstructed:
-//  * c1 = the environ's ambient, unscaled (NgMat::SetupAmbient; a material
-//    with use_environ off gets 1 through rndshape::MatUnlit);
+//  * c1 = the environ's ambient, unscaled, alpha included (NgMat::SetupAmbient;
+//    a material with use_environ off gets 1 through rndshape::MatUnlit, and
+//    c1.w = 1 through rndshape::MatAmbientIsEnviron, gfx/AmbientAlpha.h);
 //  * real lights: NgEnviron::Select (band.exe TU5 fn_82B86738) keeps at most
 //    TWO point lights, in mLightsReal order, each Showing with a non-zero
 //    packed colour (CheckPointLight / SetPointLightRegisters): c64+i =
@@ -481,7 +482,11 @@ void WriteRB3XenonRetail(SceneUniforms &s, E *env) {
     s.ambientColor[0] = amb.red;
     s.ambientColor[1] = amb.green;
     s.ambientColor[2] = amb.blue;
-    s.ambientColor[3] = 1.0f;
+    // c1.w: the environ's ambient alpha (NgMat::SetupAmbient fn_824A9090
+    // +0x38..+0x58 loads all four words). The shader multiplies it into the
+    // output alpha of a material whose c1 is the environ's (gfx/AmbientAlpha.h);
+    // RB3's UI fades whole groups this way (movie_pause.milo fade.env).
+    s.ambientColor[3] = amb.alpha;
     if (env->FogEnable()) {
         s.fogEnabled = 1.0f;
         s.fogStart = env->FogStart();

@@ -93,7 +93,8 @@ struct SceneUniforms {
     // opaque edge; a side with out == opaque is (0, 0, 0, 1). Filled only when
     // the shape answers rndshape::EnvLRFadePlanes (an environ that fades out);
     // all zero otherwise, which the shader reads as "no fade". Applied to the
-    // output alpha of materials that declare fade_out (colorMod.w bit 11).
+    // output alpha of materials that declare fade_out (colorMod.w bit 11,
+    // gfx/ColorModW.h).
     float lrFadeLeft[4];           // vec4f
     float lrFadeRight[4];          // vec4f
 };
@@ -142,9 +143,9 @@ struct MaterialUniforms {
     // Packed so the struct stays one 256-byte uniform-ring slot; the colours
     // scale an 8-bit output, so 8 bits each lose nothing visible. The shader
     // math is retail's (standard_wgsl.inc colorModScale). w also carries
-    // flags above the mode byte: bit 8 the band selector, bit 9 screen-aligned
-    // texture coordinates (DC3, rndshape::MatScreenAligned), and in its high
-    // 16 bits the world refraction strength as an f16.
+    // flags above the mode byte and, in its high 16 bits, the world
+    // refraction strength as an f16; every w field is allocated in
+    // gfx/ColorModW.h.
     uint32_t colorMod[4];       // vec4u
 };
 static_assert(sizeof(MaterialUniforms) == 256, "MaterialUniforms must match WGSL layout");
