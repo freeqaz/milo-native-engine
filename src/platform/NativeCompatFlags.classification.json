@@ -2036,6 +2036,34 @@
     "default": "on",
     "read": "value"
   },
+  "MILO_GPU_SPLIT_DRAWS": {
+    "class": "probe",
+    "owner": "render/timing",
+    "faithfulStatus": "probe: with MILO_GPU_TIMERS=1, ends the frame pass after every DrawMeshImmediate draw so each draw is timed as its own pass (per-draw GPU attribution, np-gpuprof2). Measurement only: each split adds ~0.2 ms of pass overhead, so frame times under it are not representative; pixels are the same. Unset/0 = off [Rnd_Wgpu.cpp:1913]",
+    "default": "off",
+    "read": "value"
+  },
+  "MILO_RESOLVE_PREDICT": {
+    "class": "perf",
+    "owner": "render",
+    "faithfulStatus": "live: the predicted frame-pass resolve (DC3 shape only, np-gpuprof2): a frame-pass segment resolves its MSAA samples only if the segment at the same index was followed by a reader last frame; a wrong guess runs one colour-only FrameResolve pass before the reader. Pixel-identical (0 px on/off, both sizes, with a same-setting control); 610M gameplay -0.81 ms at 1268x713, -1.85 ms at 1920x1080. Unset or on = on; 0/off = off at launch; {rnd native_look resolve_predict_on|_off|_rule} switches it in a running game [LookProfile.cpp:766]",
+    "default": "on",
+    "read": "value"
+  },
+  "MILO_RESOLVE_TRACE": {
+    "class": "probe",
+    "owner": "render",
+    "faithfulStatus": "probe: logs the predicted resolve's segments and readers every 300th frame ([RESOLVE] lines: in-pass, skipped and fallback counts). Log only, no draw change [Rnd_Wgpu.cpp:1099]",
+    "default": "off",
+    "read": "presence"
+  },
+  "MILO_RB3_POST_SKIP": {
+    "class": "debug",
+    "owner": "render/post",
+    "faithfulStatus": "n/a: inspection mask for RB3's X360 retail post chain (kRetailPostChain consumers only, i.e. rb3-xenon, which has no {rnd native_post_skip} token): MILO_RB3_POST_SKIP=<mask> (strtoul, any base) sets PostProcPass's inspection skip mask once at the first post pass and logs it. Unset = no stage skipped. Inspection only; inert for DC3 and rb3 Wii [gfx/PostProcPass.cpp:590]",
+    "default": "off",
+    "read": "value"
+  },
   "RB3_COMPOSE_PROBE": {
     "class": "probe",
     "owner": "render/compose",
