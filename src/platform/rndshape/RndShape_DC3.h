@@ -905,7 +905,14 @@ constexpr bool kOverlayDepth = kRetailPostChain;
 // Whether a glyph page draws with its font material's z mode. Retail does,
 // in both titles: RndText draws its pages with the font's material and never
 // overrides the z mode (RndText::Load's pre-rev-11 bool even sets it, 2 or 0;
-// dc3-decomp src/system/rndobj/Text.cpp, rb3 Text.cpp). The port forced every
+// dc3-decomp src/system/rndobj/Text.cpp, rb3 Text.cpp). rb3-xenon band.exe:
+// RndText::DrawShowing 0x82455EE8 walks mMeshMap and only calls each page
+// mesh's DrawShowing (`lwz r3,0x14(r31)` / `lwz r11,0x14(r11)` / `bctrl`),
+// touching no material state; the page is given the font's own material at
+// 0x82458E20 (`lwz r4,0x30(r27)` = RndFont::mMat, `bl 0x82418198` =
+// RndMesh::SetMat, `addi r3,r3,0xF0; b ObjPtr::operator=`; the other SetMat
+// sites are 0x82458ED4, 0x8245911C, 0x824594C4). The page therefore draws with
+// that material's z mode, as every mesh does. The port forced every
 // unnamed mesh to zMode 0 from its first renderer (dc3-decomp 18bd1f74b,
 // 2026-03-02, "No depth for text", with no recorded reason). RB3 needs the
 // material's mode: coop_player_widget hides its scrolled-off results rows with
