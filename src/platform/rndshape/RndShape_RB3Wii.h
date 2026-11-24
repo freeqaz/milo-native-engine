@@ -620,6 +620,8 @@ constexpr bool kRetailPostChain = true;
 // shape keeps one depth buffer through the frame, as before.
 constexpr bool kWorldEndClearsDepth = false;
 constexpr bool kOverlayDepth = false;
+// Glyph pages keep zMode 0 here, as before (RndShape_DC3.h; not measured for rb3).
+constexpr bool kGlyphKeepsMatZMode = false;
 // DC3's retail chain (RndShape_DC3.h, np-gfx-post) is the DC3 shape's only.
 constexpr bool kDC3RetailPost = false;
 // The noise map tied to output rows (RndShape_DC3.h, gfx/NoiseRows.h) is
