@@ -627,6 +627,17 @@ void DrawMeshImmediate(RndMesh* mesh) {
         }
         nextPass = rndshape::Mat(nextPass)->NextPass();
     }
+
+    // np-gpuprof2: MILO_GPU_SPLIT_DRAWS times each frame-pass draw on its own.
+    if (WgpuRnd::TimingSplitDraws()) {
+        std::string what = mesh->Name() ? mesh->Name() : "?";
+        what += "/";
+        what += rawMat && rawMat->Name() ? rawMat->Name() : "?";
+        char tail[48];
+        snprintf(tail, sizeof(tail), "/b%d/t%u", (int)key.blend, meshData.numIndices / 3);
+        what += tail;
+        gWgpuRnd->TimingSplitAfterDraw(what.c_str());
+    }
 }
 
 // ============================================================================
