@@ -36,11 +36,12 @@ private:
     double mPlayPos;            // fractional sample position for resampling
     int mEndSample;             // where to stop (-1 = end of data)
     bool mLoop;
-    volatile bool mPlaying;
-    bool mPaused;
-    float mInstVolume;
-    float mInstPan;
-    float mInstSpeed;
+    bool mBigEndian = false;
+    std::atomic<bool> mPlaying;
+    std::atomic<bool> mPaused;
+    std::atomic<float> mInstVolume;
+    std::atomic<float> mInstPan;
+    std::atomic<float> mInstSpeed;
     int mSampleRate;
     int mNumChannels;
 };
