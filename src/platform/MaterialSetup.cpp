@@ -71,8 +71,7 @@ static void FillTexGen(const MatT& mat, MaterialUniforms& uni) {
         uni.texXfmRow0[2] = xfm.v.x;   uni.texXfmRow0[3] = xfm.v.z;
         uni.texXfmRow1[0] = xfm.m.y.x; uni.texXfmRow1[1] = xfm.m.y.y;
         uni.texXfmRow1[2] = xfm.v.y;   uni.texXfmRow1[3] = 0.0f;
-        // DC3: the image's MakeTex3 rows (tx negated, translation before the
-        // matrix, transposed off-diagonals; rndshape::MatRetailTexXfmRows).
+        // Xbox MakeTex3 rows for centered and origin-relative UV transforms.
         rndshape::MatRetailTexXfmRows(mat, uni.texXfmRow0, uni.texXfmRow1);
     }
 }

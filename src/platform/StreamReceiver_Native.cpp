@@ -162,8 +162,9 @@ bool StreamReceiverNative::SendDoneImpl() {
 
 int StreamReceiverNative::GetPlayCursor() {
     // Update base class mLastPlayCursor with total bytes played for GetBytesPlayed()
-    mLastPlayCursor = mPlayCursor;
-    return mPlayCursor % kStreamRcvrBufSize;
+    const int cursor = mPlayCursor;
+    mLastPlayCursor = cursor;
+    return cursor % kStreamRcvrBufSize;
 }
 
 #ifdef HX_WEB
@@ -218,6 +219,14 @@ int StreamReceiverNative::RenderAudio(float *output, int frameCount) {
 #endif
         return frameCount;
     }
+
+#ifndef HX_WEB
+    const int outputRate = AudioDevice::GetInstance().GetSampleRate();
+    if (outputRate > 0 && mSampleRate > 0 && mSampleRate != outputRate) {
+        RenderResampled(output, frameCount, outputRate);
+        return frameCount;
+    }
+#endif
 
     int wc = mWriteCursor;
     int pc = mPlayCursor;
@@ -282,6 +291,53 @@ int StreamReceiverNative::RenderAudio(float *output, int frameCount) {
     return frameCount;
 }
 
+#ifndef HX_WEB
+void StreamReceiverNative::RenderResampled(float *output, int frameCount, int outputRate) {
+    const int playCursor = mPlayCursor;
+    const int available = std::max(0, (mWriteCursor - playCursor) / 2);
+    constexpr int ringFrames = kPCMBufSize / 2;
+    const int readPos = (playCursor / 2) % ringFrames;
+    float volL, volR;
+    ImagePan::Mono(mVolume, mPan, volL, volR);
+
+    int rendered = 0;
+    // Express the fractional source position in units of 1/outputRate so
+    // callback boundaries and exact-rate ratios never round away a sample.
+    int64_t position = mSourceFrameRemainder;
+    const float inverseOutputRate = 1.0f / outputRate;
+    while (rendered < frameCount) {
+        const int index = static_cast<int>(position / outputRate);
+        if (index >= available) break;
+        const int remainder = static_cast<int>(position % outputRate);
+        // Keep the last queued sample until the producer supplies its
+        // interpolation neighbor. At EOF the neighbor is silence.
+        if (remainder && index + 1 == available && !mEndData) break;
+        const int16_t first = mPCMBuf[(readPos + index) % ringFrames];
+        const int16_t next = index + 1 < available
+            ? mPCMBuf[(readPos + index + 1) % ringFrames] : 0;
+        const float fraction = remainder * inverseOutputRate;
+        const float sample = (first + fraction * (next - first)) / 32768.0f;
+        output[rendered * 2] = sample * volL;
+        output[rendered * 2 + 1] = sample * volR;
+        ++rendered;
+        position += mSampleRate;
+    }
+
+    std::fill(output + rendered * 2, output + frameCount * 2, 0.0f);
+    if (mEndData) {
+        position += static_cast<int64_t>(frameCount - rendered) * mSampleRate;
+    } else {
+        position = std::min(position, static_cast<int64_t>(available) * outputRate);
+    }
+
+    // The producer, ring, and stream clock all count source PCM bytes.
+    const int consumed = static_cast<int>(position / outputRate);
+    mSourceFrameRemainder = static_cast<int>(position % outputRate);
+    mPlayCursor = playCursor + consumed * 2;
+    mTotalBytesPlayed += consumed * 2;
+}
+#endif
+
 #ifdef HX_WEB
 void StreamReceiverNative::DebugDescribe(char *buf, size_t bufSize) const {
     if (bufSize == 0) {
@@ -296,8 +352,8 @@ void StreamReceiverNative::DebugDescribe(char *buf, size_t bufSize) const {
         mInMixer,
         mPlaying,
         mPaused,
-        mWriteCursor,
-        mPlayCursor,
+        mWriteCursor.load(),
+        mPlayCursor.load(),
         (unsigned long long)mTotalBytesPlayed,
         mActiveRenderCount,
         mSilentRenderCount,

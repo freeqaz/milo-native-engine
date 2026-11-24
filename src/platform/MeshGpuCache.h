@@ -18,6 +18,8 @@ struct GpuMeshData {
     int numVertices = 0;
     bool skinned = false;
     bool uploaded = false;
+    const RndMesh* geomOwner = nullptr;
+    uint64_t geomRevision = 0;
     int32_t depthBias = 0;  // set by viewer for combined meshes
     std::string debugLabel;  // GPU debug label (for text meshes etc.)
 };
@@ -25,8 +27,8 @@ struct GpuMeshData {
 // Upload mesh vertex/index data to GPU (creates or re-uploads as needed).
 // Returns true if mesh data is ready for drawing.
 // A mesh is uploaded once, and re-read (unpacked, a new vertex and index
-// buffer) only after RndMesh::OnSync / InvalidateGpuMesh has marked it stale,
-// named or not. RndText glyph pages and the spotlight beam shafts are unnamed
+// buffer) when the mesh or its geometry owner was synced or the owner changed.
+// RndText glyph pages and the spotlight beam shafts are unnamed
 // and change only through Sync; until 2026-11-15 every unnamed mesh was
 // re-read on every call, which re-uploaded each glyph page and each beam every
 // frame (docs/native/dc3-backend-for-rb3-wii.md sections 36.6 and 38).

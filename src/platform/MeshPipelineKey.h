@@ -22,6 +22,9 @@ struct MeshPassContext {
     bool hasDepth = true;     // false: the HUD overlay pass
     bool toTexture = false;   // a TexturePass (WgpuRnd::ActiveTargetTex)
     bool reflection = false;  // the reflection draw mode (cull flipped)
+    // The HUD overlay pass (WgpuRnd::CurrentPassIsOverlay), depth or not: the
+    // post chain has read the frame's bloom mask, so nothing here writes it.
+    bool overlay = false;
     // The self-shadow casters (rndshape::kSelfShadowCasterDrawMode, DC3's
     // kDrawExtrude): the image's shadowmap shader culls counter-clockwise
     // whatever the material asks (RndShader::CheckForceCull's mode 6, which a

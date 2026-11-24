@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <atomic>
 #include "synth/SampleInst.h"
 #include "audio/AudioDevice.h"
 
@@ -36,11 +37,14 @@ private:
     double mPlayPos;            // fractional sample position for resampling
     int mEndSample;             // where to stop (-1 = end of data)
     bool mLoop;
-    volatile bool mPlaying;
-    bool mPaused;
-    float mInstVolume;
-    float mInstPan;
-    float mInstSpeed;
+    std::atomic<bool> mPlaying;
+    std::atomic<bool> mPaused;
+    std::atomic<float> mInstVolume;
+    std::atomic<float> mInstPan;
+    std::atomic<float> mInstSpeed;
     int mSampleRate;
     int mNumChannels;
+    // Last, so the members before it keep their offsets for a consumer TU that
+    // still sees the previous header (dc3-decomp carries a copy of this file).
+    bool mBigEndian = false;
 };

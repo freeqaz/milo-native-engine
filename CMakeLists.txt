@@ -203,7 +203,7 @@ if(MILO_ENGINE_HAVE_CONTEXT AND MILO_ENGINE_BUILD_GFX AND NOT EMSCRIPTEN)
         find_package(glfw3 REQUIRED)
     endif()
 
-    # FFmpeg (Bink video/audio decode). Optional — gates two platform sources.
+    # FFmpeg (Bink video/audio and XMA sample decode). Optional.
     find_package(PkgConfig QUIET)
     if(PkgConfig_FOUND AND NOT TARGET PkgConfig::FFMPEG)
         pkg_check_modules(FFMPEG QUIET IMPORTED_TARGET
@@ -460,7 +460,8 @@ endif()
 if(MILO_ENGINE_HAVE_FFMPEG)
     list(APPEND MILO_ENGINE_PLATFORM_SOURCES
         src/platform/FFmpegAudioReader.cpp
-        src/platform/FFmpegMovieImpl.cpp)
+        src/platform/FFmpegMovieImpl.cpp
+        src/platform/XmaSampleDecoder.cpp)
 endif()
 
 set(MILO_ENGINE_FULL_SOURCES
@@ -587,6 +588,7 @@ if(MILO_ENGINE_HAVE_CONTEXT)
         target_compile_definitions(milo-engine PRIVATE HX_IMGUI=1)
         if(MILO_ENGINE_HAVE_FFMPEG)
             target_compile_definitions(milo-engine PRIVATE HX_FFMPEG=1)
+            set_property(TARGET milo-engine PROPERTY MILO_ENGINE_XMA_DECODER ON)
             target_include_directories(milo-engine PUBLIC ${FFMPEG_INCLUDE_DIRS})
             target_link_libraries(milo-engine PUBLIC PkgConfig::FFMPEG PkgConfig::MILO_SWRESAMPLE)
         endif()

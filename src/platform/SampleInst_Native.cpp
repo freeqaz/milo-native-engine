@@ -10,6 +10,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 static const int kOutputSampleRate = 44100;
@@ -46,20 +48,27 @@ void SampleInstNative::StartImpl() {
     if (!data.HasData())
         return;
 
-    // Skip compressed formats we can't decode natively (XMA is Xbox 360 only)
+    // Compressed samples need to be decoded by the bank loader first.
     if (data.GetFormat() != SampleData::kPCM && data.GetFormat() != SampleData::kBigEndPCM)
         return;
 
     mSampleRate = data.GetSampleRate();
     mNumChannels = data.NumChannels();
     mPCMData = (const int16_t *)data.DataPtr();
-    mPCMSamples = data.GetNumSamples();
+    mBigEndian = data.GetFormat() == SampleData::kBigEndPCM;
+    if (mSampleRate <= 0 || (mNumChannels != 1 && mNumChannels != 2)) return;
+    mPCMSamples = std::min(data.GetNumSamples(), data.GetSizeBytes() / (2 * mNumChannels));
+    if (mPCMSamples <= 0) return;
 
     if (mEndSample <= 0 || mEndSample > mPCMSamples)
         mEndSample = mPCMSamples;
 
     mPlaying = true;
     AudioDevice::GetInstance().AddSource(this);
+    if (std::getenv("MILO_AUDIO_TRACE")) {
+        std::printf("AudioDevice: sample '%s' start frames=%d rate=%d channels=%d format=%d\n",
+                    mSample->Name(), mPCMSamples, mSampleRate, mNumChannels, data.GetFormat());
+    }
 }
 
 void SampleInstNative::StopImpl(bool) {
@@ -70,18 +79,21 @@ void SampleInstNative::StopImpl(bool) {
 }
 
 // Linear interpolation between two samples
-static inline float LerpSample(const int16_t *data, int totalSamples, double pos, int channel, int numChannels) {
+static inline float LerpSample(const int16_t *data, int totalSamples, double pos, int channel,
+                               int numChannels, bool bigEndian) {
     int idx0 = (int)pos;
     int idx1 = idx0 + 1;
     float frac = (float)(pos - idx0);
 
-    float s0 = 0.0f, s1 = 0.0f;
-    if (idx0 >= 0 && idx0 < totalSamples) {
-        s0 = data[idx0 * numChannels + channel] / 32768.0f;
-    }
-    if (idx1 >= 0 && idx1 < totalSamples) {
-        s1 = data[idx1 * numChannels + channel] / 32768.0f;
-    }
+    auto fetch = [&](int frame) {
+        if (frame < 0 || frame >= totalSamples) return 0.0f;
+        const int16_t *sample = data + frame * numChannels + channel;
+        if (!bigEndian) return *sample / 32768.0f;
+        const auto *bytes = reinterpret_cast<const uint8_t *>(sample);
+        return static_cast<int16_t>((bytes[0] << 8) | bytes[1]) / 32768.0f;
+    };
+    const float s0 = fetch(idx0);
+    const float s1 = fetch(idx1);
     return s0 + frac * (s1 - s0);
 }
 
@@ -116,12 +128,12 @@ int SampleInstNative::RenderAudio(float *output, int frameCount) {
         }
 
         if (mNumChannels == 2) {
-            float left = LerpSample(mPCMData, mPCMSamples, mPlayPos, 0, 2);
-            float right = LerpSample(mPCMData, mPCMSamples, mPlayPos, 1, 2);
+            float left = LerpSample(mPCMData, mPCMSamples, mPlayPos, 0, 2, mBigEndian);
+            float right = LerpSample(mPCMData, mPCMSamples, mPlayPos, 1, 2, mBigEndian);
             output[i * 2 + 0] = left * volL;
             output[i * 2 + 1] = right * volR;
         } else {
-            float sample = LerpSample(mPCMData, mPCMSamples, mPlayPos, 0, 1);
+            float sample = LerpSample(mPCMData, mPCMSamples, mPlayPos, 0, 1, mBigEndian);
             output[i * 2 + 0] = sample * volL;
             output[i * 2 + 1] = sample * volR;
         }

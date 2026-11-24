@@ -58,6 +58,11 @@ static void RecordDrawCall(
     rec.prelit = matParams.uniforms.prelit;
     rec.useTexture = matParams.uniforms.useTexture;
     rec.alpha = matParams.uniforms.color[3];
+    rec.texGenMode = matParams.uniforms.texGenMode;
+    memcpy(rec.texXfmRow0, matParams.uniforms.texXfmRow0, sizeof(rec.texXfmRow0));
+    memcpy(rec.texXfmRow1, matParams.uniforms.texXfmRow1, sizeof(rec.texXfmRow1));
+    rec.texXfmTranslation[0] = mat->TexXfm().v.x;
+    rec.texXfmTranslation[1] = mat->TexXfm().v.y;
     const Vector3& worldPos = mesh->WorldXfm().v;
     rec.worldPos[0] = worldPos.x;
     rec.worldPos[1] = worldPos.y;
@@ -199,6 +204,7 @@ MeshPassContext CurrentMeshPassContext() {
     c.targetFormat = gWgpuRnd->CurrentTargetFormat();
     c.sampleCount = gWgpuRnd->CurrentSampleCount();
     c.hasDepth = gWgpuRnd->CurrentPassHasDepth();
+    c.overlay = gWgpuRnd->CurrentPassIsOverlay();
     c.toTexture = gWgpuRnd->ActiveTargetTex() != nullptr;
     c.reflection = rndshape::TheRndRef().DrawMode() == rndshape::kDrawModeReflection;
     c.selfShadowCaster = rndshape::kSelfShadowMap
@@ -270,7 +276,9 @@ PipelineKey MaterialPipelineKey(RndMat* rawMat, bool skinned, bool isGlyphMesh, 
         key.alphaWrite = true;
     // RB3's pseudo-HDR bloom mask (rndshape::BloomMaskScale; 0 for DC3): an
     // AllowHDR material drawn into the main frame writes its luma to alpha.
-    const float bloomMaskScale = (!isOverlayPass && !ctx.toTexture)
+    // Not in the overlay pass, which comes after the post chain read the mask
+    // (MeshPassContext::overlay; it has depth under rndshape::kOverlayDepth).
+    const float bloomMaskScale = (!isOverlayPass && !ctx.overlay && !ctx.toTexture)
         ? rndshape::BloomMaskScale(mat) : 0.0f;
     if (bloomMaskScale != 0.0f)  // DC3: negative (rndshape::BloomMaskScale)
         key.alphaWrite = true;
@@ -355,7 +363,8 @@ int WarmVariant(PipelineKey key, RndMat* rawMat, bool glyph, bool textMesh,
         && !rndshape::MatPinsAlphaWrite(rawMat))
         key.alphaWrite = true;
     int queued = WarmAtEachScale(pm, key, uiOutput);
-    if (ctx.hasDepth && !ctx.toTexture && rndshape::AllowsBloomMaskFor(mat, blend, alphaWrite)) {
+    if (ctx.hasDepth && !ctx.overlay && !ctx.toTexture &&
+        rndshape::AllowsBloomMaskFor(mat, blend, alphaWrite)) {
         PipelineKey masked = key;
         masked.alphaWrite = true;
         queued += WarmAtEachScale(pm, masked, uiOutput);
@@ -461,7 +470,7 @@ void DrawMeshImmediate(RndMesh* mesh) {
     // RB3's pseudo-HDR bloom mask (rndshape::BloomMaskScale; 0 for DC3): an
     // AllowHDR material drawn into the main frame writes its luma to alpha
     // (MeshPipelineKey sets alphaWrite for it).
-    const float bloomMaskScale = (!isOverlayPass && !passCtx.toTexture)
+    const float bloomMaskScale = (!isOverlayPass && !passCtx.overlay && !passCtx.toTexture)
         ? rndshape::BloomMaskScale(mat) : 0.0f;
 
     wgpu::RenderPipeline pipeline = gWgpuRnd->Pipelines().GetPipeline(key);
@@ -564,6 +573,11 @@ void DrawMeshImmediate(RndMesh* mesh) {
         rec.pipeCull = (int)key.cull;
         rec.passHasDepth = key.hasDepth;
         rec.glyph = isGlyphMesh;
+        rec.uploadedVerts = meshData.numVertices;
+        rec.uploadedTriangles = meshData.numIndices / 3;
+        // geomOwner is set by UploadMesh; a GpuMeshData filled another way has none.
+        rec.ownerVerts = meshData.geomOwner ? meshData.geomOwner->NumVerts() : 0;
+        rec.ownerTriangles = meshData.geomOwner ? meshData.geomOwner->NumFaces() : 0;
     }
 
     // --- Draw ---

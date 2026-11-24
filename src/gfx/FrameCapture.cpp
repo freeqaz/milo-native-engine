@@ -95,6 +95,10 @@ void FrameCapture::DumpToStderr() const {
         if (r.deferred) fprintf(stderr, " DEFERRED(dist=%.1f)", r.distSq);
         fprintf(stderr, "\n");
 
+        if (r.hasPipeState) {
+            fprintf(stderr, "       geometry=(%d verts,%d tris) owner=(%d verts,%d tris)\n",
+                    r.uploadedVerts, r.uploadedTriangles, r.ownerVerts, r.ownerTriangles);
+        }
         fprintf(stderr, "       color=(%.2f,%.2f,%.2f,%.2f) alpha=%.2f prelit=%.0f tex=%.0f spec=%.0f emissive=%.2f\n",
                 r.color[0], r.color[1], r.color[2], r.color[3],
                 r.alpha, r.prelit, r.useTexture, r.specularPower, r.emissiveMultiplier);
@@ -105,6 +109,13 @@ void FrameCapture::DumpToStderr() const {
                     r.ndcPos[0], r.ndcPos[1], r.ndcPos[2]);
         }
         fprintf(stderr, "\n");
+
+        if (r.texGenMode != 0.0f) {
+            fprintf(stderr, "       texgen=%.0f translation=(%.6g,%.6g) rows=(%.6g,%.6g,%.6g,%.6g)(%.6g,%.6g,%.6g,%.6g)\n",
+                    r.texGenMode, r.texXfmTranslation[0], r.texXfmTranslation[1],
+                    r.texXfmRow0[0], r.texXfmRow0[1], r.texXfmRow0[2], r.texXfmRow0[3],
+                    r.texXfmRow1[0], r.texXfmRow1[1], r.texXfmRow1[2], r.texXfmRow1[3]);
+        }
 
         if (r.heuristicsApplied) {
             fprintf(stderr, "       heuristics: ");
