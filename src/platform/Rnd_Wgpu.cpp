@@ -1796,6 +1796,22 @@ void WgpuRnd::BeginFramePass(bool clear) {
 
     wgpu::RenderPassDescriptor rpDesc{};
     rpDesc.label = clear ? "MainPass" : "MainPassResume";
+    if (TimingSplitDraws() && GpuTimers::Active()) {
+        // np-gpuprof2: every frame segment its own name, in frame order.
+        if (clear) {
+            mSplitSeg = 0;
+            mSplitNames.clear();
+        } else {
+            mSplitSeg++;
+        }
+        char lbl[32];
+        snprintf(lbl, sizeof(lbl), "SEG%03d", mSplitSeg);
+        mSplitLabel = lbl;
+        rpDesc.label = mSplitLabel.c_str();
+        if ((int)mSplitNames.size() <= mSplitSeg) mSplitNames.resize(mSplitSeg + 1);
+        // A segment a texture pass (or a depth clear) began, not a split.
+        if (!clear && !mInSplit) mSplitNames[mSplitSeg] = "(resume) ";
+    }
     rpDesc.colorAttachmentCount = 1;
     rpDesc.colorAttachments = &colorAtt;
     rpDesc.depthStencilAttachment = &depthAtt;
@@ -1839,6 +1855,37 @@ void WgpuRnd::BeginFramePass(bool clear) {
     } else {
         ApplyViewport();
     }
+}
+
+bool WgpuRnd::TimingSplitDraws() {
+    static const bool sOn = [] {
+        const char* e = getenv("MILO_GPU_SPLIT_DRAWS");
+        return e && *e && *e != '0';
+    }();
+    return sOn;
+}
+
+void WgpuRnd::TimingSplitAfterDraw(const char* what) {
+    if (!TimingSplitDraws() || !GpuTimers::Active()) return;
+    if (!mInPass || mActiveTargetTex || mFrameInOverlay || !mFramePassValid) return;
+    if (mCurrentSampleCount != kMSAASamples || !mCurrentPassHasDepth) return;
+    if ((int)mSplitNames.size() > mSplitSeg) {
+        std::string& n = mSplitNames[mSplitSeg];
+        if (!n.empty() && n.back() != ' ') n += "|";
+        n += what ? what : "?";
+    }
+    // A raw split: the deferred queues (text, transparent, contact shadows)
+    // stay queued; only the canvas, which records into this pass, is drawn.
+    if (mCanvas2D.HasPending()) mCanvas2D.Flush();
+    mCanvas2D.OnPassEnd();
+    const bool scissor = mClipScissorSet;
+    mPass.End();
+    mInPass = false;
+    mClipScissorSet = false;
+    mInSplit = true;
+    BeginFramePass(false);
+    mInSplit = false;
+    if (scissor) ApplyClipScissor();
 }
 
 void WgpuRnd::BeginTexturePass(RndTex* tex) { BeginTexturePass(tex, TexturePassLoad()); }
@@ -1992,6 +2039,10 @@ void WgpuRnd::MakeDrawTarget() {
 void WgpuRnd::BeginDrawing() {
     // Retail Rnd::BeginDrawing clears the queued point tests; a batch recorded
     // into an encoder that was never submitted has no answers coming.
+    if (TimingSplitDraws() && GpuTimers::Active() && mFrameID % 120 == 0) {
+        for (size_t i = 0; i < mSplitNames.size(); i++)
+            fprintf(stderr, "[GPUSPLIT] frame %d SEG%03d %s\n", mFrameID, (int)i, mSplitNames[i].c_str());
+    }
     mPointTestQueue.clear();
     mPointTestsRan = false;
     mPointTestPass.DiscardUnsubmitted();
