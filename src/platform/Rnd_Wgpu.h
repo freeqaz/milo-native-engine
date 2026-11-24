@@ -440,6 +440,24 @@ private:
     // np-gpuprof2 MILO_GPU_SPLIT_DRAWS: the frame segment being drawn, its
     // label, and what each segment of the frame drew.
     int mSplitSeg = 0;
+    // Predicted resolve (np-gpuprof2, DC3's shape only, kDC3RetailPost): a
+    // frame-pass segment resolves its 4x samples into the post intermediate
+    // only when, in the previous frame, the segment of the same index was the
+    // last one before a reader of the intermediate (the pre-buffer copy, the
+    // post chain). Every other segment keeps its samples (they are stored
+    // anyway) and leaves mResolvePending; a reader that finds it set runs
+    // ResolveFramePass, one colour-only resolve pass (the first frame, a frame
+    // whose shape changed). A resolve writes the whole intermediate from the
+    // samples, so the intermediate a reader sees is the one the last
+    // segment's resolve left before: pixel-identical. The gameplay frame is
+    // cut into ~8 segments by texture passes, and each in-pass resolve of a
+    // full-size 4x target is paid again. {rnd native_look resolve_predict_on|
+    // _off|_rule}; MILO_RESOLVE_PREDICT=0 starts it off.
+    int mFrameSegments = 0;
+    bool mResolvePending = false;
+    std::vector<int> mResolveAt, mPrevResolveAt;
+    int mResolveFallbacks = 0, mResolvesInPass = 0, mResolvesSkipped = 0;
+    void ResolveFramePass();
     bool mInSplit = false;
     std::string mSplitLabel;
     std::vector<std::string> mSplitNames;
