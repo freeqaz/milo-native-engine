@@ -2349,5 +2349,26 @@
     "faithfulStatus": "live: =1 keeps the desktop output playing when the game window is in the background and starved. Unset = mute: when the window has no focus and no frame has finished for 500 ms the mix is ramped to silence, and it comes back when the window has focus or 30 frames in a row each took under 100 ms (audio/BackgroundMute.h). A compositor that stops presenting a hidden window drops the main loop to about one frame a second, and the streams it decodes then play in bursts. Never applies headless or on the web [audio/AudioDevice.cpp]",
     "default": "off",
     "read": "truthy"
+  },
+  "MILO_AUDIO_TRACE": {
+    "class": "probe",
+    "owner": "audio",
+    "faithfulStatus": "probe: prints one 'AudioDevice: sample ... start' line (name, frames, rate, channels, format) each time a SampleInstNative starts. Log only, no playback change [SampleInst_Native.cpp:68]",
+    "default": "off",
+    "read": "presence"
+  },
+  "MILO_GLYPH_ZMODE": {
+    "class": "debug",
+    "owner": "render",
+    "faithfulStatus": "n/a: A/B override of rndshape::kGlyphKeepsMatZMode (np-overlay-zmode): keep = glyph pages draw with their font material's z mode (retail RndText; on by shape in rb3-xenon), off = force zmode 0 (the old port behaviour; still the DC3 and rb3 Wii shape default). Any other value or unset = the shape's default [Mesh_Wgpu.cpp:255]",
+    "default": "off",
+    "read": "value"
+  },
+  "MILO_GLYPH_ZMODE_LOG": {
+    "class": "probe",
+    "owner": "render",
+    "faithfulStatus": "probe: prints each font material's z mode once per (material, pass depth) with whether glyph pages keep it ([glyph-zmode] lines). Log only [Mesh_Wgpu.cpp:265]",
+    "default": "off",
+    "read": "presence"
   }
 }
