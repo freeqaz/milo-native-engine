@@ -15,6 +15,14 @@
 //
 // MILO_THERMAL_GOVERNOR=0 turns the governor off (default on): the level is
 // still readable, nothing is ever resized.
+// MILO_OUTPUT_RATE_GOVERNOR=0 turns off the governor's rate rule alone (default
+// on; gfx/ThermalGovernor.h, THE RATE RULE): an output drawn above 1080 rows is
+// then never made smaller on a cool machine, however late its frames. The rate
+// rule runs whatever the level, headless included (a headless frame of 2160
+// rows is as slow as a windowed one), but only for an output above 1080 rows.
+// Its step up reads the GPU's time for a frame, which only exists with
+// MILO_GPU_TIMERS=1 on an adapter with timestamp queries; without it a size
+// given up stays given up until the output is resized.
 // MILO_THERMAL_COOL_SECONDS=N replaces the governor's cool dwell (90 s) -- a
 // test's knob, so a run can watch the size come back without waiting minutes.
 //
@@ -55,6 +63,7 @@ void ThermalGovernorFrame(GpuDevice& gpu);
 // What the governor last saw and did (a value copy; any thread).
 struct ThermalStatus {
     bool enabled = true;        // MILO_THERMAL_GOVERNOR
+    bool rateRule = true;       // ... and MILO_OUTPUT_RATE_GOVERNOR
     int level = kThermalUnknown;  // the level the governor was given
     bool injected = false;      // ... and whether it was injected
     double targetFps = 0.0;
@@ -65,6 +74,9 @@ struct ThermalStatus {
     int outputWidth = 0, outputHeight = 0;
     int stepsDown = 0, stepsUp = 0;
     double coolSeconds = 0.0;   // the level's time at nominal, unbroken
+    int thermalRowCap = 0, rateRowCap = 0;  // each rule's own cap; rowCap is the tighter
+    int rateStepsDown = 0, rateStepsUp = 0;  // the rate rule's changes (not in stepsDown/Up)
+    double gpuFrameMs = -1.0;   // the headroom signal last given (< 0 = none)
 };
 ThermalStatus ThermalGetStatus();
 
