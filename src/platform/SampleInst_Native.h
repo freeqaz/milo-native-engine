@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <atomic>
 #include "synth/SampleInst.h"
 #include "audio/AudioDevice.h"
 

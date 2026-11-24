@@ -571,8 +571,9 @@ void DrawMeshImmediate(RndMesh* mesh) {
         rec.glyph = isGlyphMesh;
         rec.uploadedVerts = meshData.numVertices;
         rec.uploadedTriangles = meshData.numIndices / 3;
-        rec.ownerVerts = meshData.geomOwner->NumVerts();
-        rec.ownerTriangles = meshData.geomOwner->NumFaces();
+        // geomOwner is set by UploadMesh; a GpuMeshData filled another way has none.
+        rec.ownerVerts = meshData.geomOwner ? meshData.geomOwner->NumVerts() : 0;
+        rec.ownerTriangles = meshData.geomOwner ? meshData.geomOwner->NumFaces() : 0;
     }
 
     // --- Draw ---

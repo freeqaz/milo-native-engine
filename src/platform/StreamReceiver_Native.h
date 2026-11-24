@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <atomic>
 #include "synth/StreamReceiver.h"
 #include "audio/AudioDevice.h"
 
