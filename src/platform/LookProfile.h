@@ -730,6 +730,11 @@ bool SetLookCutoutModeForInspection(int mode);
 // compared both ways. Not tied to the look profile.
 void SetReflectionCullForInspection(int mode);  // -1 rule, 0 flip, 1 force
 int ReflectionCullInspection();
+// np-gpuprof2: the predicted frame-pass resolve (WgpuRnd, DC3's shape). On by
+// default (pixel-identical; MILO_RESOLVE_PREDICT=0 starts it off); -1 the
+// default, 0 off, 1 on: {rnd native_look resolve_predict_off|_on|_rule}.
+void SetResolvePredictForInspection(int mode);
+bool ResolvePredictActive();
 // One post field at a time (the per-item cost A/B: each enhancement against
 // retail in the same run); the fields not named are set retail.
 bool SetLookPostFieldsForInspection(bool precision, bool bloomFilter, bool dofFilter);

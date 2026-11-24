@@ -172,6 +172,15 @@ public:
     // target (x, y, w, h): the clip-plane rectangle, or the whole target.
     void PassScissor(int out[4]) const;
     bool IsInPass() const { return mInPass; }
+    // MILO_GPU_SPLIT_DRAWS=1 with MILO_GPU_TIMERS=1 (np-gpuprof2, measurement
+    // only): after each mesh draw into the frame pass, end the pass and resume
+    // it, so GpuTimers times every draw in a pass of its own ("SEG<n>"); the
+    // draws in each segment are printed as [GPUSPLIT] lines every 120 frames.
+    // Each segment pays a pass end (MSAA store + resolve) and a reload: read a
+    // draw's cost as its segment minus the cheapest segment. `what` names the
+    // draw for the listing. Off: one load of a static bool.
+    void TimingSplitAfterDraw(const char* what);
+    static bool TimingSplitDraws();
     wgpu::TextureFormat CurrentTargetFormat() const { return mCurrentTargetFormat; }
     uint32_t CurrentSampleCount() const { return mCurrentSampleCount; }
     // np-look47: the sample count a texture pass draws with when the look's
@@ -428,6 +437,30 @@ private:
     // (rndshape::kCamSelectSetsViewport).
     void ApplyCameraViewport(RndCam* cam);
     void BeginFramePass(bool clear);
+    // np-gpuprof2 MILO_GPU_SPLIT_DRAWS: the frame segment being drawn, its
+    // label, and what each segment of the frame drew.
+    int mSplitSeg = 0;
+    // Predicted resolve (np-gpuprof2, DC3's shape only, kDC3RetailPost): a
+    // frame-pass segment resolves its 4x samples into the post intermediate
+    // only when, in the previous frame, the segment of the same index was the
+    // last one before a reader of the intermediate (the pre-buffer copy, the
+    // post chain). Every other segment keeps its samples (they are stored
+    // anyway) and leaves mResolvePending; a reader that finds it set runs
+    // ResolveFramePass, one colour-only resolve pass (the first frame, a frame
+    // whose shape changed). A resolve writes the whole intermediate from the
+    // samples, so the intermediate a reader sees is the one the last
+    // segment's resolve left before: pixel-identical. The gameplay frame is
+    // cut into ~8 segments by texture passes, and each in-pass resolve of a
+    // full-size 4x target is paid again. {rnd native_look resolve_predict_on|
+    // _off|_rule}; MILO_RESOLVE_PREDICT=0 starts it off.
+    int mFrameSegments = 0;
+    bool mResolvePending = false;
+    std::vector<int> mResolveAt, mPrevResolveAt;
+    int mResolveFallbacks = 0, mResolvesInPass = 0, mResolvesSkipped = 0;
+    void ResolveFramePass(const char* who);
+    bool mInSplit = false;
+    std::string mSplitLabel;
+    std::vector<std::string> mSplitNames;
     // How a texture pass starts.  Selecting a target clears it to transparent
     // black (colour and depth); Rnd::Clear on a bound target restarts the pass
     // with what the clear asks for and keeps the rest (TexturePassLoad below).

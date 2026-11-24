@@ -764,6 +764,21 @@ void SetReflectionCullForInspection(int mode) {
 }
 int ReflectionCullInspection() { return sReflectionCullInspection; }
 
+static int sResolvePredictInspection = -1;
+void SetResolvePredictForInspection(int mode) {
+    sResolvePredictInspection = mode < 0 ? -1 : (mode ? 1 : 0);
+    fprintf(stderr, "[look] resolve predict %s (inspection)\n",
+            sResolvePredictInspection < 0 ? "rule" : sResolvePredictInspection ? "on" : "off");
+}
+bool ResolvePredictActive() {
+    if (sResolvePredictInspection >= 0) return sResolvePredictInspection == 1;
+    static const bool sDefault = [] {
+        const char* v = getenv("MILO_RESOLVE_PREDICT");
+        return !(v && (!strcmp(v, "0") || !strcmp(v, "off")));
+    }();
+    return sDefault;
+}
+
 bool SetLookProfileForInspection(LookProfile p) {
     if (Mutable().profile == LookProfile::Native || p == LookProfile::Native) return false;
     Mutable() = SettingsFor(p);

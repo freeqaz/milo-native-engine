@@ -802,6 +802,7 @@ void WgpuRnd::ClearDepthForOverlay() {
         colorAtt.view = mMsaaView;
         colorAtt.resolveTarget = hasPostProc ? mIntermediateView : FrameTarget();
         colorAtt.storeOp = wgpu::StoreOp::Store;
+        if (hasPostProc) mResolvePending = false;
     } else {
         colorAtt.view = hasPostProc ? mIntermediateView : FrameTarget();
         colorAtt.storeOp = wgpu::StoreOp::Store;
@@ -924,6 +925,7 @@ void WgpuRnd::FlushPostProcessingForOverlay() {
 
     // End the current pass (venue + any existing draws)
     EndActivePass();
+    ResolveFramePass("overlay");
 
     // Run post-processing now (reads intermediate, writes to framebuffer).
     // Only run once per frame — subsequent calls just start a new overlay pass
@@ -1093,6 +1095,36 @@ void WgpuRnd::DoWorldEnd() {
 // mPostWorldDepthTex, cleared, so UI drawn with z mode "normal" after the world
 // (the song list's row backings) is not hidden by the world behind it, while
 // mDepthTex keeps the world's depth for the post chain, as mFrontBufferDepth.
+void WgpuRnd::ResolveFramePass(const char* who) {
+    static const bool sTrace = getenv("MILO_RESOLVE_TRACE") != nullptr;
+    if (sTrace && mFrameID % 300 == 7)
+        fprintf(stderr, "[RTRACE] frame %d reader %s after seg %d pending %d inpass %d\n", mFrameID, who,
+                mFrameSegments, mResolvePending ? 1 : 0, mInPass ? 1 : 0);
+    // A reader of the intermediate: the segment just ended is the one whose
+    // resolve it needs (recorded for the next frame's prediction).
+    if (mFrameSegments > 0 &&
+        std::find(mResolveAt.begin(), mResolveAt.end(), mFrameSegments) == mResolveAt.end())
+        mResolveAt.push_back(mFrameSegments);
+    if (!mResolvePending) return;
+    mResolvePending = false;
+    if (mInPass || !mMsaaView || !mIntermediateView) return;
+    mResolveFallbacks++;
+    // Colour only: load the samples, keep them (a later segment may resume
+    // on them), resolve into the intermediate. No draw, no depth.
+    wgpu::RenderPassColorAttachment colorAtt{};
+    colorAtt.view = mMsaaView;
+    colorAtt.resolveTarget = mIntermediateView;
+    colorAtt.loadOp = wgpu::LoadOp::Load;
+    colorAtt.storeOp = wgpu::StoreOp::Store;
+    wgpu::RenderPassDescriptor rpDesc{};
+    rpDesc.label = "FrameResolve";
+    rpDesc.colorAttachmentCount = 1;
+    rpDesc.colorAttachments = &colorAtt;
+    MILO_GPU_TIME_PASS(rpDesc);
+    wgpu::RenderPassEncoder pass = mEncoder.BeginRenderPass(&rpDesc);
+    pass.End();
+}
+
 void WgpuRnd::SavePreBuffer() {
     if (mPreSavedThisFrame) return;
     if (!mFrameView || !mFramePassValid || mActiveTargetTex || !mFramePassColorTex) return;
@@ -1112,6 +1144,7 @@ void WgpuRnd::SavePreBuffer() {
 }
 
 void WgpuRnd::CopyWorldToPreBuffer() {
+    ResolveFramePass("prebuf");  // every caller has ended the frame pass
     const wgpu::Texture& src = mFramePassColorTex;
     if (!src || !(src.GetUsage() & wgpu::TextureUsage::CopySrc)) return;
     const uint32_t w = src.GetWidth(), h = src.GetHeight();
@@ -1739,7 +1772,25 @@ void WgpuRnd::BeginFramePass(bool clear) {
                 mIntermediateWidth = curW;
                 mIntermediateHeight = curH;
             }
-            colorAtt.resolveTarget = mIntermediateView;
+            const int seg = ++mFrameSegments;
+            static const bool sTrace = getenv("MILO_RESOLVE_TRACE") != nullptr;
+            if (sTrace && mFrameID % 300 == 7)
+                fprintf(stderr, "[RTRACE] frame %d seg %d clear %d\n", mFrameID, seg, clear ? 1 : 0);
+            bool resolveNow = true;
+            if constexpr (rndshape::kDC3RetailPost) {
+                if (milo::ResolvePredictActive()) {
+                    resolveNow = std::find(mPrevResolveAt.begin(), mPrevResolveAt.end(), seg) !=
+                                 mPrevResolveAt.end();
+                }
+            }
+            if (resolveNow) {
+                colorAtt.resolveTarget = mIntermediateView;
+                mResolvePending = false;
+                mResolvesInPass++;
+            } else {
+                mResolvePending = true;  // ResolveFramePass, before a reader
+                mResolvesSkipped++;
+            }
         } else {
             colorAtt.resolveTarget = FrameTarget();
         }
@@ -1796,6 +1847,22 @@ void WgpuRnd::BeginFramePass(bool clear) {
 
     wgpu::RenderPassDescriptor rpDesc{};
     rpDesc.label = clear ? "MainPass" : "MainPassResume";
+    if (TimingSplitDraws() && GpuTimers::Active()) {
+        // np-gpuprof2: every frame segment its own name, in frame order.
+        if (clear) {
+            mSplitSeg = 0;
+            mSplitNames.clear();
+        } else {
+            mSplitSeg++;
+        }
+        char lbl[32];
+        snprintf(lbl, sizeof(lbl), "SEG%03d", mSplitSeg);
+        mSplitLabel = lbl;
+        rpDesc.label = mSplitLabel.c_str();
+        if ((int)mSplitNames.size() <= mSplitSeg) mSplitNames.resize(mSplitSeg + 1);
+        // A segment a texture pass (or a depth clear) began, not a split.
+        if (!clear && !mInSplit) mSplitNames[mSplitSeg] = "(resume) ";
+    }
     rpDesc.colorAttachmentCount = 1;
     rpDesc.colorAttachments = &colorAtt;
     rpDesc.depthStencilAttachment = &depthAtt;
@@ -1839,6 +1906,37 @@ void WgpuRnd::BeginFramePass(bool clear) {
     } else {
         ApplyViewport();
     }
+}
+
+bool WgpuRnd::TimingSplitDraws() {
+    static const bool sOn = [] {
+        const char* e = getenv("MILO_GPU_SPLIT_DRAWS");
+        return e && *e && *e != '0';
+    }();
+    return sOn;
+}
+
+void WgpuRnd::TimingSplitAfterDraw(const char* what) {
+    if (!TimingSplitDraws() || !GpuTimers::Active()) return;
+    if (!mInPass || mActiveTargetTex || mFrameInOverlay || !mFramePassValid) return;
+    if (mCurrentSampleCount != kMSAASamples || !mCurrentPassHasDepth) return;
+    if ((int)mSplitNames.size() > mSplitSeg) {
+        std::string& n = mSplitNames[mSplitSeg];
+        if (!n.empty() && n.back() != ' ') n += "|";
+        n += what ? what : "?";
+    }
+    // A raw split: the deferred queues (text, transparent, contact shadows)
+    // stay queued; only the canvas, which records into this pass, is drawn.
+    if (mCanvas2D.HasPending()) mCanvas2D.Flush();
+    mCanvas2D.OnPassEnd();
+    const bool scissor = mClipScissorSet;
+    mPass.End();
+    mInPass = false;
+    mClipScissorSet = false;
+    mInSplit = true;
+    BeginFramePass(false);
+    mInSplit = false;
+    if (scissor) ApplyClipScissor();
 }
 
 void WgpuRnd::BeginTexturePass(RndTex* tex) { BeginTexturePass(tex, TexturePassLoad()); }
@@ -1992,6 +2090,21 @@ void WgpuRnd::MakeDrawTarget() {
 void WgpuRnd::BeginDrawing() {
     // Retail Rnd::BeginDrawing clears the queued point tests; a batch recorded
     // into an encoder that was never submitted has no answers coming.
+    if (TimingSplitDraws() && GpuTimers::Active() && mFrameID % 120 == 0) {
+        for (size_t i = 0; i < mSplitNames.size(); i++)
+            fprintf(stderr, "[GPUSPLIT] frame %d SEG%03d %s\n", mFrameID, (int)i, mSplitNames[i].c_str());
+    }
+    // np-gpuprof2 predicted resolve: this frame's readers predict the next.
+    mPrevResolveAt.swap(mResolveAt);
+    mResolveAt.clear();
+    mFrameSegments = 0;
+    mResolvePending = false;
+    if (GpuTimers::Active() && mFrameID % 300 == 0 && mFrameID > 0) {
+        fprintf(stderr, "[RESOLVE] frame %d predict %d: in-pass %d skipped %d fallback %d (300 frames)\n",
+                mFrameID, milo::ResolvePredictActive() ? 1 : 0, mResolvesInPass, mResolvesSkipped,
+                mResolveFallbacks);
+        mResolvesInPass = mResolvesSkipped = mResolveFallbacks = 0;
+    }
     mPointTestQueue.clear();
     mPointTestsRan = false;
     mPointTestPass.DiscardUnsubmitted();
@@ -2345,6 +2458,7 @@ void WgpuRnd::EndDrawing() {
 
         // Post-processing: if active, read from intermediate and draw to frame target
         // Skip if already flushed (e.g., FlushPostProcessingForOverlay was called)
+        ResolveFramePass("enddraw");
         if (mIntermediateView && FramePostProc() && !mPostProcFlushed) {
             FeedVelocity(mPostProcPass);
             RunDC3SpotBeams();
