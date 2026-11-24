@@ -32,6 +32,42 @@ int ThermalGovernor::StepUp(int cap, int baseRows) {
     return 0;
 }
 
+int ThermalGovernor::RateStepDown(int cap, int baseRows, int rateFloorRows) {
+    if (baseRows <= 0) return cap;
+    const int from = cap > 0 && cap < baseRows ? cap : baseRows;
+    for (int i = 0; i < kRateRowStepCount; i++) {
+        const int rows = kRateRowSteps[i];
+        if (rows < from && rows >= rateFloorRows) return rows;
+    }
+    return cap;
+}
+
+int ThermalGovernor::RateStepUp(int cap, int baseRows) {
+    if (cap <= 0) return 0;
+    for (int i = kRateRowStepCount - 1; i >= 0; i--) {
+        const int rows = kRateRowSteps[i];
+        if (rows > cap) return baseRows > 0 && rows >= baseRows ? 0 : rows;
+    }
+    return 0;
+}
+
+namespace {
+int Tighter(int a, int b) {
+    if (a <= 0) return b > 0 ? b : 0;
+    if (b <= 0) return a;
+    return a < b ? a : b;
+}
+}  // namespace
+
+void ThermalGovernor::SetCap(double now, int thermalCap, int rateCap, GovernorChange why) {
+    mThermalCap = thermalCap;
+    mRateCap = rateCap;
+    mCap = Tighter(thermalCap, rateCap);
+    mLastChange = why;
+    mHeadroomSince = -1.0;
+    Changed(now);
+}
+
 void ThermalGovernor::ResetWindow(double now) {
     mWindowStart = now;
     mWindowFrames = 0;
@@ -46,10 +82,21 @@ void ThermalGovernor::Changed(double now) {
 
 int ThermalGovernor::Frame(const ThermalGovernorInput& in) {
     if (!mCfg.enabled) return 0;
+    mLastChange = kGovernorNoChange;
     const double now = in.nowSeconds;
     const double began = mLastFrame;  // this frame's period runs from here to now
     const double period = began >= 0.0 ? now - began : -1.0;
     mLastFrame = now;
+    if (mRateUpDwell <= 0.0) mRateUpDwell = mCfg.rateUpDwellSeconds;
+
+    // The output was made smaller than the rate cap (a window resized by the
+    // player): the cap no longer binds, and a size chosen afresh starts afresh.
+    // Not a change: the output is the size it already is.
+    if (mRateCap > 0 && (!mCfg.rateRule || (in.baseRows > 0 && in.baseRows <= mRateCap))) {
+        mRateCap = 0;
+        mCap = Tighter(mThermalCap, mRateCap);
+        mHeadroomSince = -1.0;
+    }
 
     // The cool dwell: nominal (or no level at all) without a break.
     const bool cool = in.level <= kThermalNominal;
@@ -58,12 +105,11 @@ int ThermalGovernor::Frame(const ThermalGovernorInput& in) {
     else if (mCoolSince < 0.0)
         mCoolSince = now;
 
-    // Step up: one step per whole dwell.
-    if (mCap > 0 && cool && now - mCoolSince >= mCfg.coolDwellSeconds) {
-        mCap = StepUp(mCap, in.baseRows);
+    // Thermal step up: one step per whole dwell.
+    if (mThermalCap > 0 && cool && now - mCoolSince >= mCfg.coolDwellSeconds) {
+        SetCap(now, StepUp(mThermalCap, in.baseRows), mRateCap, kGovernorThermalUp);
         mStepsUp++;
         mCoolSince = now;
-        Changed(now);
         return mCap;
     }
 
@@ -71,6 +117,7 @@ int ThermalGovernor::Frame(const ThermalGovernorInput& in) {
     const bool judged = in.paceMeaningful && in.targetFps > 0.0 && period >= 0.0;
     if (!judged) {
         mLateWindows = 0;
+        mHeadroomSince = -1.0;
         ResetWindow(now);
         return mCap;
     }
@@ -85,24 +132,72 @@ int ThermalGovernor::Frame(const ThermalGovernorInput& in) {
     const double elapsed = now - mWindowStart;
     if (elapsed < mCfg.windowSeconds || mWindowFrames == 0) return mCap;
 
+    const double windowStart = mWindowStart;
     mLastWindowFps = mWindowFrames / elapsed;
     const bool late = mLastWindowFps < lateFps && mWindowLateFrames >= mCfg.minLateFrames &&
                       mWindowLateFrames >= mCfg.lateFrameShare * mWindowFrames;
     mLateWindows = late ? mLateWindows + 1 : 0;
     ResetWindow(now);
+    mLastPredictedMs = mLastBudgetMs = 0.0;
 
-    // Step down: the level permits, the late windows trigger.
     if (in.level >= kThermalFair) {
+        // Thermal step down: the level permits, the late windows trigger.
+        mHeadroomSince = -1.0;
         const int need =
             in.level >= kThermalSerious ? mCfg.lateWindowsSerious : mCfg.lateWindowsFair;
         if (mLateWindows >= need) {
             const int next = StepDown(mCap, in.baseRows, mCfg.floorRows);
             if (next != mCap) {
-                mCap = next;
+                SetCap(now, next, mRateCap, kGovernorThermalDown);
                 mStepsDown++;
-                Changed(now);
             } else {
                 mLateWindows = 0;  // nothing left to give; start counting again
+            }
+        }
+        return mCap;
+    }
+    if (!mCfg.rateRule) return mCap;
+
+    // Rate step down: any cooler level; only ever above rateFloorRows.
+    if (late) {
+        mHeadroomSince = -1.0;
+        if (mLateWindows >= mCfg.lateWindowsRate) {
+            const int next = RateStepDown(mCap, in.baseRows, mCfg.rateFloorRows);
+            if (next != mCap) {
+                // A step up that did not hold: the next try waits longer.
+                if (mRateUpAt >= 0.0 && now - mRateUpAt <= mCfg.rateRetrySeconds) {
+                    mRateUpDwell = mRateUpDwell * 2.0;
+                    if (mRateUpDwell > mCfg.rateUpDwellMaxSeconds)
+                        mRateUpDwell = mCfg.rateUpDwellMaxSeconds;
+                }
+                SetCap(now, mThermalCap, next, kGovernorRateDown);
+                mRateStepsDown++;
+            } else {
+                mLateWindows = 0;
+            }
+        }
+        return mCap;
+    }
+
+    // Rate step up: a positive headroom signal, unbroken for the dwell.
+    if (mRateCap > 0 && mThermalCap == 0 && cool) {
+        const int next = RateStepUp(mRateCap, in.baseRows);
+        const int nextRows = next > 0 ? next : in.baseRows;
+        bool headroom = false;
+        if (in.gpuFrameMs >= 0.0 && nextRows > mRateCap) {
+            const double ratio = (double)nextRows / mRateCap;
+            mLastPredictedMs = in.gpuFrameMs * ratio * ratio;
+            mLastBudgetMs = mCfg.rateHeadroomShare * 1000.0 / in.targetFps;
+            headroom = mLastPredictedMs <= mLastBudgetMs;
+        }
+        if (!headroom) {
+            mHeadroomSince = -1.0;
+        } else {
+            if (mHeadroomSince < 0.0) mHeadroomSince = windowStart;
+            if (now - mHeadroomSince >= mRateUpDwell) {
+                SetCap(now, mThermalCap, next, kGovernorRateUp);
+                mRateStepsUp++;
+                mRateUpAt = now;
             }
         }
     }
