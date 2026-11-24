@@ -902,6 +902,24 @@ constexpr bool kRetailPostChain =
 constexpr bool kWorldEndClearsDepth = true;
 // RB3's graded scene is followed by the 3D track, which still tests depth.
 constexpr bool kOverlayDepth = kRetailPostChain;
+// Whether a glyph page draws with its font material's z mode. Retail does,
+// in both titles: RndText draws its pages with the font's material and never
+// overrides the z mode (RndText::Load's pre-rev-11 bool even sets it, 2 or 0;
+// dc3-decomp src/system/rndobj/Text.cpp, rb3 Text.cpp). rb3-xenon band.exe:
+// RndText::DrawShowing 0x82455EE8 walks mMeshMap and only calls each page
+// mesh's DrawShowing (`lwz r3,0x14(r31)` / `lwz r11,0x14(r11)` / `bctrl`),
+// touching no material state; the page is given the font's own material at
+// 0x82458E20 (`lwz r4,0x30(r27)` = RndFont::mMat, `bl 0x82418198` =
+// RndMesh::SetMat, `addi r3,r3,0xF0; b ObjPtr::operator=`; the other SetMat
+// sites are 0x82458ED4, 0x8245911C, 0x824594C4). The page therefore draws with
+// that material's z mode, as every mesh does. The port forced every
+// unnamed mesh to zMode 0 from its first renderer (dc3-decomp 18bd1f74b,
+// 2026-03-02, "No depth for text", with no recorded reason). RB3 needs the
+// material's mode: coop_player_widget hides its scrolled-off results rows with
+// depth-only occluders (occluder.mat: blend 0, zmode 3) drawn into the HUD
+// overlay pass's depth (kOverlayDepth), and forced-off text drew through them.
+// MILO_GLYPH_ZMODE=keep|off overrides this for an A/B (Mesh_Wgpu.cpp).
+constexpr bool kGlyphKeepsMatZMode = kRetailPostChain;
 // DC3_RETAIL_POST (rndshape/DC3PostChain.cpp): unset or anything else = 1 (the
 // retail chain), "0" = 0 (PostProcPass's previous composite), "raw" = 2 (the
 // scene ungraded), "mask" = 3 / "bloom" = 4 (the chain showing the bloom mask /

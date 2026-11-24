@@ -23,7 +23,10 @@
 #include "rndobj/Rnd.h"
 #include "math/Mtx.h"
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <set>
+#include <utility>
 
 // Forward declaration — draws a mesh immediately (called for both opaque and deferred).
 // Non-static: TransparentQueue.cpp calls this via extern linkage.
@@ -243,6 +246,30 @@ WgpuCull ReflectionCull(WgpuCull materialCull, bool inReflection) {
     return materialCull == WgpuCull::Regular ? WgpuCull::Backwards : WgpuCull::Regular;
 }
 
+// Whether a glyph page takes its font material's z mode
+// (rndshape::kGlyphKeepsMatZMode). MILO_GLYPH_ZMODE=keep|off overrides the
+// shape for an A/B; MILO_GLYPH_ZMODE_LOG=1 prints each font material's z mode
+// once, with whether its pass has depth.
+static bool GlyphKeepsMatZMode() {
+    static const int sOverride = [] {
+        const char* e = getenv("MILO_GLYPH_ZMODE");
+        if (!e) return -1;
+        if (!strcmp(e, "keep")) return 1;
+        if (!strcmp(e, "off")) return 0;
+        return -1;
+    }();
+    return sOverride < 0 ? rndshape::kGlyphKeepsMatZMode : sOverride == 1;
+}
+
+static void LogGlyphZMode(RndMat* rawMat, int zMode, bool hasDepth) {
+    static const bool sLog = getenv("MILO_GLYPH_ZMODE_LOG") != nullptr;
+    if (!sLog || !rawMat) return;
+    static std::set<std::pair<const void*, int>> sSeen;
+    if (!sSeen.insert({rawMat, (int)hasDepth * 8 + zMode}).second) return;
+    fprintf(stderr, "[glyph-zmode] mat '%s' zmode=%d pass_depth=%d keep=%d\n", rawMat->Name(),
+            zMode, (int)hasDepth, (int)GlyphKeepsMatZMode());
+}
+
 PipelineKey MaterialPipelineKey(RndMat* rawMat, bool skinned, bool isGlyphMesh, bool isTextMesh,
                                 int32_t depthBias, const MeshPassContext& ctx) {
     auto mat = rndshape::Mat(rawMat);
@@ -257,7 +284,8 @@ PipelineKey MaterialPipelineKey(RndMat* rawMat, bool skinned, bool isGlyphMesh, 
     const bool isOverlayPass = !ctx.hasDepth;
 
     key.blend = (WgpuBlend)matBlend;
-    key.zMode = isGlyphMesh ? (WgpuZMode)0 : (WgpuZMode)mat->GetZMode(); // No depth for text
+    if (isGlyphMesh) LogGlyphZMode(rawMat, (int)mat->GetZMode(), ctx.hasDepth);
+    key.zMode = isGlyphMesh && !GlyphKeepsMatZMode() ? (WgpuZMode)0 : (WgpuZMode)mat->GetZMode();
     WgpuCull matCull = (isGlyphMesh || isOverlayPass) ? WgpuCull::None : (WgpuCull)mat->GetCull();
     // Reflection mode (rndshape::kDrawModeReflection) flips the camera, reversing winding order.
     // Flip cull mode so front faces aren't discarded.
@@ -357,7 +385,7 @@ int WarmVariant(PipelineKey key, RndMat* rawMat, bool glyph, bool textMesh,
     const int blend = v.blend >= 0 ? v.blend : (int)mat->GetBlend();
     const bool alphaWrite = v.alphaWrite >= 0 ? v.alphaWrite != 0 : (bool)mat->GetAlphaWrite();
     key.blend = (WgpuBlend)blend;
-    if (v.zMode >= 0 && !glyph) key.zMode = (WgpuZMode)v.zMode;
+    if (v.zMode >= 0 && (!glyph || GlyphKeepsMatZMode())) key.zMode = (WgpuZMode)v.zMode;
     key.alphaWrite = alphaWrite;
     if (rndshape::kRenderTargetForcesAlphaWrite && ctx.toTexture
         && !rndshape::MatPinsAlphaWrite(rawMat))
