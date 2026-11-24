@@ -87,6 +87,19 @@
 //               (5) asks, because nothing is suffering but the frame rate, and
 //               a screen that is slow for a few seconds (a venue streaming in)
 //               should not cost the player the size they asked for.
+//   ... and the pixels must be the cause. Late frames on a CPU-bound stretch
+//               are not made faster by fewer pixels. MEASURED 2026-11-24 on this
+//               box's RTX 3090, headless at 3840x2160 under a load of 30: boot
+//               ran 28.7 fps against 60 with the GPU's span at 0.6-5.7 ms, and a
+//               first build of this rule gave up 2160 rows for it. So when the
+//               GPU's time is known (gpuFrameMs) a window only counts as late
+//               for this rule if the GPU alone takes rateGpuBoundShare (0.75)
+//               of the target frame time or more. When it is not known (GPU
+//               timers off, the default), lateness alone counts on an adapter
+//               that is not discrete (the M3 Air's case: an integrated GPU is
+//               what runs out at 2160 rows), and never on a discrete one: a
+//               discrete adapter's big window keeps its size unless the GPU is
+//               measured to be what is slow.
 //   steps       kRateRowSteps = 1440, then 1080: each time the largest one below
 //               the size in force. One step at a time: 2160 -> 1440 is already
 //               2.25x fewer pixels, enough for the measured Mac, and a machine
@@ -117,6 +130,17 @@
 //               not step up: the thermal rule gives its own steps back first.
 //   off         rateRule false (MILO_OUTPUT_RATE_GOVERNOR=0): the thermal rule
 //               alone, exactly as before.
+//   not rows first?  Supersampling is the cheaper thing to give up where there
+//               is any (MEASURED on the GPD's 890M, 2026-11-24: 1080 rows at
+//               render scale 2 cost 19.6 ms against 6.28 at scale 1, ~3x), but
+//               above 1080 rows the default scale is already 1: 2x of 1081 rows
+//               passes kRenderScaleCap's 3840x2160 (ResolveRenderScale), and the
+//               M3 Air's 2160-row frame logged "render scale 1.00". The only
+//               supersampling this rule could meet is an explicit
+//               MILO_RENDER_SCALE, which it leaves alone (a follow-up: give that
+//               up before rows). MSAA is not a step either: its sample count is
+//               baked into every render pipeline, so changing it is a pipeline
+//               rebuild, not a between-frames resize.
 //
 // Not in the rule: the render scale. A thermal cap never raises it
 // (ResolveFrameSizesThermal, gfx/GpuDevice.h), so a capped frame is never
@@ -172,6 +196,7 @@ struct ThermalGovernorConfig {
     double rateUpDwellSeconds = 30.0;
     double rateUpDwellMaxSeconds = 480.0;
     double rateRetrySeconds = 120.0;
+    double rateGpuBoundShare = 0.75;
 };
 
 struct ThermalGovernorInput {
@@ -181,6 +206,7 @@ struct ThermalGovernorInput {
     int baseRows = 0;             // the output's height under the existing rules alone; 0 = no steps
     bool paceMeaningful = true;   // false: this frame's period says nothing (see header)
     double gpuFrameMs = -1.0;     // the GPU's time for a frame at the present size; < 0 = unknown
+    bool discreteGpu = false;     // the adapter is discrete (the rate rule, without gpuFrameMs)
 };
 
 class ThermalGovernor {
@@ -249,6 +275,7 @@ private:
     int mWindowFrames = 0;
     int mWindowLateFrames = 0;
     int mLateWindows = 0;
+    int mRateLateWindows = 0;  // late windows in a row that the pixels are blamed for
     double mLastWindowFps = 0.0;
     double mSettleUntil = -1.0;
     double mCoolSince = -1.0;

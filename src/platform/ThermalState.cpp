@@ -137,6 +137,7 @@ void ThermalGovernorFrame(GpuDevice& gpu) {
     in.baseRows = baseRows;
     in.paceMeaningful = gpu.IsWindowFocused();
     in.gpuFrameMs = gpuMs;
+    in.discreteGpu = gpu.IsDiscreteGpu();
     const int cap = sGovernor.Frame(in);
     const GovernorChange why = sGovernor.LastChange();
     if (enabled && cap != gpu.RuntimeRowCap()) {

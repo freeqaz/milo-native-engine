@@ -77,6 +77,7 @@ void ThermalGovernor::ResetWindow(double now) {
 void ThermalGovernor::Changed(double now) {
     mSettleUntil = now + mCfg.stepSettleSeconds;
     mLateWindows = 0;
+    mRateLateWindows = 0;
     ResetWindow(mSettleUntil);
 }
 
@@ -117,6 +118,7 @@ int ThermalGovernor::Frame(const ThermalGovernorInput& in) {
     const bool judged = in.paceMeaningful && in.targetFps > 0.0 && period >= 0.0;
     if (!judged) {
         mLateWindows = 0;
+        mRateLateWindows = 0;
         mHeadroomSince = -1.0;
         ResetWindow(now);
         return mCap;
@@ -143,6 +145,7 @@ int ThermalGovernor::Frame(const ThermalGovernorInput& in) {
     if (in.level >= kThermalFair) {
         // Thermal step down: the level permits, the late windows trigger.
         mHeadroomSince = -1.0;
+        mRateLateWindows = 0;
         const int need =
             in.level >= kThermalSerious ? mCfg.lateWindowsSerious : mCfg.lateWindowsFair;
         if (mLateWindows >= need) {
@@ -158,10 +161,18 @@ int ThermalGovernor::Frame(const ThermalGovernorInput& in) {
     }
     if (!mCfg.rateRule) return mCap;
 
-    // Rate step down: any cooler level; only ever above rateFloorRows.
+    // Rate step down: any cooler level; only ever above rateFloorRows; only
+    // when the pixels are what is slow (the GPU measured near the budget, or
+    // unmeasured on an adapter that is not discrete).
     if (late) {
         mHeadroomSince = -1.0;
-        if (mLateWindows >= mCfg.lateWindowsRate) {
+        const bool pixels = in.gpuFrameMs >= 0.0
+                                ? in.gpuFrameMs >= mCfg.rateGpuBoundShare * 1000.0 / in.targetFps
+                                : !in.discreteGpu;
+        if (!pixels) mRateLateWindows = 0;
+        else mRateLateWindows++;
+        if (mRateLateWindows >= mCfg.lateWindowsRate) {
+            mRateLateWindows = 0;
             const int next = RateStepDown(mCap, in.baseRows, mCfg.rateFloorRows);
             if (next != mCap) {
                 // A step up that did not hold: the next try waits longer.
@@ -172,12 +183,11 @@ int ThermalGovernor::Frame(const ThermalGovernorInput& in) {
                 }
                 SetCap(now, mThermalCap, next, kGovernorRateDown);
                 mRateStepsDown++;
-            } else {
-                mLateWindows = 0;
             }
         }
         return mCap;
     }
+    mRateLateWindows = 0;
 
     // Rate step up: a positive headroom signal, unbroken for the dwell.
     if (mRateCap > 0 && mThermalCap == 0 && cool) {
