@@ -26,6 +26,10 @@ extern "C" {
 // ============================================================================
 
 static std::unordered_map<RndMesh*, GpuMeshData> sMeshGpuData;
+// Track revisions only for owners that another mesh has rendered. A fresh
+// revision distinguishes a new owner even when it reuses an old address.
+static std::unordered_map<RndMesh*, uint64_t> sSharedGeomRevisions;
+static uint64_t sNextGeomRevision = 0;
 
 // ============================================================================
 // Frame statistics
@@ -83,6 +87,7 @@ int GetMeshDrawCallsThisFrame() {
 
 void CleanupGpuMesh(RndMesh* mesh) {
     sMeshGpuData.erase(mesh);
+    sSharedGeomRevisions.erase(mesh);
     UnmarkTextGlyphMesh(mesh);
 }
 
@@ -114,10 +119,14 @@ void InvalidateGpuMesh(RndMesh* mesh) {
         // overwrite the existing entry (creating new buffers).
         it->second.uploaded = false;
     }
+    auto shared = sSharedGeomRevisions.find(mesh);
+    if (shared != sSharedGeomRevisions.end())
+        shared->second = ++sNextGeomRevision;
 }
 
 void ClearMeshGpuCache() {
     sMeshGpuData.clear();
+    sSharedGeomRevisions.clear();
 }
 
 size_t GpuMeshCount() { return sMeshGpuData.size(); }
@@ -160,11 +169,8 @@ GpuMeshData* GetMeshGpuData(RndMesh* mesh) {
 #if !defined(MILO_RNDOBJ_SHAPE_RB3WII)
 __attribute__((weak))
 #endif
-void RndMesh::OnSync(int flags) {
-    auto it = sMeshGpuData.find(this);
-    if (it != sMeshGpuData.end()) {
-        it->second.uploaded = false;
-    }
+void RndMesh::OnSync(int) {
+    InvalidateGpuMesh(this);
 }
 
 // ============================================================================
@@ -289,8 +295,8 @@ static void ComputeMikkTangents(void* verts, const uint16_t* indices,
 // Helper: Upload mesh vertex/index data to GPU
 // ============================================================================
 
-// A mesh is read once, and again only after RndMesh::Sync -> OnSync ->
-// InvalidateGpuMesh has cleared `uploaded` (or SetGeomOwner's caller did).
+// A mesh is read once, and again when its geometry changes. RB3's sustain
+// tails sync their shared geometry owner rather than either drawable.
 // Named or not: an unnamed mesh used to be taken for an RndText glyph page and
 // re-read on every call, a guess older than the Sync wiring. Every writer of
 // a glyph page's vertices ends in Sync -- DC3 RndText::FontMap::
@@ -303,14 +309,21 @@ static void ComputeMikkTangents(void* verts, const uint16_t* indices,
 static bool UploadMesh(RndMesh* mesh) {
     if (!gWgpuRnd) return false;
 
+    RndMesh* geomOwner = rndshape::MeshGeomOwner(mesh);
+    if (!geomOwner) geomOwner = mesh;
+    uint64_t geomRevision = 0;
+    if (geomOwner != mesh) {
+        auto [shared, inserted] = sSharedGeomRevisions.try_emplace(geomOwner, 0);
+        if (inserted) shared->second = ++sNextGeomRevision;
+        geomRevision = shared->second;
+    }
     auto it = sMeshGpuData.find(mesh);
-    if (it != sMeshGpuData.end() && it->second.uploaded) {
+    if (it != sMeshGpuData.end() && it->second.uploaded &&
+        it->second.geomOwner == geomOwner && it->second.geomRevision == geomRevision) {
         return true;
     }
 
     framecost::Scope cost(framecost::kMesh);
-    RndMesh* geomOwner = rndshape::MeshGeomOwner(mesh);
-    if (!geomOwner) geomOwner = mesh;
 
     int numVerts = geomOwner->NumVerts();
     int numFaces = geomOwner->NumFaces();
@@ -440,6 +453,8 @@ static bool UploadMesh(RndMesh* mesh) {
     data.numIndices = numIndices;
     data.numVertices = unpacked;
     data.skinned = skinned;
+    data.geomOwner = geomOwner;
+    data.geomRevision = geomRevision;
     data.uploaded = true;
     sMeshUploads++;
     return true;
