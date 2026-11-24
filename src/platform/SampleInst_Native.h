@@ -37,7 +37,6 @@ private:
     double mPlayPos;            // fractional sample position for resampling
     int mEndSample;             // where to stop (-1 = end of data)
     bool mLoop;
-    bool mBigEndian = false;
     std::atomic<bool> mPlaying;
     std::atomic<bool> mPaused;
     std::atomic<float> mInstVolume;
@@ -45,4 +44,7 @@ private:
     std::atomic<float> mInstSpeed;
     int mSampleRate;
     int mNumChannels;
+    // Last, so the members before it keep their offsets for a consumer TU that
+    // still sees the previous header (dc3-decomp carries a copy of this file).
+    bool mBigEndian = false;
 };
