@@ -18,6 +18,7 @@
 #include <GLFW/glfw3native.h>
 // Defined in MetalSurface.mm — creates CAMetalLayer for an NSWindow
 extern "C" void* CreateMetalLayerForWindow(void* nsWindow);
+extern "C" void UpdateMetalLayerScaleForWindow(void* nsWindow);
 #endif
 
 #include <chrono>
@@ -564,6 +565,7 @@ bool GpuDevice::InitWindow(const GpuDeviceDesc& desc, int platform) {
     // GLFW_SCALE_FRAMEBUFFER): the window keeps its size in screen
     // coordinates and the surface is sized from the framebuffer below.
     glfwWindowHint(GLFW_SCALE_TO_MONITOR, GLFW_TRUE);
+    glfwWindowHint(GLFW_SCALE_FRAMEBUFFER, GLFW_TRUE);
 
     // MILO_FULLSCREEN=1: fullscreen on the primary monitor at its desktop
     // mode (no mode switch), for a player (dc3 scripts/play.sh --fullscreen).
@@ -615,17 +617,16 @@ bool GpuDevice::InitWindow(const GpuDeviceDesc& desc, int platform) {
     return true;
 }
 
-// The surface's size in pixels. On macOS Dawn's Metal surface uses window
-// points, not framebuffer pixels; elsewhere it is the framebuffer (on Wayland
-// with a scale, larger than the window's size in screen coordinates).
+// Dawn's surface dimensions are framebuffer pixels on every platform. On
+// Retina a window point covers multiple pixels; using points here would let
+// the compositor enlarge a low-resolution drawable instead of rendering them.
 void GpuDevice::QuerySurfaceSize(int& w, int& h) const {
     w = h = 0;
     if (!mWindow) return;
 #ifdef __APPLE__
-    glfwGetWindowSize(mWindow, &w, &h);
-#else
-    glfwGetFramebufferSize(mWindow, &w, &h);
+    UpdateMetalLayerScaleForWindow(glfwGetCocoaWindow(mWindow));
 #endif
+    glfwGetFramebufferSize(mWindow, &w, &h);
 }
 
 // F11, or Alt+Enter: toggle fullscreen. Chained, so a later key callback
