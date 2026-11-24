@@ -10,6 +10,7 @@
 
 #ifndef __EMSCRIPTEN__
 #include "gfx/GpuDevice.h"
+#include "gfx/GpuTimers.h"  // the rate rule's headroom signal (the GPU's span)
 #endif
 
 #ifdef __APPLE__
@@ -65,7 +66,9 @@ ThermalStatus ThermalGetStatus() {
     if (!sStatusPublished) {
         // The governor has not run (no level yet): say what it would be given.
         static const bool sEnabled = ParseThermalGovernorKnob(getenv("MILO_THERMAL_GOVERNOR"));
+        static const bool sRate = ParseThermalGovernorKnob(getenv("MILO_OUTPUT_RATE_GOVERNOR"));
         sStatus.enabled = sEnabled;  // read once: a consumer may ask every frame
+        sStatus.rateRule = sEnabled && sRate;
         sStatus.level = ThermalInjectedLevel();
         sStatus.injected = sStatus.level != kThermalUnknown;
         sStatus.targetFps = sTargetFps.load();
@@ -78,6 +81,7 @@ namespace {
 ThermalGovernorConfig ConfigFromEnv() {
     ThermalGovernorConfig cfg;
     cfg.enabled = ParseThermalGovernorKnob(getenv("MILO_THERMAL_GOVERNOR"));
+    cfg.rateRule = ParseThermalGovernorKnob(getenv("MILO_OUTPUT_RATE_GOVERNOR"));
     if (const char* v = getenv("MILO_THERMAL_COOL_SECONDS"); v && *v && atof(v) > 0.0)
         cfg.coolDwellSeconds = atof(v);
     return cfg;
@@ -93,6 +97,7 @@ void ThermalGovernorFrame(GpuDevice& gpu) {
     static double sOsReadAt = -1.0;
     static int sOsLevel = kThermalUnknown;
     static bool sEverActive = false;
+    static long long sGpuWindowAtChange = -1;  // GpuTimers' window when the size last changed
 
     const bool enabled = sGovernor.Config().enabled;
     const double now = NowSeconds();
@@ -105,34 +110,71 @@ void ThermalGovernorFrame(GpuDevice& gpu) {
         }
         level = sOsLevel;
     }
-    // No level, ever: nothing to run, nothing to say (the common case, and
-    // every platform but macOS without an injected level).
-    if (level == kThermalUnknown && !sEverActive) return;
+    // No level, ever, and no output above the rate rule's floor: nothing to
+    // run, nothing to say (the common case: every platform but macOS without
+    // an injected level, at the default 1080-row cap).
+    const int baseRows = gpu.BaseOutputRows();
+    const bool oversized = enabled && sGovernor.Config().rateRule &&
+                           baseRows > sGovernor.Config().rateFloorRows && sTargetFps.load() > 0.0;
+    if (level == kThermalUnknown && !sEverActive && !oversized) return;
     sEverActive = true;
+
+    // The headroom signal: the GPU's span for a frame, from a window that
+    // began after the size last changed (an older one measured another size).
+    double gpuMs = -1.0;
+    long long gpuWindow = -1;
+    if (GpuTimers::Active()) {
+        const GpuTimers::Snapshot snap = GpuTimers::Get().Latest();
+        gpuWindow = snap.windowIndex;
+        if (snap.active && snap.frames > 0 && snap.windowIndex > sGpuWindowAtChange + 1)
+            gpuMs = snap.spanMeanMs;
+    }
 
     ThermalGovernorInput in;
     in.nowSeconds = now;
     in.level = level;
     in.targetFps = sTargetFps.load();
-    in.baseRows = gpu.BaseOutputRows();
+    in.baseRows = baseRows;
     in.paceMeaningful = gpu.IsWindowFocused();
+    in.gpuFrameMs = gpuMs;
+    in.discreteGpu = gpu.IsDiscreteGpu();
     const int cap = sGovernor.Frame(in);
+    const GovernorChange why = sGovernor.LastChange();
     if (enabled && cap != gpu.RuntimeRowCap()) {
         const int wasW = gpu.OutputWidth(), wasH = gpu.OutputHeight(), wasCap = gpu.RuntimeRowCap();
         if (gpu.SetRuntimeRowCap(cap)) {
+            sGpuWindowAtChange = gpuWindow;
             char capText[24] = "none";
             if (cap > 0) snprintf(capText, sizeof(capText), "%d", cap);
-            const bool down = cap > 0 && (wasCap <= 0 || cap < wasCap);
-            printf("GpuDevice: thermal level %d (%s), %s: output %dx%d -> %dx%d (thermal row "
-                   "cap %s)\n",
-                   level, ThermalLevelName(level), down ? "frames late" : "cooled", wasW, wasH,
-                   gpu.OutputWidth(), gpu.OutputHeight(), capText);
+            if (why == kGovernorRateDown) {
+                printf("GpuDevice: output rate rule, thermal level %d (%s), frames late: last "
+                       "window %.1f fps against a %.1f fps target: output %dx%d -> %dx%d (rate "
+                       "row cap %s; never below %d rows by this rule; MILO_OUTPUT_RATE_GOVERNOR=0 "
+                       "to keep the size)\n",
+                       level, ThermalLevelName(level), sGovernor.LastWindowFps(), in.targetFps,
+                       wasW, wasH, gpu.OutputWidth(), gpu.OutputHeight(), capText,
+                       sGovernor.Config().rateFloorRows);
+            } else if (why == kGovernorRateUp) {
+                printf("GpuDevice: output rate rule, headroom for %.0f s: GPU %.2f ms a frame, "
+                       "%.2f ms predicted at the next size against a %.2f ms budget (%.0f %% of "
+                       "%.1f fps): output %dx%d -> %dx%d (rate row cap %s)\n",
+                       sGovernor.RateUpDwellSeconds(), gpuMs, sGovernor.LastPredictedMs(),
+                       sGovernor.LastBudgetMs(), sGovernor.Config().rateHeadroomShare * 100.0,
+                       in.targetFps, wasW, wasH, gpu.OutputWidth(), gpu.OutputHeight(), capText);
+            } else {
+                const bool down = cap > 0 && (wasCap <= 0 || cap < wasCap);
+                printf("GpuDevice: thermal level %d (%s), %s: output %dx%d -> %dx%d (thermal row "
+                       "cap %s)\n",
+                       level, ThermalLevelName(level), down ? "frames late" : "cooled", wasW, wasH,
+                       gpu.OutputWidth(), gpu.OutputHeight(), capText);
+            }
             fflush(stdout);
         }
     }
 
     ThermalStatus s;
     s.enabled = enabled;
+    s.rateRule = enabled && sGovernor.Config().rateRule;
     s.level = level;
     s.injected = injected;
     s.targetFps = in.targetFps;
@@ -144,6 +186,11 @@ void ThermalGovernorFrame(GpuDevice& gpu) {
     s.outputHeight = gpu.OutputHeight();
     s.stepsDown = sGovernor.StepsDown();
     s.stepsUp = sGovernor.StepsUp();
+    s.thermalRowCap = sGovernor.ThermalCap();
+    s.rateRowCap = sGovernor.RateCap();
+    s.rateStepsDown = sGovernor.RateStepsDown();
+    s.rateStepsUp = sGovernor.RateStepsUp();
+    s.gpuFrameMs = gpuMs;
     s.coolSeconds = sGovernor.CoolSeconds(now);
     std::lock_guard<std::mutex> lock(sStatusMutex);
     sStatus = s;

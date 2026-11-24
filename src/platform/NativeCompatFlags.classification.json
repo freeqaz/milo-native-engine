@@ -2294,6 +2294,13 @@
     "default": "on",
     "read": "value"
   },
+  "MILO_OUTPUT_RATE_GOVERNOR": {
+    "class": "perf",
+    "owner": "render",
+    "faithfulStatus": "live: the thermal governor's rate rule (gfx/ThermalGovernor.h THE RATE RULE, platform/ThermalState.h). Unset or on: an output drawn ABOVE 1080 rows (the row cap lifted, MILO_OUTPUT_MAX_ROWS=0, or a big window on a discrete adapter) steps down 2160 -> 1440 -> 1080 rows when 8 one-second windows in a row are late against the consumer's target rate (the display's rate at most), at any thermal level including nominal and unknown, headless included; never below 1080 by this rule. A step back up needs measured GPU headroom (MILO_GPU_TIMERS=1: the frame's GPU span scaled to the next size within 70 % of the target frame time for 30 s); without it a size given up stays given up until the output is resized. 0/off/false/no = never (the thermal rule alone); MILO_THERMAL_GOVERNOR=0 turns both off. Same picture at a smaller size [platform/ThermalState.cpp]",
+    "default": "on",
+    "read": "value"
+  },
   "MILO_THERMAL_STATE": {
     "class": "debug",
     "owner": "render",
