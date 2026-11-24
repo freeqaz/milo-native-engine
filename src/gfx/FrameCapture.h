@@ -38,6 +38,7 @@ struct DrawCallRecord {
     bool hasPipeState;
     int pipeZMode, pipeCull;
     bool passHasDepth, glyph;
+    int uploadedVerts, uploadedTriangles, ownerVerts, ownerTriangles;
 
     // Material uniforms snapshot
     float color[4];
@@ -46,6 +47,10 @@ struct DrawCallRecord {
     float prelit;
     float useTexture;
     float alpha;
+    float texGenMode;
+    float texXfmRow0[4];
+    float texXfmRow1[4];
+    float texXfmTranslation[2];
 
     // Spatial snapshot
     float worldPos[3];

@@ -58,6 +58,11 @@ static void RecordDrawCall(
     rec.prelit = matParams.uniforms.prelit;
     rec.useTexture = matParams.uniforms.useTexture;
     rec.alpha = matParams.uniforms.color[3];
+    rec.texGenMode = matParams.uniforms.texGenMode;
+    memcpy(rec.texXfmRow0, matParams.uniforms.texXfmRow0, sizeof(rec.texXfmRow0));
+    memcpy(rec.texXfmRow1, matParams.uniforms.texXfmRow1, sizeof(rec.texXfmRow1));
+    rec.texXfmTranslation[0] = mat->TexXfm().v.x;
+    rec.texXfmTranslation[1] = mat->TexXfm().v.y;
     const Vector3& worldPos = mesh->WorldXfm().v;
     rec.worldPos[0] = worldPos.x;
     rec.worldPos[1] = worldPos.y;
@@ -564,6 +569,10 @@ void DrawMeshImmediate(RndMesh* mesh) {
         rec.pipeCull = (int)key.cull;
         rec.passHasDepth = key.hasDepth;
         rec.glyph = isGlyphMesh;
+        rec.uploadedVerts = meshData.numVertices;
+        rec.uploadedTriangles = meshData.numIndices / 3;
+        rec.ownerVerts = meshData.geomOwner->NumVerts();
+        rec.ownerTriangles = meshData.geomOwner->NumFaces();
     }
 
     // --- Draw ---
