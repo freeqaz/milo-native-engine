@@ -60,9 +60,19 @@ constexpr bool kAppleInBrowser = false;
 // (+0.50 ms at 1024, ~0.061 scaled to the 890M). This class is also a
 // browser not on NVIDIA (and an Apple Mac in a browser, kAppleInBrowser),
 // which nothing timed.
+// np-rtt-rule57: the cap 1536 and the base rows 720 (Apple's pair), timed on
+// the 890M by dc3-decomp-9c, Break It Down, `rtt_on + rtt_cap_1536 +
+// rtt_rows_720` minus `rtt_off`: +0.043 ms at 1268x713 (limit +0.15), +0.222
+// at 1920x1080 (limit +0.30), +0.261 +-0.04 at 2560x1440. The projections
+// DC3 draws through this pass are 1024 (chars_base.milo's projection.tex /
+// projectionp2.tex): at 713 rows x0.99 keeps such a target at 1024, the same
+// draw as cap 1024 / rows 360 (frames byte-identical, dc3 lane A82), and from
+// 1080 rows it is 1536. A 512 target no longer grows below 720 rows (cap
+// 1024 / rows 360 made it 1014 at 713) and is 768 at 1080.
 constexpr bool kIntegratedTexPassMsaa = true;
 constexpr bool kIntegratedTexPassScale = true;
-constexpr int kIntegratedTexPassMaxSide = 1024;
+constexpr int kIntegratedTexPassMaxSide = 1536;
+constexpr int kIntegratedTexPassBaseRows = 720;
 
 LookSettings SettingsFor(LookProfile p) {
     LookSettings s;
@@ -136,12 +146,12 @@ LookSettings SettingsFor(LookProfile p) {
     s.texPassScaleIntegrated = enh && kIntegratedTexPassScale;
     // The size rule's two numbers per class, in every profile (they only act
     // with texPassScale). The other non-discrete class: the cap
-    // kIntegratedTexPassMaxSide (1024, the size the 890M timed), the base
-    // rows the discrete class's.
+    // kIntegratedTexPassMaxSide and kIntegratedTexPassBaseRows (1536 and 720,
+    // the state the 890M timed, np-rtt-rule57).
     s.texPassMaxSideApple = kAppleTexPassMaxSide;
     s.texPassBaseRowsApple = kAppleTexPassBaseRows;
     s.texPassMaxSideIntegrated = kIntegratedTexPassMaxSide;
-    s.texPassBaseRowsIntegrated = s.texPassBaseRows;
+    s.texPassBaseRowsIntegrated = kIntegratedTexPassBaseRows;
     // np-look23 (a): the noise map on whole output rows (LookProfile.h).
     // Uniforms only, no cost but a memoised constant per size.
     s.noiseSnapsToOutputRows = enh;
