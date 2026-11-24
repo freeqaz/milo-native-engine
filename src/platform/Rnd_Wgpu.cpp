@@ -629,6 +629,8 @@ void WgpuRnd::Terminate() {
     mDepthSampleView = nullptr;
     mPostWorldDepthTex = nullptr;
     mPostWorldDepthView = nullptr;
+    mOverlayDepthTex = nullptr;
+    mOverlayDepthView = nullptr;
     mWhiteTex = nullptr;
     mWhiteTexView = nullptr;
     mFlatNormalTex = nullptr;
@@ -782,65 +784,16 @@ void WgpuRnd::EndActivePass() {
 
 void WgpuRnd::ClearDepthForOverlay() {
     if (!mInPass || !mFrameView) return;
-    // The overlay pass has no depth to clear, and leaving it for the MSAA
-    // frame pass would resolve over what it holds (see BeginOverlayPass).
-    if (mFrameInOverlay) return;
-    // End current pass, restart with depth cleared but color preserved
-    EndActivePass();
-    BeginFramePass(false); // false = Load color (preserve), but we override depth below
-    // BeginFramePass(false) uses LoadOp::Load for depth too, which is wrong.
-    // We need to restart with cleared depth. End and manually build the pass.
-    EndActivePass();
-
-    int curW = mGpu.WindowWidth();
-    int curH = mGpu.WindowHeight();
-    bool hasPostProc = FramePostProc() != nullptr &&
-                       !(rndshape::kRetailPostChain && mPostProcFlushed);
-
-    wgpu::RenderPassColorAttachment colorAtt{};
-    if (kMSAASamples > 1) {
-        colorAtt.view = mMsaaView;
-        colorAtt.resolveTarget = hasPostProc ? mIntermediateView : FrameTarget();
-        colorAtt.storeOp = wgpu::StoreOp::Store;
-        if (hasPostProc) mResolvePending = false;
-    } else {
-        colorAtt.view = hasPostProc ? mIntermediateView : FrameTarget();
-        colorAtt.storeOp = wgpu::StoreOp::Store;
+    if (mFrameInOverlay) {
+        if constexpr (rndshape::kOverlayDepth) {
+            EndActivePass();
+            BeginOverlayPass(true);
+        }
+        return;
     }
-    colorAtt.loadOp = wgpu::LoadOp::Load; // preserve color from venue
-
-    wgpu::RenderPassDepthStencilAttachment depthAtt{};
-    depthAtt.view = FrameDepthView();
-    mPostWorldDepthClearPending = false;        // cleared here
-    mLastFramePassPostWorldDepth = mWorldDepthResolved && mPostWorldDepthView;
-    mLastFramePassDepthCleared = true;
-    depthAtt.depthLoadOp = wgpu::LoadOp::Clear; // clear depth for overlay
-    depthAtt.depthStoreOp = wgpu::StoreOp::Store;
-    depthAtt.depthClearValue = 1.0f;
-    depthAtt.stencilLoadOp = wgpu::LoadOp::Clear;
-    depthAtt.stencilStoreOp = wgpu::StoreOp::Store;
-    depthAtt.stencilClearValue = 0;
-
-    wgpu::RenderPassDescriptor rpDesc{};
-    rpDesc.label = "OverlayPass";
-    rpDesc.colorAttachmentCount = 1;
-    rpDesc.colorAttachments = &colorAtt;
-    rpDesc.depthStencilAttachment = &depthAtt;
-
-    MILO_GPU_TIME_PASS(rpDesc);
-    mPass = mEncoder.BeginRenderPass(&rpDesc);
-    rndshape::DrawLogPassOpen(0);
-    mInPass = true;
-    mActiveTargetTex = nullptr;
-    mCurrentTargetFormat = mGpu.SurfaceFormat();
-    mCurrentSampleCount = kMSAASamples;
-    mCurrentPassHasDepth = true;
-    mCurrentTargetWidth = (uint32_t)curW;
-    mCurrentTargetHeight = (uint32_t)curH;
-    ApplyViewport();
-
-    // Force re-bind scene uniforms on the new pass — the previous pass
-    // had them bound, but the new pass starts without any bind groups.
+    // Reset depth without a separate color load, store and MSAA resolve.
+    EndActivePass();
+    BeginFramePass(false, true);
     mLastSceneCam = nullptr;
 }
 
@@ -865,7 +818,7 @@ MeshPassContext WgpuRnd::OverlayPassContext() const {
     MeshPassContext c;  // as BeginOverlayPass does
     c.targetFormat = mGpu.SurfaceFormat();
     c.sampleCount = 1;
-    c.hasDepth = false;
+    c.hasDepth = rndshape::kOverlayDepth;
     return c;
 }
 
@@ -880,14 +833,14 @@ MeshPassContext WgpuRnd::TexturePassContext(bool depth, bool likeFrame) const {
     return c;
 }
 
-void WgpuRnd::BeginOverlayPass() {
+void WgpuRnd::BeginOverlayPass(bool clearDepth) {
     int curW = mGpu.WindowWidth();
     int curH = mGpu.WindowHeight();
 
     // Start a new pass that draws directly to the framebuffer (no post-proc).
-    // The HUD overlay draws at 1x (no MSAA) directly to the frame target,
-    // with no depth buffer. This avoids MSAA sample-count mismatches and
-    // preserves the post-processed venue that's already in the framebuffer.
+    // The HUD overlay draws at 1x directly to the frame target, preserving
+    // the post-processed venue already there. RB3's track uses a matching
+    // 1x depth attachment isolated from the venue's MSAA depth.
     // On web, FrameTarget() is an owned texture (not the swapchain surface)
     // so LoadOp::Load reliably preserves the post-proc output.
     wgpu::RenderPassColorAttachment colorAtt{};
@@ -899,7 +852,18 @@ void WgpuRnd::BeginOverlayPass() {
     rpDesc.label = "HudOverlayPass";
     rpDesc.colorAttachmentCount = 1;
     rpDesc.colorAttachments = &colorAtt;
-    rpDesc.depthStencilAttachment = nullptr; // no depth for 2D HUD
+    wgpu::RenderPassDepthStencilAttachment depthAtt{};
+    if constexpr (rndshape::kOverlayDepth) {
+        const bool clear = clearDepth || !mFrameInOverlay;
+        depthAtt.view = mOverlayDepthView;
+        depthAtt.depthLoadOp = clear ? wgpu::LoadOp::Clear : wgpu::LoadOp::Load;
+        depthAtt.depthStoreOp = wgpu::StoreOp::Store;
+        depthAtt.depthClearValue = 1.0f;
+        depthAtt.stencilLoadOp = depthAtt.depthLoadOp;
+        depthAtt.stencilStoreOp = wgpu::StoreOp::Store;
+        depthAtt.stencilClearValue = 0;
+        rpDesc.depthStencilAttachment = &depthAtt;
+    }
 
     MILO_GPU_TIME_PASS(rpDesc);
     mPass = mEncoder.BeginRenderPass(&rpDesc);
@@ -909,7 +873,7 @@ void WgpuRnd::BeginOverlayPass() {
     mActiveTargetTex = nullptr;
     mCurrentTargetFormat = mGpu.SurfaceFormat();
     mCurrentSampleCount = 1;  // 1x for HUD overlay
-    mCurrentPassHasDepth = false;
+    mCurrentPassHasDepth = rndshape::kOverlayDepth;
     mCurrentTargetWidth = (uint32_t)curW;
     mCurrentTargetHeight = (uint32_t)curH;
     ApplyViewport();
@@ -947,9 +911,7 @@ void WgpuRnd::FlushPostProcessingForOverlay() {
     // Mark post-proc as already done so EndDrawing doesn't run it again
     mPostProcFlushed = true;
 
-    // Game-supplied HUD/overlay draw pass (DC3 HamDirector overlay, RB3 band
-    // HUD). The overlay pass is now active on the framebuffer at 1x with no
-    // depth; the hook issues whatever draws it needs.
+    // The overlay pass is now active for the game's HUD draws.
     if (GameRenderHook* hook = GetGameRenderHook()) {
         hook->DrawGameOverlay(this);
     }
@@ -1736,11 +1698,11 @@ void WgpuRnd::ApplyClipScissor() {
     mClipScissorSet = true;
 }
 
-void WgpuRnd::BeginFramePass(bool clear) {
+void WgpuRnd::BeginFramePass(bool clear, bool clearDepthForOverlay) {
     if (clear) {
         mFrameInOverlay = false;
     } else if (mFrameInOverlay && mFrameView) {
-        BeginOverlayPass();
+        BeginOverlayPass(clearDepthForOverlay);
         return;
     }
     if (!mFrameView) {
@@ -1832,7 +1794,8 @@ void WgpuRnd::BeginFramePass(bool clear) {
 
     // After the world end (SavePreBuffer) the first frame pass clears the
     // post-world depth, as retail's resolve did.
-    const bool clearDepth = clear || (mWorldDepthResolved && mPostWorldDepthClearPending);
+    const bool clearDepth = clear || clearDepthForOverlay ||
+                            (mWorldDepthResolved && mPostWorldDepthClearPending);
     if (mWorldDepthResolved) mPostWorldDepthClearPending = false;
     wgpu::RenderPassDepthStencilAttachment depthAtt{};
     depthAtt.view = FrameDepthView();
@@ -1846,7 +1809,7 @@ void WgpuRnd::BeginFramePass(bool clear) {
     depthAtt.stencilClearValue = 0;
 
     wgpu::RenderPassDescriptor rpDesc{};
-    rpDesc.label = clear ? "MainPass" : "MainPassResume";
+    rpDesc.label = clear ? "MainPass" : (clearDepthForOverlay ? "OverlayPass" : "MainPassResume");
     if (TimingSplitDraws() && GpuTimers::Active()) {
         // np-gpuprof2: every frame segment its own name, in frame order.
         if (clear) {
@@ -1869,7 +1832,7 @@ void WgpuRnd::BeginFramePass(bool clear) {
 
     MILO_GPU_TIME_PASS(rpDesc);
     mPass = mEncoder.BeginRenderPass(&rpDesc);
-    rndshape::DrawLogPassOpen(clear ? 0 : 1);
+    rndshape::DrawLogPassOpen(clear || clearDepthForOverlay ? 0 : 1);
     mInPass = true;
     mActiveTargetTex = nullptr;
     mFramePassValid = true;
@@ -2672,6 +2635,13 @@ void WgpuRnd::CreateDepthTexture(int w, int h) {
             desc.usage = wgpu::TextureUsage::RenderAttachment;
             mPostWorldDepthTex = mGpu.CreateTexture(desc);
             mPostWorldDepthView = mPostWorldDepthTex.CreateView();
+        }
+        if constexpr (rndshape::kOverlayDepth) {
+            desc.label = "DepthStencilHudOverlay";
+            desc.usage = wgpu::TextureUsage::RenderAttachment;
+            desc.sampleCount = 1;
+            mOverlayDepthTex = mGpu.CreateTexture(desc);
+            mOverlayDepthView = mOverlayDepthTex.CreateView();
         }
     }
 

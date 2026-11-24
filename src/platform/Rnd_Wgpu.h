@@ -436,7 +436,7 @@ private:
     // Called by WgpuRnd only for shapes whose RndCam::Select does not do it
     // (rndshape::kCamSelectSetsViewport).
     void ApplyCameraViewport(RndCam* cam);
-    void BeginFramePass(bool clear);
+    void BeginFramePass(bool clear, bool clearDepthForOverlay = false);
     // np-gpuprof2 MILO_GPU_SPLIT_DRAWS: the frame segment being drawn, its
     // label, and what each segment of the frame drew.
     int mSplitSeg = 0;
@@ -469,15 +469,14 @@ private:
         Hmx::Color color = Hmx::Color(0.0f, 0.0f, 0.0f, 0.0f);
         bool clearDepth = true;
     };
-    // The 1x, depthless pass on the frame target that FlushPostProcessingForOverlay
-    // opens; BeginFramePass(false) reopens it once the frame is in it.
-    void BeginOverlayPass();
+    // FlushPostProcessingForOverlay opens this 1x pass on the frame target.
+    // BeginFramePass(false) reopens it once the frame is in it.
+    void BeginOverlayPass(bool clearDepth = false);
     void BeginTexturePass(RndTex* tex);
     void BeginTexturePass(RndTex* tex, const TexturePassLoad& load);
     void EndActivePass();
 public:
-    // Clear depth buffer for 2D overlay rendering (HUD on top of 3D scene).
-    // Ends current pass, restarts with depth cleared but color preserved.
+    // Restart the pass with cleared depth and preserved color for the HUD.
     void ClearDepthForOverlay() override;
     // Flush post-processing NOW, then start a new pass that draws directly
     // to the framebuffer (bypassing post-proc). Used for HUD overlay that
@@ -634,6 +633,8 @@ public:
     // to this one, cleared on its first use in the frame.
     wgpu::Texture mPostWorldDepthTex;
     wgpu::TextureView mPostWorldDepthView;
+    wgpu::Texture mOverlayDepthTex;
+    wgpu::TextureView mOverlayDepthView;
     bool mWorldDepthResolved = false;      // this frame's world end has moved the frame pass
     bool mPostWorldDepthClearPending = false;  // ... and its first pass must clear it
     // The last frame pass opened (NativeFrameDepthState): its depth attachment
