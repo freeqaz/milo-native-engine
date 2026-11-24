@@ -925,7 +925,7 @@ void WgpuRnd::FlushPostProcessingForOverlay() {
 
     // End the current pass (venue + any existing draws)
     EndActivePass();
-    ResolveFramePass();
+    ResolveFramePass("overlay");
 
     // Run post-processing now (reads intermediate, writes to framebuffer).
     // Only run once per frame — subsequent calls just start a new overlay pass
@@ -1095,7 +1095,11 @@ void WgpuRnd::DoWorldEnd() {
 // mPostWorldDepthTex, cleared, so UI drawn with z mode "normal" after the world
 // (the song list's row backings) is not hidden by the world behind it, while
 // mDepthTex keeps the world's depth for the post chain, as mFrontBufferDepth.
-void WgpuRnd::ResolveFramePass() {
+void WgpuRnd::ResolveFramePass(const char* who) {
+    static const bool sTrace = getenv("MILO_RESOLVE_TRACE") != nullptr;
+    if (sTrace && mFrameID % 300 == 7)
+        fprintf(stderr, "[RTRACE] frame %d reader %s after seg %d pending %d inpass %d\n", mFrameID, who,
+                mFrameSegments, mResolvePending ? 1 : 0, mInPass ? 1 : 0);
     // A reader of the intermediate: the segment just ended is the one whose
     // resolve it needs (recorded for the next frame's prediction).
     if (mFrameSegments > 0 &&
@@ -1140,7 +1144,7 @@ void WgpuRnd::SavePreBuffer() {
 }
 
 void WgpuRnd::CopyWorldToPreBuffer() {
-    ResolveFramePass();  // every caller has ended the frame pass
+    ResolveFramePass("prebuf");  // every caller has ended the frame pass
     const wgpu::Texture& src = mFramePassColorTex;
     if (!src || !(src.GetUsage() & wgpu::TextureUsage::CopySrc)) return;
     const uint32_t w = src.GetWidth(), h = src.GetHeight();
@@ -1769,6 +1773,9 @@ void WgpuRnd::BeginFramePass(bool clear) {
                 mIntermediateHeight = curH;
             }
             const int seg = ++mFrameSegments;
+            static const bool sTrace = getenv("MILO_RESOLVE_TRACE") != nullptr;
+            if (sTrace && mFrameID % 300 == 7)
+                fprintf(stderr, "[RTRACE] frame %d seg %d clear %d\n", mFrameID, seg, clear ? 1 : 0);
             bool resolveNow = true;
             if constexpr (rndshape::kDC3RetailPost) {
                 if (milo::ResolvePredictActive()) {
@@ -2451,7 +2458,7 @@ void WgpuRnd::EndDrawing() {
 
         // Post-processing: if active, read from intermediate and draw to frame target
         // Skip if already flushed (e.g., FlushPostProcessingForOverlay was called)
-        ResolveFramePass();
+        ResolveFramePass("enddraw");
         if (mIntermediateView && FramePostProc() && !mPostProcFlushed) {
             FeedVelocity(mPostProcPass);
             RunDC3SpotBeams();

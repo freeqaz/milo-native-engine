@@ -457,7 +457,7 @@ private:
     bool mResolvePending = false;
     std::vector<int> mResolveAt, mPrevResolveAt;
     int mResolveFallbacks = 0, mResolvesInPass = 0, mResolvesSkipped = 0;
-    void ResolveFramePass();
+    void ResolveFramePass(const char* who);
     bool mInSplit = false;
     std::string mSplitLabel;
     std::vector<std::string> mSplitNames;
