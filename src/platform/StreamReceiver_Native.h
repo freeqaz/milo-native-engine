@@ -68,8 +68,8 @@ private:
     static const int kPCMBufSize = 0x10000; // 64KB
     int16_t mPCMBuf[kPCMBufSize / 2];
 
-    volatile int mWriteCursor; // bytes written by engine
-    volatile int mPlayCursor;  // bytes consumed by audio thread
+    std::atomic<int> mWriteCursor; // bytes written by engine
+    std::atomic<int> mPlayCursor;  // bytes consumed by audio thread
     float mVolume;
     float mPan;    // -1 (left) to 1 (right)
     float mSpeed;
@@ -77,6 +77,10 @@ private:
     bool mPaused;
     int mSampleRate;
     u64 mTotalBytesPlayed;
+#ifndef HX_WEB
+    int mSourceFrameRemainder = 0;
+    void RenderResampled(float *output, int frameCount, int outputRate);
+#endif
 #ifdef HX_WEB
     int mDebugId;
     bool mInMixer;
