@@ -819,6 +819,7 @@ MeshPassContext WgpuRnd::OverlayPassContext() const {
     c.targetFormat = mGpu.SurfaceFormat();
     c.sampleCount = 1;
     c.hasDepth = rndshape::kOverlayDepth;
+    c.overlay = true;
     return c;
 }
 
@@ -874,6 +875,7 @@ void WgpuRnd::BeginOverlayPass(bool clearDepth) {
     mCurrentTargetFormat = mGpu.SurfaceFormat();
     mCurrentSampleCount = 1;  // 1x for HUD overlay
     mCurrentPassHasDepth = rndshape::kOverlayDepth;
+    mCurrentPassIsOverlay = true;
     mCurrentTargetWidth = (uint32_t)curW;
     mCurrentTargetHeight = (uint32_t)curH;
     ApplyViewport();
@@ -1840,6 +1842,7 @@ void WgpuRnd::BeginFramePass(bool clear, bool clearDepthForOverlay) {
     mCurrentTargetFormat = mGpu.SurfaceFormat();
     mCurrentSampleCount = kMSAASamples;
     mCurrentPassHasDepth = true;
+    mCurrentPassIsOverlay = false;
     mCurrentTargetWidth = (uint32_t)curW;
     mCurrentTargetHeight = (uint32_t)curH;
     static const bool sDebugPipelines = getenv("MILO_DEBUG_PIPELINES") != nullptr;  // H-110: read once; nothing in the process writes it
@@ -1971,6 +1974,7 @@ void WgpuRnd::BeginTexturePass(RndTex* tex, const TexturePassLoad& load) {
     mCurrentTargetFormat = ChooseRenderTargetFormat(tex);
     mCurrentSampleCount = msaa ? pt.samples : 1;
     mCurrentPassHasDepth = depthView != nullptr;
+    mCurrentPassIsOverlay = false;
     // The attachment's pixels (as the frame pass's are the drawn frame's);
     // viewports stay in the texture's own and FrameViewport scales them.
     mCurrentTargetWidth = pt.gpuWidth ? pt.gpuWidth : (uint32_t)tex->Width();
@@ -2514,6 +2518,7 @@ void WgpuRnd::EndDrawing() {
     mCurrentTargetFormat = wgpu::TextureFormat::Undefined;
     mCurrentSampleCount = 1;
     mCurrentPassHasDepth = false;
+    mCurrentPassIsOverlay = false;
     mCurrentTargetWidth = 0;
     mCurrentTargetHeight = 0;
     mDrawing = false;

@@ -187,6 +187,12 @@ public:
     // texPassMsaa reaches its target -- the frame's (kMSAASamples).
     static constexpr uint32_t kTexPassMsaaSamples = 4;
     bool CurrentPassHasDepth() const { return mCurrentPassHasDepth; }
+    // The HUD overlay pass (BeginOverlayPass). It draws on the frame after
+    // FlushPostProcessingForOverlay, so the retail post chain has already read
+    // the frame's alpha as its bloom mask: no draw here may write the mask.
+    // Not the same as !CurrentPassHasDepth(): the pass has a depth attachment
+    // under rndshape::kOverlayDepth (rb3-xenon).
+    bool CurrentPassIsOverlay() const { return mCurrentPassIsOverlay; }
     // The pass states a mesh can be drawn in, for a warm that runs outside any
     // pass (MeshPipelineKey.h): the world (BeginFramePass), the HUD overlay
     // (BeginOverlayPass), and a render target (the TexturePass) with or
@@ -595,6 +601,7 @@ public:
     wgpu::TextureFormat mCurrentTargetFormat = wgpu::TextureFormat::Undefined;
     uint32_t mCurrentSampleCount = 1;
     bool mCurrentPassHasDepth = false;
+    bool mCurrentPassIsOverlay = false;  // BeginOverlayPass
     uint32_t mCurrentTargetWidth = 0;
     uint32_t mCurrentTargetHeight = 0;
     // np-look47 step 2: a texture pass's attachment pixels over the texture's

@@ -204,6 +204,7 @@ MeshPassContext CurrentMeshPassContext() {
     c.targetFormat = gWgpuRnd->CurrentTargetFormat();
     c.sampleCount = gWgpuRnd->CurrentSampleCount();
     c.hasDepth = gWgpuRnd->CurrentPassHasDepth();
+    c.overlay = gWgpuRnd->CurrentPassIsOverlay();
     c.toTexture = gWgpuRnd->ActiveTargetTex() != nullptr;
     c.reflection = rndshape::TheRndRef().DrawMode() == rndshape::kDrawModeReflection;
     c.selfShadowCaster = rndshape::kSelfShadowMap
@@ -275,7 +276,9 @@ PipelineKey MaterialPipelineKey(RndMat* rawMat, bool skinned, bool isGlyphMesh, 
         key.alphaWrite = true;
     // RB3's pseudo-HDR bloom mask (rndshape::BloomMaskScale; 0 for DC3): an
     // AllowHDR material drawn into the main frame writes its luma to alpha.
-    const float bloomMaskScale = (!isOverlayPass && !ctx.toTexture)
+    // Not in the overlay pass, which comes after the post chain read the mask
+    // (MeshPassContext::overlay; it has depth under rndshape::kOverlayDepth).
+    const float bloomMaskScale = (!isOverlayPass && !ctx.overlay && !ctx.toTexture)
         ? rndshape::BloomMaskScale(mat) : 0.0f;
     if (bloomMaskScale != 0.0f)  // DC3: negative (rndshape::BloomMaskScale)
         key.alphaWrite = true;
@@ -360,7 +363,8 @@ int WarmVariant(PipelineKey key, RndMat* rawMat, bool glyph, bool textMesh,
         && !rndshape::MatPinsAlphaWrite(rawMat))
         key.alphaWrite = true;
     int queued = WarmAtEachScale(pm, key, uiOutput);
-    if (ctx.hasDepth && !ctx.toTexture && rndshape::AllowsBloomMaskFor(mat, blend, alphaWrite)) {
+    if (ctx.hasDepth && !ctx.overlay && !ctx.toTexture &&
+        rndshape::AllowsBloomMaskFor(mat, blend, alphaWrite)) {
         PipelineKey masked = key;
         masked.alphaWrite = true;
         queued += WarmAtEachScale(pm, masked, uiOutput);
@@ -466,7 +470,7 @@ void DrawMeshImmediate(RndMesh* mesh) {
     // RB3's pseudo-HDR bloom mask (rndshape::BloomMaskScale; 0 for DC3): an
     // AllowHDR material drawn into the main frame writes its luma to alpha
     // (MeshPipelineKey sets alphaWrite for it).
-    const float bloomMaskScale = (!isOverlayPass && !passCtx.toTexture)
+    const float bloomMaskScale = (!isOverlayPass && !passCtx.overlay && !passCtx.toTexture)
         ? rndshape::BloomMaskScale(mat) : 0.0f;
 
     wgpu::RenderPipeline pipeline = gWgpuRnd->Pipelines().GetPipeline(key);

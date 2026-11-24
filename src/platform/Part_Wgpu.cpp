@@ -479,7 +479,9 @@ void DrawParticlesBillboard(RndParticleSys* sys) {
     verts.reserve(256);
     const bool passHasDepth = gWgpuRnd->CurrentPassHasDepth();
     const bool passToTexture = gWgpuRnd->ActiveTargetTex() != nullptr;
-    const float mask = ParticleMaskScale(mat, passHasDepth, passToTexture);
+    // No mask in the overlay pass (WgpuRnd::CurrentPassIsOverlay), depth or not.
+    const float mask = gWgpuRnd->CurrentPassIsOverlay()
+        ? 0.0f : ParticleMaskScale(mat, passHasDepth, passToTexture);
 
     for (RndParticle* p = head; p; p = p->next) {
         const Vector3 wp = rndshape::PartWorldPos(sys, p);
@@ -635,7 +637,8 @@ int WarmParticlePipelines(RndMat* mat, const MeshPassContext& ctx, const int* bl
     // Whether the mask is written is the frame's (a current post-proc, no
     // environment fade), not the material's, so a blend that allows it is
     // warmed both ways.
-    const bool frameMask = rndshape::RetailBloomMaskActive() && ctx.hasDepth && !ctx.toTexture;
+    const bool frameMask = rndshape::RetailBloomMaskActive() && ctx.hasDepth && !ctx.overlay &&
+                           !ctx.toTexture;
     auto warm = [&](int blend) {
         ParticlePipeline(mat, (WgpuBlend)blend, false, ctx.targetFormat, ctx.hasDepth,
                          ctx.toTexture, ctx.sampleCount);

@@ -292,9 +292,11 @@ void DrawRect2D::Draw(wgpu::RenderPassEncoder& pass, const Hmx::Rect& rect, RndM
         }
     }
 
-    const float mask = gWgpuRnd ? RectMaskScale(mat, gWgpuRnd->CurrentPassHasDepth(),
-                                                 gWgpuRnd->ActiveTargetTex() != nullptr)
-                                : 0.0f;
+    // No mask in the overlay pass (WgpuRnd::CurrentPassIsOverlay), depth or not.
+    const float mask = gWgpuRnd && !gWgpuRnd->CurrentPassIsOverlay()
+                           ? RectMaskScale(mat, gWgpuRnd->CurrentPassHasDepth(),
+                                           gWgpuRnd->ActiveTargetTex() != nullptr)
+                           : 0.0f;
     Vertex2D verts[6] = {
         {{x0, y0}, {0, 0}, {cTL[0], cTL[1], cTL[2], cTL[3]}, mask},
         {{x0, y1}, {0, 1}, {cBL[0], cBL[1], cBL[2], cBL[3]}, mask},
